@@ -1,15 +1,74 @@
-local LibraryURL = "https://raw.githubusercontent.com/BUSDANSTETE/lua/main/library.lua"
+-- ============================================
+-- LIBRARY SOURCE
+-- ============================================
+-- Put your own raw URL here if you host library.lua yourself, for example:
+--   local MyLibraryURL = "https://raw.githubusercontent.com/you/repo/main/library.lua"
+-- It is tried first. If it fails (HTTP error, HTML page instead of raw Lua,
+-- compile error), the next entry is tried, so the menu still starts.
+local MyLibraryURL = nil
 
+local LibraryURLs = {}
 
-local status, LibraryCode = Susano.HttpGet(LibraryURL)
-
-if status ~= 200 then
-    print("[Menu] Erreur HTTP " .. tostring(status))
-    return
+if type(MyLibraryURL) == "string" and #MyLibraryURL > 0 then
+    LibraryURLs[#LibraryURLs + 1] = MyLibraryURL
 end
 
-if not LibraryCode or #LibraryCode < 1000 then
-    print("[Menu] Library corrompue ou vide")
+LibraryURLs[#LibraryURLs + 1] = "https://raw.githubusercontent.com/BUSDANSTETE/lua/main/library.lua"
+
+local LibraryCode = nil
+local LastError = "no source"
+
+for i = 1, #LibraryURLs do
+    local url = LibraryURLs[i]
+    local called, httpStatus, body = pcall(Susano.HttpGet, url)
+
+    if not called then
+        LastError = "HttpGet unavailable: " .. tostring(httpStatus)
+        print("[Menu] " .. LastError)
+    elseif httpStatus ~= 200 then
+        LastError = ("HTTP %s on %s"):format(tostring(httpStatus), url)
+        print("[Menu] " .. LastError)
+    elseif type(body) ~= "string" or #body < 1000 then
+        LastError = ("empty body (%s bytes) from %s"):format(tostring(body and #body), url)
+        print("[Menu] " .. LastError)
+    else
+        body = string.gsub(body, "^\239\187\191", "")
+
+        local testChunk, testErr = load(body)
+        local looksLikeLibrary = string.find(body, "Menu.ItemsPerPage", 1, true)
+            or string.find(body, "Menu.DrawItem", 1, true)
+
+        if testChunk and looksLikeLibrary then
+            LibraryCode = body
+            print(("[Menu] library OK: %s (%d bytes)"):format(url, #body))
+            break
+        elseif not testChunk then
+            LastError = ("compile error from %s: %s"):format(url, tostring(testErr))
+            print("[Menu] " .. LastError)
+        else
+            LastError = ("not the menu library: %s"):format(url)
+            print("[Menu] " .. LastError)
+        end
+    end
+end
+
+if not LibraryCode then
+    print("[Menu] no usable library: " .. LastError)
+
+    -- Show the reason on screen instead of dying silently.
+    if type(Susano) == "table" and Susano.BeginFrame and Susano.DrawText then
+        CreateThread(function()
+            while true do
+                Wait(0)
+                Susano.BeginFrame()
+                Susano.DrawRectFilled(40, 40, 780, 66, 0.05, 0.05, 0.06, 0.92, 6)
+                Susano.DrawText(56, 56, "[Menu] library not loaded", 18, 1.0, 0.28, 0.28, 1.0)
+                Susano.DrawText(56, 78, tostring(LastError):sub(1, 110), 14, 0.95, 0.95, 0.95, 1.0)
+                Susano.SubmitFrame()
+            end
+        end)
+    end
+
     return
 end
 
