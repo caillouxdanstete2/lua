@@ -16009,16 +16009,27 @@ local function Sep(text)
     return { name = "", isSeparator = true, separatorText = text }
 end
 
+local function Guard(handler)
+    if type(handler) ~= "function" then return handler end
+
+    return function(...)
+        local ok, err = pcall(handler, ...)
+        if not ok then
+            Log("ERROR", "menu handler failed: %s", tostring(err))
+        end
+    end
+end
+
 local function Toggle(name, initial, handler)
-    return { name = name, type = "toggle", value = initial, onClick = handler }
+    return { name = name, type = "toggle", value = initial, onClick = Guard(handler) }
 end
 
 local function Action(name, handler)
-    return { name = name, type = "action", onClick = handler }
+    return { name = name, type = "action", onClick = Guard(handler) }
 end
 
 local function Selector(name, options, selected, handler)
-    return { name = name, type = "selector", options = options, selected = selected, onClick = handler }
+    return { name = name, type = "selector", options = options, selected = selected, onClick = Guard(handler) }
 end
 
 local targetModeItem = Selector("Target", CFG.targetModes, S.targetMode, function(index)
@@ -16026,9 +16037,12 @@ local targetModeItem = Selector("Target", CFG.targetModes, S.targetMode, functio
     Notify("Target mode: " .. tostring(CFG.targetModes[index]), C.blue)
 end)
 
-local playerItem = Selector("Player", { "none" }, 1, function(index)
+local playerItem
+
+playerItem = Selector("Player", { "none" }, 1, function(index)
     Players.index = index
-    Notify("Target: " .. tostring(playerItem.options[index]), C.blue)
+    local label = playerItem and playerItem.options and playerItem.options[index]
+    Notify("Target: " .. tostring(label or "none"), C.blue)
 end)
 
 local boneItem = Selector("Attach bone", CFG.bones, S.propBone, function(index)
