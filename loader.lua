@@ -14581,7 +14581,7 @@ end
 -- for those is driven through the loader's own _Stealth flags instead.
 -- ============================================================================
 
-do
+;(function()
 
 local Api = rawget(_G, "Susano")
 if type(Api) ~= "table" then
@@ -16598,4 +16598,4 @@ _G.SeedMenu = {
     Close = function() Menu.Visible = false end,
 }
 
-end
+end)()
