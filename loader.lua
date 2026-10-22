@@ -16001,7 +16001,7 @@ end)()
 -- >>> VANGUARD MODULE BEGIN
 -- ============================================================================
 -- VANGUARD  (integrated artifact - edit src/ and rebuild)
--- Generated: 2026-10-22 21:43:15
+-- Generated: 2026-10-22 21:53:14
 --
 -- This block lives in loader.lua and in dist/loader.built.lua at the same
 -- time. It is the only place the local Menu table is in scope. Rebuilding
@@ -20594,12 +20594,69 @@ end
 -- ---------------------------------------------------------------------------
 -- REMOVE OLD ENTRY POINTS
 -- ---------------------------------------------------------------------------
+local MENU_REV = "2026-10-22-rework-2"
+
+-- A previous execution of the old loader can leave its category in the shared
+-- Menu table. Match both the literal name and the old nine-tab fingerprint so
+-- a case change or a renamed category does not survive a reload.
+local function isLegacyCategory(category)
+    if type(category) ~= "table" then return false end
+
+    local name = string.lower(tostring(category.name or ""))
+    if string.find(name, "vanguard", 1, true) then return true end
+
+    if category.hasTabs and category.tabs then
+        local markers = 0
+        for _, tab in ipairs(category.tabs) do
+            local tabName = string.lower(tostring(tab.name or ""))
+            if tabName == "evasion" or tabName == "staff" or tabName == "shield"
+                or tabName == "divergence" or tabName == "sandbox"
+                or tabName == "sentinel" or tabName == "debug" then
+                markers = markers + 1
+            end
+        end
+        if markers >= 3 then return true end
+    end
+
+    return false
+end
+
+local function purgeLegacyList(list)
+    if type(list) ~= "table" then return 0 end
+
+    local removed = 0
+    for i = #list, 1, -1 do
+        if isLegacyCategory(list[i]) then
+            table.remove(list, i)
+            removed = removed + 1
+        end
+    end
+    return removed
+end
+
+local function purgeLegacyCategories()
+    local removed = purgeLegacyList(Menu.Categories)
+        + purgeLegacyList(Menu.ExtraCategories)
+
+    if removed > 0 then
+        Menu.OpenedCategory = nil
+        Menu.CurrentItem = 1
+        if type(Menu.CurrentCategory) == "number"
+            and Menu.CurrentCategory > #Menu.Categories then
+            Menu.CurrentCategory = math.max(2, #Menu.Categories)
+        end
+        O.log("menu: removed %d legacy Vanguard category(ies)", removed)
+    end
+    return removed
+end
+
 local function removeLegacyEntries()
     -- The old base "Crash Method" is superseded by the Crasher category.
     removeItem("Online", "Troll", "Crash Method")
 
     -- There must never be two menu surfaces for the same features.
     removeCategory("Vanguard")
+    purgeLegacyCategories()
 end
 
 -- ---------------------------------------------------------------------------
@@ -20615,6 +20672,21 @@ local function build()
     installSeed()
     installProtection()
     installCrasher()
+
+    -- Re-check after the new categories are installed. This catches a stale
+    -- category that was appended while the old menu table was still alive.
+    purgeLegacyCategories()
+
+    -- If an old script calls AddCategory after us, keep the legacy tab out.
+    if type(Menu.AddCategory) == "function" and not Menu.__vgd_category_guard then
+        local rawAddCategory = Menu.AddCategory
+        Menu.__vgd_category_guard = true
+        Menu.AddCategory = function(category, extra)
+            if isLegacyCategory(category) then return nil end
+            return rawAddCategory(category, extra)
+        end
+    end
+
     return true
 end
 
@@ -20629,6 +20701,15 @@ function UI.boot()
     S.scan()
     build()
 
+    -- Delayed second pass: a stale menu instance or a late AddCategory call
+    -- cannot keep the old Vanguard category alive.
+    pcall(function()
+        Citizen.CreateThread(function()
+            Citizen.Wait(1200)
+            purgeLegacyCategories()
+        end)
+    end)
+
     O.every("shield", 5200, function()
         S.tick()
     end, 1200)
@@ -20637,7 +20718,7 @@ function UI.boot()
         if #S.acs == 0 then S.scan() end
     end, 4000)
 
-    O.log("vanguard %s loaded - guard: %s", O.version, S.describe())
+    O.log("menu rework %s loaded - guard: %s", MENU_REV, S.describe())
 end
 
 UI.boot()
