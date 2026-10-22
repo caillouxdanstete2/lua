@@ -14611,7 +14611,7 @@ local CFG = {
     distanceM    = { near = 1.2, mid = 3.0, far = 6.0 },
     bones        = { "off", "hand", "head", "back" },
     boneIds      = { hand = 57005, head = 31086, back = 24818 },
-    targetModes  = { "me", "selected", "all" },
+    targetModes  = { "self", "player", "all" },
 
     -- Inbound events dropped on sight. Short generic names ("st", "hb",
     -- "sync", "it") stay out: killing a liveness handshake gets you kicked.
@@ -14666,18 +14666,19 @@ local S = {
     proofBullet  = false,
     armour       = 100,
 
-    propStatebag = true,
     propBone     = 1,
     propDistance = 2,
 
-    targetMode   = 1,
+    targetMode   = 2,   -- self / player / all
     attachTarget = true,
 
-    antiFreeze   = false,
-    antiSpectate = false,
+    antiFreeze   = false,   -- native hook, left off on purpose
+    antiSpectate = false,   -- native hook, left off on purpose
     acShim       = false,
-    antiStrip    = true,
-    pickupCollect = false,
+    antiStrip    = false,   -- native hook, replaced by the outfit restore loop
+    freezeHeal   = true,
+    spectateHeal = true,
+    outfitGuard  = true,
 
     vehicleModel = 1,
     vehicleWarp  = true,
@@ -14686,10 +14687,8 @@ local S = {
 local PROP_LIST = {
     { label = "Tube corner (XL)",  model = "ar_prop_ar_tube_crn_5d",   extra = 3.5 },
     { label = "Container (XL)",    model = "prop_container_01a",       extra = 4.0 },
-    { label = "Container 2 (XL)",  model = "prop_container_05a",       extra = 4.0 },
     { label = "Wood box (xm3)",    model = "xm3_prop_xm3_box_wood03a", extra = 0.0 },
     { label = "Barrel",            model = "prop_barrel_02a",          extra = 0.0 },
-    { label = "Bench",             model = "prop_bench_01a",           extra = 0.0 },
     { label = "Road cone",         model = "prop_roadcone02a",         extra = 0.0 },
 }
 
@@ -15514,6 +15513,74 @@ local function ApplyAntiSpectate()
 end
 
 --------------------------------------------------------------------------------
+-- OUTFIT GUARD (evasive anti-strip: restore, never block the native)
+--------------------------------------------------------------------------------
+
+local Outfit = { ped = 0, components = nil, props = nil }
+
+local function SnapshotOutfit()
+    local ped = Ctx.ped
+    if ped == 0 then
+        ped = PlayerPedId()
+        if ped == 0 then return end
+    end
+
+    local components, props = {}, {}
+
+    for id = 0, 11 do
+        local okDrawable, drawable = pcall(GetPedDrawableVariation, ped, id)
+        local okTexture, texture = pcall(GetPedTextureVariation, ped, id)
+        if okDrawable and type(drawable) == "number" then
+            components[id] = { drawable, okTexture and tonumber(texture) or 0 }
+        end
+    end
+
+    for id = 0, 7 do
+        local okDrawable, drawable = pcall(GetPedPropIndex, ped, id)
+        local okTexture, texture = pcall(GetPedPropTextureIndex, ped, id)
+        if okDrawable and type(drawable) == "number" then
+            props[id] = { drawable, okTexture and tonumber(texture) or 0 }
+        end
+    end
+
+    Outfit.ped = ped
+    Outfit.components = components
+    Outfit.props = props
+end
+
+local function ApplyOutfitGuard()
+    local ped = Ctx.ped
+    if ped == 0 then return end
+
+    if not Outfit.components or Outfit.ped ~= ped then
+        SnapshotOutfit()
+        return
+    end
+
+    for id, saved in pairs(Outfit.components) do
+        local okDrawable, drawable = pcall(GetPedDrawableVariation, ped, id)
+        local okTexture, texture = pcall(GetPedTextureVariation, ped, id)
+        if okDrawable and okTexture and (drawable ~= saved[1] or texture ~= saved[2]) then
+            pcall(SetPedComponentVariation, ped, id, saved[1], saved[2], 0)
+        end
+    end
+
+    for id, saved in pairs(Outfit.props) do
+        local okDrawable, drawable = pcall(GetPedPropIndex, ped, id)
+        if okDrawable then
+            if saved[1] == -1 then
+                if drawable ~= -1 then pcall(ClearPedProp, ped, id) end
+            else
+                local okTexture, texture = pcall(GetPedPropTextureIndex, ped, id)
+                if not okTexture or drawable ~= saved[1] or texture ~= saved[2] then
+                    pcall(SetPedPropIndex, ped, id, saved[1], saved[2], true)
+                end
+            end
+        end
+    end
+end
+
+--------------------------------------------------------------------------------
 -- MODELS
 --------------------------------------------------------------------------------
 
@@ -15646,68 +15713,6 @@ local function RepairVehicle()
 end
 
 --------------------------------------------------------------------------------
--- PICKUP COLLECTION
---------------------------------------------------------------------------------
-
-local PICKUP_TYPES = {
-    "PICKUP_WEAPON_ASSAULTRIFLE",
-    "PICKUP_WEAPON_CARBINERIFLE",
-    "PICKUP_HEALTH_STANDARD",
-    "PICKUP_ARMOUR_STANDARD",
-    "PICKUP_MONEY_VARIABLE",
-}
-
-local function ApplyPickupCollection(state)
-    local player = PlayerId()
-    local enabled = state and true or false
-
-    pcall(function()
-        if type(SetLocalPlayerCanCollectPortablePickups) == "function" then
-            SetLocalPlayerCanCollectPortablePickups(enabled)
-        end
-    end)
-
-    for i = 1, #PICKUP_TYPES do
-        local hash = GetHashKey(PICKUP_TYPES[i])
-        pcall(function()
-            if type(SetPlayerPermittedToCollectPickupsOfType) == "function" then
-                SetPlayerPermittedToCollectPickupsOfType(player, hash, enabled)
-            end
-        end)
-    end
-end
-
-local function SpawnPickup(entry)
-    Citizen.CreateThread(function()
-        local hash = GetHashKey(entry.model)
-        RequestModel(hash)
-
-        local deadline = GetGameTimer() + 3000
-        while not HasModelLoaded(hash) and GetGameTimer() < deadline do
-            Citizen.Wait(10)
-        end
-
-        local ped = PlayerPedId()
-        local coords = GetOffsetFromEntityInWorldCoords(ped, 0.0, 1.5, 0.0)
-
-        local previous = _G.SeedBypass
-        _G.SeedBypass = true
-        local ok, pickup = pcall(CreatePickupRotate, hash,
-            coords.x, coords.y, coords.z + 0.2,
-            0.0, 0.0, 0.0, 8, entry.amount or 100, 0, true, hash)
-        _G.SeedBypass = previous
-
-        SetModelAsNoLongerNeeded(hash)
-
-        if ok and pickup and pickup ~= 0 then
-            Notify(("%s spawned"):format(entry.label), C.green)
-        else
-            Notify(("%s blocked by the server"):format(entry.label), C.red)
-        end
-    end)
-end
-
---------------------------------------------------------------------------------
 -- PROP SPAWNER
 --------------------------------------------------------------------------------
 
@@ -15795,51 +15800,6 @@ local function SpawnProp(model, extra, targetPed, targetName, attachToTarget)
             target = GetOffsetFromEntityInWorldCoords(ped, 0.0, forward, 0.0)
         end
 
-        local consumerObj = 0
-
-        -- The server statebag only knows about the local player; a remote
-        -- target goes straight to the networked native path.
-        if S.propStatebag and not remote then
-            local state = LocalPlayer.state
-            local payload = {
-                {
-                    model = model,
-                    coords = target,
-                    rot = vector3(pitch, roll, heading),
-                    collision = false,
-                },
-            }
-
-            local wrote = pcall(function()
-                state:set("lib:progressProps", payload, true)
-            end)
-
-            if wrote then
-                Citizen.Wait(CFG.propWait)
-                local radius = math.max(CFG.propRadius, forward + 2.0)
-                consumerObj = GetClosestObjectOfType(target.x, target.y, target.z,
-                    radius, hash, false, false, false) or 0
-            end
-
-            if consumerObj == 0 then
-                pcall(function() state:set("lib:progressProps", {}, true) end)
-            end
-        end
-
-        if consumerObj ~= 0 then
-            local netId = EnsureNetworked(consumerObj)
-            Spawned[#Spawned + 1] = consumerObj
-
-            if netId > 0 then
-                Notify(("Server prop: %s (net %d)"):format(model, netId), C.green)
-            else
-                Notify(("Server prop: %s (local only)"):format(model), C.red)
-            end
-
-            SetModelAsNoLongerNeeded(hash)
-            return
-        end
-
         -- isNetwork = true, netMissionEntity = true: the object is replicated
         -- to every player in scope, not just this client.
         local obj = CreateObject(hash, target.x, target.y, target.z, true, true, false)
@@ -15861,7 +15821,7 @@ local function SpawnProp(model, extra, targetPed, targetName, attachToTarget)
             attached = AttachToBone(obj, bone, ped)
         end
 
-        if not attached and not remote then
+        if not attached then
             PlaceObjectOnGroundProperly(obj)
         end
 
@@ -15955,44 +15915,22 @@ local function SelectedEntry()
     return nil
 end
 
-local function CurrentTargetLabel()
-    local mode = CFG.targetModes[S.targetMode] or "me"
-
-    if mode == "me" then return "me" end
-    if mode == "all" then return ("all players (%d)"):format(#Players.list) end
-
-    local entry = Players.list[Players.index]
-    if not entry then return "none" end
-    return ("%s [%s]"):format(entry.name, tostring(entry.serverId))
-end
-
-local function CyclePlayer()
-    local count = RefreshPlayers()
-    if count == 0 then
-        Notify("No other player nearby", C.red)
-        return
-    end
-
-    Players.index = (Players.index % count) + 1
-    local entry = Players.list[Players.index]
-    Notify(("Target: %s [%s]"):format(entry.name, tostring(entry.serverId)), C.blue)
-end
-
--- Spawns on all players in three modes: me, the selected player, or everyone
+-- Spawns on all players in three modes: self, the selected player, or everyone
 -- in the player list (capped so the network does not get flooded).
 local function SpawnOnTargets(model, extra)
-    local mode = CFG.targetModes[S.targetMode] or "me"
+    local mode = CFG.targetModes[S.targetMode] or "self"
 
-    if mode == "me" then
+    if mode == "self" then
         SpawnProp(model, extra)
         return
     end
 
-    if mode == "selected" then
+    if mode == "player" then
         RefreshPlayers()
         local entry = SelectedEntry()
         if not entry then
-            Notify("No player selected", C.red)
+            Notify("No player in scope - spawned on you", C.blue)
+            SpawnProp(model, extra)
             return
         end
         SpawnProp(model, extra, entry.ped, entry.name, S.attachTarget)
@@ -16013,212 +15951,6 @@ local function SpawnOnTargets(model, extra)
             SpawnProp(model, extra, ped, entry.name, S.attachTarget)
         end
     end
-end
-
---------------------------------------------------------------------------------
--- ANCHOR / DIAGNOSTICS
---------------------------------------------------------------------------------
-
-local Anchor = { coords = nil, heading = 0.0 }
-
-local function SaveAnchor()
-    local ped = PlayerPedId()
-    local coords = GetEntityCoords(ped)
-    Anchor.coords = vector3(coords.x, coords.y, coords.z)
-    Anchor.heading = GetEntityHeading(ped)
-
-    Notify(("Anchor saved: %.1f, %.1f, %.1f"):format(coords.x, coords.y, coords.z), C.blue)
-end
-
-local function ReturnAnchor()
-    if not Anchor.coords then
-        Notify("No anchor saved", C.red)
-        return
-    end
-
-    local previous = _G.SeedBypass
-    _G.SeedBypass = true
-
-    local ped = PlayerPedId()
-    pcall(SetEntityCoords, ped, Anchor.coords.x, Anchor.coords.y, Anchor.coords.z,
-        false, false, false, true)
-    pcall(SetEntityHeading, ped, Anchor.heading)
-
-    _G.SeedBypass = previous
-    Notify("Back to anchor", C.green)
-end
-
-local function GuardSelfTest()
-    Citizen.CreateThread(function()
-        local previous = S.telemetry
-        S.telemetry = false
-
-        local ok, message = pcall(function()
-            local ped = PlayerPedId()
-            local before = GetEntityCoords(ped)
-            local results = {}
-
-            pcall(SetEntityCoords, ped, before.x + 2.0, before.y + 2.0, before.z,
-                false, false, false, true)
-            Citizen.Wait(250)
-
-            local after = GetEntityCoords(ped)
-            local moved = math.abs(after.x - before.x) + math.abs(after.y - before.y) > 1.0
-            results[#results + 1] = ("teleport=%s"):format(moved and "FAIL" or "blocked")
-
-            local beforeHealth = GetEntityHealth(ped)
-            pcall(SetEntityHealth, ped, 50)
-            Citizen.Wait(250)
-
-            local afterHealth = GetEntityHealth(ped)
-            local damaged = afterHealth < math.min(beforeHealth, 150)
-            results[#results + 1] = ("health=%s"):format(damaged and "FAIL" or "blocked")
-
-            return table.concat(results, " ")
-        end)
-
-        S.telemetry = previous
-
-        if ok then
-            Log("DIAG", "guard self-test: %s", tostring(message))
-            Notify("Guard self-test: " .. tostring(message), C.blue)
-        else
-            Log("DIAG", "guard self-test error: %s", tostring(message))
-            Notify("Guard self-test unavailable", C.red)
-        end
-    end)
-end
-
-local function ApiReport()
-    local names = {}
-
-    for key, value in pairs(Api) do
-        names[#names + 1] = ("%s:%s"):format(tostring(key), type(value))
-    end
-
-    table.sort(names)
-    Log("DIAG", "Susano API (%d entries):", #names)
-
-    for i = 1, #names do
-        Log("DIAG", "  %s", names[i])
-    end
-
-    Notify(("%d Susano entries - see F8"):format(#names), C.blue)
-end
-
-local function DiagSummary()
-    Log("DIAG", "---- summary ----")
-    Log("DIAG", "native hooks: %d installed / %d failed", HookStats.installed, HookStats.failed)
-    Log("DIAG", "extra telemetry hooks: %d installed / %d failed",
-        TelemetryStats.installed, TelemetryStats.failed)
-    Log("DIAG", "spoof: telemetry=%s logPayloads=%s outboundFilter=%s",
-        tostring(S.telemetry), tostring(S.logSpoof), tostring(S.outbound))
-
-    local count = 0
-    for _ in pairs(blockedEvents) do count = count + 1 end
-    Log("DIAG", "inbound blocked: %d", count)
-
-    Log("DIAG", "prop statebag=%s bone=%s distance=%s",
-        tostring(S.propStatebag), CFG.bones[S.propBone], CFG.distances[S.propDistance])
-
-    local ped = PlayerPedId()
-    Log("DIAG", "speed=%.2f height=%.2f health=%d armour=%d wanted=%d",
-        GetEntitySpeed(ped), GetEntityHeightAboveGround(ped), GetEntityHealth(ped),
-        GetPedArmour(ped), GetPlayerWantedLevel(PlayerId()))
-
-    Notify("Diagnostics in F8", C.blue)
-end
-
-local function DiagProp(model)
-    model = model or "ar_prop_ar_tube_crn_5d"
-
-    Citizen.CreateThread(function()
-        Log("DIAG", "---- prop test: %s ----", model)
-        local hash = GetHashKey(model)
-        Log("DIAG", "valid=%s cdimage=%s",
-            tostring(IsModelValid(hash)), tostring(IsModelInCdimage(hash)))
-
-        local loaded, reason = LoadModel(hash, model)
-        if not loaded then
-            Log("DIAG", "FAIL: %s", tostring(reason))
-            Notify("Prop test: model unavailable", C.red)
-            return
-        end
-
-        local ped = PlayerPedId()
-        local coords = GetOffsetFromEntityInWorldCoords(ped, 0.0, 3.0, 0.0)
-        local heading = GetEntityHeading(ped)
-
-        local payload = {
-            { model = model, coords = coords, rot = vector3(0.0, 0.0, heading), collision = false },
-        }
-        local wrote = pcall(function()
-            LocalPlayer.state:set("lib:progressProps", payload, true)
-        end)
-        Log("DIAG", "statebag write=%s", tostring(wrote))
-
-        Citizen.Wait(1500)
-        local consumer = GetClosestObjectOfType(coords.x, coords.y, coords.z, 6.0, hash, false, false, false)
-        Log("DIAG", "consumer probe=%s", tostring(consumer))
-        pcall(function() LocalPlayer.state:set("lib:progressProps", {}, true) end)
-
-        local obj = CreateObject(hash, coords.x, coords.y, coords.z + 0.6, true, true, false)
-        local exists = obj ~= 0 and DoesEntityExist(obj)
-        Log("DIAG", "CreateObject=%s exists=%s", tostring(obj), tostring(exists))
-
-        if exists then
-            local netId = EnsureNetworked(obj)
-            Log("DIAG", "netId=%s (non-zero = visible to other players)", tostring(netId))
-
-            local previous = _G.SeedBypass
-            _G.SeedBypass = true
-            pcall(AttachEntityToEntity, obj, ped, 57005,
-                0.0, 0.0, 0.0, 0.0, 0.0, 0.0, false, false, false, true, 2, true)
-            _G.SeedBypass = previous
-            Citizen.Wait(300)
-
-            local attached = GetEntityAttachedTo(obj)
-            Log("DIAG", "attach test: attachedTo=%s (ped=%s)", tostring(attached), tostring(ped))
-            Log("DIAG", "verdict: %s",
-                attached == ped and "attach path OK" or "attach blocked - prop drops on the ground")
-
-            pcall(DeleteObject, obj)
-        end
-
-        if consumer ~= 0 then
-            pcall(DeleteObject, consumer)
-        end
-
-        SetModelAsNoLongerNeeded(hash)
-        Notify("Prop test done - see F8", C.blue)
-    end)
-end
-
-local function DiagInput()
-    local function state(code)
-        if type(Api.GetAsyncKeyState) == "function" then
-            local ok, down, pressed = pcall(Api.GetAsyncKeyState, code)
-            if ok then return tostring(down), tostring(pressed) end
-            return "err", "err"
-        end
-        return "n/a", "n/a"
-    end
-
-    Log("DIAG", "GetAsyncKeyState=%s IsRawKeyPressed=%s",
-        type(Api.GetAsyncKeyState), type(IsRawKeyPressed))
-
-    local menuKey = Menu.SelectedKey or 0x31
-    Log("DIAG", "hold the menu key (0x%02X), UP, DOWN, A, E, ENTER within the next 6 seconds", menuKey)
-
-    Citizen.CreateThread(function()
-        local deadline = GetGameTimer() + 6000
-        while GetGameTimer() < deadline do
-            Log("DIAG", "menu=0x%02X %s | UP=%s DOWN=%s A=%s E=%s ENTER=%s",
-                menuKey, state(menuKey), state(0x26), state(0x28), state(0x41), state(0x45), state(0x0D))
-            Citizen.Wait(350)
-        end
-        Log("DIAG", "input probe done")
-    end)
 end
 
 --------------------------------------------------------------------------------
@@ -16367,78 +16099,84 @@ end
 -- Tab contents -------------------------------------------------------------
 
 local guardItems = {
-    Sep("Protections"),
+    Sep("Hooks (local, never seen by the server)"),
     Toggle("Anti teleport", S.antiTeleport, function(v) S.antiTeleport = v end),
     Toggle("Anti health write", S.antiKill, function(v) S.antiKill = v end),
     Toggle("Anti ped delete", S.antiDelete, function(v) S.antiDelete = v end),
     Toggle("Anti attach", S.antiAttach, function(v) S.antiAttach = v end),
     Toggle("Anti vehicle damage", S.antiVehicle, function(v) S.antiVehicle = v end),
-    Toggle("Anti strip", S.antiStrip, function(v) S.antiStrip = v end),
-    Toggle("Anti freeze", S.antiFreeze, function(v)
-        S.antiFreeze = v
+
+    Sep("Self-heal (no native blocking)"),
+    Toggle("Freeze self-heal", S.freezeHeal, function(v)
+        S.freezeHeal = v
         if v then ApplyAntiFreeze() end
     end),
-    Toggle("Anti spectate", S.antiSpectate, function(v)
-        S.antiSpectate = v
+    Toggle("Spectate self-heal", S.spectateHeal, function(v)
+        S.spectateHeal = v
         if v then ApplyAntiSpectate() end
     end),
-    Toggle("AC shim (visibility)", S.acShim, function(v) S.acShim = v end),
+    Toggle("Outfit guard", S.outfitGuard, function(v)
+        S.outfitGuard = v
+        if v then SnapshotOutfit() end
+    end),
+    Action("Save current outfit", function()
+        SnapshotOutfit()
+        Notify("Outfit saved", C.blue)
+    end),
 
-    Sep("Combat"),
-    Toggle("Harden (master)", S.harden, function(v)
+    Sep("Tank"),
+    Toggle("Harden (self)", S.harden, function(v)
         S.harden = v
         if v then ApplyHarden() else ClearHarden() end
     end),
     Toggle("Vehicle hardening", S.vehicleArmor, function(v) S.vehicleArmor = v end),
+}
 
-    Sep("Events"),
+local stealthItems = {
+    Toggle("Log payload spoof", S.logSpoof, function(v) S.logSpoof = v end),
+    Toggle("Telemetry spoof", S.telemetry, function(v) ApplyTelemetry(v) end),
     Toggle("Inbound event shield", S.eventShield, function(v)
         S.eventShield = v
         ApplyEventShield(v)
     end),
     Toggle("Outbound report filter", S.outbound, function(v) S.outbound = v end),
-    Toggle("Log payload spoof", S.logSpoof, function(v) S.logSpoof = v end),
-    Action("Sweep events now", function() SweepEvents(true) end),
-}
-
-local evasionItems = {
-    Toggle("Telemetry spoof", S.telemetry, function(v) ApplyTelemetry(v) end),
-    Toggle("AC event filter", S.acFilter, function(v)
-        S.acFilter = v
-        if type(_Stealth) == "table" then _Stealth.blockAC = v end
-    end),
     Toggle("Ghost mode", S.ghost, function(v)
         S.ghost = v
         if v then ApplyGhost() else ClearGhost() end
     end),
 
-    Sep("Proofs (applied by harden)"),
-    Toggle("Proof: bullets", S.proofBullet, function(v) S.proofBullet = v end),
-    Toggle("Proof: fire", S.proofFire, function(v) S.proofFire = v end),
-    Toggle("Proof: explosion", S.proofExplo, function(v) S.proofExplo = v end),
-    Toggle("Proof: collision", S.proofCollide, function(v) S.proofCollide = v end),
-    Toggle("Proof: steam", S.proofSteam, function(v) S.proofSteam = v end),
-    Toggle("Proof: drowning", S.proofDrown, function(v) S.proofDrown = v end),
+    Sep("Panic"),
+    Action("Disable stealth modules", function()
+        S.telemetry, S.ghost = false, false
+        S.harden, S.vehicleArmor = false, false
+        ApplyTelemetry(false)
+        ClearGhost()
+        ClearHarden()
+        Notify("Stealth modules disabled", C.red)
+    end),
 }
 
 local propItems = {
-    Sep("Spawn (on the target below)"),
+    Sep("Target"),
+    targetModeItem,
+    playerItem,
+    Action("Refresh player list", function()
+        RefreshPlayerItem()
+        Notify(("%d player(s) in scope"):format(#Players.list), C.blue)
+    end),
+
+    Sep("Options"),
+    Toggle("Attach on target", S.attachTarget, function(v) S.attachTarget = v end),
+    boneItem,
+    distanceItem,
+
+    Sep("Spawn on target"),
 }
 
 for i = 1, #propActions do propItems[#propItems + 1] = propActions[i] end
 
-propItems[#propItems + 1] = Sep("Options")
-propItems[#propItems + 1] = targetModeItem
-propItems[#propItems + 1] = playerItem
-propItems[#propItems + 1] = Toggle("Attach on target", S.attachTarget, function(v) S.attachTarget = v end)
-propItems[#propItems + 1] = boneItem
-propItems[#propItems + 1] = distanceItem
-propItems[#propItems + 1] = Toggle("Server statebag first", S.propStatebag, function(v) S.propStatebag = v end)
-propItems[#propItems + 1] = Action("Refresh player list", function()
-    RefreshPlayerItem()
-    Notify(("%d player(s) nearby"):format(#Players.list), C.blue)
-end)
-propItems[#propItems + 1] = Action("Clear props", ClearProps)
+propItems[#propItems + 1] = Sep("")
+propItems[#propItems + 1] = Action("Clear my props", ClearProps)
 
 local vehicleItems = {
     vehicleItem,
@@ -16451,51 +16189,14 @@ local vehicleItems = {
     Action("Repair vehicle", RepairVehicle),
 }
 
-local toolItems = {
-    Action("Save anchor", SaveAnchor),
-    Action("Return to anchor", ReturnAnchor),
-
-    Sep("Pickups"),
-    Toggle("Pickup collection", S.pickupCollect, function(v)
-        S.pickupCollect = v
-        ApplyPickupCollection(v)
-    end),
-    Action("Spawn health pickup", function()
-        SpawnPickup({ label = "Health pickup", model = "PICKUP_HEALTH_STANDARD", amount = 100 })
-    end),
-    Action("Spawn armour pickup", function()
-        SpawnPickup({ label = "Armour pickup", model = "PICKUP_ARMOUR_STANDARD", amount = 100 })
-    end),
-    Action("Spawn pistol pickup", function()
-        SpawnPickup({ label = "Pistol pickup", model = "PICKUP_WEAPON_PISTOL", amount = 100 })
-    end),
-
-    Sep("Diagnostics"),
-    Action("Summary (F8)", DiagSummary),
-    Action("Guard self-test (F8)", GuardSelfTest),
-    Action("API report (F8)", ApiReport),
-    Action("Prop test: tube (F8)", function() DiagProp("ar_prop_ar_tube_crn_5d") end),
-    Action("Prop test: xm3 (F8)", function() DiagProp("xm3_prop_xm3_box_wood03a") end),
-    Action("Input probe (F8, 6s)", DiagInput),
-    Action("Panic: disable all", function()
-        S.telemetry, S.ghost = false, false
-        S.harden, S.vehicleArmor = false, false
-        ApplyTelemetry(false)
-        ClearGhost()
-        ClearHarden()
-        Notify("Panic: modules reverted", C.red)
-    end),
-}
-
 table.insert(Menu.Categories, {
     name = "Seed",
     hasTabs = true,
     tabs = {
-        { name = "Guard",   items = guardItems },
-        { name = "Evasion", items = evasionItems },
-        { name = "Props",   items = propItems },
+        { name = "Player",  items = propItems },
         { name = "Vehicle", items = vehicleItems },
-        { name = "Tools",   items = toolItems },
+        { name = "Stealth", items = stealthItems },
+        { name = "Guard",   items = guardItems },
     },
 })
 
@@ -16531,15 +16232,22 @@ end)
 
 Citizen.CreateThread(function()
     while true do
-        if S.antiFreeze then ApplyAntiFreeze() end
+        if S.freezeHeal then ApplyAntiFreeze() end
         Citizen.Wait(CFG.freezeRate)
     end
 end)
 
 Citizen.CreateThread(function()
     while true do
-        if S.antiSpectate then ApplyAntiSpectate() end
+        if S.spectateHeal then ApplyAntiSpectate() end
         Citizen.Wait(CFG.spectateRate)
+    end
+end)
+
+Citizen.CreateThread(function()
+    while true do
+        if S.outfitGuard then ApplyOutfitGuard() end
+        Citizen.Wait(1000)
     end
 end)
 
@@ -16593,7 +16301,7 @@ _G.SeedMenu = {
     SpawnSpoofedVehicle = SpawnSpoofedVehicle,
     DeleteLastVehicle = DeleteLastVehicle,
     Notify = Notify,
-    Diag = DiagSummary,
+    Outfit = { Save = SnapshotOutfit, Apply = ApplyOutfitGuard },
     Open = function() Menu.Visible = true end,
     Close = function() Menu.Visible = false end,
 }
