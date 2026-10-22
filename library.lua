@@ -57,6 +57,9 @@ function Menu.UpdateCategoriesFromTopTab()
     for _, cat in ipairs(currentTop.categories) do
         table.insert(Menu.Categories, cat)
     end
+    for _, extra in ipairs(Menu.ExtraCategories or {}) do
+        table.insert(Menu.Categories, extra)
+    end
     
     Menu.CurrentCategory = 2
     Menu.CategoryScrollOffset = 0
@@ -2608,5 +2611,89 @@ if Menu.Banner.enabled and Menu.Banner.imageUrl then
     Menu.LoadBannerTexture(Menu.Banner.imageUrl)
 end
 
+
+-- ============================================================================
+-- CATEGORY API
+-- ----------------------------------------------------------------------------
+-- Loader modules append categories after the base menu has been defined. Keep
+-- the operation in one place so a top-level tab refresh does not silently drop
+-- dynamic categories, and so extensions do not need to know whether the
+-- active list is Menu.Categories or a TopLevelTabs projection.
+-- ============================================================================
+Menu.ExtraCategories = Menu.ExtraCategories or {}
+
+function Menu.AddCategory(category, extra)
+    if type(category) ~= "table" or type(category.name) ~= "string" then
+        return nil
+    end
+
+    Menu.Categories = Menu.Categories or {}
+
+    for i = 1, #Menu.Categories do
+        if Menu.Categories[i].name == category.name then
+            Menu.Categories[i] = category
+            if extra ~= false then
+                for j = 1, #Menu.ExtraCategories do
+                    if Menu.ExtraCategories[j].name == category.name then
+                        Menu.ExtraCategories[j] = category
+                        return category
+                    end
+                end
+                Menu.ExtraCategories[#Menu.ExtraCategories + 1] = category
+            end
+            return category
+        end
+    end
+
+    Menu.Categories[#Menu.Categories + 1] = category
+    if extra ~= false then
+        Menu.ExtraCategories[#Menu.ExtraCategories + 1] = category
+    end
+    return category
+end
+
+function Menu.RemoveCategory(name)
+    if type(name) ~= "string" then return false end
+
+    local removed = false
+    for i = #(Menu.Categories or {}), 1, -1 do
+        if Menu.Categories[i].name == name then
+            table.remove(Menu.Categories, i)
+            removed = true
+        end
+    end
+    for i = #(Menu.ExtraCategories or {}), 1, -1 do
+        if Menu.ExtraCategories[i].name == name then
+            table.remove(Menu.ExtraCategories, i)
+        end
+    end
+    return removed
+end
+
+function Menu.FindCategory(name)
+    if type(name) ~= "string" then return nil end
+    for i = 1, #(Menu.Categories or {}) do
+        if Menu.Categories[i].name == name then return Menu.Categories[i], i end
+    end
+    return nil
+end
+
+function Menu.FindTab(categoryName, tabName)
+    local category = Menu.FindCategory(categoryName)
+    if not category or not category.tabs then return nil end
+    for i = 1, #category.tabs do
+        if category.tabs[i].name == tabName then return category.tabs[i], i end
+    end
+    return nil
+end
+
+function Menu.FindItem(categoryName, tabName, itemName)
+    local tab = Menu.FindTab(categoryName, tabName)
+    if not tab or not tab.items then return nil end
+    for i = 1, #tab.items do
+        if tab.items[i].name == itemName then return tab.items[i], i end
+    end
+    return nil
+end
 
 return Menu
