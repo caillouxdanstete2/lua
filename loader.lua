@@ -16001,7 +16001,7 @@ end)()
 -- >>> VANGUARD MODULE BEGIN
 -- ============================================================================
 -- VANGUARD  (integrated artifact - edit src/ and rebuild)
--- Generated: 2026-10-23 15:35:29
+-- Generated: 2026-10-23 16:13:15
 --
 -- This block lives in loader.lua and in dist/loader.built.lua at the same
 -- time. It is the only place the local Menu table is in scope. Rebuilding
@@ -16936,6 +16936,21 @@ function B.spend(name)
     end
     s.spent = s.spent + f.cost
     return true
+end
+
+-- A failed or immediately-aborted action must not consume its token. This is
+-- used by Skyfall after a pose/parachute/no-cover failure so the operator can
+-- retry without waiting a full ten-second window. It never creates a token:
+-- only a previous spend inside the current window can be returned.
+function B.refund(name)
+    local f, s = family(name)
+    if not f then return false end
+    refill(f, s, O.now())
+    if s.spent >= f.cost then
+        s.spent = s.spent - f.cost
+        return true
+    end
+    return false
 end
 
 function B.remaining(name)
@@ -22070,9 +22085,17 @@ local N = (function(O,S,B)
 --     at startup, and actorLoop reads those aliases, not _G;
 --   * the on-foot speed ceiling is 14.0 m/s, the falling ceiling 60 m/s.
 --
+-- Pose: TASK_PLAY_ANIM with the base-game skydive@freefall dictionary and the
+-- free_forward clip. This is a pose, not a physics task: it has no landing
+-- transition, no automatic parachute and no forced velocity. TASK_SKY_DIVE is
+-- deliberately rejected at ground level because live feedback showed it
+-- landing, sliding, standing up and deploying a parachute immediately.
+--
 -- Three layers, strongest genuine state first:
 --
---   task    TaskSkyDive really makes all three reads true. No hook at all.
+--   task    A task (if one is present) really makes all three reads true. No
+--           hook at all. TaskPlayAnim does not set 423, so in practice the
+--           native layer below is the normal path.
 --   native  A scoped Susano.HookNative for each read that is still false. The
 --           callback makes no native call: cached fields plus os.clock only.
 --   stage-b A payload injected into the guard resource through
@@ -22097,8 +22120,11 @@ local N = (function(O,S,B)
 --   IS_PED_IN_ANY_VEHICLE    0x997ABD671D25CA0B
 --   IS_PED_DEAD_OR_DYING     0x3317DEDB88C95038
 --   GET_GAME_TIMER           0x9CD27B0045628463
---   TASK_SKY_DIVE            0x601736CFE536B0A0  (Ped) -> void
---   TASK_PLAY_ANIM           0xEA47FE3719165B94  reserved fallback, not called
+--   TASK_SKY_DIVE            0x601736CFE536B0A0  (Ped) -> void, rejected
+--   TASK_PLAY_ANIM           0xEA47FE3719165B94  pose, skydive@freefall/free_forward
+--   REQUEST_ANIM_DICT        0xD3BD40951412FEF6  (char*)
+--   HAS_ANIM_DICT_LOADED     0xD031A9162D01088C  (char*) -> BOOL
+--   REMOVE_ANIM_DICT         0xF66A602F829E2A06  (char*)
 --   CLEAR_PED_TASKS          0xE1EF3C1216AFF2CD  (Ped) -> void
 --   SET_PED_GRAVITY          0x9FF447B6B6AD960A  (Ped, BOOL) -> void
 --   SET_ENTITY_HAS_GRAVITY   0x4A4722448F18EEF5  entity alternative, not called
@@ -22114,12 +22140,13 @@ local N = (function(O,S,B)
 -- SET_ENTITY_GRAVITY is not in natives.json: never call it. The ped-native is
 -- SET_PED_GRAVITY; SET_ENTITY_HAS_GRAVITY is the entity alternative if the ped
 -- flag is ignored by the runtime. TASK_SKY_DIVE has one documented parameter
--- (Ped); NativeDB mentions an undocumented second BOOL p1, so the call stays
--- one-parameter. A pose fallback would use TASK_PLAY_ANIM with flags
+-- (Ped); NativeDB mentions an undocumented second BOOL p1, so it is not used.
+-- The pose is TASK_PLAY_ANIM with flags
 -- AF_LOOPING|AF_HOLD_LAST_FRAME|AF_IGNORE_GRAVITY = 1|2|2048 = 2051,
--- duration -1, playbackRate 1.0, locks false. No verified freefall
--- dictionary/clip exists in this repo, so that path is a documented TODO and
--- is deliberately not called with a guessed clip.
+-- duration -1, playbackRate 1.0, locks false. The dictionary and clip are the
+-- base-game skydive@freefall / free_forward pair listed by FiveForge
+-- (https://five-forge.com/gta/animations/skydive@freefall, 6 clips); this is
+-- evidence, not a guessed clip.
 -- ============================================================================
 
 local N = {}
@@ -22130,7 +22157,7 @@ local H_TASK = 0xB0760331C7AA4155 -- GET_IS_TASK_ACTIVE
 local H_FALL = 0xFB92A102F1C4DFA3 -- IS_PED_FALLING
 local H_AIR = 0x886E37EC497200B6 -- IS_ENTITY_IN_AIR
 
--- Timing. COVER_DELAY_MS is the genuine-state settle window after TaskSkyDive.
+-- Timing. COVER_DELAY_MS is the genuine-state settle window after arming.
 local COVER_DELAY_MS = 300
 local GATE_SECONDS = 1.5
 local FALL_GRACE = 1.2
@@ -22138,6 +22165,14 @@ local WARMUP_MS = 1200
 local WARMUP_SPEED = 13.5
 local STAGE_B_PULSE = 1500
 local STAGE_B_WINDOW = 2.5
+local POSE_LOAD_MS = 1200
+
+-- Base-game freefall pose. The dictionary has free_back, free_forward,
+-- free_forward_add, free_forward_anim, free_left and free_right; free_forward
+-- is the forward freefall pose shown in the operator's reference capture.
+local ANIM_DICT = "skydive@freefall"
+local ANIM_CLIP = "free_forward"
+local ANIM_FLAGS = 1 | 2 | 2048 -- AF_LOOPING | AF_HOLD_LAST_FRAME | AF_IGNORE_GRAVITY
 
 -- Movement profile.
 local FWD_SPEED = 28.0
@@ -22156,9 +22191,13 @@ N.ped = 0
 N.layer = "none"
 N.reason = "off"
 N.onChange = nil
-N.stats = { sessions = 0, ticks = 0, refused = 0, holds = 0 }
+N.stats = { sessions = 0, ticks = 0, refused = 0, holds = 0, refunds = 0 }
 
 N.vx, N.vy, N.vz = 0.0, 0.0, 0.0
+N.armAt = 0
+N.posePending = false
+N.poseAt = 0
+N.poseApplied = false
 N.lastTickAt = 0
 N.untilAt = 0
 N.fallGateUntil = 0
@@ -22188,6 +22227,33 @@ local function clock()
     if ok2 and type(value2) == "number" then return value2 end
 
     return -1.0e9
+end
+
+-- A failed or immediately-aborted session must not consume the 10 s noclip
+-- token. The operator's first live test showed the old TaskSkyDive landing,
+-- auto-parachuting and consuming the budget, which made the toggle look
+-- broken for ten seconds. A short failure refunds; a real session and an
+-- operator stop keep the budget.
+local REFUND_REASONS = {
+    ["task failed"] = true,
+    ["gravity failed"] = true,
+    ["pose failed"] = true,
+    ["parachute"] = true,
+    ["no cover"] = true,
+    ["velocity write failed"] = true,
+    ["ped gone"] = true,
+    ["dead"] = true,
+    ["vehicle"] = true,
+}
+
+local function refundBudget()
+    if type(B) ~= "table" or type(B.refund) ~= "function" then return false end
+    local ok, refunded = pcall(B.refund, "noclip")
+    if ok and refunded then
+        N.stats.refunds = N.stats.refunds + 1
+        return true
+    end
+    return false
 end
 
 -- ---------------------------------------------------------------------------
@@ -22484,8 +22550,11 @@ local function cleanupMotion()
             pcall(SetPedGravity, ped, true)
         end
     end
+    pcall(RemoveAnimDict, ANIM_DICT)
 
     N.gravityOff = false
+    N.posePending = false
+    N.poseApplied = false
     N.vx, N.vy, N.vz = 0.0, 0.0, 0.0
 end
 
@@ -22567,28 +22636,8 @@ function N.arm()
     N.untilAt = c + GATE_SECONDS
     N.fallGateUntil = c + FALL_GRACE
 
-    -- Start the real task first: if it genuinely makes the three reads true,
-    -- there is no hook at all. Gravity is disabled in the same arm frame,
-    -- before the next tick can integrate a fall.
-    --
-    -- Pose fallback (doctrine 10_AIR_NOCLIP.md 3.1): TASK_PLAY_ANIM
-    -- (0xEA47FE3719165B94) is the intended fallback when TaskSkyDive does not
-    -- produce the pose/state, with duration -1, flags 1|2|2048 = 2051,
-    -- playbackRate 1.0 and lockX/Y/Z false. No verified freefall dictionary
-    -- and clip exist in this repo, so the call is a documented TODO, not a
-    -- guessed animation. Until a clip is verified, TaskSkyDive is the only
-    -- pose source and the read layers cover the state.
-    local okTask = pcall(TaskSkyDive, ped)
-    if not okTask then
-        cleanupMotion()
-        N.taskStarted = false
-        N.reason = "task failed"
-        O.log("air noclip refused: TaskSkyDive failed")
-        return false
-    end
-    N.taskStarted = true
-    N.taskAt = O.now()
-
+    -- Gravity first: the pose is not a physics task, so the body must not
+    -- integrate a fall while the animation dictionary is streaming.
     -- Verified ped-native: SET_PED_GRAVITY (PED, 0x9FF447B6B6AD960A).
     -- SET_ENTITY_GRAVITY is absent from natives.json and is never called.
     local okGravity = pcall(SetPedGravity, ped, false)
@@ -22596,14 +22645,33 @@ function N.arm()
         cleanupMotion()
         N.taskStarted = false
         N.reason = "gravity failed"
+        refundBudget()
         return false
     end
     N.gravityOff = true
 
+    -- Verified base-game freefall pose: skydive@freefall / free_forward.
+    -- TaskPlayAnim has no landing transition, no auto parachute and no forced
+    -- velocity, unlike TaskSkyDive at ground level.
+    local okRequest = pcall(RequestAnimDict, ANIM_DICT)
+    if not okRequest then
+        cleanupMotion()
+        N.taskStarted = false
+        N.reason = "pose failed"
+        refundBudget()
+        return false
+    end
+
+    N.posePending = true
+    N.poseAt = O.now()
+    N.poseApplied = false
+    N.taskStarted = false
+
     N.active = true
+    N.armAt = O.now()
     N.reason = "armed"
     N.stats.sessions = N.stats.sessions + 1
-    O.log("air noclip armed")
+    O.log("air noclip armed (freefall pose pending)")
     if N.onChange then pcall(N.onChange, true) end
     return true
 end
@@ -22616,16 +22684,25 @@ function N.stop(reason)
         return false
     end
 
+    local resolvedReason = reason or "off"
+    local elapsed = (N.armAt > 0) and (O.now() - N.armAt) or 0
+    -- A quick manual off after a broken pose is also a failed attempt; a real
+    -- session (or a manual off after 1.5 s) keeps the budget.
+    local quickOperator = resolvedReason == "operator" and elapsed > 0 and elapsed < 1500
+    local shouldRefund = wasActive and elapsed > 0 and elapsed < 4000
+        and (REFUND_REASONS[resolvedReason] == true or quickOperator)
+
     N.active = false
     N.layer = "none"
     N.untilAt = 0
     N.fallGateUntil = 0
     N.holdUntil = 0
     N.holdReason = nil
-    N.reason = reason or "off"
+    N.reason = resolvedReason
     N.taskStarted = false
     N.coverChecked = false
     N.lastTickAt = 0
+    N.armAt = 0
     N.vx, N.vy, N.vz = 0.0, 0.0, 0.0
 
     -- A second stop after a Stage B session must not write velocity or clear a
@@ -22643,6 +22720,7 @@ function N.stop(reason)
     N.stageB.next = 0
     motionStopped = false
 
+    if shouldRefund then refundBudget() end
     if wasActive and N.onChange then pcall(N.onChange, false) end
     O.log("air noclip off (%s)", tostring(N.reason))
     return true
@@ -22705,6 +22783,27 @@ function N.tick(now)
     if okChute and type(chute) == "number" and chute > 0 then
         holdOrStop("parachute")
         return
+    end
+
+    -- Apply the freefall pose once its dictionary is streamed. The ped is
+    -- briefly standing while the base-game dictionary loads; gravity is
+    -- already off, so it does not fall during that window.
+    if N.posePending then
+        local okLoaded, loaded = pcall(HasAnimDictLoaded, ANIM_DICT)
+        if okLoaded and loaded then
+            local okAnim = pcall(TaskPlayAnim, ped, ANIM_DICT, ANIM_CLIP,
+                8.0, 8.0, -1, ANIM_FLAGS, 1.0, false, false, false)
+            if not okAnim then
+                N.stop("pose failed")
+                return
+            end
+            N.posePending = false
+            N.poseApplied = true
+            N.taskStarted = true
+        elseif now - N.poseAt > POSE_LOAD_MS then
+            N.stop("pose failed")
+            return
+        end
     end
 
     -- Settle the genuine state once, after 300 ms. Until then the warmup cap
@@ -23081,7 +23180,7 @@ end
 -- PLAYER > MOVEMENT > SKYFALL
 --
 -- The old Movement tab was deleted with the legacy noclip. This is a new,
--- single row: a fake-air noclip that starts the skydive task, disables ped
+-- single row: a fake-air noclip that plays the freefall pose, disables ped
 -- gravity and writes velocity from ZQSD/camera/Space/Ctrl. The row is
 -- rebuilt on every load, so a stale copy cannot survive a reload.
 -- ---------------------------------------------------------------------------
