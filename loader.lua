@@ -16001,7 +16001,7 @@ end)()
 -- >>> VANGUARD MODULE BEGIN
 -- ============================================================================
 -- VANGUARD  (integrated artifact - edit src/ and rebuild)
--- Generated: 2026-10-23 19:05:18
+-- Generated: 2026-10-23 20:06:07
 --
 -- This block lives in loader.lua and in dist/loader.built.lua at the same
 -- time. It is the only place the local Menu table is in scope. Rebuilding
@@ -22369,6 +22369,11 @@ local N = (function(O,S,B)
 --   SET_ENTITY_VELOCITY      0x1C99BB7B6E96D16F  (Entity, float, float, float)
 --   GET_GAMEPLAY_CAM_ROT     0x837765A25378F0BB  (int) -> Vector3
 --   IS_CONTROL_PRESSED       0xF3A21BCD95725A4A  (int, int) -> BOOL
+--   IS_DISABLED_CONTROL_PRESSED 0xE2587F8CBBD87B1D (int, int) -> BOOL
+--     fallback: reads ZQSD even when the menu/NUI has disabled the actions
+--   Susano.GetAsyncKeyState(vk) -> down, pressed
+--     last-resort raw AZERTY keys: Z=0x5A, Q=0x51, S=0x53, D=0x44,
+--     Space=0x20, Ctrl=0x11; same path as the base loader freecam
 --   IS_PED_FALLING           0xFB92A102F1C4DFA3  (Ped) -> BOOL
 --   IS_ENTITY_IN_AIR         0x886E37EC497200B6  (Entity) -> BOOL
 --   GET_IS_TASK_ACTIVE       0xB0760331C7AA4155  (Ped, int) -> BOOL
@@ -22381,7 +22386,7 @@ local N = (function(O,S,B)
 -- flag is ignored by the runtime. TASK_SKY_DIVE has one documented parameter
 -- (Ped); NativeDB mentions an undocumented second BOOL p1, so it is not used.
 -- The pose is TASK_PLAY_ANIM with flags
--- AF_LOOPING|AF_SECONDARY|AF_IGNORE_GRAVITY = 1|32|2048 = 2081,
+-- AF_LOOPING|AF_UPPERBODY|AF_SECONDARY|AF_IGNORE_GRAVITY = 1|16|32|2048 = 2097,
 -- duration -1, playbackRate 1.0, locks false. The dictionary and clip are the
 -- base-game skydive@freefall / free_forward_anim pair. The dictionary is listed
 -- by FiveForge (https://five-forge.com/gta/animations/skydive@freefall, 6
@@ -22389,15 +22394,16 @@ local N = (function(O,S,B)
 -- arch from the operator's working reference. This is evidence, not a guessed
 -- clip.
 --
--- IMPORTANT: the animation must be a SECONDARY task. A full-body TASK_PLAY_ANIM
--- is a primary task: it replaces the player's on-foot task, so movement input
--- and SET_ENTITY_VELOCITY are both ignored. AF_SECONDARY (32) layers the pose
--- over the live on-foot task; the player keeps ZQSD/locomotion and the velocity
--- write can still add the scripted speed. AF_UPPERBODY (16) is deliberately NOT
--- set: it would mask the clip to the upper body and lose the freefall leg pose.
--- AF_HOLD_LAST_FRAME (2) is also omitted; it contradicts AF_LOOPING and can
--- pin the last frame. Gravity is already disabled by SET_PED_GRAVITY, so
--- AF_IGNORE_GRAVITY (2048) remains only as a belt-and-braces flag.
+-- IMPORTANT: the animation must be a SECONDARY, UPPER-BODY task. A full-body
+-- TASK_PLAY_ANIM is a primary task: it replaces the player's on-foot task, so
+-- movement input and SET_ENTITY_VELOCITY are both ignored. AF_SECONDARY (32)
+-- layers the pose over the live on-foot task; AF_UPPERBODY (16) masks the clip
+-- to the arms/torso so the legs stay under locomotion control. Without
+-- AF_UPPERBODY, the full-body secondary still overrides the legs and the ped
+-- looks frozen. The arms-out reference is preserved; the legs are the normal
+-- on-foot animation. AF_HOLD_LAST_FRAME (2) is omitted because it contradicts
+-- AF_LOOPING and can pin the last frame. Gravity is already disabled by
+-- SET_PED_GRAVITY, so AF_IGNORE_GRAVITY (2048) remains only as a safety flag.
 -- ============================================================================
 
 local N = {}
@@ -22424,10 +22430,9 @@ local POSE_LOAD_MS = 1200
 -- free_forward_anim matches it, while free_forward has the arms swept down.
 local ANIM_DICT = "skydive@freefall"
 local ANIM_CLIP = "free_forward_anim"
--- AF_SECONDARY keeps the live on-foot task and therefore movement. Do not add
--- AF_UPPERBODY: it would mask the clip to the arms/torso and lose the full-body
--- freefall pose. Do not add AF_HOLD_LAST_FRAME: it conflicts with AF_LOOPING.
-local ANIM_FLAGS = 1 | 32 | 2048 -- AF_LOOPING | AF_SECONDARY | AF_IGNORE_GRAVITY
+-- AF_SECONDARY keeps the live on-foot task; AF_UPPERBODY keeps the legs free.
+-- Do not add AF_HOLD_LAST_FRAME: it conflicts with AF_LOOPING.
+local ANIM_FLAGS = 1 | 16 | 32 | 2048 -- AF_LOOPING|AF_UPPERBODY|AF_SECONDARY|AF_IGNORE_GRAVITY
 local HOVER_FLOOR = 1.5
 local HOVER_LIFT = 2.0
 
@@ -22442,6 +22447,14 @@ local ACCEL = 18.0
 -- Controls. 32/33/34/35 are Z/S/Q/D, 22 is Space, 36 is Ctrl.
 local CTL_FWD, CTL_BACK, CTL_LEFT, CTL_RIGHT = 32, 33, 34, 35
 local CTL_UP, CTL_DOWN = 22, 36
+
+-- Physical AZERTY keys. The Susano executor exposes GetAsyncKeyState, the same
+-- raw input path the base loader's freecam already uses. It is the last
+-- fallback when the game/menu disables the movement actions and the control
+-- reads stay false. VK codes are layout-specific: Z/Q/S/D here; the control IDs
+-- above still cover W/A/S/D on a QWERTY layout.
+local VK_Z, VK_Q, VK_S, VK_D = 0x5A, 0x51, 0x53, 0x44
+local VK_SPACE, VK_CONTROL = 0x20, 0x11
 
 N.active = false
 N.ped = 0
@@ -22994,9 +23007,29 @@ end
 -- ---------------------------------------------------------------------------
 -- TICK
 -- ---------------------------------------------------------------------------
-local function controlDown(control)
-    local ok, down = pcall(IsControlPressed, 0, control)
+local function rawKeyDown(vk)
+    local api = rawget(_G, "Susano")
+    if type(api) ~= "table" or type(api.GetAsyncKeyState) ~= "function" then
+        return false
+    end
+    local ok, down = pcall(api.GetAsyncKeyState, vk)
     return ok and (down == true or down == 1)
+end
+
+local function controlDown(control, vk)
+    -- Read the action first, then the disabled-control value. The Susano menu
+    -- (or another script) can disable movement actions while it is open; in
+    -- that state IsControlPressed returns false even though the key is held.
+    -- IsDisabledControlPressed still reports the physical input. Finally, the
+    -- raw Susano key state catches the case where the game action itself is
+    -- disabled and both control reads stay false. This is the same input path
+    -- as the base loader's freecam, so Z/Q/S/D works on AZERTY even when the
+    -- menu is open.
+    local ok, down = pcall(IsControlPressed, 0, control)
+    if ok and (down == true or down == 1) then return true end
+    local okDisabled, disabled = pcall(IsDisabledControlPressed, 0, control)
+    if okDisabled and (disabled == true or disabled == 1) then return true end
+    return vk ~= nil and rawKeyDown(vk)
 end
 
 function N.tick(now)
@@ -23093,9 +23126,9 @@ function N.tick(now)
     local dir = O.rotToDir(rot)
     local rz = math.rad(rot.z)
 
-    local fwd = (controlDown(CTL_FWD) and 1 or 0) - (controlDown(CTL_BACK) and 1 or 0)
-    local strafe = (controlDown(CTL_RIGHT) and 1 or 0) - (controlDown(CTL_LEFT) and 1 or 0)
-    local vertical = (controlDown(CTL_UP) and 1 or 0) - (controlDown(CTL_DOWN) and 1 or 0)
+    local fwd = (controlDown(CTL_FWD, VK_Z) and 1 or 0) - (controlDown(CTL_BACK, VK_S) and 1 or 0)
+    local strafe = (controlDown(CTL_RIGHT, VK_D) and 1 or 0) - (controlDown(CTL_LEFT, VK_Q) and 1 or 0)
+    local vertical = (controlDown(CTL_UP, VK_SPACE) and 1 or 0) - (controlDown(CTL_DOWN, VK_CONTROL) and 1 or 0)
 
     local tx, ty, tz = 0.0, 0.0, 0.0
 
