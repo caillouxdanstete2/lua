@@ -16001,7 +16001,7 @@ end)()
 -- >>> VANGUARD MODULE BEGIN
 -- ============================================================================
 -- VANGUARD  (integrated artifact - edit src/ and rebuild)
--- Generated: 2026-10-23 14:03:25
+-- Generated: 2026-10-23 15:35:29
 --
 -- This block lives in loader.lua and in dist/loader.built.lua at the same
 -- time. It is the only place the local Menu table is in scope. Rebuilding
@@ -20909,10 +20909,10 @@ local function enableHover(vehicle)
 end
 
 local function setParachute(vehicle, active)
-    if type(SetVehicleParachuteActive) == "function" then
-        pcall(SetVehicleParachuteActive, vehicle, active)
-    elseif type(_SET_VEHICLE_PARACHUTE_ACTIVE) == "function" then
+    if type(_SET_VEHICLE_PARACHUTE_ACTIVE) == "function" then
         pcall(_SET_VEHICLE_PARACHUTE_ACTIVE, vehicle, active)
+    elseif type(SetVehicleParachuteActive) == "function" then
+        pcall(SetVehicleParachuteActive, vehicle, active)
     end
 end
 
@@ -21008,10 +21008,10 @@ end
 
 local function tickOppressor(vehicle)
     if type(IsControlPressed) == "function" and IsControlPressed(0, 21) then
-        pcall(SetVehicleRocketBoostPercentage, vehicle, 100.0)
-        pcall(SetVehicleRocketBoostActive, vehicle, true)
+        pcall(_SET_VEHICLE_ROCKET_BOOST_PERCENTAGE, vehicle, 100.0)
+        pcall(_SET_VEHICLE_ROCKET_BOOST_ACTIVE, vehicle, true)
     else
-        pcall(SetVehicleRocketBoostActive, vehicle, false)
+        pcall(_SET_VEHICLE_ROCKET_BOOST_ACTIVE, vehicle, false)
     end
 end
 
@@ -21063,7 +21063,7 @@ presets.oppressor = {
     models = { "oppressor2", "oppressor" },
     setup = function(vehicle)
         enableHover(vehicle)
-        pcall(SetVehicleRocketBoostPercentage, vehicle, 100.0)
+        pcall(_SET_VEHICLE_ROCKET_BOOST_PERCENTAGE, vehicle, 100.0)
     end,
     tick = tickOppressor,
 }
@@ -21135,11 +21135,15 @@ local function makeLocalVehicle(preset, carrier)
         return 0
     end
 
-    pcall(SetEntityAsMissionEntity, vehicle, true, true)
+    -- Do not mark the local vehicle as a mission entity: scriptHostObject=true
+    -- assigns script info, and WaveShield's AntiSpawnIsolatedVehicles reads
+    -- GetEntityScript(playerCurrentVehicle) and bans it.
     pcall(SetEntityInvincible, vehicle, true)
     pcall(SetEntityCollision, vehicle, true, true)
     pcall(SetVehicleEngineOn, vehicle, true, true, true)
-    pcall(SetVehicleOnGroundProperly, vehicle)
+    if not IsEntityInAir(carrier) then
+        pcall(SetVehicleOnGroundProperly, vehicle)
+    end
     pcall(SetEntityLocallyVisible, vehicle)
 
     VS.currentModel = modelName
@@ -21172,7 +21176,7 @@ local function restoreCarrier(restorePed)
         pcall(SetEntityLocallyVisible, carrier)
         pcall(SetEntityCollision, carrier, true, true)
         pcall(SetEntityInvincible, carrier, false)
-        pcall(SetEntityGravity, carrier, 1.0)
+        pcall(SetEntityHasGravity, carrier, true)
         pcall(SetVehicleGravity, carrier, true)
         pcall(SetVehicleEngineOn, carrier, true, true, true)
 
@@ -21218,18 +21222,19 @@ local function syncLoop()
             break
         end
 
-        if NetworkHasControlOfEntity and NetworkRequestControlOfEntity
-            and not NetworkHasControlOfEntity(carrier) then
+        local hasControl = type(NetworkHasControlOfEntity) == "function"
+            and NetworkHasControlOfEntity(carrier)
+        if hasControl then
+            local x, y, z = GetEntityCoords(localVehicle)
+            local rx, ry, rz = GetEntityRotation(localVehicle, 2)
+            local velocity = GetEntityVelocity(localVehicle)
+
+            pcall(SetEntityCoordsNoOffset, carrier, x, y, z, false, false, false)
+            pcall(SetEntityRotation, carrier, rx, ry, rz, 2, true)
+            pcall(SetEntityVelocity, carrier, velocity.x, velocity.y, velocity.z)
+        elseif type(NetworkRequestControlOfEntity) == "function" then
             pcall(NetworkRequestControlOfEntity, carrier)
         end
-
-        local x, y, z = GetEntityCoords(localVehicle)
-        local rx, ry, rz = GetEntityRotation(localVehicle, 2)
-        local velocity = GetEntityVelocity(localVehicle)
-
-        pcall(SetEntityCoordsNoOffset, carrier, x, y, z, false, false, false)
-        pcall(SetEntityRotation, carrier, rx, ry, rz, 2, true)
-        pcall(SetEntityVelocity, carrier, velocity.x, velocity.y, velocity.z)
 
         -- Hide only on this client; other clients still receive the carrier.
         pcall(SetEntityLocallyInvisible, carrier)
@@ -21280,7 +21285,6 @@ function VS.enablePreset(key)
     VS.activePreset = preset
     VS.enabled = true
 
-    pcall(SetEntityAsMissionEntity, carrier, true, true)
     pcall(NetworkRequestControlOfEntity, carrier)
     pcall(SetEntityLocallyInvisible, carrier)
     pcall(SetEntityCollision, carrier, false, false)
@@ -22043,9 +22047,790 @@ return K
 end)(O,S,B)
 
 -- ---------------------------------------------------------------------------
+-- PART: 16_air_noclip.lua
+-- ---------------------------------------------------------------------------
+local N = (function(O,S,B)
+-- ============================================================================
+-- VANGUARD / 16 AIR NOCLIP
+-- ----------------------------------------------------------------------------
+-- Doctrine (L4): this is not a fall and it is not a position write. It is the
+-- freefall task at ground level, gravity disabled, with a real velocity written
+-- every tick. The character keeps a skydive pose and floats; the engine owns
+-- the body, so every position sample is continuous and every physics sample is
+-- a velocity the engine itself integrated.
+--
+-- Design reference: doctrine/10_AIR_NOCLIP.md.
+--
+-- The reference guard (WaveShield V4) has five facts that decide whether this
+-- movement is legitimate:
+--   * the main noclip branch is off while isPedFalling is true;
+--   * the fall branch accepts GetIsTaskActive(ped, 423) as the real-fall token;
+--   * actorLoop caches isEntityInAir and isPedFalling for 1000 ms;
+--   * initializer.lua copies IsPedFalling/IsEntityInAir into WaveShield.Native
+--     at startup, and actorLoop reads those aliases, not _G;
+--   * the on-foot speed ceiling is 14.0 m/s, the falling ceiling 60 m/s.
+--
+-- Three layers, strongest genuine state first:
+--
+--   task    TaskSkyDive really makes all three reads true. No hook at all.
+--   native  A scoped Susano.HookNative for each read that is still false. The
+--           callback makes no native call: cached fields plus os.clock only.
+--   stage-b A payload injected into the guard resource through
+--           Susano.InjectResource, used only when the native hook is missing or
+--           refused. The payload has no Susano.* reference and is armed by a
+--           random local event with a 2.5 s window. It wraps _G.GetIsTaskActive,
+--           _G.IsPedFalling and _G.IsEntityInAir, and also replaces
+--           WaveShield.Native.IsPedFalling / .IsEntityInAir when that alias
+--           table exists and is mutable. If the aliases are absent or
+--           immutable, Tier B alone covers only task 423; falling/in-air must
+--           come from the genuine task or Tier A.
+--
+-- Movement is deliberately slow at first: for 1200 ms after arming the written
+-- speed stays below the guard's 14.0 m/s on-foot ceiling while its 1000 ms
+-- caches refresh. After that the 45 m/s cap applies (teleport is 50 m/s,
+-- speedHack 60 m/s). No coordinate write, no freeze, no collision write, no
+-- health/proof/visibility write, no state bag and no server event.
+--
+-- Native hashes verified against this repo's natives.json:
+--   PLAYER_PED_ID            0xD80958FC74E988A6
+--   DOES_ENTITY_EXIST        0x7239B21A38F536BA
+--   IS_PED_IN_ANY_VEHICLE    0x997ABD671D25CA0B
+--   IS_PED_DEAD_OR_DYING     0x3317DEDB88C95038
+--   GET_GAME_TIMER           0x9CD27B0045628463
+--   TASK_SKY_DIVE            0x601736CFE536B0A0  (Ped) -> void
+--   TASK_PLAY_ANIM           0xEA47FE3719165B94  reserved fallback, not called
+--   CLEAR_PED_TASKS          0xE1EF3C1216AFF2CD  (Ped) -> void
+--   SET_PED_GRAVITY          0x9FF447B6B6AD960A  (Ped, BOOL) -> void
+--   SET_ENTITY_HAS_GRAVITY   0x4A4722448F18EEF5  entity alternative, not called
+--   SET_ENTITY_VELOCITY      0x1C99BB7B6E96D16F  (Entity, float, float, float)
+--   GET_GAMEPLAY_CAM_ROT     0x837765A25378F0BB  (int) -> Vector3
+--   IS_CONTROL_PRESSED       0xF3A21BCD95725A4A  (int, int) -> BOOL
+--   IS_PED_FALLING           0xFB92A102F1C4DFA3  (Ped) -> BOOL
+--   IS_ENTITY_IN_AIR         0x886E37EC497200B6  (Entity) -> BOOL
+--   GET_IS_TASK_ACTIVE       0xB0760331C7AA4155  (Ped, int) -> BOOL
+--   IS_PED_RAGDOLL           0x47E4E977581C5B55  (Ped) -> BOOL
+--   GET_PED_PARACHUTE_STATE  0x79CFD9827CC979B6  (Ped) -> int
+--
+-- SET_ENTITY_GRAVITY is not in natives.json: never call it. The ped-native is
+-- SET_PED_GRAVITY; SET_ENTITY_HAS_GRAVITY is the entity alternative if the ped
+-- flag is ignored by the runtime. TASK_SKY_DIVE has one documented parameter
+-- (Ped); NativeDB mentions an undocumented second BOOL p1, so the call stays
+-- one-parameter. A pose fallback would use TASK_PLAY_ANIM with flags
+-- AF_LOOPING|AF_HOLD_LAST_FRAME|AF_IGNORE_GRAVITY = 1|2|2048 = 2051,
+-- duration -1, playbackRate 1.0, locks false. No verified freefall
+-- dictionary/clip exists in this repo, so that path is a documented TODO and
+-- is deliberately not called with a guessed clip.
+-- ============================================================================
+
+local N = {}
+
+local TASK_LEGIT_FALL = 423
+
+local H_TASK = 0xB0760331C7AA4155 -- GET_IS_TASK_ACTIVE
+local H_FALL = 0xFB92A102F1C4DFA3 -- IS_PED_FALLING
+local H_AIR = 0x886E37EC497200B6 -- IS_ENTITY_IN_AIR
+
+-- Timing. COVER_DELAY_MS is the genuine-state settle window after TaskSkyDive.
+local COVER_DELAY_MS = 300
+local GATE_SECONDS = 1.5
+local FALL_GRACE = 1.2
+local WARMUP_MS = 1200
+local WARMUP_SPEED = 13.5
+local STAGE_B_PULSE = 1500
+local STAGE_B_WINDOW = 2.5
+
+-- Movement profile.
+local FWD_SPEED = 28.0
+local STRAFE_SPEED = 20.0
+local CAM_VERT_MAX = 15.0
+local EXPLICIT_VERT = 12.0
+local SPEED_CAP = 45.0
+local ACCEL = 18.0
+
+-- Controls. 32/33/34/35 are Z/S/Q/D, 22 is Space, 36 is Ctrl.
+local CTL_FWD, CTL_BACK, CTL_LEFT, CTL_RIGHT = 32, 33, 34, 35
+local CTL_UP, CTL_DOWN = 22, 36
+
+N.active = false
+N.ped = 0
+N.layer = "none"
+N.reason = "off"
+N.onChange = nil
+N.stats = { sessions = 0, ticks = 0, refused = 0, holds = 0 }
+
+N.vx, N.vy, N.vz = 0.0, 0.0, 0.0
+N.lastTickAt = 0
+N.untilAt = 0
+N.fallGateUntil = 0
+N.holdUntil = 0
+N.holdReason = nil
+N.warmupUntil = 0
+N.taskAt = 0
+N.taskStarted = false
+N.gravityOff = false
+N.hooks = {}
+N.stageB = { event = nil, injected = false, next = 0 }
+N.coverChecked = false
+local motionStopped = false
+local stageBResource = nil
+
+-- ---------------------------------------------------------------------------
+-- WATCHDOG CLOCK. CPU time, not wall time: it keeps moving if this chunk is
+-- unloaded, so every repair fails closed. Same contract as 15_skyfall.lua.
+-- ---------------------------------------------------------------------------
+local function clock()
+    if type(os) ~= "table" then return -1.0e9 end
+
+    local ok, value = pcall(os.clock)
+    if ok and type(value) == "number" then return value end
+
+    local ok2, value2 = pcall(os.time)
+    if ok2 and type(value2) == "number" then return value2 end
+
+    return -1.0e9
+end
+
+-- ---------------------------------------------------------------------------
+-- TIER A: scoped native hooks. Callbacks are native-free. They answer only for
+-- the exact local tuple and only while both the liveness gate and the fall
+-- cache gate are open. Everything else passes through untouched.
+-- ---------------------------------------------------------------------------
+local function gateOpen()
+    local deadline = N.untilAt
+    if N.fallGateUntil < deadline then deadline = N.fallGateUntil end
+    return deadline > 0 and clock() <= deadline
+end
+
+local function onTaskActive(ped, taskIndex)
+    if N.active and ped == N.ped and taskIndex == TASK_LEGIT_FALL and gateOpen() then
+        return false, true
+    end
+    return true
+end
+
+local function onPedFalling(ped)
+    if N.active and ped == N.ped and gateOpen() then
+        return false, true
+    end
+    return true
+end
+
+local function onEntityInAir(entity)
+    if N.active and entity == N.ped and gateOpen() then
+        return false, true
+    end
+    return true
+end
+
+local HOOK_CALLBACK = {
+    [H_TASK] = onTaskActive,
+    [H_FALL] = onPedFalling,
+    [H_AIR] = onEntityInAir,
+}
+
+local function removeHooks()
+    local api = rawget(_G, "Susano")
+    if type(api) == "table" and type(api.UnhookNative) == "function" then
+        for hash in pairs(N.hooks) do
+            pcall(api.UnhookNative, hash)
+        end
+    end
+    N.hooks = {}
+end
+
+local function installHooks(need)
+    if type(O) ~= "table" or type(O.has) ~= "function"
+        or not O.has("HookNative", "UnhookNative") then
+        return false, "HookNative unavailable"
+    end
+
+    local api = rawget(_G, "Susano")
+    if type(api) ~= "table" then return false, "HookNative unavailable" end
+
+    local done = {}
+    for i = 1, #need do
+        local hash = need[i]
+        -- Clear a stale trampoline from an executor reload before installing.
+        pcall(api.UnhookNative, hash)
+
+        local ok, result = pcall(api.HookNative, hash, HOOK_CALLBACK[hash])
+        if not ok or result == false then
+            -- Never leave half a layer behind: Tier B must not stack on it.
+            for j = 1, #done do pcall(api.UnhookNative, done[j]) end
+            return false, "HookNative failed"
+        end
+        done[#done + 1] = hash
+    end
+
+    for i = 1, #done do N.hooks[done[i]] = true end
+    return true
+end
+
+-- ---------------------------------------------------------------------------
+-- TIER B: guard-side read repair. The payload has no Susano.* reference. It is
+-- idempotent through a marker in the guard state; a guard restart removes the
+-- marker with the resource and the next arm injects again. The event name is
+-- random and never written to a global.
+--
+-- V4's actorLoop reads WaveShield.Native.IsPedFalling/IsEntityInAir, copied at
+-- startup by initializer.lua. The payload replaces those aliases too when the
+-- table exists and the fields are mutable. If the table is absent or
+-- immutable, Tier A is the only cover for falling/in-air; Tier B alone then
+-- covers only task 423. The payload must not claim more than that.
+-- ---------------------------------------------------------------------------
+local function stageBName()
+    return string.format("sf_%06x", math.floor(O.int(0x100000, 0xffffff)))
+end
+
+local function stageBPayload(eventName)
+    return ([[
+pcall(function()
+    if rawget(_G, "__sfnc") then return end
+    local clock = os.clock
+    if type(clock) ~= "function" then clock = os.time end
+    if type(clock) ~= "function" then return end
+    local expiry = -1
+    AddEventHandler(%q, function(duration)
+        if type(duration) == "number" and duration > 0 then
+            expiry = clock() + duration
+        else
+            expiry = -1
+        end
+    end)
+    local function localPed()
+        local guard = rawget(_G, "WaveShield")
+        if guard and type(guard.playerPed) == "number" and guard.playerPed ~= 0 then
+            return guard.playerPed
+        end
+        return PlayerPedId()
+    end
+    local guardTable = rawget(_G, "WaveShield")
+    local native = (guardTable and type(guardTable.Native) == "table") and guardTable.Native or nil
+    local origTask = rawget(_G, "GetIsTaskActive")
+    local origFall = rawget(_G, "IsPedFalling")
+    local origAir = rawget(_G, "IsEntityInAir")
+    local oldNativeFall = native and native.IsPedFalling or nil
+    local oldNativeAir = native and native.IsEntityInAir or nil
+
+    local function makeFall(original)
+        return function(ped)
+            if clock() <= expiry and ped == localPed() then return true end
+            if type(original) == "function" then return original(ped) end
+            return false
+        end
+    end
+    local function makeAir(original)
+        return function(entity)
+            if clock() <= expiry and entity == localPed() then return true end
+            if type(original) == "function" then return original(entity) end
+            return false
+        end
+    end
+    local function replaceField(tbl, key, value)
+        local ok = pcall(function() tbl[key] = value end)
+        -- A refused or silently ignored write leaves the original in place:
+        -- Tier A is then the only cover for that read. Never claim otherwise.
+        return ok and tbl[key] == value
+    end
+
+    if type(origTask) == "function" then
+        _G.GetIsTaskActive = function(ped, taskIndex)
+            if taskIndex == 423 and clock() <= expiry and ped == localPed() then
+                return true
+            end
+            return origTask(ped, taskIndex)
+        end
+    end
+    if type(origFall) == "function" then
+        _G.IsPedFalling = makeFall(origFall)
+    end
+    if type(origAir) == "function" then
+        _G.IsEntityInAir = makeAir(origAir)
+    end
+
+    -- WaveShield V4 copies IsPedFalling/IsEntityInAir into WaveShield.Native
+    -- at startup and actorLoop reads those aliases. Replace the aliases too
+    -- when the table/fields are mutable. The alias wrappers share the same
+    -- gating logic but call their own saved original, so neither path recurses.
+    -- If the table is absent or immutable, Tier A is the only cover for
+    -- falling/in-air; Tier B alone then covers only task 423. This is a
+    -- coverage limit, not a success claim.
+    if native then
+        if type(oldNativeFall) == "function" then
+            replaceField(native, "IsPedFalling", makeFall(oldNativeFall))
+        end
+        if type(oldNativeAir) == "function" then
+            replaceField(native, "IsEntityInAir", makeAir(oldNativeAir))
+        end
+    end
+    _G.__sfnc = true
+end)
+]]):format(eventName)
+end
+
+local function injectStageB()
+    if type(S) ~= "table" then return false, "no scanner" end
+    if type(S.acs) ~= "table" then return false, "no resource list" end
+    if #S.acs == 0 and type(S.scan) == "function" then pcall(S.scan) end
+
+    local target = stageBResource
+    if not target then
+        for i = 1, #S.acs do
+            if S.acs[i].vendor == "waveshield" then
+                target = S.acs[i].resource
+                break
+            end
+        end
+    end
+    if not target then return false, "no WaveShield resource" end
+
+    if type(GetResourceState) ~= "function" then
+        return false, "resource state unavailable"
+    end
+    local okState, state = pcall(GetResourceState, target)
+    if not okState or state ~= "started" then return false, "guard not started" end
+
+    local api = rawget(_G, "Susano")
+    if type(api) ~= "table" or type(api.InjectResource) ~= "function" then
+        return false, "InjectResource unavailable"
+    end
+
+    if not N.stageB.event then N.stageB.event = stageBName() end
+    local code = stageBPayload(N.stageB.event)
+
+    local ok, result
+    local injectionType = api.InjectionType
+    if type(injectionType) == "table" and injectionType.NEW_THREAD ~= nil then
+        ok, result = pcall(api.InjectResource, target, code, injectionType.NEW_THREAD)
+    else
+        ok, result = pcall(api.InjectResource, target, code)
+    end
+
+    if not ok or result == false then
+        return false, tostring(result or "injection failed")
+    end
+
+    stageBResource = target
+    N.stageB.injected = true
+    N.stageB.next = 0
+    return true
+end
+
+-- ---------------------------------------------------------------------------
+-- COVER. Read the genuine state after the settle window. Install a hook only
+-- for a read that is false. If every read is true, the task is the state and
+-- there is no hook at all.
+-- ---------------------------------------------------------------------------
+local function ensureCover()
+    local okTask, task = pcall(GetIsTaskActive, N.ped, TASK_LEGIT_FALL)
+    task = okTask and task and true or false
+
+    local okFall, falling = pcall(IsPedFalling, N.ped)
+    falling = okFall and falling and true or false
+
+    local okAir, inAir = pcall(IsEntityInAir, N.ped)
+    inAir = okAir and inAir and true or false
+
+    if task then N.taskStarted = true end
+
+    if task and falling and inAir then
+        N.layer = "task"
+        return true
+    end
+
+    local need = {}
+    if not task then need[#need + 1] = H_TASK end
+    if not falling then need[#need + 1] = H_FALL end
+    if not inAir then need[#need + 1] = H_AIR end
+
+    local okHook, hookWhy = installHooks(need)
+    if okHook then
+        N.layer = "native"
+        return true
+    end
+
+    local okB, whyB = injectStageB()
+    if okB then
+        N.layer = "stage-b"
+        if N.stageB.event then
+            pcall(TriggerEvent, N.stageB.event, STAGE_B_WINDOW)
+            -- NEW_THREAD injection can finish after this first pulse. Retry on
+            -- the next tick (30 ms) instead of waiting a full pulse period, so
+            -- an asynchronously registered handler cannot leave a 1.5 s gap.
+            N.stageB.next = O.now() + 1
+        end
+        return true
+    end
+
+    N.layer = "none"
+    return false, whyB or hookWhy
+end
+
+-- ---------------------------------------------------------------------------
+-- MOTION CLEANUP. Stop the body, end the pose and restore gravity once. The
+-- flag makes the hold-then-stop path idempotent.
+-- ---------------------------------------------------------------------------
+local function cleanupMotion()
+    if motionStopped then return end
+    motionStopped = true
+
+    local ped = N.ped
+    if ped ~= 0 and DoesEntityExist(ped) then
+        pcall(SetEntityVelocity, ped, 0.0, 0.0, 0.0)
+        pcall(ClearPedTasks, ped)
+        if N.gravityOff then
+            -- Restore only the ped-native that was disabled at arm. Never call
+            -- SET_ENTITY_GRAVITY: it is absent from natives.json.
+            pcall(SetPedGravity, ped, true)
+        end
+    end
+
+    N.gravityOff = false
+    N.vx, N.vy, N.vz = 0.0, 0.0, 0.0
+end
+
+local function holdOrStop(reason)
+    if N.layer == "none" then
+        N.stop(reason)
+        return
+    end
+    if N.holdUntil ~= 0 then return end
+
+    local c = clock()
+    N.holdUntil = c + FALL_GRACE
+    N.holdReason = reason
+    N.untilAt = c + GATE_SECONDS
+    N.fallGateUntil = c + FALL_GRACE
+    cleanupMotion()
+
+    -- A Stage B gate must stay open across the hold too.
+    if N.layer == "stage-b" and N.stageB.event then
+        pcall(TriggerEvent, N.stageB.event, STAGE_B_WINDOW)
+        N.stageB.next = O.now() + O.jitter(STAGE_B_PULSE, 0.25)
+    end
+
+    N.stats.holds = N.stats.holds + 1
+    O.log("air noclip cover hold (%s)", tostring(reason))
+end
+
+-- ---------------------------------------------------------------------------
+-- ARM / STOP
+-- ---------------------------------------------------------------------------
+function N.arm()
+    if N.active then return true end
+
+    local ped = PlayerPedId()
+    if ped == 0 or not DoesEntityExist(ped) then return false end
+    if IsPedInAnyVehicle(ped, false) then
+        O.log("air noclip: leave the vehicle first")
+        return false
+    end
+    if IsPedDeadOrDying(ped, true) then return false end
+    local okChute, chute = pcall(GetPedParachuteState, ped)
+    if okChute and type(chute) == "number" and chute > 0 then
+        O.log("air noclip: parachute is open")
+        return false
+    end
+
+    -- A stale trampoline or an open guard-side gate from a previous execution
+    -- must not survive a refused arm either.
+    removeHooks()
+    if N.stageB.event then
+        pcall(TriggerEvent, N.stageB.event, 0)
+    end
+
+    -- One noclip-family token per window. A refused arm leaves nothing behind.
+    if not B.spend("noclip") then
+        N.stats.refused = N.stats.refused + 1
+        N.layer = "none"
+        N.reason = "budget"
+        return false
+    end
+
+    local now = O.now()
+    N.ped = ped
+    N.layer = "none"
+    N.reason = "arming"
+    N.holdUntil = 0
+    N.holdReason = nil
+    N.vx, N.vy, N.vz = 0.0, 0.0, 0.0
+    N.lastTickAt = now
+    N.taskAt = now
+    N.warmupUntil = now + WARMUP_MS
+    N.taskStarted = false
+    N.coverChecked = false
+    N.gravityOff = false
+    motionStopped = false
+    N.stageB.next = 0
+
+    local c = clock()
+    N.untilAt = c + GATE_SECONDS
+    N.fallGateUntil = c + FALL_GRACE
+
+    -- Start the real task first: if it genuinely makes the three reads true,
+    -- there is no hook at all. Gravity is disabled in the same arm frame,
+    -- before the next tick can integrate a fall.
+    --
+    -- Pose fallback (doctrine 10_AIR_NOCLIP.md 3.1): TASK_PLAY_ANIM
+    -- (0xEA47FE3719165B94) is the intended fallback when TaskSkyDive does not
+    -- produce the pose/state, with duration -1, flags 1|2|2048 = 2051,
+    -- playbackRate 1.0 and lockX/Y/Z false. No verified freefall dictionary
+    -- and clip exist in this repo, so the call is a documented TODO, not a
+    -- guessed animation. Until a clip is verified, TaskSkyDive is the only
+    -- pose source and the read layers cover the state.
+    local okTask = pcall(TaskSkyDive, ped)
+    if not okTask then
+        cleanupMotion()
+        N.taskStarted = false
+        N.reason = "task failed"
+        O.log("air noclip refused: TaskSkyDive failed")
+        return false
+    end
+    N.taskStarted = true
+    N.taskAt = O.now()
+
+    -- Verified ped-native: SET_PED_GRAVITY (PED, 0x9FF447B6B6AD960A).
+    -- SET_ENTITY_GRAVITY is absent from natives.json and is never called.
+    local okGravity = pcall(SetPedGravity, ped, false)
+    if not okGravity then
+        cleanupMotion()
+        N.taskStarted = false
+        N.reason = "gravity failed"
+        return false
+    end
+    N.gravityOff = true
+
+    N.active = true
+    N.reason = "armed"
+    N.stats.sessions = N.stats.sessions + 1
+    O.log("air noclip armed")
+    if N.onChange then pcall(N.onChange, true) end
+    return true
+end
+
+function N.stop(reason)
+    local wasActive = N.active
+    local had = wasActive or next(N.hooks) ~= nil or N.stageB.injected
+    if not had then
+        N.reason = reason or "off"
+        return false
+    end
+
+    N.active = false
+    N.layer = "none"
+    N.untilAt = 0
+    N.fallGateUntil = 0
+    N.holdUntil = 0
+    N.holdReason = nil
+    N.reason = reason or "off"
+    N.taskStarted = false
+    N.coverChecked = false
+    N.lastTickAt = 0
+    N.vx, N.vy, N.vz = 0.0, 0.0, 0.0
+
+    -- A second stop after a Stage B session must not write velocity or clear a
+    -- task that the operator has started since. Only an active session (or a
+    -- gravity flag left by it) owns motion cleanup.
+    if wasActive or N.gravityOff then
+        cleanupMotion()
+    end
+    removeHooks()
+
+    -- Close the guard-side gate immediately; the wrapper itself stays inert.
+    if N.stageB.event then
+        pcall(TriggerEvent, N.stageB.event, 0)
+    end
+    N.stageB.next = 0
+    motionStopped = false
+
+    if wasActive and N.onChange then pcall(N.onChange, false) end
+    O.log("air noclip off (%s)", tostring(N.reason))
+    return true
+end
+
+function N.disable()
+    return N.stop("panic")
+end
+
+function N.isActive()
+    return N.active == true
+end
+
+-- ---------------------------------------------------------------------------
+-- TICK
+-- ---------------------------------------------------------------------------
+local function controlDown(control)
+    local ok, down = pcall(IsControlPressed, 0, control)
+    return ok and (down == true or down == 1)
+end
+
+function N.tick(now)
+    if not N.active then return end
+    now = now or O.now()
+
+    local c = clock()
+    N.untilAt = c + GATE_SECONDS
+    N.fallGateUntil = c + FALL_GRACE
+
+    if N.holdUntil ~= 0 then
+        if c > N.holdUntil then
+            N.stop(N.holdReason or "state")
+        end
+        return
+    end
+
+    local ped = N.ped
+    if ped == 0 or not DoesEntityExist(ped) then
+        holdOrStop("ped gone")
+        return
+    end
+    if O.Ctx and type(O.Ctx.ped) == "number" and O.Ctx.ped ~= 0 and O.Ctx.ped ~= ped then
+        holdOrStop("ped gone")
+        return
+    end
+
+    local dead = (O.Ctx and O.Ctx.dead) or IsPedDeadOrDying(ped, true)
+    if dead then
+        holdOrStop("dead")
+        return
+    end
+
+    local inVehicle = (O.Ctx and O.Ctx.inVehicle) or IsPedInAnyVehicle(ped, false)
+    if inVehicle then
+        holdOrStop("vehicle")
+        return
+    end
+
+    local okChute, chute = pcall(GetPedParachuteState, ped)
+    if okChute and type(chute) == "number" and chute > 0 then
+        holdOrStop("parachute")
+        return
+    end
+
+    -- Settle the genuine state once, after 300 ms. Until then the warmup cap
+    -- keeps every written speed below the guard's on-foot ceiling.
+    --
+    -- Doctrine 10_AIR_NOCLIP.md 3.5a also calls for periodic revalidation of
+    -- the task layer. That is a documented TODO here, not an implemented
+    -- claim: without a verified TASK_PLAY_ANIM dictionary/clip, a later false
+    -- 423 cannot yet choose safely between "stop" and "fallback pose".
+    if not N.coverChecked and (now - N.taskAt) >= COVER_DELAY_MS then
+        N.coverChecked = true
+        local okCover, why = ensureCover()
+        if not okCover then
+            N.stop("no cover")
+            O.log("air noclip refused: %s", tostring(why))
+            return
+        end
+    end
+
+    -- Tier B liveness: a jittered pulse keeps the guard-side gate open. If this
+    -- chunk dies, the last pulse expires on its own.
+    if N.layer == "stage-b" and N.stageB.event then
+        if now >= N.stageB.next then
+            pcall(TriggerEvent, N.stageB.event, STAGE_B_WINDOW)
+            N.stageB.next = now + O.jitter(STAGE_B_PULSE, 0.25)
+        end
+    end
+
+    local rot = GetGameplayCamRot(2)
+    local dir = O.rotToDir(rot)
+    local rz = math.rad(rot.z)
+
+    local fwd = (controlDown(CTL_FWD) and 1 or 0) - (controlDown(CTL_BACK) and 1 or 0)
+    local strafe = (controlDown(CTL_RIGHT) and 1 or 0) - (controlDown(CTL_LEFT) and 1 or 0)
+    local vertical = (controlDown(CTL_UP) and 1 or 0) - (controlDown(CTL_DOWN) and 1 or 0)
+
+    local tx, ty, tz = 0.0, 0.0, 0.0
+
+    -- Forward/back follows the full 3D camera direction. The vertical share is
+    -- capped at 15 m/s so looking straight up is not a 28 m/s elevator.
+    if fwd ~= 0 then
+        tx = tx + dir.x * FWD_SPEED * fwd
+        ty = ty + dir.y * FWD_SPEED * fwd
+        local camV = dir.z * FWD_SPEED * fwd
+        if camV > CAM_VERT_MAX then camV = CAM_VERT_MAX end
+        if camV < -CAM_VERT_MAX then camV = -CAM_VERT_MAX end
+        tz = tz + camV
+    end
+
+    -- Strafe is horizontal only: cos/sin of yaw, no pitch component.
+    if strafe ~= 0 then
+        tx = tx + math.cos(rz) * STRAFE_SPEED * strafe
+        ty = ty + math.sin(rz) * STRAFE_SPEED * strafe
+    end
+
+    if vertical ~= 0 then
+        tz = tz + EXPLICIT_VERT * vertical
+    end
+
+    local targetSpeed = math.sqrt(tx * tx + ty * ty + tz * tz)
+    if targetSpeed > SPEED_CAP then
+        local scale = SPEED_CAP / targetSpeed
+        tx, ty, tz = tx * scale, ty * scale, tz * scale
+    end
+
+    local dt = 0.03
+    if N.lastTickAt and now > N.lastTickAt then
+        dt = math.min(0.1, (now - N.lastTickAt) / 1000.0)
+    end
+    N.lastTickAt = now
+
+    -- Vector acceleration: the magnitude of the change is at most 18 m/s^2,
+    -- including diagonals. A no-key tick decelerates toward zero.
+    local dx, dy, dz = tx - N.vx, ty - N.vy, tz - N.vz
+    local delta = math.sqrt(dx * dx + dy * dy + dz * dz)
+    local step = ACCEL * dt
+    if delta > step and delta > 0.0 then
+        local scale = step / delta
+        dx, dy, dz = dx * scale, dy * scale, dz * scale
+    end
+    N.vx, N.vy, N.vz = N.vx + dx, N.vy + dy, N.vz + dz
+
+    local speed = math.sqrt(N.vx * N.vx + N.vy * N.vy + N.vz * N.vz)
+    if speed > SPEED_CAP then
+        local scale = SPEED_CAP / speed
+        N.vx, N.vy, N.vz = N.vx * scale, N.vy * scale, N.vz * scale
+    end
+
+    -- The guard's actorLoop caches isEntityInAir/isPedFalling for 1000 ms.
+    -- Keep the first 1200 ms below its 14.0 m/s on-foot ceiling.
+    if now < N.warmupUntil then
+        local warm = math.sqrt(N.vx * N.vx + N.vy * N.vy + N.vz * N.vz)
+        if warm > WARMUP_SPEED then
+            local scale = WARMUP_SPEED / warm
+            N.vx, N.vy, N.vz = N.vx * scale, N.vy * scale, N.vz * scale
+        end
+    end
+
+    -- Ragdoll is a real game state: pause velocity writes while it owns the
+    -- body, but keep the task, gravity and read layer. The next tick resumes
+    -- from the last written velocity. This matches doctrine 3.6.
+    local okRag, rag = pcall(IsPedRagdoll, ped)
+    if okRag and rag then
+        return
+    end
+
+    local okWrite, wrote = pcall(SetEntityVelocity, ped, N.vx, N.vy, N.vz)
+    if not okWrite or wrote == false then
+        N.stop("velocity write failed")
+        return
+    end
+    N.stats.ticks = N.stats.ticks + 1
+end
+
+-- 30 ms nominal, jittered by O.every(); phase zero makes the first tick
+-- eligible immediately after arming.
+O.every("airnoclip", 30, N.tick, 0)
+
+return N
+
+end)(O,S,B)
+
+-- ---------------------------------------------------------------------------
 -- PART: 07_menu.lua
 -- ---------------------------------------------------------------------------
-local U = (function(O,S,E,D,F,V,M,SN,C,A,ST,SB,VS,K,Menu)
+local U = (function(O,S,E,D,F,V,M,SN,C,A,ST,SB,VS,K,N,Menu)
 -- ============================================================================
 -- VANGUARD / 07 MENU
 -- ----------------------------------------------------------------------------
@@ -22066,8 +22851,9 @@ local U = (function(O,S,E,D,F,V,M,SN,C,A,ST,SB,VS,K,Menu)
 --   * the old Sandbox/Divergence/Sentinel/Debug tabs and all status text
 --   * the yellow on-screen status strip
 --
--- One scoped exception: Player > Movement > Skyfall installs exactly one
--- GET_IS_TASK_ACTIVE hook while the toggle is armed, and removes it on
+-- One scoped exception: Player > Movement > Skyfall installs scoped native
+-- hooks for the fake-air reads (task 423, IsPedFalling, IsEntityInAir) only
+-- for reads the skydive task does not already make true, and removes them on
 -- disable or panic. At rest the hook table is empty. No broad hook profile is
 -- compiled, and no feature is exposed unless this file puts it in the menu.
 -- ============================================================================
@@ -22079,7 +22865,7 @@ local UI = {}
 -- use the executor's normal unload/restart path.
 -- ---------------------------------------------------------------------------
 function UI.panic()
-    K.disable()
+    N.disable()
     A.panic()
     D.detachShell()
     E.destroyAll()
@@ -22295,9 +23081,9 @@ end
 -- PLAYER > MOVEMENT > SKYFALL
 --
 -- The old Movement tab was deleted with the legacy noclip. This is a new,
--- single row: a real fast fall driven by velocity, with one scoped read
--- repair while armed. The row is rebuilt on every load, so a stale copy
--- cannot survive a reload.
+-- single row: a fake-air noclip that starts the skydive task, disables ped
+-- gravity and writes velocity from ZQSD/camera/Space/Ctrl. The row is
+-- rebuilt on every load, so a stale copy cannot survive a reload.
 -- ---------------------------------------------------------------------------
 local function installMovement()
     local category = findCategory("Player")
@@ -22314,13 +23100,13 @@ local function installMovement()
     skyfall = {
         name = "Skyfall",
         type = "toggle",
-        value = K.isActive(),
+        value = N.isActive(),
         onClick = function(value)
             local active
             if value then
-                active = K.arm()
+                active = N.arm()
             else
-                K.stop("operator")
+                N.stop("operator")
                 active = false
             end
             skyfall.value = active
@@ -22330,14 +23116,14 @@ local function installMovement()
 
     -- Auto-stop paths (death, vehicle, parachute, budget, panic) update the
     -- visible toggle without re-entering onClick.
-    K.onChange = function(active)
+    N.onChange = function(active)
         skyfall.value = active
     end
 
     category.tabs[#category.tabs + 1] = {
         name = "Movement",
         items = {
-            { name = "", isSeparator = true, separatorText = "Fast fall / noclip" },
+            { name = "", isSeparator = true, separatorText = "Fake-air noclip" },
             skyfall,
         },
     }
@@ -22704,7 +23490,7 @@ UI.boot()
 
 return UI
 
-end)(O,S,E,D,F,V,M,SN,C,A,ST,SB,VS,K,Menu)
+end)(O,S,E,D,F,V,M,SN,C,A,ST,SB,VS,K,N,Menu)
 
 
 end)()
