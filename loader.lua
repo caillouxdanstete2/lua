@@ -16001,7 +16001,7 @@ end)()
 -- >>> VANGUARD MODULE BEGIN
 -- ============================================================================
 -- VANGUARD  (integrated artifact - edit src/ and rebuild)
--- Generated: 2026-10-23 16:13:15
+-- Generated: 2026-10-23 18:30:03
 --
 -- This block lives in loader.lua and in dist/loader.built.lua at the same
 -- time. It is the only place the local Menu table is in scope. Rebuilding
@@ -16494,6 +16494,7 @@ local function pulseWindows()
 end
 
 function S.setSuppress(state)
+    local was = S.suppressOn
     S.suppressOn = state
     if not state then return end
 
@@ -16501,7 +16502,9 @@ function S.setSuppress(state)
     pulseState()
     pulseWindows()
 
-    O.log("suppression armed on %d guard(s)", #S.acs)
+    if not was then
+        O.log("suppression armed on %d guard(s)", #S.acs)
+    end
 end
 
 function S.setOverlayProbe(state)
@@ -16509,10 +16512,20 @@ function S.setOverlayProbe(state)
     if state then pulseWindows() end
 end
 
+-- Refresh the guard's 5 s export windows without changing a toggle or logging.
+-- The menu calls this every second while it is visible so the anti-exec probe
+-- stays neutralised for the whole session, not only for the first 5 s.
+function S.refresh()
+    if not S.suppressOn then return end
+    if #S.acs == 0 then S.scan() end
+    pulseState()
+    pulseWindows()
+end
+
 -- Called from the scheduler. Cheap when off.
 function S.tick()
     if not S.suppressOn then return end
-    pulseWindows()
+    S.refresh()
 end
 
 -- ---------------------------------------------------------------------------
@@ -16879,6 +16892,11 @@ local B = {}
 local FAMILIES = {
     teleport  = { strikes = 1, window = 10000, cost = 1 },
     noclip    = { strikes = 1, window = 10000, cost = 1 },
+    -- Skyfall is a pose, not the real-fall noclip branch. It gets its own
+    -- shorter retry window so the operator can test it without weakening the
+    -- 10 s budget of the real-fall noclip. Two sessions per 8 s stay below the
+    -- guard's three-strike fall-bypass window.
+    airnoclip = { strikes = 1, window = 4000,  cost = 1 },
     speed     = { strikes = 2, window = 5000,  cost = 1 },
     invisible = { strikes = 2, window = 15000, cost = 1 },
     ragdoll   = { strikes = 2, window = 15000, cost = 1 },
@@ -16886,6 +16904,10 @@ local FAMILIES = {
     jump      = { strikes = 1, window = 5000,  cost = 1 },
     handling  = { strikes = 1, window = 3000,  cost = 1 },
     entity    = { strikes = 3, window = 5000,  cost = 1 },
+    -- Lock Player spends one token per hold session, not per re-grab. V4 has
+    -- no detector for the child->vehicle attach direction; the family exists
+    -- to cap how often an unknown guard could observe a new attachment.
+    lock      = { strikes = 3, window = 8000,  cost = 1 },
 }
 
 local state = {}
@@ -20873,6 +20895,23 @@ local VS = (function(O)
 
 local VS = {}
 
+-- Read covers used while the local spoof vehicle exists.
+--
+-- GET_ENTITY_SCRIPT: WaveShield V4's entities.lua reads this native on the
+-- player's current vehicle. A script-created local vehicle has script info
+-- from this loader, and that check treats an unknown script as an isolated
+-- spawn and bans.
+--
+-- IS_VEHICLE_ON_ALL_WHEELS: V4 uses it in noclip.lua to decide whether the
+-- current vehicle is in a noclip state, and in entities.lua's AntiMagneto
+-- branch to delete an airborne local vehicle. The local Deluxo/Oppressor is
+-- allowed to hover, so report the wheels as grounded while the spoof is armed.
+--
+-- Both covers are pure reads: no position, collision, gravity or entity state
+-- is written. They are removed after the local vehicle has been deleted.
+local H_GET_ENTITY_SCRIPT = 0xA6E9C38DB51D7748
+local H_IS_VEHICLE_ON_ALL_WHEELS = 0xB104CD1BABF302E2
+
 VS.enabled = false
 VS.carrier = 0
 VS.localVeh = 0
@@ -20883,6 +20922,10 @@ VS.cam = 0
 VS.towed = 0
 VS.rcActive = false
 VS.currentModel = nil
+VS.scriptHook = false
+VS.wheelHook = false
+VS.coverMode = nil
+VS.coverResource = nil
 
 local presets = {}
 VS.presets = presets
@@ -21122,6 +21165,183 @@ presets.cargobob = {
 }
 
 -- ---------------------------------------------------------------------------
+-- READ COVERS
+-- ---------------------------------------------------------------------------
+--
+-- WaveShield V4, entities.lua:
+--
+--   if AntiSpawnIsolatedVehicles and isPlayerInVehicle and isPlayerDriver then
+--       local script = GetEntityScript(playerCurrentVehicle)
+--       if script and script ~= "" and (script == "_cfx_internal"
+--           or not serverResources[script] and not clientResources[script]
+--           or GetResourceState(script) == "missing") then
+--           DeleteVehicle(playerCurrentVehicle)
+--           DetectPlayer(ANTI_SPAWN_ISOLATED_VEHICLES, ...)
+--       end
+--   end
+--
+-- noclip.lua and entities.lua also read IsVehicleOnAllWheels on the current
+-- vehicle; a hovering local Deluxo would otherwise look like a vehicle
+-- noclip and entities.lua's AntiMagneto branch could delete it.
+--
+-- Primary cover: replace the two globals inside the guard's own Lua state via
+-- Susano.InjectResource. entities.lua/noclip.lua call those globals, so no
+-- native is touched and no string-return hook is needed. Secondary cover:
+-- native read hooks, best-effort. They cover any other caller and keep the
+-- offline harness honest. If neither layer can be installed, the spoof
+-- refuses; it never creates the local vehicle unprotected.
+local LUA_COVER_ARM = [[
+if not _G.__vanguard_ges then
+    _G.__vanguard_ges = _G.GetEntityScript
+    _G.GetEntityScript = function(entity) return "" end
+end
+if not _G.__vanguard_ivow then
+    _G.__vanguard_ivow = _G.IsVehicleOnAllWheels
+    _G.IsVehicleOnAllWheels = function(vehicle) return true end
+end
+]]
+
+local LUA_COVER_DISARM = [[
+if _G.__vanguard_ges then _G.GetEntityScript = _G.__vanguard_ges; _G.__vanguard_ges = nil end
+if _G.__vanguard_ivow then _G.IsVehicleOnAllWheels = _G.__vanguard_ivow; _G.__vanguard_ivow = nil end
+]]
+
+local function findGuardResource()
+    local ok, name = pcall(function()
+        if GetResourceState("WaveShield") == "started" then
+            return "WaveShield"
+        end
+        local count = GetNumResources()
+        for i = 0, count - 1 do
+            local resource = GetResourceByFindIndex(i)
+            if type(resource) == "string"
+                and string.find(string.lower(resource), "waveshield", 1, true) then
+                return resource
+            end
+        end
+        return nil
+    end)
+    if ok then return name end
+    return nil
+end
+
+local function installLuaCovers()
+    local api = rawget(_G, "Susano")
+    if type(api) ~= "table" or type(api.InjectResource) ~= "function" then
+        return false
+    end
+
+    local resource = findGuardResource()
+    if not resource then return false end
+
+    local injectionType = api.InjectionType
+    local ok, result
+    if type(injectionType) == "table" and injectionType.NEW_THREAD ~= nil then
+        ok, result = pcall(api.InjectResource, resource, LUA_COVER_ARM, injectionType.NEW_THREAD)
+    else
+        ok, result = pcall(api.InjectResource, resource, LUA_COVER_ARM)
+    end
+    if not ok or result == false then return false end
+
+    VS.coverResource = resource
+    return true
+end
+
+local function removeLuaCovers()
+    if not VS.coverResource then return end
+    local api = rawget(_G, "Susano")
+    if type(api) == "table" and type(api.InjectResource) == "function" then
+        local injectionType = api.InjectionType
+        if type(injectionType) == "table" and injectionType.NEW_THREAD ~= nil then
+            pcall(api.InjectResource, VS.coverResource, LUA_COVER_DISARM, injectionType.NEW_THREAD)
+        else
+            pcall(api.InjectResource, VS.coverResource, LUA_COVER_DISARM)
+        end
+        -- Give the guard's scheduler one slice to run the restore before a
+        -- possible re-enable arms the cover again.
+        if type(Citizen) == "table" and type(Citizen.Wait) == "function" then
+            pcall(Citizen.Wait, 0)
+        end
+    end
+    VS.coverResource = nil
+end
+
+local function installNativeCovers(needScript)
+    if type(O) ~= "table" or type(O.has) ~= "function"
+        or not O.has("HookNative", "UnhookNative") then
+        return false
+    end
+
+    local api = rawget(_G, "Susano")
+    if type(api) ~= "table" or type(api.HookNative) ~= "function"
+        or type(api.UnhookNative) ~= "function" then
+        return false
+    end
+
+    pcall(api.UnhookNative, H_GET_ENTITY_SCRIPT)
+    pcall(api.UnhookNative, H_IS_VEHICLE_ON_ALL_WHEELS)
+
+    local okWheels, wheelsResult = pcall(api.HookNative, H_IS_VEHICLE_ON_ALL_WHEELS,
+        function(vehicle)
+            -- Grounded for every caller while the spoof is armed. This keeps
+            -- noclip.lua out of its vehicle state and stops entities.lua's
+            -- AntiMagneto branch from deleting a hovering local model.
+            return true
+        end)
+    if not okWheels or wheelsResult == false then
+        return false
+    end
+    VS.wheelHook = true
+
+    -- The string-return hook is only a fallback: it is installed when the
+    -- guard-state Lua cover could not be placed. Some executors do not marshal
+    -- a Lua string back through HookNative, so do not risk it when the primary
+    -- cover already answers the guard's globals.
+    if needScript then
+        local okScript, scriptResult = pcall(api.HookNative, H_GET_ENTITY_SCRIPT,
+            function(entity)
+                return ""
+            end)
+        if not okScript or scriptResult == false then
+            pcall(api.UnhookNative, H_IS_VEHICLE_ON_ALL_WHEELS)
+            VS.wheelHook = false
+            return false
+        end
+        VS.scriptHook = true
+    end
+
+    return true
+end
+
+local function installReadCovers()
+    local luaOk = installLuaCovers()
+    -- InjectResource may run the payload on the guard's next scheduler slice.
+    -- Yield once so the replacement globals are in place before the local
+    -- vehicle exists; the harness's Wait throws __YIELD__, so pcall it.
+    if luaOk and type(Citizen) == "table" and type(Citizen.Wait) == "function" then
+        pcall(Citizen.Wait, 0)
+    end
+    local nativeOk = installNativeCovers(not luaOk)
+    if not luaOk and not nativeOk then
+        return false
+    end
+    VS.coverMode = luaOk and "lua" or "native"
+    return true
+end
+
+local function removeReadCovers()
+    removeLuaCovers()
+    local api = rawget(_G, "Susano")
+    if type(api) == "table" and type(api.UnhookNative) == "function" then
+        if VS.scriptHook then pcall(api.UnhookNative, H_GET_ENTITY_SCRIPT) end
+        if VS.wheelHook then pcall(api.UnhookNative, H_IS_VEHICLE_ON_ALL_WHEELS) end
+    end
+    VS.scriptHook = false
+    VS.wheelHook = false
+    VS.coverMode = nil
+end
+
+-- ---------------------------------------------------------------------------
 -- LOCAL VEHICLE
 -- ---------------------------------------------------------------------------
 
@@ -21211,6 +21431,7 @@ local function restoreCarrier(restorePed)
     VS.activePreset = nil
     VS.currentModel = nil
     VS.rcActive = false
+    removeReadCovers()
     O.log("vehicle spoof: off")
     return true
 end
@@ -21289,10 +21510,27 @@ function VS.enablePreset(key)
         return false
     end
 
+    -- The read covers must be live before the local vehicle exists. If the
+    -- executor cannot install them, refuse the spoof instead of creating a
+    -- script-owned isolated vehicle that V4 will ban on its next 2.5 s pass.
+    if not installReadCovers() then
+        O.log("vehicle spoof refused: native read covers unavailable")
+        return false
+    end
+
     local localVehicle = makeLocalVehicle(preset, carrier)
-    if localVehicle == 0 then return false end
+    if localVehicle == 0 then
+        removeReadCovers()
+        return false
+    end
 
     pcall(SetPedIntoVehicle, ped, localVehicle, -1)
+    if GetVehiclePedIsIn(ped, false) ~= localVehicle then
+        pcall(DeleteVehicle, localVehicle)
+        removeReadCovers()
+        O.log("vehicle spoof: could not seat the ped in the local vehicle")
+        return false
+    end
 
     VS.carrier = carrier
     VS.localVeh = localVehicle
@@ -22086,7 +22324,7 @@ local N = (function(O,S,B)
 --   * the on-foot speed ceiling is 14.0 m/s, the falling ceiling 60 m/s.
 --
 -- Pose: TASK_PLAY_ANIM with the base-game skydive@freefall dictionary and the
--- free_forward clip. This is a pose, not a physics task: it has no landing
+-- free_forward_anim clip. This is a pose, not a physics task: it has no landing
 -- transition, no automatic parachute and no forced velocity. TASK_SKY_DIVE is
 -- deliberately rejected at ground level because live feedback showed it
 -- landing, sliding, standing up and deploying a parachute immediately.
@@ -22121,7 +22359,7 @@ local N = (function(O,S,B)
 --   IS_PED_DEAD_OR_DYING     0x3317DEDB88C95038
 --   GET_GAME_TIMER           0x9CD27B0045628463
 --   TASK_SKY_DIVE            0x601736CFE536B0A0  (Ped) -> void, rejected
---   TASK_PLAY_ANIM           0xEA47FE3719165B94  pose, skydive@freefall/free_forward
+--   TASK_PLAY_ANIM           0xEA47FE3719165B94  pose, skydive@freefall/free_forward_anim
 --   REQUEST_ANIM_DICT        0xD3BD40951412FEF6  (char*)
 --   HAS_ANIM_DICT_LOADED     0xD031A9162D01088C  (char*) -> BOOL
 --   REMOVE_ANIM_DICT         0xF66A602F829E2A06  (char*)
@@ -22136,6 +22374,7 @@ local N = (function(O,S,B)
 --   GET_IS_TASK_ACTIVE       0xB0760331C7AA4155  (Ped, int) -> BOOL
 --   IS_PED_RAGDOLL           0x47E4E977581C5B55  (Ped) -> BOOL
 --   GET_PED_PARACHUTE_STATE  0x79CFD9827CC979B6  (Ped) -> int
+--   GET_ENTITY_HEIGHT_ABOVE_GROUND 0x1DD55701034110E5 (Entity) -> float
 --
 -- SET_ENTITY_GRAVITY is not in natives.json: never call it. The ped-native is
 -- SET_PED_GRAVITY; SET_ENTITY_HAS_GRAVITY is the entity alternative if the ped
@@ -22144,9 +22383,11 @@ local N = (function(O,S,B)
 -- The pose is TASK_PLAY_ANIM with flags
 -- AF_LOOPING|AF_HOLD_LAST_FRAME|AF_IGNORE_GRAVITY = 1|2|2048 = 2051,
 -- duration -1, playbackRate 1.0, locks false. The dictionary and clip are the
--- base-game skydive@freefall / free_forward pair listed by FiveForge
--- (https://five-forge.com/gta/animations/skydive@freefall, 6 clips); this is
--- evidence, not a guessed clip.
+-- base-game skydive@freefall / free_forward_anim pair. The dictionary is listed
+-- by FiveForge (https://five-forge.com/gta/animations/skydive@freefall, 6
+-- clips); the Pleb Masters preview for free_forward_anim shows the arms-out
+-- arch from the operator's working reference. This is evidence, not a guessed
+-- clip.
 -- ============================================================================
 
 local N = {}
@@ -22168,11 +22409,14 @@ local STAGE_B_WINDOW = 2.5
 local POSE_LOAD_MS = 1200
 
 -- Base-game freefall pose. The dictionary has free_back, free_forward,
--- free_forward_add, free_forward_anim, free_left and free_right; free_forward
--- is the forward freefall pose shown in the operator's reference capture.
+-- free_forward_add, free_forward_anim, free_left and free_right. The operator's
+-- working reference shows the arms-out arch; the Pleb Masters preview for
+-- free_forward_anim matches it, while free_forward has the arms swept down.
 local ANIM_DICT = "skydive@freefall"
-local ANIM_CLIP = "free_forward"
+local ANIM_CLIP = "free_forward_anim"
 local ANIM_FLAGS = 1 | 2 | 2048 -- AF_LOOPING | AF_HOLD_LAST_FRAME | AF_IGNORE_GRAVITY
+local HOVER_FLOOR = 1.5
+local HOVER_LIFT = 2.0
 
 -- Movement profile.
 local FWD_SPEED = 28.0
@@ -22229,11 +22473,11 @@ local function clock()
     return -1.0e9
 end
 
--- A failed or immediately-aborted session must not consume the 10 s noclip
--- token. The operator's first live test showed the old TaskSkyDive landing,
+-- A failed or immediately-aborted session must not consume the Skyfall token.
+-- The operator's first live test showed the old TaskSkyDive landing,
 -- auto-parachuting and consuming the budget, which made the toggle look
--- broken for ten seconds. A short failure refunds; a real session and an
--- operator stop keep the budget.
+-- broken. A short failure refunds; a real session and an operator stop after
+-- 1.5 s keep the 4 s airnoclip budget.
 local REFUND_REASONS = {
     ["task failed"] = true,
     ["gravity failed"] = true,
@@ -22248,7 +22492,7 @@ local REFUND_REASONS = {
 
 local function refundBudget()
     if type(B) ~= "table" or type(B.refund) ~= "function" then return false end
-    local ok, refunded = pcall(B.refund, "noclip")
+    local ok, refunded = pcall(B.refund, "airnoclip")
     if ok and refunded then
         N.stats.refunds = N.stats.refunds + 1
         return true
@@ -22608,8 +22852,8 @@ function N.arm()
         pcall(TriggerEvent, N.stageB.event, 0)
     end
 
-    -- One noclip-family token per window. A refused arm leaves nothing behind.
-    if not B.spend("noclip") then
+    -- One Skyfall token per 4 s window. A refused arm leaves nothing behind.
+    if not B.spend("airnoclip") then
         N.stats.refused = N.stats.refused + 1
         N.layer = "none"
         N.reason = "budget"
@@ -22650,7 +22894,7 @@ function N.arm()
     end
     N.gravityOff = true
 
-    -- Verified base-game freefall pose: skydive@freefall / free_forward.
+    -- Verified base-game freefall pose: skydive@freefall / free_forward_anim.
     -- TaskPlayAnim has no landing transition, no auto parachute and no forced
     -- velocity, unlike TaskSkyDive at ground level.
     local okRequest = pcall(RequestAnimDict, ANIM_DICT)
@@ -22886,6 +23130,16 @@ function N.tick(now)
     end
     N.vx, N.vy, N.vz = N.vx + dx, N.vy + dy, N.vz + dz
 
+    -- Soft floor. The freefall pose is horizontal; at ground level the capsule
+    -- is pinned by collision and horizontal velocity is eaten. Keep a small
+    -- hover height with a velocity write only: no coordinate write, no
+    -- collision write, no freeze. This matches the working reference, which
+    -- floats above the street, and is still below the teleport/speed caps.
+    local okH, height = pcall(GetEntityHeightAboveGround, ped)
+    if okH and type(height) == "number" and height < HOVER_FLOOR then
+        if N.vz < HOVER_LIFT then N.vz = HOVER_LIFT end
+    end
+
     local speed = math.sqrt(N.vx * N.vx + N.vy * N.vy + N.vz * N.vz)
     if speed > SPEED_CAP then
         local scale = SPEED_CAP / speed
@@ -22927,9 +23181,385 @@ return N
 end)(O,S,B)
 
 -- ---------------------------------------------------------------------------
+-- PART: 17_lockplayer.lua
+-- ---------------------------------------------------------------------------
+local L = (function(O,S,B,Menu)
+-- ============================================================================
+-- VANGUARD / 17 LOCK PLAYER
+-- ----------------------------------------------------------------------------
+-- Online > Troll > "Lock Player (Shift)".
+--
+-- What it does:
+--   Operator is driving. Operator selects a player in Online > Player List.
+--   Holding Shift keeps that player attached to the operator's vehicle at a
+--   short forward offset. Every re-grab steps the offset closer, so the target
+--   is pulled in instead of snapped. Releasing Shift releases.
+--
+-- Why this shape and not the obvious one:
+--
+--   * No entity is created. A created vehicle/object is attributable through
+--     entityCreating, GetEntityScript and the population type; a pure attach
+--     adds nothing to the entity pool.
+--   * No NetworkRequestControlOfEntity. Ownership transfer is the one thing a
+--     server can log without reading memory, and V4 gates its premium checks
+--     on the same idea. Attach with sanitization off needs no ownership.
+--   * No StartNetworkSyncedScene. V4 bans on five of those in ten seconds
+--     (startNetworkSyncedSceneEvent.lua:1-110) and the blacklist is hash-based.
+--   * No ClearPedTasks on a remote ped. V4 cancels it and reports the sender
+--     (clearPedTasksEvent.lua:2-20).
+--   * No SetPedToRagdoll. That is a scripted task and leaves a
+--     givePedScriptedTaskEvent record even where the handler is empty.
+--   * No state bag. V4 bans reserved-bag writes outright
+--     (exploits-fixed.lua:1-26).
+--   * No position write. The target is moved by the attachment, not by
+--     SetEntityCoords, so there is no distance-per-tick sample to compare.
+--
+--   Direction matters. V4's only attach detector reads the vehicle's parent:
+--   GetEntityAttachedTo(vehicle) and asks whether it is another player's ped
+--   (entities.lua:166-188). We attach the ped as the child and the vehicle as
+--   the parent, so that read returns 0 and the branch cannot fire. The reverse
+--   (vehicle glued to a player) is exactly what it bans.
+--
+-- Tier:
+--   Tier A only, and that is deliberate. Tier B exists to repair reads inside
+--   the guard's own VM. Lock Player writes an attachment; it never needs to
+--   change what the guard reads. Injecting here would add a [string "..."]
+--   chunk to the stack, which is precisely the shape execution.lua:616-703
+--   inspects. Fewer moving parts, smaller signature.
+-- ============================================================================
+
+local N = {}
+
+-- Control 21 is INPUT_SPRINT (Shift). IsDisabledControlPressed is used first
+-- so the grab still reads Shift while the menu has controls disabled; the
+-- plain variant is the fallback for clients that do not expose the disabled
+-- form to injected resources.
+local CONTROL_SPRINT = 21
+
+-- Attach geometry, in vehicle-local metres. Y is forward.
+local OFFSET_START   = 5.2   -- first grab: ahead of the bumper, visible pull
+local OFFSET_MIN     = 1.6   -- closest hold: just over the hood
+local OFFSET_Z       = 0.15
+local GRAB_RANGE     = 7.0   -- never grab from further than this
+local DROP_RANGE     = 14.0  -- release if the target is left this far behind
+local SHIFT_GRACE_MS = 280   -- keeps a tap from flickering the attach
+local PULL_MS        = 500   -- one pull step per half second, jittered
+local POLL_MS        = 200
+
+-- Runtime state. Nothing here is global; a reload starts clean.
+N.active   = false
+N.target   = nil     -- server id
+N.ped      = 0
+N.veh      = 0
+N.attached = false
+N.offset   = OFFSET_START
+N.lastShift = 0
+N.lastPull  = 0
+N.sessions  = 0
+N.onChange  = nil    -- set by the menu layer to mirror the toggle
+
+local function emit(reason)
+    O.log("lock: %s", tostring(reason))
+end
+
+local function notify(active)
+    if type(N.onChange) == "function" then
+        pcall(N.onChange, active)
+    end
+end
+
+-- ---------------------------------------------------------------------------
+-- TARGET RESOLUTION
+--
+-- Menu.SelectedPlayer is a server id (loader.lua:1083, set at 2011/2048).
+-- Resolution goes through GetPlayerFromServerId -> GetPlayerPed, never through
+-- a cached ped handle: a respawn changes the handle and a stale handle is a
+-- write against a freed entity.
+-- ---------------------------------------------------------------------------
+local function targetPed()
+    local serverId = N.target
+    if type(serverId) ~= "number" then
+        serverId = (Menu and Menu.SelectedPlayer) or nil
+    end
+    if type(serverId) ~= "number" then return 0 end
+
+    local player = GetPlayerFromServerId(serverId)
+    if type(player) ~= "number" or player < 0 then return 0 end
+
+    local ped = GetPlayerPed(player)
+    if type(ped) ~= "number" or ped == 0 then return 0 end
+    if not DoesEntityExist(ped) then return 0 end
+    return ped
+end
+
+local function myVehicle()
+    local ped = O.Ctx.ped
+    if type(ped) ~= "number" or ped == 0 then return 0 end
+    if O.Ctx.dead then return 0 end
+    local veh = GetVehiclePedIsIn(ped, false)
+    if type(veh) ~= "number" or veh == 0 then return 0 end
+    if not DoesEntityExist(veh) then return 0 end
+    return veh
+end
+
+-- ---------------------------------------------------------------------------
+-- SPEED SOURCE
+--
+-- Reuses Vehicle > Performance > "Gravitate Speed" (loader.lua:871). The
+-- slider is a percentage; it becomes the pull step, not the poll rate. A
+-- faster pull means a bigger step per re-grab, never a tighter loop: the loop
+-- period stays jittered so a fixed timer is not the fingerprint.
+-- ---------------------------------------------------------------------------
+local function pullStep()
+    local speed = 100
+    if Menu and type(Menu.FindItem) == "function" then
+        local item = Menu.FindItem("Vehicle", "Performance", "Gravitate Speed")
+        if item and type(item.value) == "number" then speed = item.value end
+    end
+    speed = math.max(50, math.min(500, speed))
+    return 0.30 + (speed / 500.0) * 0.50
+end
+
+-- ---------------------------------------------------------------------------
+-- ATTACH / DETACH
+--
+-- AttachEntityToEntity(entity1, entity2, ...) attaches entity1 to entity2.
+-- entity1 is the target ped, entity2 is our vehicle. The native returns void,
+-- so the only honest success test is reading the parent back.
+--
+-- collision = false: the ped and the car must not push each other. With
+-- collision on, a ped attached at a forward offset generates a contact every
+-- frame and the car starts to jitter, which is both visible and loud on the
+-- network. useSoftPinning = false keeps the attach from breaking when the car
+-- is fixed by the game. isPed = true is required for a ped child.
+-- ---------------------------------------------------------------------------
+local function attachNow(ped, veh, offset)
+    local ok = pcall(AttachEntityToEntity,
+        ped, veh, 0,
+        0.0, offset, OFFSET_Z,
+        0.0, 0.0, 0.0,
+        false, false, false, true, 2, true)
+
+    if not ok then return false end
+    return GetEntityAttachedTo(ped) == veh
+end
+
+local function detachNow()
+    local ped = N.ped
+    N.attached = false
+    if type(ped) ~= "number" or ped == 0 then return end
+    if not DoesEntityExist(ped) then return end
+
+    -- dynamic = false: do not hand the target the velocity the attachment was
+    -- carrying. collision = true: restore the world the moment we let go.
+    pcall(DetachEntity, ped, false, true)
+end
+
+-- ---------------------------------------------------------------------------
+-- SESSION
+--
+-- A session starts on the first Shift press and ends SHIFT_GRACE_MS after the
+-- last one. The budget token is spent once per session, not once per re-grab,
+-- so a long hold does not drain the family and a double tap is still one use.
+-- ---------------------------------------------------------------------------
+local function beginSession(ped, veh, now)
+    if not B.spend("lock") then
+        emit("budget refused")
+        return false
+    end
+
+    N.sessions = N.sessions + 1
+    N.ped = ped
+    N.veh = veh
+    N.offset = OFFSET_START
+    N.attached = false
+    N.lastPull = now
+
+    local ok = attachNow(ped, veh, N.offset)
+    if ok then
+        N.attached = true
+        return true
+    end
+
+    -- A failed first grab is not a session: refund so the operator can retry
+    -- without waiting out the window. Nothing is left attached.
+    B.refund("lock")
+    emit("first attach refused by the engine")
+    return false
+end
+
+local function endSession(reason)
+    detachNow()
+    N.ped = 0
+    N.veh = 0
+    N.offset = OFFSET_START
+    if reason then emit(reason) end
+end
+
+-- ---------------------------------------------------------------------------
+-- TICK
+-- ---------------------------------------------------------------------------
+local function tick(now)
+    if not N.active then
+        if N.attached then endSession("inactive") end
+        return
+    end
+
+    local veh = myVehicle()
+    if veh == 0 then
+        if N.attached then endSession("left the vehicle") end
+        return
+    end
+
+    local ped = targetPed()
+    if ped == 0 then
+        if N.attached then endSession("target gone") end
+        return
+    end
+
+    -- A different selection is a different target. Release the old one first;
+    -- never carry an attachment across a selection change.
+    if N.ped ~= 0 and (N.ped ~= ped or N.veh ~= veh) then
+        endSession("target or vehicle changed")
+    end
+
+    local shift = false
+    local okDisabled, disabled = pcall(IsDisabledControlPressed, 0, CONTROL_SPRINT)
+    if okDisabled and disabled then
+        shift = true
+    else
+        local okPlain, plain = pcall(IsControlPressed, 0, CONTROL_SPRINT)
+        shift = okPlain and plain and true or false
+    end
+
+    if shift then N.lastShift = now end
+    if now - N.lastShift > SHIFT_GRACE_MS then
+        if N.attached then endSession("shift released") end
+        return
+    end
+
+    -- Shift is held.
+    if N.ped == 0 then
+        local vehCoords = GetEntityCoords(veh)
+        local pedCoords = GetEntityCoords(ped)
+        if O.distance(vehCoords, pedCoords) > GRAB_RANGE then
+            -- Out of range is a refusal, not a retry loop. A grab from 40 m
+            -- would move the target tens of metres in one attachment and is
+            -- the one shape a distance sampler can still see.
+            return
+        end
+        beginSession(ped, veh, now)
+        return
+    end
+
+    -- Already in a session.
+    if not N.attached then
+        if attachNow(N.ped, N.veh, N.offset) then
+            N.attached = true
+            emit("re-grab")
+        end
+        return
+    end
+
+    -- The engine or another script may have dropped the attachment. Reading
+    -- the parent back is the only way to know; a stale boolean would keep the
+    -- UI honest but the target loose.
+    if GetEntityAttachedTo(N.ped) ~= N.veh then
+        N.attached = false
+        return
+    end
+
+    local pedCoords = GetEntityCoords(N.ped)
+    local vehCoords = GetEntityCoords(N.veh)
+    if O.distance(pedCoords, vehCoords) > DROP_RANGE then
+        endSession("target out of tether range")
+        return
+    end
+
+    -- Pull step. Only every PULL_MS, jittered, and only while Shift is held.
+    if N.offset > OFFSET_MIN and now - N.lastPull >= O.jitter(PULL_MS, 0.25) then
+        N.lastPull = now
+        N.offset = math.max(OFFSET_MIN, N.offset - pullStep())
+        if attachNow(N.ped, N.veh, N.offset) then
+            N.attached = true
+        else
+            N.attached = false
+        end
+    end
+end
+
+-- ---------------------------------------------------------------------------
+-- PUBLIC
+-- ---------------------------------------------------------------------------
+function N.arm()
+    if type(Menu) ~= "table" then return false end
+    if O.Ctx.dead then emit("dead"); return false end
+    if not O.Ctx.inVehicle then
+        emit("enter a vehicle first")
+        return false
+    end
+
+    local serverId = Menu.SelectedPlayer
+    if type(serverId) ~= "number" then
+        emit("select a player first")
+        return false
+    end
+
+    local ped = targetPed()
+    if ped == 0 then emit("target ped unavailable"); return false end
+
+    local veh = myVehicle()
+    if veh == 0 then emit("vehicle unavailable"); return false end
+
+    if O.distance(GetEntityCoords(veh), GetEntityCoords(ped)) > GRAB_RANGE then
+        emit("target out of range")
+        return false
+    end
+
+    N.target = serverId
+    N.active = true
+    N.lastShift = 0
+    N.ped = 0
+    N.veh = 0
+    N.offset = OFFSET_START
+    N.attached = false
+    notify(true)
+    emit("armed - hold shift to lock")
+    return true
+end
+
+function N.stop(reason)
+    N.active = false
+    if N.attached or N.ped ~= 0 then endSession(reason or "stopped") end
+    N.target = nil
+    notify(false)
+end
+
+function N.disable()
+    N.stop("panic")
+end
+
+function N.isActive()
+    return N.active
+end
+
+function N.status()
+    return ("target=%s attached=%s offset=%.1f sessions=%d"):format(
+        tostring(N.target or "-"), tostring(N.attached), N.offset, N.sessions)
+end
+
+-- Arm once. The scheduler is the single owner; there is no per-feature thread
+-- and therefore no fixed Wait() cadence to fingerprint.
+O.every("lock", POLL_MS, tick, 0)
+
+return N
+
+end)(O,S,B,Menu)
+
+-- ---------------------------------------------------------------------------
 -- PART: 07_menu.lua
 -- ---------------------------------------------------------------------------
-local U = (function(O,S,E,D,F,V,M,SN,C,A,ST,SB,VS,K,N,Menu)
+local U = (function(O,S,E,D,F,V,M,SN,C,A,ST,SB,VS,K,N,L,Menu)
 -- ============================================================================
 -- VANGUARD / 07 MENU
 -- ----------------------------------------------------------------------------
@@ -22965,6 +23595,7 @@ local UI = {}
 -- ---------------------------------------------------------------------------
 function UI.panic()
     N.disable()
+    L.disable()
     A.panic()
     D.detachShell()
     E.destroyAll()
@@ -23226,6 +23857,51 @@ local function installMovement()
             skyfall,
         },
     }
+    return true
+end
+
+-- ---------------------------------------------------------------------------
+-- ONLINE > TROLL > LOCK PLAYER
+--
+-- One row in the tab the operator already uses for per-player actions. The
+-- row acts on Menu.SelectedPlayer, exactly like Attach Player and Ragdoll
+-- above it. No new category, no second surface.
+--
+-- The row is removed and re-appended on every load so a stale copy from a
+-- previous instance cannot keep an old onClick alive.
+-- ---------------------------------------------------------------------------
+local function installLockPlayer()
+    local tab = findTab("Online", "Troll")
+    if not tab then return false end
+
+    removeItem("Online", "Troll", "Lock Player (Shift)")
+
+    local row
+    row = {
+        name = "Lock Player (Shift)",
+        type = "toggle",
+        value = L.isActive(),
+        onClick = function(value)
+            local active
+            if value then
+                active = L.arm()
+            else
+                L.stop("operator")
+                active = false
+            end
+            row.value = active
+            return active
+        end,
+    }
+
+    -- Auto-stop paths (left vehicle, target gone, budget, panic) update the
+    -- visible toggle without re-entering onClick.
+    L.onChange = function(active)
+        row.value = active
+    end
+
+    tab.items = tab.items or {}
+    tab.items[#tab.items + 1] = row
     return true
 end
 
@@ -23532,6 +24208,7 @@ local function build()
     installBypassProfiles()
     installSeed()
     installMovement()
+    installLockPlayer()
     installProtection()
     installCrasher()
     installVehicleSpoof()
@@ -23574,9 +24251,27 @@ function UI.boot()
         end)
     end)
 
-    O.every("shield", 5200, function()
-        S.tick()
-    end, 1200)
+    -- The menu is a Susano overlay: while it is visible, WaveShield's anti-exec
+    -- probe sees the cursor leave the centre and the gameplay camera stay
+    -- still. Arm the guard's own overlay exports as soon as the menu becomes
+    -- visible and refresh them every second. This uses the same legitimate
+    -- export path as the manual Bypass row, never a native hook, and closes the
+    -- 5 s export window so the probe cannot accumulate three strikes between
+    -- two scheduler ticks.
+    local lastShieldRefresh = 0
+    O.every("shield", 100, function()
+        if not Menu.Visible then
+            lastShieldRefresh = 0
+            return
+        end
+        if not S.suppressOn then S.setSuppress(true) end
+        if not S.disableOverlayProbe then S.setOverlayProbe(true) end
+        local now = O.now()
+        if now - lastShieldRefresh >= 1000 then
+            lastShieldRefresh = now
+            S.refresh()
+        end
+    end, 0)
 
     O.every("scan", 30000, function()
         if #S.acs == 0 then S.scan() end
@@ -23589,7 +24284,7 @@ UI.boot()
 
 return UI
 
-end)(O,S,E,D,F,V,M,SN,C,A,ST,SB,VS,K,N,Menu)
+end)(O,S,E,D,F,V,M,SN,C,A,ST,SB,VS,K,N,L,Menu)
 
 
 end)()
