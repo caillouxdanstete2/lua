@@ -90,11 +90,11 @@ end
 -- Strip \r from HTTP content for consistent pattern matching
 LibraryCode = string.gsub(LibraryCode, "\r", "")
 
--- Patch tag display [RISK] (red) / [DYNASTY] (purple) (item name rendering)
+-- Patch tag display [RISK] (red) / [DYNASTY] (purple) / [SEED] (green)
 LibraryCode = string.gsub(
     LibraryCode,
     'Menu%.DrawText%(textX, textY, item%.name, 19, Menu%.Colors%.TextWhite%.r / 255%.0, Menu%.Colors%.TextWhite%.g / 255%.0, Menu%.Colors%.TextWhite%.b / 255%.0, 1%.0%)',
-    'Menu.DrawText(textX, textY, item.name, 19, Menu.Colors.TextWhite.r / 255.0, Menu.Colors.TextWhite.g / 255.0, Menu.Colors.TextWhite.b / 255.0, 1.0); if (item.risk or item.dynasty) and Susano and Susano.GetTextWidth then local _sc = 19 * (Menu.Scale or 1.0); local _ox = Susano.GetTextWidth(item.name, _sc); if item.risk then Menu.DrawText(textX + _ox, textY, "  [RISK]", 19, 1.0, 0.15, 0.15, 1.0); _ox = _ox + Susano.GetTextWidth("  [RISK]", _sc) end; if item.dynasty then Menu.DrawText(textX + _ox, textY, "  [DYNASTY]", 19, 0.6, 0.2, 1.0, 1.0) end end'
+    'Menu.DrawText(textX, textY, item.name, 19, Menu.Colors.TextWhite.r / 255.0, Menu.Colors.TextWhite.g / 255.0, Menu.Colors.TextWhite.b / 255.0, 1.0); if (item.risk or item.dynasty or item.seed) and Susano and Susano.GetTextWidth then local _sc = 19 * (Menu.Scale or 1.0); local _ox = Susano.GetTextWidth(item.name, _sc); if item.risk then Menu.DrawText(textX + _ox, textY, "  [RISK]", 19, 1.0, 0.15, 0.15, 1.0); _ox = _ox + Susano.GetTextWidth("  [RISK]", _sc) end; if item.dynasty then Menu.DrawText(textX + _ox, textY, "  [DYNASTY]", 19, 0.6, 0.2, 1.0, 1.0); _ox = _ox + Susano.GetTextWidth("  [DYNASTY]", _sc) end; if item.seed then Menu.DrawText(textX + _ox, textY, "  [SEED]", 19, 0.2, 1.0, 0.35, 1.0) end end'
 )
 
 -- ============================================
@@ -16001,7 +16001,7 @@ end)()
 -- >>> VANGUARD MODULE BEGIN
 -- ============================================================================
 -- VANGUARD  (integrated artifact - edit src/ and rebuild)
--- Generated: 2026-10-22 22:53:21
+-- Generated: 2026-10-23 14:03:25
 --
 -- This block lives in loader.lua and in dist/loader.built.lua at the same
 -- time. It is the only place the local Menu table is in scope. Rebuilding
@@ -20841,38 +20841,46 @@ local VS = (function(O)
 -- ============================================================================
 -- VANGUARD / 14 VEHICLE SPOOF
 -- ----------------------------------------------------------------------------
--- Local visual model swap without changing the networked model.
+-- Local vehicle over an already existing network vehicle.
 --
---   server / other players : the current networked vehicle (any model)
---   local client           : Deluxo (non-networked visual proxy attached to it)
+--   server / other players : the vehicle you were already in (any model)
+--   local client           : a real local vehicle, isNetwork=false
 --
--- The current vehicle remains the only vehicle the server knows. The Deluxo is
--- created with isNetwork=false, has no network ID and is never registered as a
--- networked entity. The local client drives the current vehicle; the Deluxo
--- proxy follows it. If the player is on foot, a normal networked Sultan is
--- spawned as the fallback carrier.
+-- No network vehicle is created. The player must first take any car, bike,
+-- boat, helicopter, etc. and then choose a local model. The original vehicle
+-- stays the only network carrier; it is hidden locally and its transform is
+-- mirrored from the local vehicle every tick.
 --
--- Flight is emulated on the carrier by disabling its gravity and applying a
--- local velocity from the movement controls. Other clients therefore see the
--- carrier flying, while the local client sees the Deluxo proxy in the same
--- position. This is not a Deluxo model on the server and it does not use
--- Susano.CreateSpoofedVehicle or Susano.SpoofPed.
+-- Weapons are deliberately not added. Only movement/utility features are
+-- implemented: Deluxo hover, Oppressor boost, Ruiner jump/parachute, RC
+-- camera, tow/Cargobob hooks, boat and Stromberg native water behaviour.
 -- ============================================================================
 
 local VS = {}
 
 VS.enabled = false
-VS.net = 0
+VS.carrier = 0
 VS.localVeh = 0
+VS.activeKey = nil
+VS.activePreset = nil
 VS.thread = false
+VS.cam = 0
+VS.towed = 0
+VS.rcActive = false
+VS.currentModel = nil
 
-local FLY_FORWARD = 71
-local FLY_BACK = 72
-local FLY_LEFT = 63
-local FLY_RIGHT = 64
-local FLY_UP = 22
-local FLY_DOWN = 36
-local FLY_BOOST = 21
+local presets = {}
+VS.presets = presets
+VS.presetOrder = {
+    "deluxo",
+    "oppressor",
+    "boat",
+    "rc",
+    "tow",
+    "ruiner",
+    "stromberg",
+    "cargobob",
+}
 
 local function modelHash(name)
     return GetHashKey(name)
@@ -20891,143 +20899,348 @@ local function requestModel(hash, timeout)
     return true
 end
 
-local function makeNetworkCarrier()
-    local ped = PlayerPedId()
-    local current = GetVehiclePedIsIn(ped, false)
+-- ---------------------------------------------------------------------------
+-- PRESET HELPERS
+-- ---------------------------------------------------------------------------
 
-    -- Any current vehicle can be the network carrier: Sultan, car, bike,
-    -- helicopter, boat, etc. We do not force a model.
-    if current ~= 0 and DoesEntityExist(current) then
-        return current, false
-    end
-
-    -- On foot there is no network model to reuse. A normal Sultan is spawned
-    -- only as a neutral fallback so the feature still works from the menu.
-    local fallbackHash = modelHash("sultan")
-    if not requestModel(fallbackHash, 4000) then
-        O.log("vehicle spoof: fallback model unavailable")
-        return 0, false
-    end
-
-    local x, y, z = GetEntityCoords(ped)
-    local heading = GetEntityHeading(ped)
-    local vehicle = CreateVehicle(fallbackHash, x, y, z, heading, true, true)
-    SetModelAsNoLongerNeeded(fallbackHash)
-
-    if not vehicle or vehicle == 0 or not DoesEntityExist(vehicle) then
-        O.log("vehicle spoof: fallback creation failed")
-        return 0, false
-    end
-
-    pcall(SetEntityAsMissionEntity, vehicle, true, true)
-    pcall(NetworkRegisterEntityAsNetworked, vehicle)
-    local netId = 0
-    pcall(function() netId = NetworkGetNetworkIdFromEntity(vehicle) end)
-    if netId and netId > 0 then
-        pcall(SetNetworkIdExistsOnAllMachines, netId, true)
-        pcall(SetNetworkIdCanMigrate, netId, true)
-    end
-    pcall(SetVehicleOnGroundProperly, vehicle)
-    pcall(SetPedIntoVehicle, ped, vehicle, -1)
-
-    return vehicle, true
+local function enableHover(vehicle)
+    pcall(SetDisableHoverModeFlight, vehicle, false)
+    pcall(SetSpecialFlightModeAllowed, vehicle, true)
 end
 
-local function makeLocalDeluxo(netVehicle)
-    local deluxoHash = modelHash("deluxo")
-    if not requestModel(deluxoHash, 4000) then
-        O.log("vehicle spoof: deluxo model unavailable")
+local function setParachute(vehicle, active)
+    if type(SetVehicleParachuteActive) == "function" then
+        pcall(SetVehicleParachuteActive, vehicle, active)
+    elseif type(_SET_VEHICLE_PARACHUTE_ACTIVE) == "function" then
+        pcall(_SET_VEHICLE_PARACHUTE_ACTIVE, vehicle, active)
+    end
+end
+
+local function startRcCamera(vehicle)
+    if type(CreateCam) ~= "function" then return end
+
+    local cam = CreateCam("DEFAULT_SCRIPTED_CAMERA", true)
+    if not cam or cam == 0 then return end
+
+    pcall(AttachCamToEntity, cam, vehicle, 0.0, -4.0, 2.0, true)
+    pcall(SetCamActive, cam, true)
+    pcall(RenderScriptCams, true, false, 0, true, true)
+    VS.cam = cam
+end
+
+local function stopRcCamera()
+    if VS.cam and VS.cam ~= 0 then
+        pcall(RenderScriptCams, false, false, 0, true, true)
+        pcall(DestroyCam, VS.cam, false)
+        VS.cam = 0
+    end
+end
+
+local function setupRc(vehicle)
+    VS.rcActive = true
+    pcall(SetEntityLocallyInvisible, PlayerPedId())
+    startRcCamera(vehicle)
+end
+
+local function cleanupRc()
+    VS.rcActive = false
+    stopRcCamera()
+    pcall(SetEntityLocallyVisible, PlayerPedId())
+end
+
+local function findNearestVehicle(center, radius)
+    if type(FindFirstVehicle) ~= "function" then return 0 end
+
+    local centerCoords = GetEntityCoords(center)
+    local handle, vehicle = FindFirstVehicle()
+    if not handle then return 0 end
+
+    local best, bestDistance = 0, radius or 12.0
+    repeat
+        if vehicle and vehicle ~= 0 and vehicle ~= center
+            and vehicle ~= VS.localVeh and vehicle ~= VS.carrier
+            and DoesEntityExist(vehicle) then
+            local coords = GetEntityCoords(vehicle)
+            local dx, dy, dz = coords.x - centerCoords.x, coords.y - centerCoords.y, coords.z - centerCoords.z
+            local distance = math.sqrt(dx * dx + dy * dy + dz * dz)
+            if distance < bestDistance then
+                best, bestDistance = vehicle, distance
+            end
+        end
+        local ok, nextVehicle = FindNextVehicle(handle)
+        vehicle = nextVehicle
+        if not ok then break end
+    until false
+
+    pcall(EndFindVehicle, handle)
+    return best
+end
+
+local function hookToggle(localVehicle, offset)
+    if VS.towed and VS.towed ~= 0 then
+        if DoesEntityExist(VS.towed) then
+            pcall(DetachEntity, VS.towed, true, true)
+        end
+        VS.towed = 0
+        O.log("vehicle spoof: hook released")
+        return
+    end
+
+    local target = findNearestVehicle(localVehicle, 12.0)
+    if target == 0 then
+        O.log("vehicle spoof: no vehicle close enough for the hook")
+        return
+    end
+
+    local attached = pcall(AttachEntityToEntity, target, localVehicle, 0,
+        offset.x, offset.y, offset.z,
+        0.0, 0.0, 0.0,
+        false, false, false, false, 2, true)
+
+    if not attached then
+        O.log("vehicle spoof: hook attach failed")
+        return
+    end
+
+    VS.towed = target
+    O.log("vehicle spoof: hook attached to %s", tostring(target))
+end
+
+local function tickOppressor(vehicle)
+    if type(IsControlPressed) == "function" and IsControlPressed(0, 21) then
+        pcall(SetVehicleRocketBoostPercentage, vehicle, 100.0)
+        pcall(SetVehicleRocketBoostActive, vehicle, true)
+    else
+        pcall(SetVehicleRocketBoostActive, vehicle, false)
+    end
+end
+
+local function tickRuiner(vehicle)
+    local airborne = (type(IsEntityInAir) == "function") and IsEntityInAir(vehicle) or false
+
+    if type(IsControlJustPressed) == "function" and IsControlJustPressed(0, 22) and not airborne then
+        local velocity = GetEntityVelocity(vehicle)
+        pcall(SetEntityVelocity, vehicle, velocity.x, velocity.y, math.max(velocity.z, 8.0))
+    end
+
+    if airborne then
+        local height = 0.0
+        if type(GetEntityHeightAboveGround) == "function" then
+            height = GetEntityHeightAboveGround(vehicle) or 0.0
+        end
+        if height > 4.0 then
+            setParachute(vehicle, true)
+        end
+    else
+        setParachute(vehicle, false)
+    end
+end
+
+local function tickTow(vehicle)
+    if type(IsControlJustPressed) == "function" and IsControlJustPressed(0, 86) then
+        hookToggle(vehicle, vector3(0.0, -3.5, -0.4))
+    end
+end
+
+local function tickCargobob(vehicle)
+    if type(IsControlJustPressed) == "function" and IsControlJustPressed(0, 86) then
+        hookToggle(vehicle, vector3(0.0, -1.5, -5.0))
+    end
+end
+
+-- ---------------------------------------------------------------------------
+-- PRESETS
+-- ---------------------------------------------------------------------------
+
+presets.deluxo = {
+    label = "Spoofed Deluxo",
+    models = { "deluxo" },
+    setup = enableHover,
+}
+
+presets.oppressor = {
+    label = "Spoofed Oppressor",
+    models = { "oppressor2", "oppressor" },
+    setup = function(vehicle)
+        enableHover(vehicle)
+        pcall(SetVehicleRocketBoostPercentage, vehicle, 100.0)
+    end,
+    tick = tickOppressor,
+}
+
+presets.boat = {
+    label = "Spoofed Boat",
+    models = { "speeder", "jetmax", "squalo" },
+}
+
+presets.rc = {
+    label = "Spoofed RC Bandito",
+    models = { "rcbandito" },
+    setup = setupRc,
+    cleanup = cleanupRc,
+}
+
+presets.tow = {
+    label = "Spoofed Tow Truck",
+    models = { "towtruck", "towtruck2" },
+    tick = tickTow,
+}
+
+presets.ruiner = {
+    label = "Spoofed Ruiner 2000",
+    models = { "ruiner2" },
+    setup = function(vehicle)
+        setParachute(vehicle, false)
+    end,
+    tick = tickRuiner,
+}
+
+presets.stromberg = {
+    label = "Spoofed Stromberg",
+    models = { "stromberg", "toreador" },
+}
+
+presets.cargobob = {
+    label = "Spoofed Cargobob",
+    models = { "cargobob", "cargobob2", "cargobob3" },
+    tick = tickCargobob,
+}
+
+-- ---------------------------------------------------------------------------
+-- LOCAL VEHICLE
+-- ---------------------------------------------------------------------------
+
+local function makeLocalVehicle(preset, carrier)
+    local hash, modelName = nil, nil
+    for i = 1, #preset.models do
+        local candidate = modelHash(preset.models[i])
+        if requestModel(candidate, 4000) then
+            hash, modelName = candidate, preset.models[i]
+            break
+        end
+    end
+
+    if not hash then
+        O.log("vehicle spoof: no model available for %s", preset.label)
         return 0
     end
 
-    local x, y, z = GetEntityCoords(netVehicle)
-    local heading = GetEntityHeading(netVehicle)
-    local vehicle = CreateVehicle(deluxoHash, x, y, z, heading, false, false)
-    SetModelAsNoLongerNeeded(deluxoHash)
+    local coords = GetEntityCoords(carrier)
+    local heading = GetEntityHeading(carrier)
+    local vehicle = CreateVehicle(hash, coords.x, coords.y, coords.z, heading, false, false)
+    SetModelAsNoLongerNeeded(hash)
 
     if not vehicle or vehicle == 0 or not DoesEntityExist(vehicle) then
-        O.log("vehicle spoof: local deluxo creation failed")
+        O.log("vehicle spoof: local %s creation failed", tostring(modelName))
         return 0
     end
 
     pcall(SetEntityAsMissionEntity, vehicle, true, true)
     pcall(SetEntityInvincible, vehicle, true)
-    pcall(SetEntityCollision, vehicle, false, false)
+    pcall(SetEntityCollision, vehicle, true, true)
+    pcall(SetVehicleEngineOn, vehicle, true, true, true)
+    pcall(SetVehicleOnGroundProperly, vehicle)
     pcall(SetEntityLocallyVisible, vehicle)
-    pcall(AttachEntityToEntity, vehicle, netVehicle, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-        false, false, false, false, 2, true)
 
+    VS.currentModel = modelName
+    if preset.setup then pcall(preset.setup, vehicle) end
     return vehicle
 end
 
-local function stopFlight()
+-- ---------------------------------------------------------------------------
+-- CARRIER / RESTORE
+-- ---------------------------------------------------------------------------
+
+local function restoreCarrier(restorePed)
+    local preset = VS.activePreset
+    if preset and preset.cleanup then pcall(preset.cleanup) end
+
     VS.enabled = false
 
+    local carrier = VS.carrier
     local localVehicle = VS.localVeh
+    local ped = PlayerPedId()
+
+    if VS.towed and VS.towed ~= 0 then
+        if DoesEntityExist(VS.towed) then
+            pcall(DetachEntity, VS.towed, true, true)
+        end
+    end
+    VS.towed = 0
+
+    if carrier and carrier ~= 0 and DoesEntityExist(carrier) then
+        pcall(SetEntityLocallyVisible, carrier)
+        pcall(SetEntityCollision, carrier, true, true)
+        pcall(SetEntityInvincible, carrier, false)
+        pcall(SetEntityGravity, carrier, 1.0)
+        pcall(SetVehicleGravity, carrier, true)
+        pcall(SetVehicleEngineOn, carrier, true, true, true)
+
+        if restorePed and localVehicle ~= 0 and DoesEntityExist(localVehicle)
+            and GetVehiclePedIsIn(ped, false) == localVehicle then
+            pcall(SetPedIntoVehicle, ped, carrier, -1)
+        end
+    end
+
     if localVehicle and localVehicle ~= 0 and DoesEntityExist(localVehicle) then
-        pcall(DetachEntity, localVehicle, true, false)
         pcall(DeleteVehicle, localVehicle)
     end
+
+    VS.carrier = 0
     VS.localVeh = 0
-
-    local netVehicle = VS.net
-    if netVehicle and netVehicle ~= 0 and DoesEntityExist(netVehicle) then
-        pcall(SetEntityLocallyVisible, netVehicle)
-        pcall(SetEntityGravity, netVehicle, 1.0)
-        pcall(SetVehicleGravity, netVehicle, true)
-        pcall(SetVehicleGravityAmount, netVehicle, 1.0)
-        pcall(SetEntityVelocity, netVehicle, 0.0, 0.0, 0.0)
-        pcall(SetVehicleEngineOn, netVehicle, true, true, true)
-    end
-    VS.net = 0
-
+    VS.activeKey = nil
+    VS.activePreset = nil
+    VS.currentModel = nil
+    VS.rcActive = false
     O.log("vehicle spoof: off")
     return true
 end
 
 function VS.disable()
-    return stopFlight()
+    return restoreCarrier(true)
 end
 
-local function flightLoop()
+-- ---------------------------------------------------------------------------
+-- SYNC + FEATURE LOOP
+-- ---------------------------------------------------------------------------
+
+local function syncLoop()
     while VS.enabled do
-        local netVehicle = VS.net
+        local carrier = VS.carrier
         local localVehicle = VS.localVeh
+        local preset = VS.activePreset
         local ped = PlayerPedId()
 
-        if not netVehicle or netVehicle == 0 or not DoesEntityExist(netVehicle)
+        if not carrier or carrier == 0 or not DoesEntityExist(carrier)
             or not localVehicle or localVehicle == 0 or not DoesEntityExist(localVehicle)
-            or GetVehiclePedIsIn(ped, false) ~= netVehicle then
-            stopFlight()
+            or GetVehiclePedIsIn(ped, false) ~= localVehicle then
+            restoreCarrier(false)
             break
         end
 
-        pcall(SetVehicleGravity, netVehicle, false)
-        pcall(SetVehicleGravityAmount, netVehicle, 0.0)
-        pcall(SetEntityGravity, netVehicle, 0.0)
-        pcall(SetVehicleEngineOn, netVehicle, false, true, true)
+        if NetworkHasControlOfEntity and NetworkRequestControlOfEntity
+            and not NetworkHasControlOfEntity(carrier) then
+            pcall(NetworkRequestControlOfEntity, carrier)
+        end
 
-        local forward = GetEntityForwardVector(netVehicle)
-        local rightX, rightY = forward.y, -forward.x
-        local speed, strafe, lift = 0.0, 0.0, 0.0
+        local x, y, z = GetEntityCoords(localVehicle)
+        local rx, ry, rz = GetEntityRotation(localVehicle, 2)
+        local velocity = GetEntityVelocity(localVehicle)
 
-        if IsControlPressed(0, FLY_FORWARD) then speed = speed + 5.0 end
-        if IsControlPressed(0, FLY_BACK) then speed = speed - 3.0 end
-        if IsControlPressed(0, FLY_LEFT) then strafe = strafe - 3.0 end
-        if IsControlPressed(0, FLY_RIGHT) then strafe = strafe + 3.0 end
-        if IsControlPressed(0, FLY_UP) then lift = lift + 2.5 end
-        if IsControlPressed(0, FLY_DOWN) then lift = lift - 2.5 end
-        if IsControlPressed(0, FLY_BOOST) then speed = speed * 1.6 end
+        pcall(SetEntityCoordsNoOffset, carrier, x, y, z, false, false, false)
+        pcall(SetEntityRotation, carrier, rx, ry, rz, 2, true)
+        pcall(SetEntityVelocity, carrier, velocity.x, velocity.y, velocity.z)
 
-        local vx = forward.x * speed + rightX * strafe
-        local vy = forward.y * speed + rightY * strafe
-        pcall(SetEntityVelocity, netVehicle, vx, vy, lift)
+        -- Hide only on this client; other clients still receive the carrier.
+        pcall(SetEntityLocallyInvisible, carrier)
 
-        -- If the proxy lost its attachment, keep it on the networked vehicle.
-        if not IsEntityAttached(localVehicle) then
-            local x, y, z = GetEntityCoords(netVehicle)
-            pcall(SetEntityCoordsNoOffset, localVehicle, x, y, z, false, false, false)
-            pcall(SetEntityHeading, localVehicle, GetEntityHeading(netVehicle))
+        -- No weapon feature: block vehicle attack inputs on the local model.
+        pcall(DisableControlAction, 0, 68, true)
+        pcall(DisableControlAction, 0, 69, true)
+        pcall(DisableControlAction, 0, 70, true)
+
+        if preset and preset.tick then
+            pcall(preset.tick, localVehicle, carrier)
         end
 
         Citizen.Wait(0)
@@ -21035,47 +21248,66 @@ local function flightLoop()
     VS.thread = false
 end
 
-function VS.enable()
-    if VS.enabled then return true end
+-- ---------------------------------------------------------------------------
+-- PUBLIC API
+-- ---------------------------------------------------------------------------
 
-    local netVehicle, spawned = makeNetworkCarrier()
-    if netVehicle == 0 then return false end
+function VS.enablePreset(key)
+    local preset = presets[key]
+    if not preset then return false end
 
-    local localVehicle = makeLocalDeluxo(netVehicle)
-    if localVehicle == 0 then
-        if spawned and DoesEntityExist(netVehicle) then
-            pcall(DeleteVehicle, netVehicle)
-        end
+    if VS.enabled then
+        VS.disable()
+    end
+
+    local ped = PlayerPedId()
+    local carrier = GetVehiclePedIsIn(ped, false)
+
+    -- Never create a network vehicle. The player must already be in one.
+    if not carrier or carrier == 0 or not DoesEntityExist(carrier) then
+        O.log("vehicle spoof: enter any vehicle first; nothing spawned")
         return false
     end
 
-    VS.net = netVehicle
+    local localVehicle = makeLocalVehicle(preset, carrier)
+    if localVehicle == 0 then return false end
+
+    pcall(SetPedIntoVehicle, ped, localVehicle, -1)
+
+    VS.carrier = carrier
     VS.localVeh = localVehicle
+    VS.activeKey = key
+    VS.activePreset = preset
     VS.enabled = true
 
-    pcall(SetEntityLocallyInvisible, netVehicle)
-    pcall(SetVehicleGravity, netVehicle, false)
-    pcall(SetVehicleGravityAmount, netVehicle, 0.0)
-    pcall(SetEntityGravity, netVehicle, 0.0)
-    pcall(SetVehicleEngineOn, netVehicle, false, true, true)
+    pcall(SetEntityAsMissionEntity, carrier, true, true)
+    pcall(NetworkRequestControlOfEntity, carrier)
+    pcall(SetEntityLocallyInvisible, carrier)
+    pcall(SetEntityCollision, carrier, false, false)
+    pcall(SetEntityInvincible, carrier, true)
+    pcall(SetVehicleEngineOn, carrier, false, true, true)
 
     if not VS.thread then
         VS.thread = true
-        Citizen.CreateThread(flightLoop)
+        Citizen.CreateThread(syncLoop)
     end
 
-    O.log("vehicle spoof: network carrier / deluxo local")
+    O.log("vehicle spoof: %s / local %s", preset.label, tostring(VS.currentModel))
     return true
 end
 
-function VS.toggle(value)
-    if value then return VS.enable() end
-    return VS.disable()
+function VS.togglePreset(key)
+    if VS.enabled and VS.activeKey == key then
+        return VS.disable()
+    end
+    return VS.enablePreset(key)
 end
 
 function VS.status()
-    if not VS.enabled then return "Spoofed Deluxo: off" end
-    return "Spoofed Deluxo: current vehicle network / Deluxo local"
+    if not VS.enabled then return "Spoofed vehicle: off" end
+    return ("Spoofed vehicle: %s / local %s"):format(
+        VS.activePreset and VS.activePreset.label or "unknown",
+        tostring(VS.currentModel))
 end
 
 return VS
@@ -21083,9 +21315,737 @@ return VS
 end)(O)
 
 -- ---------------------------------------------------------------------------
+-- PART: 15_skyfall.lua
+-- ---------------------------------------------------------------------------
+local K = (function(O,S,B)
+-- ============================================================================
+-- VANGUARD / 15 SKYFALL
+-- ----------------------------------------------------------------------------
+-- Doctrine (L4): a position is only suspicious as a delta over time. A fast
+-- fall is the one noclip movement whose telemetry is already an accepted
+-- shape. The reference guard (WaveShield V4, modules/client/noclip.lua) turns
+-- its main noclip test off whenever the ped is falling, and its only
+-- fall-specific test is:
+--
+--     if isPedFalling and not GetIsTaskActive(ped, 423) then strike end
+--
+-- The guard's own fall test treats task 423 as the legitimate-fall token. This
+-- module reproduces that single read for the local ped, only while the ped is
+-- genuinely falling, and nowhere else. It never writes a position, never
+-- freezes, never toggles collision and never writes gravity: the engine moves
+-- a real body, so every other sample the guard takes is true.
+--
+-- Two tiers, in the documented preference order:
+--
+--   A. Susano.HookNative on GET_IS_TASK_ACTIVE. One hash, one predicate,
+--      installed only while armed. The callback calls no native: it reads
+--      cached fields and os.clock(), so it cannot deadlock the VM.
+--
+--   B. A payload injected into the guard resource through
+--      Susano.InjectResource. The payload contains no Susano.* call at all.
+--      It wraps the guard's own GetIsTaskActive and is armed by a local event
+--      whose name is random per session. It is a fallback, not a second
+--      permanent change: a wrapper living in the guard VM is a larger
+--      footprint than one scoped native hook, so it is only used when A fails.
+--
+-- Both tiers are time-gated. If this chunk stops running (unload, panic,
+-- reload), the read repair expires on its own: 1.5 s for the native hook,
+-- 2.5 s for the injected fallback. Nothing has to be restored because nothing
+-- outside the read was changed.
+--
+-- Native hashes are from the offline docs.fivem.net database used by this
+-- repo (natives.json), not invented:
+--   PLAYER_PED_ID              0xD80958FC74E988A6
+--   DOES_ENTITY_EXIST          0x7239B21A38F536BA
+--   IS_PED_IN_ANY_VEHICLE      0x997ABD671D25CA0B
+--   IS_PED_DEAD_OR_DYING       0x3317DEDB88C95038
+--   IS_PED_FALLING             0xFB92A102F1C4DFA3
+--   IS_ENTITY_IN_AIR           0x886E37EC497200B6
+--   IS_PED_RAGDOLL             0x47E4E977581C5B55
+--   GET_PED_PARACHUTE_STATE    0x79CFD9827CC979B6
+--   GET_ENTITY_VELOCITY        0x4805D2B1D8CF94A9
+--   GET_GAMEPLAY_CAM_ROT       0x837765A25378F0BB
+--   SET_ENTITY_VELOCITY        0x1C99BB7B6E96D16F
+--   GET_IS_TASK_ACTIVE         0xB0760331C7AA4155
+-- O.Ctx already owns the ped/dead/vehicle state used by the tick. The module
+-- does not read coords, ground Z or speed itself: fewer reads, and no floor
+-- logic to conflict with the operator's no-collision state.
+-- ============================================================================
+
+local K = {}
+
+-- The guard's own "legitimate fall" token. It is not a guessed task name:
+-- WaveShield V4 uses exactly this index in noclip.lua line 71, and no other
+-- task read in that source uses 423 (AFK tasks use 100/101/151/221/222,
+-- aimbot uses 299).
+local TASK_LEGIT_FALL = 423
+local HOOK_HASH = 0xB0760331C7AA4155 -- GET_IS_TASK_ACTIVE
+
+-- Terminal profile. The exact targets are rolled per fall, not per tick: a
+-- server that compares two skyfalls never sees the same two numbers.
+local DIVE_MIN, DIVE_MAX = 33.0, 39.0   -- m/s downward
+local HORIZ_MIN, HORIZ_MAX = 20.0, 26.0 -- m/s lateral
+
+-- Entry ramp. A step from a real fall speed to 36 m/s in one frame is a
+-- physics-integrity signature; these caps make the entry a plausible dive.
+local MAX_FALL_ACCEL = 10.0 -- m/s^2, ~1 g: the entry accelerates like gravity
+local MAX_AIR_ACCEL = 18.0  -- m/s^2, lateral air control
+local MAX_START_SPEED = 48.0 -- keep the first second under teleport's 50 m/s
+
+local SPEED_CAP = 55.0   -- 5 m/s margin for the gravity the engine adds
+local GATE_SECONDS = 1.5 -- script-liveness watchdog, refreshed every tick
+local FALL_GRACE = 1.2   -- guard actorLoop caches isPedFalling for 1000 ms
+local WARMUP_MS = 1200    -- actorLoop also caches isEntityInAir for 1000 ms
+local WARMUP_SPEED = 13.5 -- below the guard's 14.0 on-foot speed ceiling
+local STAGE_B_PULSE = 1500
+local STAGE_B_WINDOW = 2.5
+local IDLE_MS = 30000     -- sleep the read layer after this long without a fall
+
+K.active = false
+K.layer = "none"
+K.reason = "off"
+K.ped = 0
+K.falling = false
+K.untilAt = 0
+K.fallGateUntil = 0
+K.holdUntil = 0
+K.holdReason = nil
+K.onChange = nil
+K.stats = { sessions = 0, ticks = 0, stageB = 0, refused = 0, sleeps = 0 }
+
+-- Ballistic state, reset on every falling edge. K.ramped is the edge flag;
+-- K.vx/vy/vz is the velocity actually written on the previous tick.
+K.ramped = false
+K.vx, K.vy, K.vz = 0.0, 0.0, 0.0
+K.termDive = 36.0
+K.termHoriz = 24.0
+K.lastTickAt = 0
+K.lastFallAt = 0
+K.idleAfter = IDLE_MS
+K.wasFalling = false
+K.fallStartedAt = 0
+K.skipWarmup = false
+
+local hookInstalled = false
+local stageB = { resource = nil, event = nil, next = 0, injected = false }
+local frame = 0
+local ragdoll = false
+local parachute = 0
+
+-- ---------------------------------------------------------------------------
+-- WATCHDOG CLOCK
+--
+-- os.clock() is process CPU time, not a native and not wall time. It keeps
+-- advancing if this chunk is unloaded, which is what makes the read repair
+-- fail closed. A wall clock would also work, but it can jump when the system
+-- clock is adjusted; CPU time cannot.
+-- ---------------------------------------------------------------------------
+local function clock()
+    if type(os) ~= "table" then return -1.0e9 end
+
+    local ok, value = pcall(os.clock)
+    if ok and type(value) == "number" then return value end
+
+    -- Some executors strip os.clock but keep os.time. One-second resolution is
+    -- enough for a 1.5 s watchdog.
+    local ok2, value2 = pcall(os.time)
+    if ok2 and type(value2) == "number" then return value2 end
+
+    -- Fail closed: the negative value makes K.untilAt negative, and the hook
+    -- requires K.untilAt > 0 before it can answer.
+    return -1.0e9
+end
+
+-- ---------------------------------------------------------------------------
+-- TIER A: one scoped native hook
+--
+-- The callback is called by every resource that reads GET_IS_TASK_ACTIVE. It
+-- must therefore be both cheap and native-free. It answers true only for the
+-- exact tuple the guard uses to decide that a fall is legitimate:
+--   task == 423, ped == our cached local ped, the ped is really falling,
+--   and this chunk has refreshed the watchdog recently.
+-- Any other call passes through untouched.
+-- ---------------------------------------------------------------------------
+local function onTaskActive(ped, taskIndex)
+    if taskIndex == TASK_LEGIT_FALL and K.active and ped == K.ped then
+        -- The guard reads its cached isPedFalling, not the live flag.
+        -- FALL_GRACE keeps the answer true through the landing edge where that
+        -- cache is still true. The min with untilAt keeps the script-liveness
+        -- watchdog, so a stopped chunk still fails closed.
+        local deadline = K.untilAt
+        if K.fallGateUntil < deadline then deadline = K.fallGateUntil end
+        if deadline > 0 and clock() <= deadline then
+            return false, true
+        end
+    end
+    return true
+end
+
+local function removeHook()
+    if O.has("UnhookNative") then
+        pcall(Susano.UnhookNative, HOOK_HASH)
+    end
+    hookInstalled = false
+end
+
+local function installHook()
+    if hookInstalled then return true end
+    if not O.has("HookNative", "UnhookNative") then return false end
+
+    -- A previous execution of this chunk can leave its closure installed.
+    -- Unhooking first makes the install idempotent and clears that stale
+    -- closure even after an executor reload. No other compiled module in this
+    -- build owns this hash.
+    pcall(Susano.UnhookNative, HOOK_HASH)
+
+    local ok, result = pcall(Susano.HookNative, HOOK_HASH, onTaskActive)
+    if ok and result ~= false then
+        hookInstalled = true
+        return true
+    end
+
+    -- A failed install can still leave a partial trampoline. Remove it before
+    -- Tier B takes over, so the two tiers never stack on the same hash.
+    pcall(Susano.UnhookNative, HOOK_HASH)
+    return false
+end
+
+-- ---------------------------------------------------------------------------
+-- TIER B: guard-side read repair
+--
+-- Only used when Tier A is unavailable or refused. The payload has no
+-- Susano.* reference. It is idempotent through a marker in the host state;
+-- if the guard resource restarts, the marker disappears with it and the next
+-- arm re-injects. The random event name is generated once per session and is
+-- never written to a global.
+-- ---------------------------------------------------------------------------
+local function stageBName()
+    return string.format("sf_%06x", math.floor(O.int(0x100000, 0xffffff)))
+end
+
+local function stageBPayload(eventName)
+    return ([[
+pcall(function()
+    if rawget(_G, "__sfTask") then return end
+    local clock = os.clock
+    if type(clock) ~= "function" then clock = os.time end
+    if type(clock) ~= "function" then return end
+    local expiry = -1
+    AddEventHandler(%q, function(duration)
+        if type(duration) == "number" and duration > 0 then
+            expiry = clock() + duration
+        else
+            expiry = -1
+        end
+    end)
+    local original = rawget(_G, "GetIsTaskActive")
+    if type(original) ~= "function" then return end
+    _G.GetIsTaskActive = function(ped, taskIndex)
+        if taskIndex == 423 and clock() <= expiry then
+            -- Prefer the guard's own cache: the noclip check reads exactly
+            -- these fields, and this path calls no native at all.
+            local guard = rawget(_G, "WaveShield")
+            if guard and guard.playerPed == ped and guard.isPedFalling then
+                return true
+            end
+            -- Fallback for a guard whose cache is not exposed under that name.
+            if not guard and ped == PlayerPedId() and IsPedFalling(ped) then
+                return true
+            end
+        end
+        return original(ped, taskIndex)
+    end
+    _G.__sfTask = true
+end)
+]]):format(eventName)
+end
+
+local function injectStageB()
+    if #S.acs == 0 then S.scan() end
+
+    local target = stageB.resource
+    if not target then
+        for i = 1, #S.acs do
+            if S.acs[i].vendor == "waveshield" then
+                target = S.acs[i].resource
+                break
+            end
+        end
+    end
+    if not target then return false, "no WaveShield resource" end
+    if GetResourceState(target) ~= "started" then return false, "guard not started" end
+
+    local api = rawget(_G, "Susano")
+    if type(api) ~= "table" or type(api.InjectResource) ~= "function" then
+        return false, "InjectResource unavailable"
+    end
+
+    if not stageB.event then stageB.event = stageBName() end
+    local code = stageBPayload(stageB.event)
+
+    local ok, result
+    local injectionType = api.InjectionType
+    if type(injectionType) == "table" and injectionType.NEW_THREAD ~= nil then
+        ok, result = pcall(api.InjectResource, target, code, injectionType.NEW_THREAD)
+    else
+        ok, result = pcall(api.InjectResource, target, code)
+    end
+
+    if not ok or result == false then
+        return false, tostring(result or "injection failed")
+    end
+
+    stageB.resource = target
+    stageB.injected = true
+    stageB.next = 0
+    K.stats.stageB = K.stats.stageB + 1
+    return true
+end
+
+-- ---------------------------------------------------------------------------
+-- ARM / STOP
+-- ---------------------------------------------------------------------------
+local function ensureReadLayer()
+    if installHook() then
+        K.layer = "native"
+        return true
+    end
+
+    local ok, why = injectStageB()
+    if ok then
+        K.layer = "stage-b"
+        return true
+    end
+
+    K.layer = "none"
+    return false, why
+end
+
+-- Start a new ballistic entry from the velocity the ped already has. Seeding
+-- from GET_ENTITY_VELOCITY is what removes the first-frame step: the first
+-- write is the real fall, then the caps below bend it toward the terminal.
+local function beginFall(now)
+    local vx, vy, vz = 0.0, 0.0, 0.0
+    local ok, vel = pcall(GetEntityVelocity, K.ped)
+    if ok and vel then
+        vx = tonumber(vel.x) or 0.0
+        vy = tonumber(vel.y) or 0.0
+        vz = tonumber(vel.z) or 0.0
+    end
+
+    -- The ped is already falling. Keep a real downward floor so playerSpeed
+    -- is never exactly 0.0 on the apex frame: the guard's main noclip branch
+    -- is only invalid while a falling ped is actually moving.
+    if vz > -6.0 then vz = -6.0 end
+
+    local speed = math.sqrt(vx * vx + vy * vy + vz * vz)
+    if speed > MAX_START_SPEED then
+        local scale = MAX_START_SPEED / speed
+        vx, vy, vz = vx * scale, vy * scale, vz * scale
+    end
+
+    K.vx, K.vy, K.vz = vx, vy, vz
+    K.termDive = O.range(DIVE_MIN, DIVE_MAX)
+    K.termHoriz = O.range(HORIZ_MIN, HORIZ_MAX)
+
+    -- A mid-air arm inherits a real fall and skips the warmup. Anything else
+    -- (a fresh fall, or IsPedFalling true while IsEntityInAir false) starts
+    -- the warmup on the first actual in-air tick.
+    if K.skipWarmup then
+        K.skipWarmup = false
+    else
+        K.fallStartedAt = now
+    end
+
+    K.ramped = true
+    K.lastTickAt = now - 30
+end
+
+-- Remove the read layer after a long grounded period. The toggle stays on,
+-- but the trampoline no longer exists in memory. The next falling tick wakes
+-- it before it writes velocity; the only exposure is the one frame between
+-- the native fall flag and the reinstall.
+local function sleepLayer()
+    if K.layer == "none" then return end
+    removeHook()
+    if stageB.event then pcall(TriggerEvent, stageB.event, 0) end
+    K.layer = "none"
+    K.ramped = false
+    K.stats.sleeps = K.stats.sleeps + 1
+    O.log("skyfall layer asleep")
+end
+
+function K.arm()
+    if K.active then return true end
+
+    local ped = PlayerPedId()
+    if ped == 0 or not DoesEntityExist(ped) then return false end
+    if IsPedInAnyVehicle(ped, false) then
+        O.log("skyfall: leave the vehicle first")
+        return false
+    end
+    if IsPedDeadOrDying(ped, true) then return false end
+
+    K.ped = ped
+    K.falling = false
+    K.untilAt = 0
+    K.holdUntil = 0
+    K.holdReason = nil
+    K.active = false
+    K.ramped = false
+    K.vx, K.vy, K.vz = 0.0, 0.0, 0.0
+    K.lastFallAt = O.now()
+    K.idleAfter = O.jitter(IDLE_MS, 0.3)
+    K.wasFalling = false
+    K.fallStartedAt = 0
+    K.skipWarmup = false
+    frame = 4          -- the first falling tick samples ragdoll/parachute
+    ragdoll = false
+    parachute = 0
+
+    local ok, why = ensureReadLayer()
+    if not ok then
+        K.reason = "no read layer"
+        K.layer = "none"
+        O.log("skyfall refused: %s", tostring(why))
+        return false
+    end
+
+    -- A skyfall session is a noclip-family event. The budget reserves one
+    -- strike for a real-world anomaly and refuses a second session inside the
+    -- window. The layer is removed again if the budget refuses, so a refused
+    -- arm leaves nothing behind.
+    if not B.spend("noclip") then
+        K.stats.refused = K.stats.refused + 1
+        K.stop("budget")
+        return false
+    end
+
+    -- Read the real fall state before opening the gate. If the operator arms
+    -- mid-fall, the very first guard read is already covered; there is no
+    -- one-tick window where the hook is installed but still answers false.
+    local okFall, falling = pcall(IsPedFalling, ped)
+    if not okFall then
+        K.stop("fall read failed")
+        return false
+    end
+    falling = falling and true or false
+
+    K.falling = falling
+    -- Arming mid-air means the guard's 1 s cache has already had time to see
+    -- the fall; skip the warmup instead of slowing a real 30 m/s descent.
+    -- IsPedFalling alone is not enough: the speedHack ceiling is keyed on
+    -- isEntityInAir, so a falling-but-not-in-air ped must still warm up.
+    -- The negative sentinel makes now - fallStartedAt > WARMUP_MS even at
+    -- game timer zero.
+    local okAir, inAir = pcall(IsEntityInAir, ped)
+    inAir = okAir and inAir and true or false
+    K.skipWarmup = falling and inAir
+    K.wasFalling = falling
+    K.fallStartedAt = K.skipWarmup and -WARMUP_MS or 0
+    K.untilAt = clock() + GATE_SECONDS
+    K.fallGateUntil = (falling and inAir) and (clock() + FALL_GRACE) or 0
+    K.active = true
+    K.reason = "armed"
+
+    if K.layer == "stage-b" and stageB.event then
+        pcall(TriggerEvent, stageB.event, STAGE_B_WINDOW)
+        stageB.next = O.now() + STAGE_B_PULSE
+    end
+
+    K.stats.sessions = K.stats.sessions + 1
+    O.log("skyfall armed (%s)", K.layer)
+    if K.onChange then pcall(K.onChange, true) end
+    return true
+end
+
+function K.stop(reason)
+    if not K.active and not hookInstalled and not stageB.injected then
+        K.reason = reason or "off"
+        return false
+    end
+
+    K.active = false
+    K.layer = "none"
+    K.falling = false
+    K.untilAt = 0
+    K.fallGateUntil = 0
+    K.holdUntil = 0
+    K.holdReason = nil
+    K.reason = reason or "off"
+    K.ramped = false
+    K.vx, K.vy, K.vz = 0.0, 0.0, 0.0
+    K.wasFalling = false
+    K.fallStartedAt = 0
+    K.skipWarmup = false
+    ragdoll = false
+    parachute = 0
+
+    removeHook()
+
+    -- Close the guard-side gate immediately. The wrapper stays in place but
+    -- inert; it is cheaper and less visible than a second injection whose only
+    -- job is to restore a function pointer.
+    if stageB.event then
+        pcall(TriggerEvent, stageB.event, 0)
+    end
+
+    if K.onChange then pcall(K.onChange, false) end
+    O.log("skyfall off (%s)", K.reason)
+    return true
+end
+
+function K.disable()
+    return K.stop("panic")
+end
+
+function K.isActive()
+    return K.active == true
+end
+
+-- ---------------------------------------------------------------------------
+-- TICK
+--
+-- Runs from O.every(), which jitters the period. Zero native calls when the
+-- feature is off: the first line returns. While armed, the reads are the ones
+-- the guard itself already makes (falling, ragdoll, parachute, camera) plus
+-- the one write the doctrine needs: a real velocity.
+-- ---------------------------------------------------------------------------
+-- A stop edge (death, vehicle, parachute, ped gone) must not remove the
+-- 423 cover before the guard's 1 s isPedFalling cache has refreshed. Stop
+-- writing velocity now, hold the read layer for FALL_GRACE, then stop.
+local function holdOrStop(reason)
+    if K.layer == "none" then
+        K.stop(reason)
+        return
+    end
+    if K.holdUntil ~= 0 then return end
+    K.holdUntil = clock() + FALL_GRACE
+    K.holdReason = reason
+    K.untilAt = clock() + GATE_SECONDS
+    K.fallGateUntil = clock() + FALL_GRACE
+    K.ramped = false
+    K.vx, K.vy, K.vz = 0.0, 0.0, 0.0
+    K.wasFalling = false
+    O.log("skyfall cover hold (%s)", reason)
+end
+
+function K.tick(now)
+    if not K.active then return end
+    now = now or O.now()
+
+    if K.holdUntil ~= 0 then
+        if clock() > K.holdUntil then
+            K.stop(K.holdReason or "state")
+        end
+        return
+    end
+
+    local ped = O.Ctx.ped
+    if ped == 0 then
+        holdOrStop("ped gone")
+        return
+    end
+
+    if O.Ctx.dead or O.Ctx.inVehicle then
+        holdOrStop(O.Ctx.dead and "dead" or "vehicle")
+        return
+    end
+
+    K.ped = ped
+    K.falling = IsPedFalling(ped) and true or false
+    local inAir = IsEntityInAir(ped) and true or false
+    K.untilAt = clock() + GATE_SECONDS
+
+    if K.falling and not K.wasFalling then
+        K.fallStartedAt = now
+    end
+    K.wasFalling = K.falling
+
+    if K.falling and inAir then
+        K.lastFallAt = now
+        -- The guard's isPedFalling cache can still be true for one update
+        -- after landing. Keep the 423 answer true through that edge; a
+        -- falling flag without IsEntityInAir must not refresh it.
+        K.fallGateUntil = clock() + FALL_GRACE
+    elseif K.layer ~= "none" and (now - K.lastFallAt) > K.idleAfter then
+        -- The idle clock is the last genuine in-air fall, not a glitchy
+        -- IsPedFalling flag, so the hook still sleeps in that state.
+        sleepLayer()
+    end
+
+    -- Tier B is kept alive with a jittered pulse. If this chunk dies, the
+    -- last pulse expires on its own; there is no permanent open gate.
+    if K.layer == "stage-b" and stageB.event then
+        if now >= stageB.next then
+            pcall(TriggerEvent, stageB.event, STAGE_B_WINDOW)
+            stageB.next = now + O.jitter(STAGE_B_PULSE, 0.25)
+        end
+    end
+
+    if not K.falling then
+        -- A stale parachute/ragdoll/ramp sample from the previous fall must
+        -- not abort the next dive during its first four ticks.
+        parachute = 0
+        ragdoll = false
+        K.ramped = false
+        K.skipWarmup = false
+        return
+    end
+
+    -- Wake a sleeping read layer on the falling edge, before any gate that
+    -- could return early. The guard's fall bypass is keyed on IsPedFalling,
+    -- not on IsEntityInAir; the hook must cover that state too.
+    if K.layer == "none" then
+        local ok, why = ensureReadLayer()
+        if not ok then
+            K.stop("no read layer")
+            return
+        end
+        if K.layer == "stage-b" and stageB.event then
+            pcall(TriggerEvent, stageB.event, STAGE_B_WINDOW)
+            stageB.next = now + O.jitter(STAGE_B_PULSE, 0.25)
+        end
+        O.log("skyfall layer awake (%s)", K.layer)
+    end
+
+    -- The guard's speedHack only grants the 60 m/s ceiling when its cached
+    -- isEntityInAir is true. If the native disagrees with IsPedFalling, do not
+    -- add speed: the default on-foot ceiling is 14 m/s and the dive would
+    -- strike.
+    if not inAir then
+        parachute = 0
+        ragdoll = false
+        K.ramped = false
+        K.skipWarmup = false
+        return
+    end
+
+    -- Ragdoll and parachute are checked every fifth tick. Both are real states
+    -- owned by the game; overriding them would be a visible physics lie. If
+    -- either is present, the fall is left alone.
+    frame = frame + 1
+    if frame % 5 == 0 then
+        ragdoll = IsPedRagdoll(ped) and true or false
+        local ok, state = pcall(GetPedParachuteState, ped)
+        parachute = (ok and type(state) == "number") and state or 0
+    end
+
+    if parachute > 0 then
+        holdOrStop("parachute")
+        return
+    end
+    if ragdoll then return end
+
+    -- Camera-relative steering. The horizontal component is normalised so a
+    -- steep look angle does not silently remove lateral control; the vertical
+    -- component is independent of the camera pitch sign.
+    local rot = GetGameplayCamRot(2)
+    local dir = O.rotToDir(rot)
+    local hx, hy = dir.x, dir.y
+    local hlen = math.sqrt(hx * hx + hy * hy)
+    if hlen > 0.001 then
+        hx, hy = hx / hlen, hy / hlen
+    else
+        hx, hy = 0.0, 0.0
+    end
+
+    -- Collision is deliberately out of scope: the operator already runs a
+    -- no-collision state. The module never brakes, freezes or inspects the
+    -- floor, which is also why it cannot leave a physics-integrity signature
+    -- at low altitude.
+
+    if not K.ramped then beginFall(now) end
+
+    -- Per-tick target jitter: a perfectly constant terminal speed is a machine
+    -- signature. The excursion is well inside a human fall, and the terminal
+    -- pair stays under the guard's 60.0 m/s falling ceiling.
+    local targetDive = K.termDive + O.range(-0.6, 0.6)
+    local targetHoriz = K.termHoriz + O.range(-0.5, 0.5)
+    local targetVx = hx * targetHoriz
+    local targetVy = hy * targetHoriz
+    local targetVz = -targetDive
+
+    -- Ballistic entry with capped acceleration. beginFall seeded the real
+    -- fall velocity; this bends it toward the terminal at a rate a server-side
+    -- physics check can accept, instead of a one-frame step to 36 m/s.
+    local dt = 0.03
+    if K.lastTickAt and now > K.lastTickAt then
+        dt = math.min(0.1, (now - K.lastTickAt) / 1000.0)
+    end
+    K.lastTickAt = now
+
+    local stepV = MAX_FALL_ACCEL * dt
+    local stepH = MAX_AIR_ACCEL * dt
+
+    local dv = targetVz - K.vz
+    if dv > stepV then
+        K.vz = K.vz + stepV
+    elseif dv < -stepV then
+        K.vz = K.vz - stepV
+    else
+        K.vz = targetVz
+    end
+
+    local dx = targetVx - K.vx
+    if dx > stepH then
+        K.vx = K.vx + stepH
+    elseif dx < -stepH then
+        K.vx = K.vx - stepH
+    else
+        K.vx = targetVx
+    end
+
+    local dy = targetVy - K.vy
+    if dy > stepH then
+        K.vy = K.vy + stepH
+    elseif dy < -stepH then
+        K.vy = K.vy - stepH
+    else
+        K.vy = targetVy
+    end
+
+    -- The guard's actorLoop refreshes isEntityInAir every 1000 ms. During the
+    -- first second of a fresh fall the cached value may still be false, which
+    -- puts speedHack on its 14 m/s on-foot ceiling. Stay below it until the
+    -- cache has necessarily refreshed; after that the 60 m/s falling ceiling
+    -- applies and the ramp continues from here.
+    if now - K.fallStartedAt < WARMUP_MS then
+        local warm = math.sqrt(K.vx * K.vx + K.vy * K.vy + K.vz * K.vz)
+        if warm > WARMUP_SPEED then
+            local scale = WARMUP_SPEED / warm
+            K.vx, K.vy, K.vz = K.vx * scale, K.vy * scale, K.vz * scale
+        end
+    end
+
+    local vx, vy, vz = K.vx, K.vy, K.vz
+    local speed = math.sqrt(vx * vx + vy * vy + vz * vz)
+    if speed > SPEED_CAP then
+        local scale = SPEED_CAP / speed
+        vx, vy, vz = vx * scale, vy * scale, vz * scale
+        K.vx, K.vy, K.vz = vx, vy, vz
+    end
+
+    local wrote = pcall(SetEntityVelocity, ped, vx, vy, vz)
+    if not wrote then
+        K.stop("velocity write failed")
+        return
+    end
+    K.stats.ticks = K.stats.ticks + 1
+end
+
+-- The scheduler owns the cadence. 30 ms nominal, jittered by O.every(); the
+-- first phase is zero so the task is eligible immediately after arming.
+O.every("skyfall", 30, K.tick, 0)
+
+return K
+
+end)(O,S,B)
+
+-- ---------------------------------------------------------------------------
 -- PART: 07_menu.lua
 -- ---------------------------------------------------------------------------
-local U = (function(O,S,E,D,F,V,M,SN,C,A,ST,SB,VS,Menu)
+local U = (function(O,S,E,D,F,V,M,SN,C,A,ST,SB,VS,K,Menu)
 -- ============================================================================
 -- VANGUARD / 07 MENU
 -- ----------------------------------------------------------------------------
@@ -21097,18 +22057,19 @@ local U = (function(O,S,E,D,F,V,M,SN,C,A,ST,SB,VS,Menu)
 --   Exploit > Exploits  Menu Staff [SEED], no false Dynasty badge
 --   Protection          anti-freeze, anti-attach and anti-spectate only
 --   Crasher             one direct action per method, no select + Crash step
---   Vehicle > Spoofed   local Deluxo proxy over a normal networked Sultan
+--   Vehicle > Spoofed   real local vehicles over the one you already stole
 --
 -- Removed on purpose:
---   * native hooks / read repair / hook jitter
+--   * the broad native-hook profile / read repair / hook jitter
 --   * server ped spoof and every spoofed model path
 --   * ghost, local-hidden, proof hardening, firewall, deep shim
 --   * the old Sandbox/Divergence/Sentinel/Debug tabs and all status text
 --   * the yellow on-screen status strip
 --
--- Some internal modules still exist in the build, but no hook module is
--- compiled, nothing installs a hook, and no feature is exposed unless this
--- file puts it in the menu.
+-- One scoped exception: Player > Movement > Skyfall installs exactly one
+-- GET_IS_TASK_ACTIVE hook while the toggle is armed, and removes it on
+-- disable or panic. At rest the hook table is empty. No broad hook profile is
+-- compiled, and no feature is exposed unless this file puts it in the menu.
 -- ============================================================================
 
 local UI = {}
@@ -21118,6 +22079,7 @@ local UI = {}
 -- use the executor's normal unload/restart path.
 -- ---------------------------------------------------------------------------
 function UI.panic()
+    K.disable()
     A.panic()
     D.detachShell()
     E.destroyAll()
@@ -21243,17 +22205,6 @@ local function installBypassProfiles()
 
     -- Replace the whole tab. This also removes old combined entries left
     -- behind by a previous loader instance without requiring a GTA restart.
-    local ravenItem
-    ravenItem = {
-        name = "Raven",
-        type = "toggle",
-        value = false,
-        onClick = function(value)
-            local ok = V.setRaven(value)
-            ravenItem.value = ok and value or false
-        end,
-    }
-
     tab.items = {
         {
             name = "WaveShield",
@@ -21283,10 +22234,13 @@ local function installBypassProfiles()
         {
             name = "Dynasty",
             type = "action",
-            dynasty = true,
             onClick = function() V.applyDynasty() end,
         },
-        ravenItem,
+        {
+            name = "Raven",
+            type = "action",
+            onClick = function() V.setRaven(not V.ravenActive) end,
+        },
     }
 
     return true
@@ -21319,15 +22273,74 @@ local function installSeed()
 
     local seed = findItem("Exploit", "Exploits", "Menu Staff")
     if not seed then
-        seed = { name = "Menu Staff [SEED]", type = "action" }
+        seed = findItem("Exploit", "Exploits", "Menu Staff [SEED]")
+    end
+    if not seed then
+        seed = { name = "Menu Staff", type = "action" }
         tab.items = tab.items or {}
         tab.items[#tab.items + 1] = seed
     end
 
-    seed.name = "Menu Staff [SEED]"
+    -- The base renderer appends the [SEED] tag in green. Keeping the tag out
+    -- of the name avoids a second white duplicate.
+    seed.name = "Menu Staff"
+    seed.seed = true
     seed.type = "action"
     seed.dynasty = nil
     seed.onClick = seedClick
+    return true
+end
+
+-- ---------------------------------------------------------------------------
+-- PLAYER > MOVEMENT > SKYFALL
+--
+-- The old Movement tab was deleted with the legacy noclip. This is a new,
+-- single row: a real fast fall driven by velocity, with one scoped read
+-- repair while armed. The row is rebuilt on every load, so a stale copy
+-- cannot survive a reload.
+-- ---------------------------------------------------------------------------
+local function installMovement()
+    local category = findCategory("Player")
+    if not category then return false end
+
+    category.tabs = category.tabs or {}
+    for i = #category.tabs, 1, -1 do
+        if category.tabs[i].name == "Movement" then
+            table.remove(category.tabs, i)
+        end
+    end
+
+    local skyfall
+    skyfall = {
+        name = "Skyfall",
+        type = "toggle",
+        value = K.isActive(),
+        onClick = function(value)
+            local active
+            if value then
+                active = K.arm()
+            else
+                K.stop("operator")
+                active = false
+            end
+            skyfall.value = active
+            return active
+        end,
+    }
+
+    -- Auto-stop paths (death, vehicle, parachute, budget, panic) update the
+    -- visible toggle without re-entering onClick.
+    K.onChange = function(active)
+        skyfall.value = active
+    end
+
+    category.tabs[#category.tabs + 1] = {
+        name = "Movement",
+        items = {
+            { name = "", isSeparator = true, separatorText = "Fast fall / noclip" },
+            skyfall,
+        },
+    }
     return true
 end
 
@@ -21425,9 +22438,10 @@ end
 -- ---------------------------------------------------------------------------
 -- VEHICLE > SPOOFED
 --
--- Network model stays whatever vehicle you are in; only this client renders a
--- local Deluxo proxy. The Deluxo is created with isNetwork=false and never
--- registered.
+-- The network model stays whatever vehicle you are already in; this client
+-- drives a real local vehicle (isNetwork=false) and mirrors the carrier. No
+-- network vehicle is spawned. Each row is a direct action; clicking the active
+-- row disables it, and Remove Spoof is always available.
 -- ---------------------------------------------------------------------------
 local function installVehicleSpoof()
     local category = findCategory("Vehicle")
@@ -21440,28 +22454,115 @@ local function installVehicleSpoof()
         end
     end
 
-    local spoofItem
-    spoofItem = {
-        name = "Spoofed Deluxo",
-        type = "toggle",
-        value = VS.enabled,
-        onClick = function(value)
-            local ok = VS.toggle(value)
-            spoofItem.value = ok and value or false
-        end,
+    local items = {
+        {
+            name = "",
+            isSeparator = true,
+            separatorText = "Real local vehicle / current network vehicle",
+        },
+    }
+
+    for i = 1, #VS.presetOrder do
+        local key = VS.presetOrder[i]
+        local preset = VS.presets[key]
+        if preset then
+            items[#items + 1] = {
+                name = preset.label,
+                type = "action",
+                onClick = function() VS.togglePreset(key) end,
+            }
+        end
+    end
+
+    items[#items + 1] = {
+        name = "Remove Spoof",
+        type = "action",
+        onClick = function() VS.disable() end,
     }
 
     category.tabs[#category.tabs + 1] = {
         name = "Spoofed",
-        items = {
-            {
-                name = "",
-                isSeparator = true,
-                separatorText = "Local visual / current network vehicle",
-            },
-            spoofItem,
-        },
+        items = items,
     }
+
+    return true
+end
+
+-- ---------------------------------------------------------------------------
+-- VEHICLE > PERFORMANCE > ATTACH RAMP
+--
+-- The base loader created two networked ramps on the ground ahead of the
+-- vehicle, then left them there. This override makes one local ramp a real
+-- child of the vehicle: it follows position and rotation like a front bumper
+-- and is removed with Detach Ramp. No ground placement after the attach.
+-- ---------------------------------------------------------------------------
+local function installRampFix()
+    if type(Menu) ~= "table" then return false end
+
+    local RAMP_MODELS = { "prop_mp_ramp_01", "prop_mp_ramp_02", "prop_mp_ramp_03" }
+
+    local function loadRamp()
+        for i = 1, #RAMP_MODELS do
+            local hash = GetHashKey(RAMP_MODELS[i])
+            if E.requestModel(hash, 3000) then
+                return hash, RAMP_MODELS[i]
+            end
+        end
+        return nil, nil
+    end
+
+    Menu.AttachBuggyRamp = function()
+        if type(Menu.DetachBuggyRamp) == "function" then
+            pcall(Menu.DetachBuggyRamp)
+        end
+
+        local ped = PlayerPedId()
+        local vehicle = GetVehiclePedIsIn(ped, false)
+        if not vehicle or vehicle == 0 or not DoesEntityExist(vehicle) then
+            O.log("ramp: enter a vehicle first")
+            return false
+        end
+
+        local hash, modelName = loadRamp()
+        if not hash then
+            O.log("ramp: no ramp model could be loaded")
+            return false
+        end
+
+        local _, vehicleMax = GetModelDimensions(GetEntityModel(vehicle))
+        local front = (vehicleMax and vehicleMax.y or 2.5) + 0.9
+        local coords = GetEntityCoords(vehicle)
+        local obj = CreateObject(hash, coords.x, coords.y, coords.z, false, false, false)
+        SetModelAsNoLongerNeeded(hash)
+
+        if not obj or obj == 0 or not DoesEntityExist(obj) then
+            O.log("ramp: local object creation failed")
+            return false
+        end
+
+        pcall(SetEntityAsMissionEntity, obj, true, true)
+        pcall(SetEntityInvincible, obj, true)
+        pcall(SetEntityCollision, obj, true, true)
+
+        -- Local coordinates: Y is forward on the vehicle. The ramp is fixed
+        -- to the front bumper and inherits every vehicle movement.
+        local attached = pcall(AttachEntityToEntity, obj, vehicle, 0,
+            0.0, front, 0.1,
+            0.0, 0.0, 180.0,
+            false, false, false, false, 2, true)
+
+        if not attached then
+            pcall(DeleteObject, obj)
+            O.log("ramp: attach failed")
+            return false
+        end
+
+        _G._buggyRampHandles = { obj }
+        _G._buggyRampVeh = vehicle
+        _G._buggyRampCooldowns = {}
+        O.log("ramp: attached %s to vehicle", tostring(modelName))
+        return true
+    end
 
     return true
 end
@@ -21545,9 +22646,11 @@ local function build()
     removeLegacyEntries()
     installBypassProfiles()
     installSeed()
+    installMovement()
     installProtection()
     installCrasher()
     installVehicleSpoof()
+    installRampFix()
 
     -- Re-check after the new categories are installed. This catches a stale
     -- category that was appended while the old menu table was still alive.
@@ -21601,7 +22704,7 @@ UI.boot()
 
 return UI
 
-end)(O,S,E,D,F,V,M,SN,C,A,ST,SB,VS,Menu)
+end)(O,S,E,D,F,V,M,SN,C,A,ST,SB,VS,K,Menu)
 
 
 end)()
