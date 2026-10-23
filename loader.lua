@@ -16001,7 +16001,7 @@ end)()
 -- >>> VANGUARD MODULE BEGIN
 -- ============================================================================
 -- VANGUARD  (integrated artifact - edit src/ and rebuild)
--- Generated: 2026-10-23 20:06:07
+-- Generated: 2026-10-23 23:00:05
 --
 -- This block lives in loader.lua and in dist/loader.built.lua at the same
 -- time. It is the only place the local Menu table is in scope. Rebuilding
@@ -16908,6 +16908,12 @@ local FAMILIES = {
     -- no detector for the child->vehicle attach direction; the family exists
     -- to cap how often an unknown guard could observe a new attachment.
     lock      = { strikes = 3, window = 8000,  cost = 1 },
+    -- Voice changes no proximity value, so V4's voice check never reads it.
+    -- The token caps how often an unknown guard could observe a re-arm.
+    voice     = { strikes = 3, window = 6000,  cost = 1 },
+    -- Car Prison takes vehicle ownership and holds a door state. V4 has no
+    -- detector for the write itself; the token caps re-arms.
+    prison    = { strikes = 3, window = 8000,  cost = 1 },
 }
 
 local state = {}
@@ -22386,7 +22392,7 @@ local N = (function(O,S,B)
 -- flag is ignored by the runtime. TASK_SKY_DIVE has one documented parameter
 -- (Ped); NativeDB mentions an undocumented second BOOL p1, so it is not used.
 -- The pose is TASK_PLAY_ANIM with flags
--- AF_LOOPING|AF_UPPERBODY|AF_SECONDARY|AF_IGNORE_GRAVITY = 1|16|32|2048 = 2097,
+-- AF_LOOPING|AF_SECONDARY|AF_IGNORE_GRAVITY = 1|32|2048 = 2081,
 -- duration -1, playbackRate 1.0, locks false. The dictionary and clip are the
 -- base-game skydive@freefall / free_forward_anim pair. The dictionary is listed
 -- by FiveForge (https://five-forge.com/gta/animations/skydive@freefall, 6
@@ -22394,16 +22400,18 @@ local N = (function(O,S,B)
 -- arch from the operator's working reference. This is evidence, not a guessed
 -- clip.
 --
--- IMPORTANT: the animation must be a SECONDARY, UPPER-BODY task. A full-body
--- TASK_PLAY_ANIM is a primary task: it replaces the player's on-foot task, so
--- movement input and SET_ENTITY_VELOCITY are both ignored. AF_SECONDARY (32)
--- layers the pose over the live on-foot task; AF_UPPERBODY (16) masks the clip
--- to the arms/torso so the legs stay under locomotion control. Without
--- AF_UPPERBODY, the full-body secondary still overrides the legs and the ped
--- looks frozen. The arms-out reference is preserved; the legs are the normal
--- on-foot animation. AF_HOLD_LAST_FRAME (2) is omitted because it contradicts
--- AF_LOOPING and can pin the last frame. Gravity is already disabled by
--- SET_PED_GRAVITY, so AF_IGNORE_GRAVITY (2048) remains only as a safety flag.
+-- IMPORTANT: the animation must be a SECONDARY task, not a primary one. A
+-- full-body TASK_PLAY_ANIM as primary replaces the player's on-foot task and
+-- freezes both input and velocity. AF_SECONDARY (32) layers the full-body
+-- pose over the primary movement task, so the reference pose is preserved.
+-- AF_UPPERBODY is deliberately NOT set: the operator's live test showed that
+-- masking this clip to the upper body corrupts the pose (the arms/torso are
+-- authored against the full-body root). Movement is supplied by the explicit
+-- TASK_GO_STRAIGHT_TO_COORD primary task below, not by fighting the
+-- animation with raw velocity alone. AF_HOLD_LAST_FRAME (2) is omitted
+-- because it contradicts AF_LOOPING and can pin the last frame. Gravity is
+-- already disabled by SET_PED_GRAVITY, so AF_IGNORE_GRAVITY (2048) remains
+-- only as a safety flag.
 -- ============================================================================
 
 local N = {}
@@ -22413,6 +22421,8 @@ local TASK_LEGIT_FALL = 423
 local H_TASK = 0xB0760331C7AA4155 -- GET_IS_TASK_ACTIVE
 local H_FALL = 0xFB92A102F1C4DFA3 -- IS_PED_FALLING
 local H_AIR = 0x886E37EC497200B6 -- IS_ENTITY_IN_AIR
+local H_TASK_GO = 0xD76B57B44F1E6F8B -- TASK_GO_STRAIGHT_TO_COORD
+local H_PLAYING = 0x1F0B79228E461EC9 -- IS_ENTITY_PLAYING_ANIM
 
 -- Timing. COVER_DELAY_MS is the genuine-state settle window after arming.
 local COVER_DELAY_MS = 300
@@ -22430,9 +22440,9 @@ local POSE_LOAD_MS = 1200
 -- free_forward_anim matches it, while free_forward has the arms swept down.
 local ANIM_DICT = "skydive@freefall"
 local ANIM_CLIP = "free_forward_anim"
--- AF_SECONDARY keeps the live on-foot task; AF_UPPERBODY keeps the legs free.
--- Do not add AF_HOLD_LAST_FRAME: it conflicts with AF_LOOPING.
-local ANIM_FLAGS = 1 | 16 | 32 | 2048 -- AF_LOOPING|AF_UPPERBODY|AF_SECONDARY|AF_IGNORE_GRAVITY
+-- AF_SECONDARY layers the full-body pose over the primary movement task.
+-- Do not add AF_UPPERBODY (it corrupts this clip) or AF_HOLD_LAST_FRAME.
+local ANIM_FLAGS = 1 | 32 | 2048 -- AF_LOOPING | AF_SECONDARY | AF_IGNORE_GRAVITY
 local HOVER_FLOOR = 1.5
 local HOVER_LIFT = 2.0
 
@@ -22441,8 +22451,20 @@ local FWD_SPEED = 28.0
 local STRAFE_SPEED = 20.0
 local CAM_VERT_MAX = 15.0
 local EXPLICIT_VERT = 12.0
-local SPEED_CAP = 45.0
+local SPEED_CAP = 28.0
 local ACCEL = 18.0
+
+-- Engine movement. TASK_GO_STRAIGHT_TO_COORD moves the ped through the normal
+-- primary-task path, so the full-body secondary pose is not fighting the
+-- on-foot task. The target is reissued ahead of the ped; the task's speed is a
+-- move blend (3.0 = sprint) and SET_PED_MOVE_RATE_OVERRIDE scales it (2.5,
+-- about 19 m/s; with the 28 m/s velocity cap the worst case stays below 50).
+-- The velocity write remains for vertical movement and as a fallback.
+local TASK_LOOKAHEAD = 6.0
+local TASK_REISSUE_MS = 100
+local TASK_SPEED = 3.0
+local MOVE_RATE = 2.5
+local ANIM_CHECK_MS = 500
 
 -- Controls. 32/33/34/35 are Z/S/Q/D, 22 is Space, 36 is Ctrl.
 local CTL_FWD, CTL_BACK, CTL_LEFT, CTL_RIGHT = 32, 33, 34, 35
@@ -22476,6 +22498,9 @@ N.holdReason = nil
 N.warmupUntil = 0
 N.taskAt = 0
 N.taskStarted = false
+N.taskNext = 0
+N.taskMoving = false
+N.animCheckAt = 0
 N.gravityOff = false
 N.hooks = {}
 N.stageB = { event = nil, injected = false, next = 0 }
@@ -22813,6 +22838,7 @@ local function cleanupMotion()
     local ped = N.ped
     if ped ~= 0 and DoesEntityExist(ped) then
         pcall(SetEntityVelocity, ped, 0.0, 0.0, 0.0)
+        pcall(SetPedMoveRateOverride, ped, 1.0)
         pcall(ClearPedTasks, ped)
         if N.gravityOff then
             -- Restore only the ped-native that was disabled at arm. Never call
@@ -22897,6 +22923,9 @@ function N.arm()
     N.taskAt = now
     N.warmupUntil = now + WARMUP_MS
     N.taskStarted = false
+    N.taskNext = 0
+    N.taskMoving = false
+    N.animCheckAt = 0
     N.coverChecked = false
     N.gravityOff = false
     motionStopped = false
@@ -22919,6 +22948,9 @@ function N.arm()
         return false
     end
     N.gravityOff = true
+
+    -- Clear a stale locomotion multiplier from an interrupted previous session.
+    pcall(SetPedMoveRateOverride, ped, 1.0)
 
     -- Verified base-game freefall pose: skydive@freefall / free_forward_anim.
     -- TaskPlayAnim has no landing transition, no auto parachute and no forced
@@ -23202,12 +23234,56 @@ function N.tick(now)
         end
     end
 
-    -- Ragdoll is a real game state: pause velocity writes while it owns the
-    -- body, but keep the task, gravity and read layer. The next tick resumes
-    -- from the last written velocity. This matches doctrine 3.6.
+    -- Ragdoll is a real game state: pause task/velocity writes while it owns
+    -- the body, but keep the pose, gravity and read layer. The next tick
+    -- resumes from the last written velocity. This matches doctrine 3.6.
     local okRag, rag = pcall(IsPedRagdoll, ped)
     if okRag and rag then
         return
+    end
+
+    -- Engine movement. A primary TASK_GO_STRAIGHT_TO_COORD moves the ped
+    -- through the normal task path while the full-body secondary pose stays
+    -- layered. Without a movement key the task is cleared once and the pose
+    -- re-layered, so camera-only input does not drift. SET_PED_MOVE_RATE_OVERRIDE
+    -- is looped (the native requires it) and only boosted after the warmup.
+    local moving = (fwd ~= 0 or strafe ~= 0)
+    local rate = (moving and now >= N.warmupUntil) and MOVE_RATE or 1.0
+    pcall(SetPedMoveRateOverride, ped, rate)
+    local hx, hy = tx, ty
+    local hm = math.sqrt(hx * hx + hy * hy)
+    if moving and hm > 0.1 then
+        if now >= N.taskNext then
+            N.taskNext = now + TASK_REISSUE_MS
+            local okCoords, coords = pcall(GetEntityCoords, ped, true)
+            if okCoords and type(coords) == "table" and coords.x then
+                local nx = coords.x + (hx / hm) * TASK_LOOKAHEAD
+                local ny = coords.y + (hy / hm) * TASK_LOOKAHEAD
+                pcall(TaskGoStraightToCoord, ped, nx, ny, coords.z,
+                    TASK_SPEED, -1, rot.z, 0.5)
+                N.taskMoving = true
+            end
+        end
+    elseif N.taskMoving then
+        -- Stop the engine task exactly once on release. CLEAR_PED_TASKS also
+        -- drops the secondary pose, so the same pose is re-layered immediately.
+        -- This is what keeps camera-only input from drifting to the last target.
+        pcall(ClearPedTasks, ped)
+        pcall(TaskPlayAnim, ped, ANIM_DICT, ANIM_CLIP,
+            8.0, 8.0, -1, ANIM_FLAGS, 1.0, false, false, false)
+        N.taskMoving = false
+    end
+
+    -- A primary task change can, on some runtimes, drop the secondary pose.
+    -- Check it at a low rate and re-layer the same clip; this is a read plus a
+    -- normal TASK_PLAY_ANIM, never a position or collision write.
+    if N.poseApplied and now >= N.animCheckAt then
+        N.animCheckAt = now + ANIM_CHECK_MS
+        local okPlaying, playing = pcall(IsEntityPlayingAnim, ped, ANIM_DICT, ANIM_CLIP, 3)
+        if okPlaying and playing == false then
+            pcall(TaskPlayAnim, ped, ANIM_DICT, ANIM_CLIP,
+                8.0, 8.0, -1, ANIM_FLAGS, 1.0, false, false, false)
+        end
     end
 
     local okWrite, wrote = pcall(SetEntityVelocity, ped, N.vx, N.vy, N.vz)
@@ -23584,9 +23660,451 @@ return N
 end)(O,S,B,Menu)
 
 -- ---------------------------------------------------------------------------
+-- PART: 18_voice.lua
+-- ---------------------------------------------------------------------------
+local VC = (function(O,S,B,Menu)
+-- ============================================================================
+-- VANGUARD / 18 VOICE RANGE
+-- ----------------------------------------------------------------------------
+-- Player > Voice > "Voice Range".
+--
+-- What it does:
+--   Raises the distance at which your voice is transmitted, and optionally
+--   routes it directly to every player inside that radius through a Mumble
+--   voice target. The operator is heard at 300 m instead of 8 m.
+--
+-- Why it does NOT touch the two obvious natives:
+--
+--   WaveShield V4 has a voice check (modules/client/misc.lua:1-27). It runs
+--   every 5000 ms and reads exactly two values:
+--
+--       NetworkGetTalkerProximity()
+--       MumbleGetTalkerProximity()
+--
+--   If either is >= 20, it reads the secured state bag "_WS:TalkerProximity"
+--   and bans when that bag is missing or does not match. The bag is written
+--   server-side, so a client cannot satisfy it. Writing it yourself hits
+--   server/exploits-fixed.lua:1-26, which bans reserved-bag writes.
+--
+--   So the two proximity natives are left exactly as pma-voice set them. The
+--   check never sees a value it dislikes. The reach comes from the two natives
+--   the check does not read and that have no Lua getter:
+--
+--       MumbleSetAudioInputDistance(range)   -- how far your mic is carried
+--       MumbleSetAudioOutputDistance(range)  -- how far you hear others
+--
+--   The direct-target layer is the guarantee: MumbleAddVoiceTargetPlayerByServerId
+--   routes your voice to a named player regardless of proximity, and it is
+--   invisible to the proximity check because it changes no proximity value.
+--
+--   This is the same mechanism the reference file used in its "Crier" mode
+--   (Infinite Voice Range.lua:45-61): clear target 2, add every player by
+--   server id, set target 2.
+--
+-- Tier:
+--   Tier A only. No injection, no Susano call, no server event, no state bag.
+-- ============================================================================
+
+local VC = {}
+
+-- Mumble target ids are 1..30; 0 disables targeting and returns the client to
+-- normal proximity. pma-voice uses its own targets for radio, so 2 is kept
+-- clear of the common radio path and matches the reference implementation.
+local TARGET = 2
+
+-- A voice target list is rebuilt from scratch on every refresh. The cap keeps
+-- a pathological 300-player server from turning one refresh into a burst.
+local MAX_TARGETS = 200
+
+VC.active = false
+VC.range  = 300
+VC.direct = true
+VC.saved  = 0.0
+VC.targets = 0
+VC.lastTarget = 0
+VC.lastApply = 0
+VC.onChange = nil
+
+local function emit(fmt, ...)
+    O.log("voice: " .. tostring(fmt), ...)
+end
+
+local function notify(active)
+    if type(VC.onChange) == "function" then
+        pcall(VC.onChange, active)
+    end
+end
+
+-- ---------------------------------------------------------------------------
+-- DISTANCES
+--
+-- Only the audio input/output pair is written. The two talker-proximity
+-- natives are never called from this module, by design: they are the exact
+-- values V4 compares against its secured state bag.
+-- ---------------------------------------------------------------------------
+local function applyDistances()
+    pcall(MumbleSetAudioInputDistance, VC.range)
+    pcall(MumbleSetAudioOutputDistance, VC.range)
+    VC.lastApply = O.now()
+end
+
+-- ---------------------------------------------------------------------------
+-- DIRECT TARGET
+--
+-- Rebuild target 2 with every player inside the range. Self is excluded: a
+-- client that targets itself gets its own voice back in the mix on some
+-- Mumble builds.
+--
+-- If the list is empty the client is put back on target 0. Leaving an empty
+-- target 2 active would silence the operator completely.
+-- ---------------------------------------------------------------------------
+local function refreshTargets()
+    pcall(MumbleClearVoiceTargetPlayers, TARGET)
+
+    local me = PlayerId()
+    local myPed = PlayerPedId()
+    local myCoords = GetEntityCoords(myPed)
+    local count = 0
+
+    for _, player in ipairs(GetActivePlayers()) do
+        if player ~= me then
+            local ped = GetPlayerPed(player)
+            if type(ped) == "number" and ped ~= 0 and DoesEntityExist(ped) then
+                if O.distance(myCoords, GetEntityCoords(ped)) <= VC.range then
+                    local serverId = GetPlayerServerId(player)
+                    if type(serverId) == "number" and serverId > 0 then
+                        pcall(MumbleAddVoiceTargetPlayerByServerId, TARGET, serverId)
+                        count = count + 1
+                        if count >= MAX_TARGETS then break end
+                    end
+                end
+            end
+        end
+    end
+
+    if count > 0 then
+        pcall(MumbleSetVoiceTarget, TARGET)
+    else
+        pcall(MumbleSetVoiceTarget, 0)
+    end
+
+    VC.targets = count
+    VC.lastTarget = O.now()
+    return count
+end
+
+local function clearTargets()
+    pcall(MumbleClearVoiceTargetPlayers, TARGET)
+    pcall(MumbleSetVoiceTarget, 0)
+    VC.targets = 0
+end
+
+-- ---------------------------------------------------------------------------
+-- PUBLIC
+-- ---------------------------------------------------------------------------
+function VC.setRange(value)
+    if type(value) ~= "number" then return VC.range end
+    VC.range = math.max(50, math.min(2000, value))
+    if VC.active then applyDistances() end
+    return VC.range
+end
+
+function VC.setDirect(value)
+    VC.direct = value and true or false
+    if not VC.active then return VC.direct end
+
+    if VC.direct then
+        refreshTargets()
+    else
+        clearTargets()
+    end
+    return VC.direct
+end
+
+function VC.arm()
+    if VC.active then return true end
+
+    if not B.spend("voice") then
+        emit("budget refused")
+        return false
+    end
+
+    -- The talker proximity currently in force is the voice mode distance the
+    -- host script chose. It is the only readable reference for the restore
+    -- value; the audio input/output pair has no getter.
+    local ok, proximity = pcall(MumbleGetTalkerProximity)
+    VC.saved = (ok and type(proximity) == "number" and proximity > 0 and proximity < 20)
+        and proximity or 8.0
+
+    VC.active = true
+    VC.lastTarget = 0
+    applyDistances()
+    if VC.direct then refreshTargets() end
+
+    notify(true)
+    emit("armed at %d m (direct=%s)", math.floor(VC.range), tostring(VC.direct))
+    return true
+end
+
+function VC.stop(reason)
+    if not VC.active then
+        clearTargets()
+        notify(false)
+        return
+    end
+
+    clearTargets()
+
+    -- Put the audio pair back to the host script's mode distance. The two
+    -- proximity natives were never changed, so nothing to undo there.
+    local restore = VC.saved
+    if type(restore) ~= "number" or restore <= 0 or restore >= 20 then restore = 8.0 end
+    pcall(MumbleSetAudioInputDistance, restore)
+    pcall(MumbleSetAudioOutputDistance, restore)
+
+    VC.active = false
+    notify(false)
+    if reason then emit("stopped: %s", tostring(reason)) end
+end
+
+function VC.disable()
+    VC.stop("panic")
+end
+
+function VC.isActive()
+    return VC.active
+end
+
+function VC.status()
+    return ("active=%s range=%d direct=%s targets=%d"):format(
+        tostring(VC.active), math.floor(VC.range), tostring(VC.direct), VC.targets)
+end
+
+-- ---------------------------------------------------------------------------
+-- WATCHDOG
+--
+-- The host voice script re-applies its own mode distance on every mode change
+-- (whisper / normal / shout) and on some vehicle transitions. A single write at
+-- arm time would be undone within seconds. The loop is jittered so the re-apply
+-- is not a fixed-period signature.
+-- ---------------------------------------------------------------------------
+O.every("voice", 250, function(now)
+    if not VC.active then return end
+
+    applyDistances()
+
+    if VC.direct then
+        if now - VC.lastTarget >= O.jitter(700, 0.2) then
+            refreshTargets()
+        end
+    end
+end, 0)
+
+return VC
+
+end)(O,S,B,Menu)
+
+-- ---------------------------------------------------------------------------
+-- PART: 19_carprison.lua
+-- ---------------------------------------------------------------------------
+local CP = (function(O,S,B,Menu)
+-- ============================================================================
+-- VANGUARD / 19 CAR PRISON
+-- ----------------------------------------------------------------------------
+-- Online > Troll > "Car Prison".
+--
+-- What it does:
+--   While armed, the selected player is locked inside whatever vehicle they
+--   are in. The doors are shut and held on the "player inside" lock state, so
+--   the exit animation is refused. If they change car, the old one is released
+--   and the new one is locked. If they get out before the lock lands, the next
+--   vehicle they enter is locked instead.
+--
+-- Why it needs vehicle ownership:
+--   Door lock state is vehicle state. It replicates from the client that owns
+--   the vehicle. Without ownership the write is local and the target keeps
+--   stepping out. Vehicles are freely transferable, so ownership is requested
+--   once per second at most, not every tick.
+--
+-- Why it is quiet against WaveShield V4:
+--   * no entity is created            -> entityCreating never runs
+--   * no ped is attached              -> entities.lua:166-188 never matches
+--   * no ped task is issued           -> clearPedTasksEvent / givePedScriptedTaskEvent
+--                                        never fire
+--   * no state bag is written         -> exploits-fixed.lua:1-26 never fires
+--   * no synced scene is started      -> startNetworkSyncedSceneEvent never fires
+--   * no server event is sent
+--   * the ownership request is not one of the premium events V4 watches; its
+--     AntiRequestControl path is reached through SetExclusiveDriver and synced
+--     scenes (premiumEvents.lua:20-31, startNetworkSyncedSceneEvent.lua:40-109)
+--
+-- The one rule the module enforces on itself: never lock the operator's own
+-- vehicle. A prison that traps both of you is a bug, not a feature.
+-- ============================================================================
+
+local P = {}
+
+-- eVehicleLockState: 3 = CARLOCK_LOCKED_PLAYER_INSIDE, the state that refuses
+-- the exit animation for the occupant. 0 restores the vehicle.
+local LOCK_INSIDE = 3
+local LOCK_FREE   = 0
+
+local REQUEST_MS = 1000
+local POLL_MS    = 250
+
+P.active   = false
+P.veh      = 0
+P.locked   = false
+P.lastReq  = 0
+P.sessions = 0
+P.onChange = nil
+
+local function emit(fmt, ...)
+    O.log("prison: " .. tostring(fmt), ...)
+end
+
+local function notify(active)
+    if type(P.onChange) == "function" then
+        pcall(P.onChange, active)
+    end
+end
+
+local function targetPed()
+    local serverId = (Menu and Menu.SelectedPlayer) or nil
+    if type(serverId) ~= "number" then return 0 end
+
+    local player = GetPlayerFromServerId(serverId)
+    if type(player) ~= "number" or player < 0 then return 0 end
+
+    local ped = GetPlayerPed(player)
+    if type(ped) ~= "number" or ped == 0 then return 0 end
+    if not DoesEntityExist(ped) then return 0 end
+    return ped
+end
+
+local function myVehicle()
+    local ped = O.Ctx.ped
+    if type(ped) ~= "number" or ped == 0 then return 0 end
+    if not O.Ctx.inVehicle then return 0 end
+    local veh = GetVehiclePedIsIn(ped, false)
+    if type(veh) ~= "number" or veh == 0 then return 0 end
+    return veh
+end
+
+-- Release a vehicle we previously locked. Ownership is not given back
+-- explicitly: the game rebalances it once we stop writing.
+local function release()
+    if P.veh ~= 0 and DoesEntityExist(P.veh) then
+        pcall(SetVehicleDoorsLocked, P.veh, LOCK_FREE)
+    end
+    P.veh = 0
+    P.locked = false
+end
+
+local function lockVehicle(veh, now)
+    if veh == 0 then return false end
+    if veh == myVehicle() then
+        -- Never trap the operator. Documented behaviour, not a silent skip.
+        return false
+    end
+
+    if not NetworkHasControlOfEntity(veh) then
+        if now - P.lastReq >= REQUEST_MS then
+            P.lastReq = now
+            pcall(NetworkRequestControlOfEntity, veh)
+        end
+        -- No ownership means no replicated write. Fail closed: do not pretend
+        -- the target is locked when the state only exists on this client.
+        return false
+    end
+
+    pcall(SetVehicleDoorsLocked, veh, LOCK_INSIDE)
+    pcall(SetVehicleDoorsShut, veh, true)
+    P.veh = veh
+    P.locked = true
+    return true
+end
+
+-- ---------------------------------------------------------------------------
+-- TICK
+-- ---------------------------------------------------------------------------
+local function tick(now)
+    if not P.active then
+        if P.veh ~= 0 then release() end
+        return
+    end
+
+    local ped = targetPed()
+    if ped == 0 then
+        if P.veh ~= 0 then release() end
+        return
+    end
+
+    local veh = GetVehiclePedIsIn(ped, false)
+    if type(veh) ~= "number" or veh == 0 then
+        -- Target is on foot. Release the previous car and wait: the next car
+        -- they enter gets locked on the following tick.
+        if P.veh ~= 0 then release() end
+        return
+    end
+
+    if P.veh ~= 0 and P.veh ~= veh then release() end
+    lockVehicle(veh, now)
+end
+
+-- ---------------------------------------------------------------------------
+-- PUBLIC
+-- ---------------------------------------------------------------------------
+function P.arm()
+    if type(Menu) ~= "table" then return false end
+    if P.active then return true end
+
+    if not B.spend("prison") then
+        emit("budget refused")
+        return false
+    end
+
+    P.active = true
+    P.veh = 0
+    P.locked = false
+    P.lastReq = 0
+    P.sessions = P.sessions + 1
+
+    notify(true)
+    emit("armed - select a player in a vehicle")
+    return true
+end
+
+function P.stop(reason)
+    P.active = false
+    release()
+    notify(false)
+    if reason then emit("stopped: %s", tostring(reason)) end
+end
+
+function P.disable()
+    P.stop("panic")
+end
+
+function P.isActive()
+    return P.active
+end
+
+function P.status()
+    return ("active=%s veh=%s locked=%s sessions=%d"):format(
+        tostring(P.active), tostring(P.veh), tostring(P.locked), P.sessions)
+end
+
+O.every("prison", POLL_MS, tick, 0)
+
+return P
+
+end)(O,S,B,Menu)
+
+-- ---------------------------------------------------------------------------
 -- PART: 07_menu.lua
 -- ---------------------------------------------------------------------------
-local U = (function(O,S,E,D,F,V,M,SN,C,A,ST,SB,VS,K,N,L,Menu)
+local U = (function(O,S,E,D,F,V,M,SN,C,A,ST,SB,VS,K,N,L,VC,CP,Menu)
 -- ============================================================================
 -- VANGUARD / 07 MENU
 -- ----------------------------------------------------------------------------
@@ -23623,6 +24141,8 @@ local UI = {}
 function UI.panic()
     N.disable()
     L.disable()
+    VC.disable()
+    CP.disable()
     A.panic()
     D.detachShell()
     E.destroyAll()
@@ -23888,6 +24408,85 @@ local function installMovement()
 end
 
 -- ---------------------------------------------------------------------------
+-- PLAYER > VOICE
+--
+-- Reach comes from MumbleSetAudioInputDistance / MumbleSetAudioOutputDistance
+-- plus a direct voice target. The two talker-proximity natives are never
+-- written: V4's checkVoiceExploits reads exactly those two and compares them
+-- against a server-written state bag. See doctrine/12_VOICE.md.
+-- ---------------------------------------------------------------------------
+local function installVoice()
+    local category = findCategory("Player")
+    if not category then return false end
+
+    category.tabs = category.tabs or {}
+    for i = #category.tabs, 1, -1 do
+        if category.tabs[i].name == "Voice" then
+            table.remove(category.tabs, i)
+        end
+    end
+
+    local rangeItem
+    local toggle
+
+    toggle = {
+        name = "Voice Range",
+        type = "toggle",
+        value = VC.isActive(),
+        onClick = function(value)
+            local active
+            if value then
+                active = VC.arm()
+            else
+                VC.stop("operator")
+                active = false
+            end
+            toggle.value = active
+            return active
+        end,
+    }
+
+    rangeItem = {
+        name = "Range (m)",
+        type = "slider",
+        value = VC.range,
+        min = 50,
+        max = 2000,
+        step = 50,
+        onClick = function(value)
+            rangeItem.value = VC.setRange(value)
+            return rangeItem.value
+        end,
+    }
+
+    local direct
+    direct = {
+        name = "Direct Voice Target",
+        type = "toggle",
+        value = VC.direct,
+        onClick = function(value)
+            direct.value = VC.setDirect(value)
+            return direct.value
+        end,
+    }
+
+    VC.onChange = function(active)
+        toggle.value = active
+    end
+
+    category.tabs[#category.tabs + 1] = {
+        name = "Voice",
+        items = {
+            { name = "", isSeparator = true, separatorText = "Reach" },
+            toggle,
+            rangeItem,
+            direct,
+        },
+    }
+    return true
+end
+
+-- ---------------------------------------------------------------------------
 -- ONLINE > TROLL > LOCK PLAYER
 --
 -- One row in the tab the operator already uses for per-player actions. The
@@ -23938,6 +24537,66 @@ local function installLockPlayer()
         if item.isSeparator and item.separatorText == "Attacks" then
             at = i + 1
             break
+        end
+    end
+
+    table.insert(tab.items, at or 1, row)
+    return true
+end
+
+-- ---------------------------------------------------------------------------
+-- ONLINE > TROLL > CAR PRISON
+--
+-- Locks the selected player inside their vehicle. Vehicle ownership is taken
+-- once per second at most; the door state is held on CARLOCK_LOCKED_PLAYER_INSIDE.
+-- Placed directly under Lock Player so the two per-player locks sit together.
+-- ---------------------------------------------------------------------------
+local function installCarPrison()
+    local tab = findTab("Online", "Troll")
+    if not tab then return false end
+
+    removeItem("Online", "Troll", "Car Prison")
+
+    local row
+    row = {
+        name = "Car Prison",
+        type = "toggle",
+        value = CP.isActive(),
+        onClick = function(value)
+            local active
+            if value then
+                active = CP.arm()
+            else
+                CP.stop("operator")
+                active = false
+            end
+            row.value = active
+            return active
+        end,
+    }
+
+    CP.onChange = function(active)
+        row.value = active
+    end
+
+    tab.items = tab.items or {}
+
+    -- Directly after Lock Player when present, otherwise first in Attacks.
+    local at = nil
+    for i = 1, #tab.items do
+        local item = tab.items[i]
+        if item.name == "Lock Player (Shift)" then
+            at = i + 1
+            break
+        end
+    end
+    if not at then
+        for i = 1, #tab.items do
+            local item = tab.items[i]
+            if item.isSeparator and item.separatorText == "Attacks" then
+                at = i + 1
+                break
+            end
         end
     end
 
@@ -24248,7 +24907,9 @@ local function build()
     installBypassProfiles()
     installSeed()
     installMovement()
+    installVoice()
     installLockPlayer()
+    installCarPrison()
     installProtection()
     installCrasher()
     installVehicleSpoof()
@@ -24324,7 +24985,7 @@ UI.boot()
 
 return UI
 
-end)(O,S,E,D,F,V,M,SN,C,A,ST,SB,VS,K,N,L,Menu)
+end)(O,S,E,D,F,V,M,SN,C,A,ST,SB,VS,K,N,L,VC,CP,Menu)
 
 
 end)()
