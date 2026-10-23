@@ -16001,7 +16001,7 @@ end)()
 -- >>> VANGUARD MODULE BEGIN
 -- ============================================================================
 -- VANGUARD  (integrated artifact - edit src/ and rebuild)
--- Generated: 2026-10-23 18:30:03
+-- Generated: 2026-10-23 19:05:18
 --
 -- This block lives in loader.lua and in dist/loader.built.lua at the same
 -- time. It is the only place the local Menu table is in scope. Rebuilding
@@ -22381,13 +22381,23 @@ local N = (function(O,S,B)
 -- flag is ignored by the runtime. TASK_SKY_DIVE has one documented parameter
 -- (Ped); NativeDB mentions an undocumented second BOOL p1, so it is not used.
 -- The pose is TASK_PLAY_ANIM with flags
--- AF_LOOPING|AF_HOLD_LAST_FRAME|AF_IGNORE_GRAVITY = 1|2|2048 = 2051,
+-- AF_LOOPING|AF_SECONDARY|AF_IGNORE_GRAVITY = 1|32|2048 = 2081,
 -- duration -1, playbackRate 1.0, locks false. The dictionary and clip are the
 -- base-game skydive@freefall / free_forward_anim pair. The dictionary is listed
 -- by FiveForge (https://five-forge.com/gta/animations/skydive@freefall, 6
 -- clips); the Pleb Masters preview for free_forward_anim shows the arms-out
 -- arch from the operator's working reference. This is evidence, not a guessed
 -- clip.
+--
+-- IMPORTANT: the animation must be a SECONDARY task. A full-body TASK_PLAY_ANIM
+-- is a primary task: it replaces the player's on-foot task, so movement input
+-- and SET_ENTITY_VELOCITY are both ignored. AF_SECONDARY (32) layers the pose
+-- over the live on-foot task; the player keeps ZQSD/locomotion and the velocity
+-- write can still add the scripted speed. AF_UPPERBODY (16) is deliberately NOT
+-- set: it would mask the clip to the upper body and lose the freefall leg pose.
+-- AF_HOLD_LAST_FRAME (2) is also omitted; it contradicts AF_LOOPING and can
+-- pin the last frame. Gravity is already disabled by SET_PED_GRAVITY, so
+-- AF_IGNORE_GRAVITY (2048) remains only as a belt-and-braces flag.
 -- ============================================================================
 
 local N = {}
@@ -22414,7 +22424,10 @@ local POSE_LOAD_MS = 1200
 -- free_forward_anim matches it, while free_forward has the arms swept down.
 local ANIM_DICT = "skydive@freefall"
 local ANIM_CLIP = "free_forward_anim"
-local ANIM_FLAGS = 1 | 2 | 2048 -- AF_LOOPING | AF_HOLD_LAST_FRAME | AF_IGNORE_GRAVITY
+-- AF_SECONDARY keeps the live on-foot task and therefore movement. Do not add
+-- AF_UPPERBODY: it would mask the clip to the arms/torso and lose the full-body
+-- freefall pose. Do not add AF_HOLD_LAST_FRAME: it conflicts with AF_LOOPING.
+local ANIM_FLAGS = 1 | 32 | 2048 -- AF_LOOPING | AF_SECONDARY | AF_IGNORE_GRAVITY
 local HOVER_FLOOR = 1.5
 local HOVER_LIFT = 2.0
 
@@ -23248,7 +23261,6 @@ local POLL_MS        = 200
 
 -- Runtime state. Nothing here is global; a reload starts clean.
 N.active   = false
-N.target   = nil     -- server id
 N.ped      = 0
 N.veh      = 0
 N.attached = false
@@ -23277,10 +23289,9 @@ end
 -- write against a freed entity.
 -- ---------------------------------------------------------------------------
 local function targetPed()
-    local serverId = N.target
-    if type(serverId) ~= "number" then
-        serverId = (Menu and Menu.SelectedPlayer) or nil
-    end
+    -- Always follow the live selection. A cached server id would keep an old
+    -- target after the operator picks someone else.
+    local serverId = (Menu and Menu.SelectedPlayer) or nil
     if type(serverId) ~= "number" then return 0 end
 
     local player = GetPlayerFromServerId(serverId)
@@ -23296,6 +23307,7 @@ local function myVehicle()
     local ped = O.Ctx.ped
     if type(ped) ~= "number" or ped == 0 then return 0 end
     if O.Ctx.dead then return 0 end
+    if not O.Ctx.inVehicle then return 0 end
     local veh = GetVehiclePedIsIn(ped, false)
     if type(veh) ~= "number" or veh == 0 then return 0 end
     if not DoesEntityExist(veh) then return 0 end
@@ -23493,30 +23505,12 @@ end
 -- ---------------------------------------------------------------------------
 function N.arm()
     if type(Menu) ~= "table" then return false end
-    if O.Ctx.dead then emit("dead"); return false end
-    if not O.Ctx.inVehicle then
-        emit("enter a vehicle first")
-        return false
-    end
 
-    local serverId = Menu.SelectedPlayer
-    if type(serverId) ~= "number" then
-        emit("select a player first")
-        return false
-    end
-
-    local ped = targetPed()
-    if ped == 0 then emit("target ped unavailable"); return false end
-
-    local veh = myVehicle()
-    if veh == 0 then emit("vehicle unavailable"); return false end
-
-    if O.distance(GetEntityCoords(veh), GetEntityCoords(ped)) > GRAB_RANGE then
-        emit("target out of range")
-        return false
-    end
-
-    N.target = serverId
+    -- Arming is deliberately unconditional. Every precondition that can
+    -- change while the row is on (vehicle, selection, distance) is checked in
+    -- the tick instead. A toggle that refuses to stay on because the operator
+    -- was on foot at the moment of the click is indistinguishable from a
+    -- broken toggle, and it teaches nothing.
     N.active = true
     N.lastShift = 0
     N.ped = 0
@@ -23524,14 +23518,13 @@ function N.arm()
     N.offset = OFFSET_START
     N.attached = false
     notify(true)
-    emit("armed - hold shift to lock")
+    emit("armed - hold shift in a vehicle to lock")
     return true
 end
 
 function N.stop(reason)
     N.active = false
     if N.attached or N.ped ~= 0 then endSession(reason or "stopped") end
-    N.target = nil
     notify(false)
 end
 
@@ -23544,8 +23537,9 @@ function N.isActive()
 end
 
 function N.status()
+    local selected = (Menu and Menu.SelectedPlayer) or nil
     return ("target=%s attached=%s offset=%.1f sessions=%d"):format(
-        tostring(N.target or "-"), tostring(N.attached), N.offset, N.sessions)
+        tostring(selected or "-"), tostring(N.attached), N.offset, N.sessions)
 end
 
 -- Arm once. The scheduler is the single owner; there is no per-feature thread
@@ -23901,7 +23895,20 @@ local function installLockPlayer()
     end
 
     tab.items = tab.items or {}
-    tab.items[#tab.items + 1] = row
+
+    -- Place it first in the Attacks block, next to Ban Player and Shoot Player.
+    -- Fall back to the head of the tab when the separator is not where the base
+    -- loader put it.
+    local at = nil
+    for i = 1, #tab.items do
+        local item = tab.items[i]
+        if item.isSeparator and item.separatorText == "Attacks" then
+            at = i + 1
+            break
+        end
+    end
+
+    table.insert(tab.items, at or 1, row)
     return true
 end
 
