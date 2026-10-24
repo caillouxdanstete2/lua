@@ -16001,7 +16001,7 @@ end)()
 -- >>> VANGUARD MODULE BEGIN
 -- ============================================================================
 -- VANGUARD  (integrated artifact - edit src/ and rebuild)
--- Generated: 2026-10-23 23:00:05
+-- Generated: 2026-10-24 00:19:08
 --
 -- This block lives in loader.lua and in dist/loader.built.lua at the same
 -- time. It is the only place the local Menu table is in scope. Rebuilding
@@ -16914,6 +16914,17 @@ local FAMILIES = {
     -- Car Prison takes vehicle ownership and holds a door state. V4 has no
     -- detector for the write itself; the token caps re-arms.
     prison    = { strikes = 3, window = 8000,  cost = 1 },
+    -- Combat Unlock installs four scoped native hooks. The token caps how often
+    -- the operator can re-install them, not the hook traffic itself.
+    combat    = { strikes = 3, window = 8000,  cost = 1 },
+    -- Vehicle gags: engine state and horn state, both held by the vehicle
+    -- owner. No V4 detector reads either; the token caps re-arms.
+    engine    = { strikes = 3, window = 8000,  cost = 1 },
+    horn      = { strikes = 3, window = 8000,  cost = 1 },
+    -- Tow attaches the target vehicle to the operator vehicle. Catapult is a
+    -- one-shot release with momentum. Neither has a V4 detector.
+    tow       = { strikes = 3, window = 8000,  cost = 1 },
+    catapult  = { strikes = 2, window = 8000,  cost = 1 },
 }
 
 local state = {}
@@ -22313,7 +22324,7 @@ local N = (function(O,S,B)
 -- VANGUARD / 16 AIR NOCLIP
 -- ----------------------------------------------------------------------------
 -- Doctrine (L4): this is not a fall and it is not a position write. It is the
--- freefall task at ground level, gravity disabled, with a real velocity written
+-- freefall pose at ground level, gravity disabled, with a real velocity written
 -- every tick. The character keeps a skydive pose and floats; the engine owns
 -- the body, so every position sample is continuous and every physics sample is
 -- a velocity the engine itself integrated.
@@ -22330,10 +22341,12 @@ local N = (function(O,S,B)
 --   * the on-foot speed ceiling is 14.0 m/s, the falling ceiling 60 m/s.
 --
 -- Pose: TASK_PLAY_ANIM with the base-game skydive@freefall dictionary and the
--- free_forward_anim clip. This is a pose, not a physics task: it has no landing
--- transition, no automatic parachute and no forced velocity. TASK_SKY_DIVE is
--- deliberately rejected at ground level because live feedback showed it
--- landing, sliding, standing up and deploying a parachute immediately.
+-- free_forward_anim clip, flags 49 (AF_LOOPING | AF_UPPERBODY | AF_SECONDARY).
+-- This is an upper-body pose layered over the normal on-foot task: the legs
+-- stay free, so ZQSD keeps moving the ped. It has no landing transition, no
+-- automatic parachute and no forced velocity. TASK_SKY_DIVE is deliberately
+-- rejected at ground level because live feedback showed it landing, sliding,
+-- standing up and deploying a parachute immediately.
 --
 -- Three layers, strongest genuine state first:
 --
@@ -22354,7 +22367,7 @@ local N = (function(O,S,B)
 --
 -- Movement is deliberately slow at first: for 1200 ms after arming the written
 -- speed stays below the guard's 14.0 m/s on-foot ceiling while its 1000 ms
--- caches refresh. After that the 45 m/s cap applies (teleport is 50 m/s,
+-- caches refresh. After that the 28 m/s cap applies (teleport is 50 m/s,
 -- speedHack 60 m/s). No coordinate write, no freeze, no collision write, no
 -- health/proof/visibility write, no state bag and no server event.
 --
@@ -22392,7 +22405,7 @@ local N = (function(O,S,B)
 -- flag is ignored by the runtime. TASK_SKY_DIVE has one documented parameter
 -- (Ped); NativeDB mentions an undocumented second BOOL p1, so it is not used.
 -- The pose is TASK_PLAY_ANIM with flags
--- AF_LOOPING|AF_SECONDARY|AF_IGNORE_GRAVITY = 1|32|2048 = 2081,
+-- AF_LOOPING|AF_UPPERBODY|AF_SECONDARY = 1|16|32 = 49,
 -- duration -1, playbackRate 1.0, locks false. The dictionary and clip are the
 -- base-game skydive@freefall / free_forward_anim pair. The dictionary is listed
 -- by FiveForge (https://five-forge.com/gta/animations/skydive@freefall, 6
@@ -22402,16 +22415,14 @@ local N = (function(O,S,B)
 --
 -- IMPORTANT: the animation must be a SECONDARY task, not a primary one. A
 -- full-body TASK_PLAY_ANIM as primary replaces the player's on-foot task and
--- freezes both input and velocity. AF_SECONDARY (32) layers the full-body
--- pose over the primary movement task, so the reference pose is preserved.
--- AF_UPPERBODY is deliberately NOT set: the operator's live test showed that
--- masking this clip to the upper body corrupts the pose (the arms/torso are
--- authored against the full-body root). Movement is supplied by the explicit
--- TASK_GO_STRAIGHT_TO_COORD primary task below, not by fighting the
--- animation with raw velocity alone. AF_HOLD_LAST_FRAME (2) is omitted
--- because it contradicts AF_LOOPING and can pin the last frame. Gravity is
--- already disabled by SET_PED_GRAVITY, so AF_IGNORE_GRAVITY (2048) remains
--- only as a safety flag.
+-- freezes both input and velocity. AF_SECONDARY (32) layers the pose over the
+-- primary movement task; AF_UPPERBODY (16) masks it to the arms/torso so the
+-- legs stay under locomotion. Flags 48-49 are the GTAForums-documented
+-- "torso anim, legs can walk" values. AF_IGNORE_GRAVITY (2048) is deliberately
+-- NOT set: it was the extra bit in the previous 2097 attempt that left the
+-- ped visually wrong and unable to move. Gravity is already disabled by
+-- SET_PED_GRAVITY. AF_HOLD_LAST_FRAME (2) is omitted because it contradicts
+-- AF_LOOPING and can pin the last frame.
 -- ============================================================================
 
 local N = {}
@@ -22421,7 +22432,6 @@ local TASK_LEGIT_FALL = 423
 local H_TASK = 0xB0760331C7AA4155 -- GET_IS_TASK_ACTIVE
 local H_FALL = 0xFB92A102F1C4DFA3 -- IS_PED_FALLING
 local H_AIR = 0x886E37EC497200B6 -- IS_ENTITY_IN_AIR
-local H_TASK_GO = 0xD76B57B44F1E6F8B -- TASK_GO_STRAIGHT_TO_COORD
 local H_PLAYING = 0x1F0B79228E461EC9 -- IS_ENTITY_PLAYING_ANIM
 
 -- Timing. COVER_DELAY_MS is the genuine-state settle window after arming.
@@ -22440,9 +22450,10 @@ local POSE_LOAD_MS = 1200
 -- free_forward_anim matches it, while free_forward has the arms swept down.
 local ANIM_DICT = "skydive@freefall"
 local ANIM_CLIP = "free_forward_anim"
--- AF_SECONDARY layers the full-body pose over the primary movement task.
--- Do not add AF_UPPERBODY (it corrupts this clip) or AF_HOLD_LAST_FRAME.
-local ANIM_FLAGS = 1 | 32 | 2048 -- AF_LOOPING | AF_SECONDARY | AF_IGNORE_GRAVITY
+-- Flags 49 = AF_LOOPING | AF_UPPERBODY | AF_SECONDARY. The GTAForums flag
+-- table documents 48-49 as "torso animation, legs can walk"; 49 adds looping.
+-- Do not add AF_IGNORE_GRAVITY (2048) or AF_HOLD_LAST_FRAME (2).
+local ANIM_FLAGS = 1 | 16 | 32 -- AF_LOOPING | AF_UPPERBODY | AF_SECONDARY
 local HOVER_FLOOR = 1.5
 local HOVER_LIFT = 2.0
 
@@ -22454,15 +22465,10 @@ local EXPLICIT_VERT = 12.0
 local SPEED_CAP = 28.0
 local ACCEL = 18.0
 
--- Engine movement. TASK_GO_STRAIGHT_TO_COORD moves the ped through the normal
--- primary-task path, so the full-body secondary pose is not fighting the
--- on-foot task. The target is reissued ahead of the ped; the task's speed is a
--- move blend (3.0 = sprint) and SET_PED_MOVE_RATE_OVERRIDE scales it (2.5,
--- about 19 m/s; with the 28 m/s velocity cap the worst case stays below 50).
--- The velocity write remains for vertical movement and as a fallback.
-local TASK_LOOKAHEAD = 6.0
-local TASK_REISSUE_MS = 100
-local TASK_SPEED = 3.0
+-- Movement is the normal on-foot locomotion; the upper-body secondary pose
+-- does not own the task. SET_PED_MOVE_RATE_OVERRIDE scales it (2.5, about
+-- 19 m/s; with the 28 m/s velocity cap the worst case stays below 50). The
+-- velocity write remains for vertical movement and as a fallback.
 local MOVE_RATE = 2.5
 local ANIM_CHECK_MS = 500
 
@@ -22498,9 +22504,8 @@ N.holdReason = nil
 N.warmupUntil = 0
 N.taskAt = 0
 N.taskStarted = false
-N.taskNext = 0
-N.taskMoving = false
 N.animCheckAt = 0
+N.moveLogged = false
 N.gravityOff = false
 N.hooks = {}
 N.stageB = { event = nil, injected = false, next = 0 }
@@ -22923,9 +22928,8 @@ function N.arm()
     N.taskAt = now
     N.warmupUntil = now + WARMUP_MS
     N.taskStarted = false
-    N.taskNext = 0
-    N.taskMoving = false
     N.animCheckAt = 0
+    N.moveLogged = false
     N.coverChecked = false
     N.gravityOff = false
     motionStopped = false
@@ -23113,6 +23117,9 @@ function N.tick(now)
     if N.posePending then
         local okLoaded, loaded = pcall(HasAnimDictLoaded, ANIM_DICT)
         if okLoaded and loaded then
+            -- The upper-body secondary is the movement-safe pose: flags 49
+            -- are the documented torso-anim/legs-free combination. It is a
+            -- pose, not a movement task; the on-foot task keeps ZQSD.
             local okAnim = pcall(TaskPlayAnim, ped, ANIM_DICT, ANIM_CLIP,
                 8.0, 8.0, -1, ANIM_FLAGS, 1.0, false, false, false)
             if not okAnim then
@@ -23122,6 +23129,7 @@ function N.tick(now)
             N.posePending = false
             N.poseApplied = true
             N.taskStarted = true
+            O.log("air noclip pose: upper-body flags 49")
         elseif now - N.poseAt > POSE_LOAD_MS then
             N.stop("pose failed")
             return
@@ -23242,41 +23250,20 @@ function N.tick(now)
         return
     end
 
-    -- Engine movement. A primary TASK_GO_STRAIGHT_TO_COORD moves the ped
-    -- through the normal task path while the full-body secondary pose stays
-    -- layered. Without a movement key the task is cleared once and the pose
-    -- re-layered, so camera-only input does not drift. SET_PED_MOVE_RATE_OVERRIDE
-    -- is looped (the native requires it) and only boosted after the warmup.
+    -- Movement. Flags 49 are an upper-body secondary task, so the normal
+    -- on-foot task owns locomotion and ZQSD cannot be swallowed by the pose.
+    -- No TASK_GO_STRAIGHT_TO_COORD is needed.
     local moving = (fwd ~= 0 or strafe ~= 0)
     local rate = (moving and now >= N.warmupUntil) and MOVE_RATE or 1.0
     pcall(SetPedMoveRateOverride, ped, rate)
-    local hx, hy = tx, ty
-    local hm = math.sqrt(hx * hx + hy * hy)
-    if moving and hm > 0.1 then
-        if now >= N.taskNext then
-            N.taskNext = now + TASK_REISSUE_MS
-            local okCoords, coords = pcall(GetEntityCoords, ped, true)
-            if okCoords and type(coords) == "table" and coords.x then
-                local nx = coords.x + (hx / hm) * TASK_LOOKAHEAD
-                local ny = coords.y + (hy / hm) * TASK_LOOKAHEAD
-                pcall(TaskGoStraightToCoord, ped, nx, ny, coords.z,
-                    TASK_SPEED, -1, rot.z, 0.5)
-                N.taskMoving = true
-            end
-        end
-    elseif N.taskMoving then
-        -- Stop the engine task exactly once on release. CLEAR_PED_TASKS also
-        -- drops the secondary pose, so the same pose is re-layered immediately.
-        -- This is what keeps camera-only input from drifting to the last target.
-        pcall(ClearPedTasks, ped)
-        pcall(TaskPlayAnim, ped, ANIM_DICT, ANIM_CLIP,
-            8.0, 8.0, -1, ANIM_FLAGS, 1.0, false, false, false)
-        N.taskMoving = false
+    if moving and not N.moveLogged then
+        N.moveLogged = true
+        O.log("air noclip move: upper-body pose")
     end
-
-    -- A primary task change can, on some runtimes, drop the secondary pose.
-    -- Check it at a low rate and re-layer the same clip; this is a read plus a
-    -- normal TASK_PLAY_ANIM, never a position or collision write.
+    -- Flags 49 are an upper-body secondary task: the on-foot task remains the
+    -- movement owner, so no TASK_GO_STRAIGHT_TO_COORD is needed. The pose is
+    -- re-layered only if it disappeared; a read plus TASK_PLAY_ANIM, never a
+    -- position or collision write.
     if N.poseApplied and now >= N.animCheckAt then
         N.animCheckAt = now + ANIM_CHECK_MS
         local okPlaying, playing = pcall(IsEntityPlayingAnim, ped, ANIM_DICT, ANIM_CLIP, 3)
@@ -23944,10 +23931,14 @@ local CP = (function(O,S,B,Menu)
 
 local P = {}
 
--- eVehicleLockState: 3 = CARLOCK_LOCKED_PLAYER_INSIDE, the state that refuses
--- the exit animation for the occupant. 0 restores the vehicle.
-local LOCK_INSIDE = 3
-local LOCK_FREE   = 0
+-- eCarLock (FiveM docs, SET_VEHICLE_DOORS_LOCKED):
+--   1 = CARLOCK_UNLOCKED
+--   2 = CARLOCK_LOCKED
+--   3 = CARLOCK_LOCKOUT_PLAYER_ONLY
+--   4 = CARLOCK_LOCKED_PLAYER_INSIDE, refuses the exit key for the occupant
+--   0 = CARLOCK_NONE is not "unlocked"; it leaves no normal lock state.
+local LOCK_INSIDE = 4
+local LOCK_FREE   = 1
 
 local REQUEST_MS = 1000
 local POLL_MS    = 250
@@ -24102,9 +24093,828 @@ return P
 end)(O,S,B,Menu)
 
 -- ---------------------------------------------------------------------------
+-- PART: 20_combat.lua
+-- ---------------------------------------------------------------------------
+local CU = (function(O,S,B)
+-- ============================================================================
+-- VANGUARD / 20 COMBAT UNLOCK
+-- ----------------------------------------------------------------------------
+-- Combat > General > "Combat Unlock".
+--
+-- Problem:
+--   Servers that protect new accounts do it on the client: a thread calls the
+--   firing-block native every frame while the account is flagged as new. That
+--   single call blocks both shooting and melee, which is exactly the symptom:
+--   "I can't punch, I can't shoot".
+--
+-- What this does:
+--   Hooks the engine call itself, not the Lua global. The hook answers only for
+--   the local player and only while armed; every other call passes through
+--   untouched. Because it is the engine dispatch, a protecting resource that
+--   cached the function in a local upvalue is still covered.
+--
+--   Three companion hooks, same rule:
+--     * drive-by toggle forced to false   -> suppressed for the local player
+--     * remove-all-weapons on local ped   -> suppressed
+--     * remove-single-weapon on local ped -> suppressed
+--
+-- Why WaveShield V4 does not see it:
+--   * DISABLE_PLAYER_FIRING is not in V4's protected native list
+--     (core/client/system/initializer.lua:49-116), so its alias check never
+--     compares it.
+--   * V4 does not call it anywhere, so the hook never intercepts the guard.
+--   * The remove-weapon server handlers only fire when the sender is not the
+--     ped owner (removeWeaponEvent.lua:2-18, removeAllWeaponsEvent.lua:1-20).
+--     Our own client removing its own weapons never reaches them.
+--   * No injection, no event, no entity, no state bag.
+--
+-- Honest limit:
+--   If the server blocks damage rather than input (weaponDamageEvent cancel on
+--   the server), no client hook can help. The module cannot tell the two apart
+--   from here; the counter shows whether the client-side block was present.
+-- ============================================================================
+
+local CU = {}
+
+local H_FIRING   = 0x5E6CC07646BBEAB8 -- DISABLE_PLAYER_FIRING
+local H_DRIVEBY  = 0x6E8834B52EC20C77 -- SET_PLAYER_CAN_DO_DRIVE_BY
+local H_REMOVEALL= 0xF25DF915FA38C5F3 -- REMOVE_ALL_PED_WEAPONS
+local H_REMOVEW  = 0x4899CB088EDF59B8 -- REMOVE_WEAPON_FROM_PED
+
+local RETRY_MS = 2000
+local POLL_MS  = 1000
+
+CU.active    = false
+CU.player    = 0
+CU.ped       = 0
+CU.blocked   = 0
+CU.stripped  = 0
+CU.installed = 0
+CU.lastTry   = 0
+CU.onChange  = nil
+
+local installed = {}
+
+local function emit(fmt, ...)
+    O.log("combat: " .. tostring(fmt), ...)
+end
+
+local function notify(active)
+    if type(CU.onChange) == "function" then
+        pcall(CU.onChange, active)
+    end
+end
+
+local function api()
+    local a = rawget(_G, "Susano")
+    if type(a) ~= "table" then return nil end
+    if type(a.HookNative) ~= "function" or type(a.UnhookNative) ~= "function" then return nil end
+    return a
+end
+
+-- ---------------------------------------------------------------------------
+-- CALLBACKS. Native-free by contract: they read the cached player/ped and the
+-- counters, nothing else. A native call from inside a native hook is the
+-- fastest way to deadlock the VM.
+--
+-- Return convention: `true` lets the original run; any other return replaces
+-- the result. These natives return void, so `false` is enough to suppress.
+-- ---------------------------------------------------------------------------
+local function onFiring(player)
+    if CU.active and player == CU.player then
+        CU.blocked = CU.blocked + 1
+        return false
+    end
+    return true
+end
+
+local function onDriveBy(player, toggle)
+    if CU.active and player == CU.player and (toggle == false or toggle == 0) then
+        return false
+    end
+    return true
+end
+
+local function onRemoveAll(ped)
+    if CU.active and ped == CU.ped then
+        CU.stripped = CU.stripped + 1
+        return false
+    end
+    return true
+end
+
+local function onRemoveOne(ped)
+    if CU.active and ped == CU.ped then
+        CU.stripped = CU.stripped + 1
+        return false
+    end
+    return true
+end
+
+local CALLBACKS = {
+    [H_FIRING]    = onFiring,
+    [H_DRIVEBY]   = onDriveBy,
+    [H_REMOVEALL] = onRemoveAll,
+    [H_REMOVEW]   = onRemoveOne,
+}
+
+local ORDER = { H_FIRING, H_DRIVEBY, H_REMOVEALL, H_REMOVEW }
+
+-- ---------------------------------------------------------------------------
+-- INSTALL / REMOVE
+-- ---------------------------------------------------------------------------
+local function installAll()
+    local a = api()
+    if not a then return 0 end
+
+    local count = 0
+    for i = 1, #ORDER do
+        local hash = ORDER[i]
+        if not installed[hash] then
+            pcall(a.UnhookNative, hash)
+            local ok = pcall(a.HookNative, hash, CALLBACKS[hash])
+            if ok then
+                installed[hash] = true
+                count = count + 1
+            end
+        else
+            count = count + 1
+        end
+    end
+
+    CU.installed = count
+
+    if type(a.HasNativeHookInitializationFailed) == "function" then
+        local ok, failed = pcall(a.HasNativeHookInitializationFailed)
+        if ok and failed then emit("hook init reported a failure") end
+    end
+
+    return count
+end
+
+local function removeAll()
+    local a = api()
+    for hash in pairs(installed) do
+        if a then pcall(a.UnhookNative, hash) end
+    end
+    installed = {}
+    CU.installed = 0
+end
+
+-- ---------------------------------------------------------------------------
+-- TICK. Refreshes the cached identity and retries a failed install. Nothing
+-- here touches the guard: it only reads the local player and ped.
+-- ---------------------------------------------------------------------------
+local function tick(now)
+    if not CU.active then
+        if next(installed) ~= nil then removeAll() end
+        return
+    end
+
+    CU.player = PlayerId()
+    CU.ped = PlayerPedId()
+
+    if CU.installed < #ORDER and now - CU.lastTry >= O.jitter(RETRY_MS, 0.2) then
+        CU.lastTry = now
+        installAll()
+    end
+end
+
+-- ---------------------------------------------------------------------------
+-- PUBLIC
+-- ---------------------------------------------------------------------------
+function CU.arm()
+    if CU.active then return true end
+
+    if not B.spend("combat") then
+        emit("budget refused")
+        return false
+    end
+
+    CU.player = PlayerId()
+    CU.ped = PlayerPedId()
+    CU.blocked = 0
+    CU.stripped = 0
+    CU.lastTry = O.now()
+    CU.active = true
+
+    installAll()
+
+    notify(true)
+    if CU.installed >= #ORDER then
+        emit("armed - %d hooks", CU.installed)
+    else
+        emit("armed - %d/%d hooks, retrying", CU.installed, #ORDER)
+    end
+    return true
+end
+
+function CU.stop(reason)
+    CU.active = false
+    removeAll()
+    notify(false)
+    if reason then emit("stopped: %s", tostring(reason)) end
+end
+
+function CU.disable()
+    CU.stop("panic")
+end
+
+function CU.isActive()
+    return CU.active
+end
+
+function CU.status()
+    return ("active=%s hooks=%d blocked=%d stripped=%d"):format(
+        tostring(CU.active), CU.installed, CU.blocked, CU.stripped)
+end
+
+O.every("combat", POLL_MS, tick, 0)
+
+return CU
+
+end)(O,S,B)
+
+-- ---------------------------------------------------------------------------
+-- PART: 21_gags.lua
+-- ---------------------------------------------------------------------------
+local G = (function(O,S,B,Menu)
+-- ============================================================================
+-- VANGUARD / 21 VEHICLE GAGS
+-- ----------------------------------------------------------------------------
+-- Online > Troll > "Engine Cut" and "Horn".
+--
+-- Engine Cut:
+--   While armed, the selected player's engine is held off. The car coasts,
+--   loses power and stalls; if the driver restarts it, the next tick cuts it
+--   again. On release the engine is restored to the state it had before the
+--   first cut (never force-started on a car that was already parked off).
+--
+-- Horn:
+--   While armed, the selected player's car honks on its own every 2.5 s
+--   (jittered). If the player is on foot, the last car they used is targeted,
+--   but only while it is within 60 m. The native only sounds briefly when a
+--   player is inside, which is exactly the gag: repeated short toots.
+--
+-- Why ownership:
+--   Engine state and horn state replicate from the client that owns the
+--   vehicle. Without ownership the write is local and the target hears
+--   nothing. Ownership is requested once per second at most.
+--
+-- Why it is quiet against WaveShield V4:
+--   * no entity is created              -> entityCreating never runs
+--   * no ped is attached                -> entities.lua:166-188 never matches
+--   * no ped task is issued             -> clearPedTasksEvent / givePedScriptedTaskEvent
+--                                          never fire
+--   * no state bag is written           -> exploits-fixed.lua:1-26 never fires
+--   * no server event is sent
+--   * V4 has no detector for engine, horn, door or light state; the only
+--     vehicle-state branch is AntiMagneto, which skips player-owned cars
+--     (entities.lua:130-140).
+--
+-- The module never touches the operator's own vehicle.
+-- ============================================================================
+
+local G = {}
+
+local POLL_MS       = 250
+local REQUEST_MS    = 1000
+local HORN_MS       = 2500
+local HORN_DURATION = 800
+local HORN_RANGE    = 60.0
+
+local function makeState()
+    return {
+        active   = false,
+        veh      = 0,
+        wasOn    = false,
+        lastReq  = 0,
+        nextAt   = 0,
+        sessions = 0,
+        onChange = nil,
+    }
+end
+
+G.engine = makeState()
+G.horn   = makeState()
+
+local function emit(fmt, ...)
+    O.log("gags: " .. tostring(fmt), ...)
+end
+
+local function notify(state, active)
+    if type(state.onChange) == "function" then
+        pcall(state.onChange, active)
+    end
+end
+
+-- ---------------------------------------------------------------------------
+-- TARGET AND OWNERSHIP
+-- ---------------------------------------------------------------------------
+local function targetPed()
+    local serverId = (Menu and Menu.SelectedPlayer) or nil
+    if type(serverId) ~= "number" then return 0 end
+
+    local player = GetPlayerFromServerId(serverId)
+    if type(player) ~= "number" or player < 0 then return 0 end
+
+    local ped = GetPlayerPed(player)
+    if type(ped) ~= "number" or ped == 0 then return 0 end
+    if not DoesEntityExist(ped) then return 0 end
+    return ped
+end
+
+local function myVehicle()
+    local ped = O.Ctx.ped
+    if type(ped) ~= "number" or ped == 0 then return 0 end
+    if not O.Ctx.inVehicle then return 0 end
+    local veh = GetVehiclePedIsIn(ped, false)
+    if type(veh) ~= "number" or veh == 0 then return 0 end
+    if not DoesEntityExist(veh) then return 0 end
+    return veh
+end
+
+local function currentVehicle(ped)
+    local veh = GetVehiclePedIsIn(ped, false)
+    if type(veh) ~= "number" or veh == 0 then return 0 end
+    if not DoesEntityExist(veh) then return 0 end
+    return veh
+end
+
+local function lastVehicle(ped)
+    local veh = GetVehiclePedIsIn(ped, true)
+    if type(veh) ~= "number" or veh == 0 then return 0 end
+    if not DoesEntityExist(veh) then return 0 end
+
+    local okV, vcoords = pcall(GetEntityCoords, veh)
+    local okP, pcoords = pcall(GetEntityCoords, ped)
+    if okV and okP and vcoords and pcoords then
+        if O.distance(vcoords, pcoords) > HORN_RANGE then return 0 end
+    end
+    return veh
+end
+
+local function ensureControl(veh, state, now)
+    if NetworkHasControlOfEntity(veh) then return true end
+
+    if now - state.lastReq >= REQUEST_MS then
+        state.lastReq = now
+        pcall(NetworkRequestControlOfEntity, veh)
+    end
+    return false
+end
+
+-- ---------------------------------------------------------------------------
+-- ENGINE CUT
+-- ---------------------------------------------------------------------------
+local function restoreEngine(state)
+    if state.veh ~= 0 and DoesEntityExist(state.veh) and state.wasOn then
+        pcall(SetVehicleEngineOn, state.veh, true, true, false)
+    end
+    state.veh = 0
+    state.wasOn = false
+end
+
+local function engineTick(now)
+    local state = G.engine
+
+    if not state.active then
+        if state.veh ~= 0 then restoreEngine(state) end
+        return
+    end
+
+    local ped = targetPed()
+    if ped == 0 then
+        restoreEngine(state)
+        return
+    end
+
+    local veh = currentVehicle(ped)
+    if veh == 0 then
+        restoreEngine(state)
+        return
+    end
+    if veh == myVehicle() then return end
+
+    if state.veh ~= 0 and state.veh ~= veh then
+        restoreEngine(state)
+    end
+
+    if not ensureControl(veh, state, now) then return end
+
+    if state.veh ~= veh then
+        state.veh = veh
+        local ok, running = pcall(GetIsVehicleEngineRunning, veh)
+        state.wasOn = (ok and running == true)
+    end
+
+    -- instantly = true: no start/stop animation.
+    -- disableAutoStart = true: the game does not silently restart it.
+    pcall(SetVehicleEngineOn, veh, false, true, true)
+end
+
+-- ---------------------------------------------------------------------------
+-- HORN
+-- ---------------------------------------------------------------------------
+local function hornTick(now)
+    local state = G.horn
+
+    if not state.active then
+        state.veh = 0
+        return
+    end
+
+    local ped = targetPed()
+    if ped == 0 then
+        state.veh = 0
+        return
+    end
+
+    local veh = currentVehicle(ped)
+    if veh == 0 then veh = lastVehicle(ped) end
+    if veh == 0 then
+        state.veh = 0
+        return
+    end
+    if veh == myVehicle() then return end
+
+    state.veh = veh
+
+    if not ensureControl(veh, state, now) then return end
+    if now < state.nextAt then return end
+
+    state.nextAt = now + O.jitter(HORN_MS, 0.4)
+    -- duration 800 ms, mode 0 (normal), forever false. If a player is inside,
+    -- the game shortens it by design; the next toot comes on the next window.
+    pcall(StartVehicleHorn, veh, HORN_DURATION, 0, false)
+end
+
+-- ---------------------------------------------------------------------------
+-- TICK
+-- ---------------------------------------------------------------------------
+local function tick(now)
+    engineTick(now)
+    hornTick(now)
+end
+
+-- ---------------------------------------------------------------------------
+-- PUBLIC
+-- ---------------------------------------------------------------------------
+function G.armEngine()
+    local state = G.engine
+    if state.active then return true end
+
+    if not B.spend("engine") then
+        emit("engine budget refused")
+        return false
+    end
+
+    state.active = true
+    state.veh = 0
+    state.wasOn = false
+    state.lastReq = 0
+    state.sessions = state.sessions + 1
+
+    notify(state, true)
+    emit("engine armed")
+    return true
+end
+
+function G.stopEngine(reason)
+    local state = G.engine
+    state.active = false
+    restoreEngine(state)
+    notify(state, false)
+    if reason then emit("engine stopped: %s", tostring(reason)) end
+end
+
+function G.armHorn()
+    local state = G.horn
+    if state.active then return true end
+
+    if not B.spend("horn") then
+        emit("horn budget refused")
+        return false
+    end
+
+    state.active = true
+    state.veh = 0
+    state.lastReq = 0
+    state.nextAt = 0
+    state.sessions = state.sessions + 1
+
+    notify(state, true)
+    emit("horn armed")
+    return true
+end
+
+function G.stopHorn(reason)
+    local state = G.horn
+    state.active = false
+    state.veh = 0
+    notify(state, false)
+    if reason then emit("horn stopped: %s", tostring(reason)) end
+end
+
+function G.disable()
+    G.stopEngine("panic")
+    G.stopHorn("panic")
+end
+
+function G.engineActive()
+    return G.engine.active
+end
+
+function G.hornActive()
+    return G.horn.active
+end
+
+function G.status()
+    return ("engine=%s/%s horn=%s/%s"):format(
+        tostring(G.engine.active), tostring(G.engine.veh),
+        tostring(G.horn.active), tostring(G.horn.veh))
+end
+
+O.every("gags", POLL_MS, tick, 0)
+
+return G
+
+end)(O,S,B,Menu)
+
+-- ---------------------------------------------------------------------------
+-- PART: 22_tow.lua
+-- ---------------------------------------------------------------------------
+local T = (function(O,S,B,Menu)
+-- ============================================================================
+-- VANGUARD / 22 TOW
+-- ----------------------------------------------------------------------------
+-- Online > Troll > "Tow" and "Catapult".
+--
+-- Tow:
+--   The selected player's vehicle is attached behind the operator's vehicle
+--   and follows it. Combined with Car Prison, the target is locked inside a
+--   car that is being dragged: "Prison roulante".
+--
+-- Catapult:
+--   While towing, detaches the target vehicle and gives it the operator's
+--   velocity plus an upward kick. The car flies; the tow toggle drops so the
+--   next tick does not re-attach it.
+--
+-- Why vehicle -> vehicle:
+--   WaveShield V4's only attach detector reads GetEntityAttachedTo(vehicle)
+--   and reports when the attached entity is a *player ped*
+--   (client/entities.lua:166-188). A vehicle attached to a vehicle never
+--   matches. No ped is attached, no task is issued, no entity is created.
+--
+-- Ownership:
+--   The attach replicates from the client that owns the towed vehicle.
+--   Ownership is requested once per second at most.
+--
+-- The module never tows the operator's own vehicle.
+-- ============================================================================
+
+local T = {}
+
+local POLL_MS    = 250
+local REQUEST_MS = 1000
+local ATTACH_MS  = 1000
+
+-- Local offset behind the operator vehicle. GTA vehicles face +Y in local
+-- space, so -Y is the rear. The small Z lift keeps the towed car off the road.
+local OFFSET_X = 0.0
+local OFFSET_Y = -5.0
+local OFFSET_Z = 0.5
+
+local LAUNCH_MULT = 1.5
+local LAUNCH_UP   = 6.0
+local LAUNCH_CAP  = 45.0
+
+T.active   = false
+T.veh      = 0
+T.myVeh    = 0
+T.attached = false
+T.lastReq  = 0
+T.lastAttach = 0
+T.sessions = 0
+T.onChange = nil
+
+local function emit(fmt, ...)
+    O.log("tow: " .. tostring(fmt), ...)
+end
+
+local function notify(active)
+    if type(T.onChange) == "function" then
+        pcall(T.onChange, active)
+    end
+end
+
+-- ---------------------------------------------------------------------------
+-- TARGET
+-- ---------------------------------------------------------------------------
+local function targetPed()
+    local serverId = (Menu and Menu.SelectedPlayer) or nil
+    if type(serverId) ~= "number" then return 0 end
+
+    local player = GetPlayerFromServerId(serverId)
+    if type(player) ~= "number" or player < 0 then return 0 end
+
+    local ped = GetPlayerPed(player)
+    if type(ped) ~= "number" or ped == 0 then return 0 end
+    if not DoesEntityExist(ped) then return 0 end
+    return ped
+end
+
+local function myVehicle()
+    local ped = O.Ctx.ped
+    if type(ped) ~= "number" or ped == 0 then return 0 end
+    if not O.Ctx.inVehicle then return 0 end
+    local veh = GetVehiclePedIsIn(ped, false)
+    if type(veh) ~= "number" or veh == 0 then return 0 end
+    if not DoesEntityExist(veh) then return 0 end
+    return veh
+end
+
+local function targetVehicle(ped)
+    local veh = GetVehiclePedIsIn(ped, false)
+    if type(veh) ~= "number" or veh == 0 then return 0 end
+    if not DoesEntityExist(veh) then return 0 end
+    return veh
+end
+
+local function ensureControl(veh, now)
+    if NetworkHasControlOfEntity(veh) then return true end
+    if now - T.lastReq >= REQUEST_MS then
+        T.lastReq = now
+        pcall(NetworkRequestControlOfEntity, veh)
+    end
+    return false
+end
+
+-- ---------------------------------------------------------------------------
+-- ATTACH / DETACH
+-- ---------------------------------------------------------------------------
+local function detach()
+    if T.veh ~= 0 and DoesEntityExist(T.veh) then
+        pcall(DetachEntity, T.veh, true, true)
+    end
+    T.attached = false
+    T.veh = 0
+    T.lastAttach = 0
+end
+
+local function attach(veh, myVeh)
+    pcall(AttachEntityToEntity, veh, myVeh, 0,
+        OFFSET_X, OFFSET_Y, OFFSET_Z,
+        0.0, 0.0, 0.0,
+        false, false, false, false, 2, true)
+    T.veh = veh
+    T.myVeh = myVeh
+    T.attached = true
+end
+
+local function isAttached(veh, myVeh)
+    if veh == 0 or myVeh == 0 then return false end
+    local ok, attached = pcall(IsEntityAttachedToEntity, veh, myVeh)
+    return ok and attached == true
+end
+
+-- ---------------------------------------------------------------------------
+-- TICK
+-- ---------------------------------------------------------------------------
+local function tick(now)
+    if not T.active then
+        if T.attached or T.veh ~= 0 then detach() end
+        return
+    end
+
+    local ped = targetPed()
+    if ped == 0 then detach(); return end
+
+    local veh = targetVehicle(ped)
+    if veh == 0 then detach(); return end
+
+    local mine = myVehicle()
+    if mine == 0 then detach(); return end
+    if veh == mine then detach(); return end
+
+    if T.veh ~= 0 and T.veh ~= veh then detach() end
+
+    if not ensureControl(veh, now) then return end
+
+    if T.attached and isAttached(T.veh, mine) then
+        T.myVeh = mine
+        return
+    end
+
+    if now - T.lastAttach < ATTACH_MS then return end
+
+    T.lastAttach = now
+    attach(veh, mine)
+end
+
+-- ---------------------------------------------------------------------------
+-- PUBLIC
+-- ---------------------------------------------------------------------------
+function T.arm()
+    if T.active then return true end
+
+    if not B.spend("tow") then
+        emit("budget refused")
+        return false
+    end
+
+    T.active = true
+    T.veh = 0
+    T.myVeh = 0
+    T.attached = false
+    T.lastReq = 0
+    T.lastAttach = 0
+    T.sessions = T.sessions + 1
+
+    notify(true)
+    emit("armed - select a player in a vehicle")
+    return true
+end
+
+function T.stop(reason)
+    T.active = false
+    detach()
+    notify(false)
+    if reason then emit("stopped: %s", tostring(reason)) end
+end
+
+function T.disable()
+    T.stop("panic")
+end
+
+function T.catapult()
+    if not T.active or not T.attached then
+        emit("catapult refused: not towing")
+        return false
+    end
+    if T.veh == 0 or not DoesEntityExist(T.veh) then
+        emit("catapult refused: no vehicle")
+        return false
+    end
+    if not isAttached(T.veh, T.myVeh) then
+        emit("catapult refused: attachment lost")
+        return false
+    end
+    if not B.spend("catapult") then
+        emit("catapult budget refused")
+        return false
+    end
+
+    local veh = T.veh
+    local mine = T.myVeh
+
+    local vx, vy, vz = 0.0, 0.0, 0.0
+    local okVel, vel = pcall(GetEntityVelocity, mine)
+    if okVel and vel then
+        vx, vy, vz = vel.x or 0.0, vel.y or 0.0, vel.z or 0.0
+    end
+
+    vx, vy = vx * LAUNCH_MULT, vy * LAUNCH_MULT
+
+    local speed = math.sqrt(vx * vx + vy * vy)
+    if speed > LAUNCH_CAP then
+        local scale = LAUNCH_CAP / speed
+        vx, vy = vx * scale, vy * scale
+    end
+
+    -- Detach first: the attachment would override the velocity.
+    pcall(DetachEntity, veh, true, true)
+    pcall(SetEntityVelocity, veh, vx, vy, vz + LAUNCH_UP)
+
+    T.active = false
+    T.attached = false
+    T.veh = 0
+    T.myVeh = 0
+
+    notify(false)
+    emit("catapulted")
+    return true
+end
+
+function T.isActive()
+    return T.active
+end
+
+function T.status()
+    return ("active=%s veh=%s attached=%s sessions=%d"):format(
+        tostring(T.active), tostring(T.veh), tostring(T.attached), T.sessions)
+end
+
+O.every("tow", POLL_MS, tick, 0)
+
+return T
+
+end)(O,S,B,Menu)
+
+-- ---------------------------------------------------------------------------
 -- PART: 07_menu.lua
 -- ---------------------------------------------------------------------------
-local U = (function(O,S,E,D,F,V,M,SN,C,A,ST,SB,VS,K,N,L,VC,CP,Menu)
+local U = (function(O,S,E,D,F,V,M,SN,C,A,ST,SB,VS,K,N,L,VC,CP,CU,G,T,Menu)
 -- ============================================================================
 -- VANGUARD / 07 MENU
 -- ----------------------------------------------------------------------------
@@ -24143,6 +24953,9 @@ function UI.panic()
     L.disable()
     VC.disable()
     CP.disable()
+    CU.disable()
+    G.disable()
+    T.disable()
     A.panic()
     D.detachShell()
     E.destroyAll()
@@ -24605,6 +25418,168 @@ local function installCarPrison()
 end
 
 -- ---------------------------------------------------------------------------
+-- COMBAT > GENERAL > COMBAT UNLOCK
+--
+-- Some servers protect new accounts by calling the firing-block native every
+-- frame on the client. One call blocks shooting and melee both. The module
+-- hooks the engine call for the local player only; every other call passes
+-- through. Rows is first in Combat > General because it gates every other
+-- combat feature on a fresh account.
+-- ---------------------------------------------------------------------------
+local function installCombatUnlock()
+    local tab = findTab("Combat", "General")
+    if not tab then return false end
+
+    removeItem("Combat", "General", "Combat Unlock")
+
+    local row
+    row = {
+        name = "Combat Unlock",
+        type = "toggle",
+        value = CU.isActive(),
+        onClick = function(value)
+            local active
+            if value then
+                active = CU.arm()
+            else
+                CU.stop("operator")
+                active = false
+            end
+            row.value = active
+            return active
+        end,
+    }
+
+    CU.onChange = function(active)
+        row.value = active
+    end
+
+    tab.items = tab.items or {}
+    table.insert(tab.items, 1, row)
+    return true
+end
+
+-- ---------------------------------------------------------------------------
+-- ONLINE > TROLL > VEHICLE GAGS
+--
+-- Engine Cut holds the target's engine off; Horn toots their car every few
+-- seconds. Both use the same target/ownership rule as Car Prison. They sit in
+-- their own "Gags" group before "Bugs" so the Attacks block stays intact.
+-- ---------------------------------------------------------------------------
+local function installGags()
+    local tab = findTab("Online", "Troll")
+    if not tab then return false end
+
+    removeItem("Online", "Troll", "Engine Cut")
+    removeItem("Online", "Troll", "Horn")
+    removeItem("Online", "Troll", "Tow")
+    removeItem("Online", "Troll", "Catapult")
+
+    tab.items = tab.items or {}
+    for i = #tab.items, 1, -1 do
+        local item = tab.items[i]
+        if item.isSeparator and item.separatorText == "Gags" then
+            table.remove(tab.items, i)
+        end
+    end
+
+    local engineRow
+    engineRow = {
+        name = "Engine Cut",
+        type = "toggle",
+        value = G.engineActive(),
+        onClick = function(value)
+            local active
+            if value then
+                active = G.armEngine()
+            else
+                G.stopEngine("operator")
+                active = false
+            end
+            engineRow.value = active
+            return active
+        end,
+    }
+    G.engine.onChange = function(active)
+        engineRow.value = active
+    end
+
+    local hornRow
+    hornRow = {
+        name = "Horn",
+        type = "toggle",
+        value = G.hornActive(),
+        onClick = function(value)
+            local active
+            if value then
+                active = G.armHorn()
+            else
+                G.stopHorn("operator")
+                active = false
+            end
+            hornRow.value = active
+            return active
+        end,
+    }
+    G.horn.onChange = function(active)
+        hornRow.value = active
+    end
+
+    local towRow
+    towRow = {
+        name = "Tow",
+        type = "toggle",
+        value = T.isActive(),
+        onClick = function(value)
+            local active
+            if value then
+                active = T.arm()
+            else
+                T.stop("operator")
+                active = false
+            end
+            towRow.value = active
+            return active
+        end,
+    }
+    T.onChange = function(active)
+        towRow.value = active
+    end
+
+    local catapultRow = {
+        name = "Catapult",
+        type = "action",
+        onClick = function()
+            T.catapult()
+        end,
+    }
+
+    local at = nil
+    for i = 1, #tab.items do
+        local item = tab.items[i]
+        if item.isSeparator and item.separatorText == "Bugs" then
+            at = i
+            break
+        end
+    end
+    if not at then at = #tab.items + 1 end
+
+    -- Insert in reverse so the final order is: Gags, Engine Cut, Horn, Tow,
+    -- Catapult.
+    table.insert(tab.items, at, catapultRow)
+    table.insert(tab.items, at, towRow)
+    table.insert(tab.items, at, hornRow)
+    table.insert(tab.items, at, engineRow)
+    table.insert(tab.items, at, {
+        name = "",
+        isSeparator = true,
+        separatorText = "Gags",
+    })
+
+    return true
+end
+
+-- ---------------------------------------------------------------------------
 -- PROTECTION
 -- Only local-ped recovery. No hooks, no spoof, no firewall, no entity edits.
 -- ---------------------------------------------------------------------------
@@ -24910,6 +25885,8 @@ local function build()
     installVoice()
     installLockPlayer()
     installCarPrison()
+    installCombatUnlock()
+    installGags()
     installProtection()
     installCrasher()
     installVehicleSpoof()
@@ -24985,7 +25962,7 @@ UI.boot()
 
 return UI
 
-end)(O,S,E,D,F,V,M,SN,C,A,ST,SB,VS,K,N,L,VC,CP,Menu)
+end)(O,S,E,D,F,V,M,SN,C,A,ST,SB,VS,K,N,L,VC,CP,CU,G,T,Menu)
 
 
 end)()
