@@ -16001,7 +16001,7 @@ end)()
 -- >>> VANGUARD MODULE BEGIN
 -- ============================================================================
 -- VANGUARD  (integrated artifact - edit src/ and rebuild)
--- Generated: 2026-10-25 16:27:28
+-- Generated: 2026-10-25 17:22:27
 --
 -- This block lives in loader.lua and in dist/loader.built.lua at the same
 -- time. It is the only place the local Menu table is in scope. Rebuilding
@@ -23496,205 +23496,134 @@ local L = (function(O,S,B,Menu)
 -- ============================================================================
 -- VANGUARD / 17 LOCK PLAYER
 -- ----------------------------------------------------------------------------
--- Online > Troll > "Lock Player (Shift)".
+-- Player > Target > "Lock Player (Shift)".
 --
 -- What it does:
---   The operator selects a player, enters a vehicle and holds Shift. The
---   selected player is pulled to that vehicle and seated in it; while Shift is
---   held the seat is re-asserted and the door is locked for that player, so an
---   exit is repaired on the next loop instead of ending the feature. Releasing
---   Shift unlocks the door and lets the current task expire on its own.
+--   The row is a permanent arm. Once it is on it stays on until the operator
+--   turns it off; it never expires, it does not need to be re-armed after a
+--   target respawns, and it survives leaving and re-entering a vehicle.
 --
--- Why this is a task feature and not an attach feature
--- ----------------------------------------------------
--- The previous build asked for network ownership, then attached the target ped
--- (or the target's car) to the operator's vehicle. Two independent facts make
--- that path dead on the guard this depot targets:
+--   While Shift is held, the operator's current vehicle is driven at the
+--   Gravitate ceiling (200) into the target, over and over. The target is
+--   aimed at whether they are on foot or in a vehicle: the aim entity is the
+--   target ped, or the target vehicle when they are seated in one. Release
+--   Shift and the car is handed back to normal physics; the row stays armed
+--   and the next Shift starts the loop again against the nearest valid
+--   player.
 --
---   1. WaveShield V4 pins `sv_filterRequestControl` to 4 at boot
---      (core/server/system/configUpdater.lua:37). Mode 4 does not route
---      REQUEST_CONTROL_EVENT at all, so NetworkRequestControlOfEntity can
---      never hand us a remote entity. The request batch, the regrab timer and
---      the control cooldown were therefore a five-event server signature that
---      bought nothing.
---   2. An attachment is replicated from the *owner of the child*. The target
---      ped is owned by the target's client; our local AttachEntityToEntity
---      writes a child state that its owner never sends. It is a private
---      picture for the operator. This is also why the corpus' "bug player"
---      takes control of a vehicle and attaches that vehicle as the child
---      (luamenu.txt:5768-5796): only the child owner's copy is authoritative.
+--   Target order: the player selected in Online > Player List first, then the
+--   nearest other player. A selected player that is self, gone, in the
+--   operator's own vehicle, or beyond the engagement range does not block the
+--   fallback. When nothing is selected the nearest player is used, which is
+--   what makes the row work without a manual selection.
 --
--- The only channel that makes a remote player move without ownership is the
--- scripted-task RPC. GTA routes TASK_* applied to a ped the caller does not own
--- through the `givePedScriptedTaskEvent` server event; FiveM exposes that
--- event so a server can filter it. The event is declared in FiveM's own server
--- code (code/components/citizen-server-impl/src/state/ServerGameState.cpp:
--- 6251-6287) and carries only `entityNetId` and a 10-bit `taskId`; the task
--- parameters travel in the game-event buffer, which the server does not
--- rewrite. The generic handler (7095-7126) is a plain `TriggerEvent2`, and a
--- resource that calls `CancelEvent()` stops the routing. WaveShield V4's
--- handler is an empty stub
--- (modules/server/events/givePedScriptedTaskEvent.lua:2-4): it neither
--- cancels, nor reports, nor reads `taskId`. The task is executed by the
--- target's own client, so the resulting seat state is owned by the target and
--- is authoritative for everyone. The depot's own corpus already relies on this
--- for remote player peds: `Nouveau/dev.lua:2012` calls TaskPlayAnim on a player
--- ped it does not own, and `Nouveau/dev.lua:3906` calls TaskLeaveVehicle on a
--- remote target. The native differs here, the RPC does not.
+--   The Vehicle > Performance rows "Gravitate Vehicle" and "Gravitate Speed"
+--   are mirrored to ON / 200 for the duration of a ram session, then
+--   restored. The base toggle's onClick is never called: its injected loop
+--   steers from the gameplay camera, and two drivers writing the same entity
+--   every frame would fight. This module implements the same 200-unit
+--   velocity directly.
 --
--- The task IDs matter because a server AC can filter on them. `TaskEnterVehicle`
--- is `TASK_ENTER_VEHICLE` 160, and `TaskGoToEntity` builds
--- `CTaskComplexControlMovement(TTaskMoveSeekEntityStandard)`, i.e. wrapper 35 /
--- move 210 (eTaskTypeIndex). The public Icarus AC's default task blacklist is
--- {12, 100, 101, 151, 205, 221, 222, 224, 307, 343, 356}; none of our IDs is
--- in it. Icarus separately bans every `clearPedTasksEvent`, which this module
--- never produces.
+-- Why the arm is permanent but the ram is Shift-held:
+--   "Permanent" is the row state: the operator should not have to re-enable
+--   the feature after every target, every respawn, or every vehicle change.
+--   "Lock in a loop" is an action: holding Shift is the operator's live
+--   consent to keep writing velocity to their own car. Releasing Shift ends
+--   the ram session and restores gravity/velocity, so the car cannot run away
+--   while the operator is doing something else. The next Shift re-enters the
+--   loop with no menu interaction.
 --
--- Why a seat and not a rope
--- -------------------------
--- A task-driven warp into the operator's vehicle is the strongest lock that
--- survives without ownership:
+-- Why this is a local-vehicle write, not a remote-ped task
+-- -------------------------------------------------------
+-- The previous build pulled the target into the operator's car with
+-- TaskEnterVehicle / TaskGoToEntity and held a per-player door lock. That
+-- design has three live failure modes:
 --
---   * `TaskEnterVehicle(ped, veh, timeout, seat, 1.0, 16, 0)` uses flag 16,
---     "teleport directly into vehicle" (native doc). The target's client owns
---     the resulting seat, so the server and every other client accept it.
---   * `SetVehicleDoorsLockedForPlayer(veh, player, true)` is a write on *our*
---     vehicle, which we own. It is not a state bag, not a network event and
---     not a native WaveShield wraps.
---   * If the target leaves anyway, the next tick sees `GetVehiclePedIsIn ~= veh`
---     and re-issues the enter task. The lock is the loop, not a single write.
---   * If no seat is free (two-seater already full), the approach task keeps the
---     target at the car; the module never pretends it seated them.
+--   1. A scripted task on a remote ped is routed through the
+--      givePedScriptedTaskEvent RPC and executed by the target's client. The
+--      target's own movement input can cancel a locomotion task.
+--   2. A door lock on a vehicle the target does not own is repaired by the
+--      target's client on the next frame.
+--   3. The target must be within a task range and a seat must be free, which
+--      makes the feature look dead in every other situation.
 --
--- Why the approach is a task and not a velocity write
--- ---------------------------------------------------
--- SetEntityVelocity on a remote ped is the same private-picture problem as the
--- attach: the target's owner keeps broadcasting its own velocity. The previous
--- 16 m/s pull never moved the victim. TaskGoToEntity is executed by the
--- target's client and therefore moves the real ped, but the target's own
--- movement input can cancel a scripted locomotion task. The pull is best-effort
--- and is re-issued on a jittered cadence; the lock proper is the enter task,
--- which is a direct warp. Its speed argument is a gait multiplier, not metres
--- per second; it is clamped to 3.0 here. That is
--- deliberate: V4's AntiSpeedHack measures on-foot speed and starts striking
--- above 14 m/s (speedHack.lua:36-59), and no task setting is worth a false
--- positive on the target's own client. The Gravitate slider is 50..500 and is
--- not read here; its "run at maximum" intent is capped at a 16 m/s design
--- ceiling and mapped into the task's [1.0, 3.0] gait scale.
+-- The operator's vehicle is the one entity this client owns and may write
+-- without a request. `SetEntityVelocity` on it is authoritative for this
+-- client and is replicated by the vehicle's owner like every other transform.
+-- `SetEntityRotation` only changes yaw; no position teleport is made.
+-- `SetVehicleGravityAmount(0)` is the same CFX gravity value the base
+-- Gravitate Vehicle feature writes; it is restored to 9.8 on release.
 --
--- Why this does not wake the V4 detectors
--- ---------------------------------------
---   * No entity is created: entityCreating never runs.
---   * No attachment: entities.lua:166-188 (AntiAttachVehicles) and the
---     remote-attachment sanitization are never in the path.
---   * No ragdoll: RAGDOLL_REQUEST_EVENT is blocked by
---     configUpdater.lua:41 and is never sent.
---   * No ClearPedTasks, local or remote: clearPedTasksEvent.lua:2-20 has
---     nothing to cancel. Tasks are finite and expire on their own.
---   * No SetEntityCoords / SetEntityCoordsNoOffset / SetPedIntoVehicle /
---     TaskWarpPedIntoVehicle: those are the natives WaveShield wraps with its
---     IsValidExecution stack check (modules/include/client.lua:1052-1124).
---     TaskGoToEntity, TaskEnterVehicle, IsVehicleSeatFree,
---     GetVehicleMaxNumberOfPassengers, GetVehiclePedIsEntering and the
---     door-lock native are absent from that wrapper list.
---   * No state bag, no custom server event, no synced scene:
---     exploits-fixed.lua:1-26, startNetworkSyncedSceneEvent.lua and
---     premiumEvents.lua:20-31 stay silent.
---   * The victim's own movement checks do not fire on the warp:
---       - teleport.lua:3-25 requires `TP_oldIsInVehicle == isPlayerInVehicle`
---         and a valid *current* state. A passenger is not a valid state
---         (`not isPlayerInVehicle or (isDriver and speed < 3)`), and the
---         on-foot -> seated transition changes the flag, so neither side of
---         the comparison can match.
---       - noclip.lua:39-53 requires a frozen / collision-disabled ped or a
---         low-speed high-altitude state. A seated passenger is none of them.
---       - speedHack.lua:36-59 is bounded to 14 m/s and the task is capped at
---         a 3.0 gait.
---   * The door lock is per-player vehicle state owned by us. It is not
---     "SetExclusiveDriver", the one state change premiumEvents.lua bans.
+-- Why 200
+-- -------
+-- The Gravitate Speed slider is 50..500 and the base feature writes the raw
+-- value as velocity units. The operator asked for the maximum, 200. The
+-- module mirrors 200 into the slider while a session is live and restores the
+-- operator's previous value on release. It never reads the slider: a missing
+-- or renamed item cannot change the driving speed.
+--
+-- Detector surface
+-- ----------------
+--   * The target is never written: no task, no attachment, no ownership
+--     request, no door lock, no position write. The only target reads are
+--     GetEntityCoords and IsPedDeadOrDying.
+--   * The only entity written is the operator's own vehicle: velocity,
+--     rotation, gravity, engine/repair state. All are local-authoritative.
+--   * V4's speed check ignores players in a vehicle (speedHack.lua:19-24).
+--     Its teleport check requires two in-vehicle samples below 3 m/s
+--     (teleport.lua:3-25). Its noclip check requires a frozen or
+--     collision-disabled ped (noclip.lua:39-53). At 200 m/s the vehicle fails
+--     every one of those preconditions, and the operator's ped is seated.
+--   * No entity is created, no server event is sent, no state bag is written.
+--     The budget family "lock" caps arm/disarm, not target re-acquisition.
+--
+-- Residual risk:
+--   * The server sees a vehicle moving faster than its handling data. A
+--     server-side vehicle-speed check, or a human report, is the remaining
+--     exposure. The base Gravitate Vehicle feature has the same signature.
+--   * At 200 m/s thin geometry can be tunnelled. The driver holds a short
+--     pass at impact range (PASS_MS) so the collision solver gets a window,
+--     but the travel leg is deliberately fast.
 --
 -- Tier:
---   Tier A only. No Susano.InjectResource, no graft, no chunk on the guard's
---   stack, no global. The key read uses Susano.GetAsyncKeyState when present
---   and the normal control natives as the harness/offline fallback.
+--   Tier A only. No Susano.InjectResource, no native hook, no server event.
 -- ============================================================================
 
 local N = {}
 
--- Control 21 is INPUT_SPRINT (Shift). It is the fallback path when the raw
--- Windows key state is not available to the sandbox.
-local CONTROL_SPRINT = 21
-local VK_LSHIFT      = 0xA0
-local VK_SHIFT       = 0x10
-
--- Range graph, in metres. START is the gate to open a session; KEEP is the
--- gate to keep one alive after the car has moved. A task leash can lag behind
--- a fast car, so KEEP is wider than START.
-local START_RANGE      = 30.0
-local KEEP_RANGE       = 45.0
-local ENTER_RANGE      = 6.0   -- warp only after the target is this close
-local TASK_STOP        = 1.5   -- TaskGoToEntity stops inside this radius
-
--- Timing. Every value is a base; the scheduler and each branch add jitter.
-local POLL_MS          = 160
-local SHIFT_GRACE_MS   = 320
-local APPROACH_MS      = 2400   -- re-issue before the 3 s task expires
-local APPROACH_DUR_MS  = 3000
-local ENTER_MS         = 1200
-local ENTER_TIMEOUT_MS = 2000
-local LOCK_MS          = 1500
-local SEAT_RETRIES     = 6
-local FAIL_COOLDOWN_MS = 3500
-local BUDGET_BACKOFF   = 2000
-
--- Gait scale for TaskGoToEntity. The native takes a movement multiplier, not
--- m/s. 1.0 = walk and 2.0 = run are the documented anchors; 3.0 is the value
--- this module treats as "maximum" and keeps the ped well under the 14 m/s
--- AntiSpeedHack ceiling.
---
--- The Gravitate slider is 50..500 and writes its raw value as a vehicle speed.
--- Lock Player only reuses its "maximum" intent: it evaluates the normalized
--- slider position 1.0, maps that to an 8..16 m/s pull band, then to the gait.
--- The menu item is never queried, so its visible value cannot be changed by
--- this module and a missing or renamed item cannot break the feature.
-local GRAVITATE_MIN    = 50.0
-local GRAVITATE_MAX    = 500.0
-local TASK_SPEED_MIN   = 1.0
-local TASK_SPEED_MAX   = 3.0
-local PULL_MIN         = 8.0
-local PULL_MAX         = 16.0
-
--- Seat scan. 0 is the front passenger; 1 and 2 cover the rear of a four-door.
--- Never -1: the driver seat belongs to whoever is driving the operator's car,
--- and must not be displaced. `GetVehicleMaxNumberOfPassengers` is the
--- documented bound for seat indices (`IS_VEHICLE_SEAT_FREE`: -1 ..
--- max - 1), so a two-seater is never probed for a rear seat. The hard cap
--- keeps a bus from turning one tick into a 50-call scan.
-local FIRST_SEAT       = 0
-local LAST_SEAT        = 2
-local SEAT_SCAN_CAP    = 6
+local POLL_MS         = 40
+local RAM_SPEED       = 200.0
+local HIT_RANGE       = 9.0
+local PASS_MS         = 180
+local MAX_RANGE       = 900.0
+local NEAREST_RANGE   = 600.0
+local REPAIR_MS       = 500
+local GRAVITATE_SPEED = 200
+local GRAVITATE_ROW   = "Gravitate Vehicle"
+local SPEED_ROW       = "Gravitate Speed"
+local SHIFT_CODES     = { 0xA0, 0xA2, 0x10 }
 
 -- Runtime state. Nothing here is global; a reload starts clean.
-N.active       = false
-N.session      = false
-N.ped          = 0
-N.veh          = 0
-N.player       = -1
-N.mode         = "idle"    -- "approach", "enter", "seat" or "leash"
-N.lastShift    = 0
-N.lastApproach = 0
-N.lastEnter    = 0
-N.lastLock     = 0
-N.lockedVeh    = 0
-N.lockedPlayer = -1
-N.doorLocked   = false
-N.tasks        = 0
-N.fails        = 0
-N.cooldown     = 0
-N.sessions     = 0
-N.spent        = false
-N.didWork      = false
-N.onChange     = nil
+N.active     = false    -- the permanent row state
+N.held       = false    -- Shift is down (the live ram consent)
+N.session    = false    -- a vehicle/target ram is running
+N.veh        = 0
+N.ped        = 0
+N.player     = -1
+N.targetMode = "none"   -- "selected" or "nearest"
+N.mode       = "idle"   -- "charge", "pass" or "hold"
+N.lastRepair = 0
+N.passUntil  = 0
+N.dirX       = 0.0
+N.dirY       = 0.0
+N.dirZ       = 0.0
+N.lastDist   = 0.0
+N.impacts    = 0
+N.sessions   = 0
+N.spent      = false
+N.didWork    = false
+N.saved      = nil
+N.onChange   = nil
 
 local function emit(fmt, ...)
     O.log("lock: " .. tostring(fmt), ...)
@@ -23707,15 +23636,49 @@ local function notify(active)
 end
 
 -- ---------------------------------------------------------------------------
+-- SHIFT
+--
+-- The raw key path is the menu path: a Susano overlay can hold the menu open
+-- while the game controls are disabled, and GetAsyncKeyState still reports the
+-- physical key. The control path is the gameplay path: when the menu is
+-- closed, the sprint control (21) is the same physical Shift and is readable
+-- by IsControlPressed / IsDisabledControlPressed. Both are checked; either
+-- one is enough.
+-- ---------------------------------------------------------------------------
+local function apiKeyDown(code)
+    local api = rawget(_G, "Susano")
+    if type(api) ~= "table" or type(api.GetAsyncKeyState) ~= "function" then
+        return false
+    end
+    local ok, down = pcall(api.GetAsyncKeyState, code)
+    -- AP_DOC.txt:1157 documents (down, pressed). Accept the numeric 1 form as
+    -- well; some loader builds return 1/0 instead of true/false.
+    return ok and (down == true or down == 1)
+end
+
+local function shiftHeld()
+    for i = 1, #SHIFT_CODES do
+        if apiKeyDown(SHIFT_CODES[i]) then return true end
+    end
+
+    local okDisabled, disabled = pcall(IsDisabledControlPressed, 0, 21)
+    if okDisabled and disabled == true then return true end
+
+    local okPressed, pressed = pcall(IsControlPressed, 0, 21)
+    return okPressed and pressed == true
+end
+
+-- ---------------------------------------------------------------------------
 -- TARGET RESOLUTION
 --
 -- Menu.SelectedPlayer is a server id. Resolution goes through
 -- GetPlayerFromServerId -> GetPlayerPed on every tick: a respawn changes the
--- handle and a cached handle is a write against a freed entity. The player
--- index is returned as well because the door lock is per player, not per ped.
+-- handle and a cached handle is a write against a freed entity. Self is
+-- refused before any write, including the respawn window where the cached ped
+-- handle no longer matches but the player index does.
 -- ---------------------------------------------------------------------------
 local function selectedId()
-    local serverId = (Menu and Menu.SelectedPlayer) or nil
+    local serverId = (type(Menu) == "table") and Menu.SelectedPlayer or nil
     if type(serverId) ~= "number" then return nil end
     return serverId
 end
@@ -23731,10 +23694,6 @@ local function targetPed()
     if not okPed or type(ped) ~= "number" or ped == 0 then return 0, player end
     if not DoesEntityExist(ped) then return 0, player end
 
-    -- The player list can select "(You)". Locking the operator's own ped would
-    -- task our own client and then door-lock us inside our own car. Refuse
-    -- before any write. The ped check is direct; the player check covers the
-    -- respawn window where the cached context still holds the old ped handle.
     local myPed = O.Ctx.ped
     if type(myPed) == "number" and myPed ~= 0 and ped == myPed then
         return 0, player
@@ -23747,16 +23706,6 @@ local function targetPed()
     return ped, player
 end
 
-local function myVehicle()
-    if type(O.Ctx.ped) ~= "number" or O.Ctx.ped == 0 then return 0 end
-    if not O.Ctx.inVehicle then return 0 end
-
-    local ok, veh = pcall(GetVehiclePedIsIn, O.Ctx.ped, false)
-    if not ok or type(veh) ~= "number" or veh == 0 then return 0 end
-    if not DoesEntityExist(veh) then return 0 end
-    return veh
-end
-
 local function pedVehicle(ped)
     local ok, veh = pcall(GetVehiclePedIsIn, ped, false)
     if ok and type(veh) == "number" and veh ~= 0 and DoesEntityExist(veh) then
@@ -23765,188 +23714,275 @@ local function pedVehicle(ped)
     return 0
 end
 
--- ---------------------------------------------------------------------------
--- SHIFT
---
--- Susano.GetAsyncKeyState is the raw Windows state and works while the Susano
--- overlay holds the cursor. The control natives are the harness/runtime
--- fallback. Both are reads.
--- ---------------------------------------------------------------------------
-local function keyDown(api, vk)
-    local ok, down = pcall(api.GetAsyncKeyState, vk)
-    -- AP_DOC documents a boolean; the `1` form is the same defensive check
-    -- 16_air_noclip.lua uses, so a build that returns a number still reads.
-    return ok and (down == true or down == 1)
+local function entityCoords(entity)
+    local ok, coords = pcall(GetEntityCoords, entity)
+    if ok and coords then return coords end
+    return nil
 end
 
-local function keyHeld()
-    local api = rawget(_G, "Susano")
-    if type(api) == "table" and type(api.GetAsyncKeyState) == "function" then
-        if keyDown(api, VK_LSHIFT) then return true end
-        if keyDown(api, VK_SHIFT) then return true end
+-- Nearest other player, measured from the operator's vehicle. Players seated
+-- in the operator's own vehicle are skipped: a ram would hit the operator.
+local function nearestPlayer(veh, origin)
+    local myPlayer = O.Ctx.player
+    local okId, id = pcall(PlayerId)
+    if okId and type(id) == "number" then myPlayer = id end
+
+    local bestPed, bestPlayer, bestDist = 0, -1, NEAREST_RANGE
+
+    local okPlayers, players = pcall(GetActivePlayers)
+    if not okPlayers or type(players) ~= "table" then return 0, -1 end
+
+    for i = 1, #players do
+        local player = players[i]
+        if player ~= myPlayer then
+            local okPed, ped = pcall(GetPlayerPed, player)
+            if okPed and type(ped) == "number" and ped ~= 0 and DoesEntityExist(ped) then
+                local theirVeh = pedVehicle(ped)
+                if theirVeh == 0 or theirVeh ~= veh then
+                    local coords = entityCoords(theirVeh ~= 0 and theirVeh or ped)
+                    if coords then
+                        local d = O.distance(coords, origin)
+                        if d <= bestDist then
+                            bestDist = d
+                            bestPed = ped
+                            bestPlayer = player
+                        end
+                    end
+                end
+            end
+        end
     end
 
-    local okDisabled, disabled = pcall(IsDisabledControlPressed, 0, CONTROL_SPRINT)
-    if okDisabled and disabled == true then return true end
-
-    local okPlain, plain = pcall(IsControlPressed, 0, CONTROL_SPRINT)
-    return okPlain and plain == true
+    return bestPed, bestPlayer
 end
 
--- ---------------------------------------------------------------------------
--- SPEED SOURCE
---
--- The Gravitate feature reads the menu slider 50..500 and writes the raw value
--- as a vehicle speed. A ped must not be given 500 m/s: V4's teleport check
--- compares a one-second position delta against 50 m and its speed check
--- against 14 m/s. Lock Player therefore takes only the slider's normalized
--- maximum (1.0), maps it to its own 8..16 m/s pull band, and then to the
--- task's gait scale, clamped to 3.0. The slider is never read and its visible
--- value never changes.
--- ---------------------------------------------------------------------------
-local function pullSpeed()
-    local slider = GRAVITATE_MAX
-    local t = (slider - GRAVITATE_MIN) / (GRAVITATE_MAX - GRAVITATE_MIN)
-    return PULL_MIN + t * (PULL_MAX - PULL_MIN)
-end
-
-local function taskSpeed()
-    local speed = pullSpeed()
-    local t = TASK_SPEED_MIN +
-        ((speed - PULL_MIN) / (PULL_MAX - PULL_MIN)) * (TASK_SPEED_MAX - TASK_SPEED_MIN)
-    if t < TASK_SPEED_MIN then return TASK_SPEED_MIN end
-    if t > TASK_SPEED_MAX then return TASK_SPEED_MAX end
-    return t
-end
-
--- ---------------------------------------------------------------------------
--- SEAT AND DOOR
---
--- The seat is chosen from the target's own client's point of view: any free
--- passenger seat is a valid lock. The door lock is applied only while the
--- target is seated, because a locked door can make the entering task fail.
--- Both are pcall-guarded: a seat that vanishes between the read and the task
--- must not abort the loop.
--- ---------------------------------------------------------------------------
-local function freeSeat(veh)
-    local last = LAST_SEAT
-    local okMax, max = pcall(GetVehicleMaxNumberOfPassengers, veh)
-    if okMax and type(max) == "number" and max >= 1 then
-        last = math.min(SEAT_SCAN_CAP, math.floor(max) - 1)
+-- Selection first, nearest second. A selection that is self, gone, in our own
+-- car, or out of range does not block the fallback; that is what makes the
+-- row work in every situation without a manual reselect.
+local function resolveTarget(veh, origin)
+    local ped, player = targetPed()
+    if ped ~= 0 then
+        local theirVeh = pedVehicle(ped)
+        if theirVeh == 0 or theirVeh ~= veh then
+            local coords = entityCoords(theirVeh ~= 0 and theirVeh or ped)
+            if coords and O.distance(coords, origin) <= MAX_RANGE then
+                return ped, player, "selected"
+            end
+        end
     end
 
-    for seat = FIRST_SEAT, last do
-        local ok, free = pcall(IsVehicleSeatFree, veh, seat)
-        if ok and free == true then return seat end
+    local nearPed, nearPlayer = nearestPlayer(veh, origin)
+    if nearPed ~= 0 then return nearPed, nearPlayer, "nearest" end
+    return 0, -1, "none"
+end
+
+-- ---------------------------------------------------------------------------
+-- GRAVITATE ROWS
+--
+-- The rows are UI state, not the driver. They are found by name because the
+-- menu can be rebuilt between loads and a saved item reference would then
+-- point at a dead table. The previous value is restored on release, so a
+-- manual Gravitate session survives a Lock Player session untouched.
+-- ---------------------------------------------------------------------------
+local function findItem(name)
+    if type(Menu) ~= "table" then return nil end
+
+    local lists = { Menu.Categories, Menu.ExtraCategories }
+    for li = 1, #lists do
+        local list = lists[li]
+        if type(list) == "table" then
+            for ci = 1, #list do
+                local category = list[ci]
+                local tabs = type(category) == "table" and category.tabs or nil
+                if type(tabs) == "table" then
+                    for ti = 1, #tabs do
+                        local tab = tabs[ti]
+                        local items = type(tab) == "table" and tab.items or nil
+                        if type(items) == "table" then
+                            for ii = 1, #items do
+                                local item = items[ii]
+                                if type(item) == "table" and item.name == name then
+                                    return item
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
     end
     return nil
 end
 
-local function doorLock(on)
-    if N.lockedVeh == 0 or N.lockedPlayer < 0 then return false end
-    if not DoesEntityExist(N.lockedVeh) then return false end
-    local ok = pcall(SetVehicleDoorsLockedForPlayer, N.lockedVeh, N.lockedPlayer, on)
-    return ok
+local function gravitateOn()
+    if N.saved == nil then
+        local vehItem = findItem(GRAVITATE_ROW)
+        local speedItem = findItem(SPEED_ROW)
+        N.saved = {
+            vehItem = vehItem,
+            vehValue = vehItem and vehItem.value or false,
+            speedItem = speedItem,
+            speedValue = speedItem and speedItem.value or nil,
+        }
+    end
+
+    local vehItem = findItem(GRAVITATE_ROW)
+    if vehItem then vehItem.value = true end
+    local speedItem = findItem(SPEED_ROW)
+    if speedItem then speedItem.value = GRAVITATE_SPEED end
 end
 
-local function clearDoorLock()
-    if N.doorLocked then
-        doorLock(false)
+local function gravitateOff()
+    local saved = N.saved
+    N.saved = nil
+    if not saved then return end
+
+    local vehItem = saved.vehItem
+    if vehItem then vehItem.value = saved.vehValue end
+    local speedItem = saved.speedItem
+    if speedItem and saved.speedValue ~= nil then speedItem.value = saved.speedValue end
+end
+
+-- ---------------------------------------------------------------------------
+-- VEHICLE PREP / RESTORE
+--
+-- Every write is on the operator's own vehicle. A frozen vehicle is repaired
+-- by a read-gated unfreeze (the same read/write pairing 11_evasion.lua uses),
+-- never an unconditional detach loop.
+-- ---------------------------------------------------------------------------
+local function prepVehicle(veh)
+    pcall(SetVehicleGravityAmount, veh, 0.0)
+    pcall(SetVehicleFixed, veh)
+    pcall(SetVehicleEngineOn, veh, true, true, false)
+    pcall(SetVehicleUndriveable, veh, false)
+
+    local okFrozen, frozen = pcall(IsEntityPositionFrozen, veh)
+    if okFrozen and frozen == true then
+        pcall(FreezeEntityPosition, veh, false)
     end
-    N.lockedVeh = 0
-    N.lockedPlayer = -1
-    N.doorLocked = false
+end
+
+local function restoreVehicle(veh)
+    if type(veh) ~= "number" or veh == 0 or not DoesEntityExist(veh) then return end
+
+    pcall(SetVehicleGravityAmount, veh, 9.8)
+    pcall(SetEntityVelocity, veh, 0.0, 0.0, 0.0)
+    pcall(SetVehicleFixed, veh)
+    pcall(SetVehicleEngineOn, veh, true, true, false)
+    pcall(SetVehicleUndriveable, veh, false)
+end
+
+local function repairVehicle(veh)
+    pcall(SetVehicleFixed, veh)
+    pcall(SetVehicleEngineHealth, veh, 1000.0)
+    pcall(SetVehicleBodyHealth, veh, 1000.0)
+    pcall(SetVehicleDeformationFixed, veh)
+    pcall(SetVehicleEngineOn, veh, true, true, false)
+    pcall(SetVehicleUndriveable, veh, false)
+    pcall(SetVehicleGravityAmount, veh, 0.0)
 end
 
 -- ---------------------------------------------------------------------------
 -- SESSION
 --
--- A session starts on the first Shift tick that has a live target in range and
--- ends SHIFT_GRACE_MS after the last Shift press. The budget token is spent
--- once per session, not once per task re-issue, so a long hold does not drain
--- the family. A session that never issued a task and never locked a door is
--- refunded; a session whose enter task was never honoured starts a cooldown
--- instead of a task storm.
+-- A session is one vehicle/target pair. The row is the permanent state:
+-- losing the target, Shift, or the vehicle ends the session, never the arm.
+-- The budget token is spent once in N.arm(), so a target change, a respawn or
+-- a second Shift hold does not drain the family.
 -- ---------------------------------------------------------------------------
-local function beginSession(ped, veh, player, now)
-    if not B.spend("lock") then
-        emit("budget refused")
-        return false
-    end
-
-    -- Defensive: a session can only be opened after endSession(), which
-    -- already unlocks, but a stale lock must never survive into a new target.
-    clearDoorLock()
-
-    N.session = true
-    N.sessions = N.sessions + 1
-    N.ped = ped
-    N.veh = veh
-    N.player = player
-    N.mode = "idle"
-    N.lastApproach = 0
-    N.lastEnter = 0
-    N.lastLock = 0
-    N.lockedVeh = 0
-    N.lockedPlayer = -1
-    N.doorLocked = false
-    N.tasks = 0
-    N.fails = 0
-    N.spent = true
-    N.didWork = false
-    return true
-end
-
 local function endSession(reason)
-    clearDoorLock()
+    local veh = N.veh
 
-    if N.spent and not N.didWork then
-        B.refund("lock")
-    end
+    if type(veh) == "number" and veh ~= 0 then restoreVehicle(veh) end
+    gravitateOff()
 
     N.session = false
-    N.ped = 0
     N.veh = 0
+    N.ped = 0
     N.player = -1
+    N.targetMode = "none"
     N.mode = "idle"
-    N.lastApproach = 0
-    N.lastEnter = 0
-    N.lastLock = 0
-    N.doorLocked = false
-    N.tasks = 0
-    N.fails = 0
-    N.spent = false
-    N.didWork = false
+    N.passUntil = 0
+    N.dirX, N.dirY, N.dirZ = 0.0, 0.0, 0.0
+    N.impacts = 0
+
     if reason then emit("%s", tostring(reason)) end
 end
 
--- ---------------------------------------------------------------------------
--- TASK WRITES
---
--- Every write below is a scripted task or a per-player door state. No native
--- here is in WaveShield's protected list, so none of them can trip
--- IsValidExecution; all are pcall-guarded so a missing native (older build,
--- harness) degrades to "not honoured" instead of an error.
--- ---------------------------------------------------------------------------
-local function goTo(ped, veh, now)
-    local ok = pcall(TaskGoToEntity, ped, veh, APPROACH_DUR_MS, TASK_STOP,
-        taskSpeed(), 1073741824, 0)
-    N.lastApproach = now
-    if ok then
-        N.didWork = true
-        N.tasks = N.tasks + 1
-    end
-    return ok
+-- A vehicle change restores the old car before preparing the new one: leaving
+-- gravity at 0 on an abandoned vehicle would make it float for everyone.
+local function startSession(veh, ped, player, mode)
+    gravitateOff()
+    prepVehicle(veh)
+
+    N.session = true
+    N.sessions = N.sessions + 1
+    N.veh = veh
+    N.ped = ped
+    N.player = player
+    N.targetMode = mode
+    N.mode = "charge"
+    N.lastRepair = 0
+    N.passUntil = 0
+    N.dirX, N.dirY, N.dirZ = 0.0, 0.0, 0.0
+    N.impacts = 0
+
+    gravitateOn()
+    emit("session %d: %s target", N.sessions, tostring(mode))
 end
 
-local function enterSeat(ped, veh, seat, now)
-    local ok = pcall(TaskEnterVehicle, ped, veh, ENTER_TIMEOUT_MS, seat, 1.0, 16, 0)
-    N.lastEnter = now
-    if ok then
-        N.didWork = true
-        N.tasks = N.tasks + 1
+-- Same vehicle, new target (respawn, selection change, nearest switch). The
+-- car keeps its gravity, rows, and momentum; only the aim state resets.
+local function retarget(ped, player, mode)
+    N.ped = ped
+    N.player = player
+    N.targetMode = mode
+    N.mode = "charge"
+    N.passUntil = 0
+    N.dirX, N.dirY, N.dirZ = 0.0, 0.0, 0.0
+    N.impacts = 0
+    emit("retarget: %s target", tostring(mode))
+end
+
+-- ---------------------------------------------------------------------------
+-- AIM
+--
+-- GTA heading: 0 is +Y (north), 90 is -X (west). The forward vector used by
+-- GetOffsetFromEntityInWorldCoords is +Y at heading 0, so heading is
+-- atan2(-dx, dy), normalised to [0, 360).
+-- ---------------------------------------------------------------------------
+local function atan2(y, x)
+    if x > 0.0 then return math.atan(y / x) end
+    if x < 0.0 then
+        if y >= 0.0 then return math.atan(y / x) + math.pi end
+        return math.atan(y / x) - math.pi
     end
-    return ok
+    if y > 0.0 then return math.pi / 2.0 end
+    if y < 0.0 then return -math.pi / 2.0 end
+    return 0.0
+end
+
+local function headingTo(dx, dy)
+    if math.abs(dx) < 0.0001 and math.abs(dy) < 0.0001 then return nil end
+    local heading = math.deg(atan2(-dx, dy))
+    heading = heading % 360.0
+    return heading
+end
+
+local function drive(veh, dx, dy, dz, speed)
+    local okVel = pcall(SetEntityVelocity, veh, dx * speed, dy * speed, dz * speed)
+    if okVel then N.didWork = true end
+
+    local heading = headingTo(dx, dy)
+    if heading then
+        -- Rotation order 2 is the order GetEntityRotation(veh, 2) uses. Pitch
+        -- and roll are zeroed so a collision cannot spin the ram off its aim;
+        -- only the position is left to physics.
+        pcall(SetEntityRotation, veh, 0.0, 0.0, heading, 2, true)
+    end
+
+    pcall(SetVehicleGravityAmount, veh, 0.0)
+    return okVel
 end
 
 -- ---------------------------------------------------------------------------
@@ -23954,132 +23990,140 @@ end
 -- ---------------------------------------------------------------------------
 local function tick(now)
     if not N.active then
+        N.held = false
         if N.session then endSession("inactive") end
         return
     end
 
-    local veh = myVehicle()
-    if veh == 0 then
+    -- The row is permanent; the ram is not. Without Shift the module does no
+    -- target work and no vehicle work at all. Releasing Shift mid-run restores
+    -- the car and leaves the row armed for the next hold.
+    N.held = shiftHeld()
+    if not N.held then
+        if N.session then endSession("shift released") end
+        return
+    end
+
+    local ped = PlayerPedId()
+    if not ped or ped == 0 then
+        if N.session then endSession("operator ped gone") end
+        return
+    end
+
+    local okVeh, veh = pcall(GetVehiclePedIsIn, ped, false)
+    if not okVeh or type(veh) ~= "number" or veh == 0 or not DoesEntityExist(veh) then
         if N.session then endSession("left the vehicle") end
         return
     end
 
-    -- A dead operator has no authoritative ped to drive the loop from. Checked
-    -- before the target so a simultaneous death cannot be logged as a target
-    -- loss.
+    -- The vehicle has to be driven by the operator. A passenger cannot write
+    -- the transform of a car owned by the driver without a control request,
+    -- and this module never asks for one.
+    local okDriver, driver = pcall(GetPedInVehicleSeat, veh, -1)
+    if not okDriver or driver ~= ped then
+        if N.session then endSession("not the driver") end
+        return
+    end
+
     if O.Ctx.dead then
         if N.session then endSession("operator died") end
         return
     end
 
-    local ped, player = targetPed()
-    if ped == 0 then
-        if N.session then endSession("target gone") end
+    local selfCoords = entityCoords(veh)
+    if not selfCoords then
+        if N.session then endSession("vehicle coords unreadable") end
         return
     end
 
-    -- A dead target is owned by the death system and must not be task-driven.
-    local okDead, targetDead = pcall(IsPedDeadOrDying, ped, true)
+    local target, player, targetMode = resolveTarget(veh, selfCoords)
+    if target == 0 then
+        if N.session then endSession("no target") end
+        return
+    end
+
+    local targetVeh = pedVehicle(target)
+
+    -- A target seated in our own car is never written: the ram would hit the
+    -- operator. resolveTarget already skips them; this is the defensive gate
+    -- for the window between the read and the write.
+    if targetVeh == veh then
+        if N.session then endSession("target is in the operator vehicle") end
+        return
+    end
+
+    if not N.session or N.veh ~= veh then
+        if N.session then endSession("vehicle changed") end
+        startSession(veh, target, player, targetMode)
+    elseif N.ped ~= target then
+        retarget(target, player, targetMode)
+    elseif N.targetMode ~= targetMode then
+        N.targetMode = targetMode
+    end
+
+    local okTarget, targetCoords = pcall(GetEntityCoords,
+        targetVeh ~= 0 and targetVeh or target)
+    if not okTarget or not targetCoords then return end
+
+    local distance = O.distance(targetCoords, selfCoords)
+    N.lastDist = distance
+
+    -- A dead target is owned by the death system. Hold the session so the ram
+    -- resumes when they respawn, but do not keep a 200 m/s velocity alive
+    -- against a corpse (the car would fly away from the selection).
+    local okDead, targetDead = pcall(IsPedDeadOrDying, target, true)
     if okDead and targetDead == true then
-        if N.session then endSession("target died") end
+        pcall(SetEntityVelocity, veh, 0.0, 0.0, 0.0)
+        N.mode = "hold"
         return
     end
 
-    -- A different selection or a different car is a different session. Release
-    -- the old target and door state first; never carry them across a change.
-    if N.session and (N.ped ~= ped or N.veh ~= veh) then
-        endSession("target or vehicle changed")
+    -- Repair on a low, jittered cadence. The vehicle must survive a long
+    -- hold, and a wreck cannot carry a ram. Every write is on our vehicle.
+    if now - N.lastRepair >= O.jitter(REPAIR_MS, 0.2) then
+        N.lastRepair = now
+        local okHealth, health = pcall(GetEntityHealth, veh)
+        local okEngine, running = pcall(GetIsVehicleEngineRunning, veh)
+        local damaged = okHealth and type(health) == "number" and health < 950
+        local stalled = okEngine and running ~= true
+        if damaged or stalled then
+            repairVehicle(veh)
+        end
     end
 
-    local held = keyHeld()
-    if held then N.lastShift = now end
-
-    if now - N.lastShift > SHIFT_GRACE_MS then
-        if N.session then endSession("shift released") end
-        return
-    end
-    if not held then return end
-
-    if now < N.cooldown then return end
-
-    local okP, pc = pcall(GetEntityCoords, ped)
-    local okV, vc = pcall(GetEntityCoords, veh)
-    if not okP or not okV or not pc or not vc then return end
-    local dist = O.distance(pc, vc)
-
-    if not N.session then
-        if dist > START_RANGE then return end
-        if not beginSession(ped, veh, player, now) then
-            N.cooldown = now + O.jitter(BUDGET_BACKOFF, 0.2)
-            return
-        end
-    elseif dist > KEEP_RANGE then
-        endSession("target out of leash range")
-        return
+    local okFrozen, frozen = pcall(IsEntityPositionFrozen, veh)
+    if okFrozen and frozen == true then
+        pcall(FreezeEntityPosition, veh, false)
     end
 
-    -- Seated: the lock is the seat plus the door. Nothing is written to the
-    -- ped; the target's own client already owns the seat state.
-    if pedVehicle(ped) == veh then
-        N.mode = "seat"
-        N.fails = 0
-        N.player = player
-        if N.lockedVeh ~= veh or N.lockedPlayer ~= player then
-            clearDoorLock()
-            N.lockedVeh = veh
-            N.lockedPlayer = player
-            N.lastLock = now
-            N.doorLocked = doorLock(true)
-            if N.doorLocked then N.didWork = true end
-        elseif now - N.lastLock >= O.jitter(LOCK_MS, 0.2) then
-            N.lastLock = now
-            N.doorLocked = doorLock(true)
-            if N.doorLocked then N.didWork = true end
+    -- Aim point: chest height for a ped, centre mass for a vehicle.
+    local tx = targetCoords.x
+    local ty = targetCoords.y
+    local tz = targetCoords.z + (targetVeh ~= 0 and 0.4 or 0.9)
+
+    local dx, dy, dz = tx - selfCoords.x, ty - selfCoords.y, tz - selfCoords.z
+    local len = math.sqrt(dx * dx + dy * dy + dz * dz)
+    if len < 0.01 then return end
+    dx, dy, dz = dx / len, dy / len, dz / len
+
+    -- A short pass at impact range. The homing vector is held for PASS_MS so
+    -- the collision solver sees a continuous approach instead of a car that
+    -- instantly reverses on the target and vibrates on top of them. After the
+    -- pass the next tick homes again: that is the loop.
+    if now < N.passUntil then
+        dx, dy, dz = N.dirX, N.dirY, N.dirZ
+        N.mode = "pass"
+    else
+        N.mode = "charge"
+        if distance <= HIT_RANGE then
+            N.dirX, N.dirY, N.dirZ = dx, dy, dz
+            N.passUntil = now + O.jitter(PASS_MS, 0.2)
+            N.impacts = N.impacts + 1
+            N.mode = "pass"
         end
-        return
     end
 
-    -- Not seated. A door locked from the previous seat must be removed before
-    -- the entering task runs; a locked door can refuse the warp.
-    if N.lockedVeh ~= 0 then clearDoorLock() end
-
-    local theirVeh = pedVehicle(ped)
-    if theirVeh ~= 0 or dist <= ENTER_RANGE then
-        N.mode = "enter"
-        if now - N.lastEnter < O.jitter(ENTER_MS, 0.15) then return end
-
-        -- The target's client reports the vehicle it is already entering. Do
-        -- not re-issue the task during the door/seat animation: a re-issue
-        -- resets the animation and can starve the lock. Read-only, unwrapped.
-        local okEntering, entering = pcall(GetVehiclePedIsEntering, ped)
-        if okEntering and entering == veh then
-            N.fails = 0
-            return
-        end
-
-        local seat = freeSeat(veh)
-        if seat == nil then
-            -- No free seat: keep the target at the car with the approach task.
-            -- The status says mode=leash, never that the target is seated.
-            N.mode = "leash"
-            if now - N.lastApproach >= O.jitter(APPROACH_MS, 0.2) then
-                goTo(ped, veh, now)
-            end
-            return
-        end
-
-        enterSeat(ped, veh, seat, now)
-        N.fails = N.fails + 1
-        if N.fails >= SEAT_RETRIES then
-            N.cooldown = now + O.jitter(FAIL_COOLDOWN_MS, 0.25)
-            endSession("seat not honoured")
-        end
-        return
-    end
-
-    N.mode = "approach"
-    if now - N.lastApproach < O.jitter(APPROACH_MS, 0.2) then return end
-    goTo(ped, veh, now)
+    drive(veh, dx, dy, dz, RAM_SPEED)
 end
 
 -- ---------------------------------------------------------------------------
@@ -24088,44 +24132,57 @@ end
 function N.arm()
     if type(Menu) ~= "table" then return false end
 
-    -- Idempotent. Re-clicking an already armed row must not drop a live
-    -- session on the floor: the reset below clears the door-lock bookkeeping,
-    -- and a lock written for the old session would then never be removed.
+    -- Idempotent. Re-clicking an already armed row must not spend a second
+    -- token or drop a live session on the floor.
     if N.active then return true end
-    if N.session or N.lockedVeh ~= 0 or N.doorLocked then
-        endSession("re-arm")
+    if N.session or N.saved then endSession("re-arm") end
+
+    -- The token is spent once per armed period, not per Shift hold and not
+    -- per session. A target respawn or a vehicle change must not drain the
+    -- family: the lock is meant to stay on until the operator turns it off.
+    if not B.spend("lock") then
+        emit("budget refused")
+        return false
     end
 
-    -- Arming is deliberately unconditional otherwise. Every precondition that
-    -- can change while the row is on (vehicle, selection, distance, seat) is
-    -- checked in the tick. A toggle that refuses to stay on because the
-    -- operator was on foot at the moment of the click is indistinguishable
-    -- from a broken toggle, and it teaches nothing.
     N.active = true
+    N.held = false
     N.session = false
-    N.lastShift = 0
-    N.cooldown = 0
-    N.ped = 0
     N.veh = 0
+    N.ped = 0
     N.player = -1
+    N.targetMode = "none"
     N.mode = "idle"
-    N.lockedVeh = 0
-    N.lockedPlayer = -1
-    N.doorLocked = false
-    N.tasks = 0
-    N.fails = 0
-    N.spent = false
+    N.lastRepair = 0
+    N.passUntil = 0
+    N.dirX, N.dirY, N.dirZ = 0.0, 0.0, 0.0
+    N.lastDist = 0.0
+    N.impacts = 0
+    N.spent = true
     N.didWork = false
+    N.saved = nil
+
     notify(true)
-    emit("armed - hold shift in a vehicle to lock")
+    emit("armed - permanent, hold Shift to ram selected/nearest")
     return true
 end
 
 function N.stop(reason)
     N.active = false
-    if N.session or N.lockedVeh ~= 0 or N.doorLocked then
+    N.held = false
+
+    if N.session or N.saved then
         endSession(reason or "stopped")
+    else
+        gravitateOff()
     end
+
+    -- A period that never wrote the vehicle (armed then disarmed, or a Shift
+    -- hold with no target) must not consume its token.
+    if N.spent and not N.didWork then B.refund("lock") end
+    N.spent = false
+    N.didWork = false
+
     notify(false)
 end
 
@@ -24139,10 +24196,10 @@ end
 
 function N.status()
     local selected = selectedId()
-    local cooldown = math.max(0, N.cooldown - O.now())
-    return ("target=%s mode=%s locked=%s tasks=%d fails=%d cooldown=%d sessions=%d"):format(
-        tostring(selected or "-"), tostring(N.mode), tostring(N.doorLocked),
-        N.tasks, N.fails, cooldown, N.sessions)
+    return ("armed=%s held=%s target=%s mode=%s source=%s dist=%d speed=%d impacts=%d sessions=%d"):format(
+        tostring(N.active), tostring(N.held), tostring(selected or "-"),
+        tostring(N.mode), tostring(N.targetMode),
+        math.floor(N.lastDist or 0), math.floor(RAM_SPEED), N.impacts, N.sessions)
 end
 
 -- Arm once. The scheduler is the single owner; there is no per-feature thread
@@ -25650,49 +25707,60 @@ local FA = (function(O,S,B)
 --   the "audio freecam": you hear a conversation at the camera, whether or not
 --   your body is close enough to hear it.
 --
--- Why a real camera instead of Susano.LockCameraPos:
---   WaveShield V4 freecam detection (modules/client/freecam.lua) is built
---   around two shapes:
+-- Why the camera is created here and declared in a resource VM:
+--   WaveShield V4 freecam detection (modules/client/freecam.lua) has one
+--   branch that runs while a script camera renders:
 --
---     * renderingCam ~= -1 and not createdCams[renderingCam]  -> strike
---     * renderingCam == -1 + off-screen / distance tests      -> strike
+--       renderingCam ~= -1 and not createdCams[renderingCam] -> strike
 --
 --   createdCams is filled by the guard's own `createCam` export
 --   (freecam.lua:105-118) and cleared by `destroyCam`. A script camera that
 --   calls that export is declared legitimate by the guard itself, exactly like
---   a phone camera or a cinematic resource. Branch 1 is skipped by
---   construction. Branches 2, 3 and 4 all require renderingCam == -1, so a
---   real active camera skips them too. No native is hooked and no guard value
---   is falsified.
+--   a phone camera or a cinematic resource. Every other branch requires
+--   renderingCam == -1, so a declared camera skips the whole detector.
 --
---   The camera is also clamped to 45 m from the ped. That is inside the
---   vehicle envelope of freecam.lua:62-63 and outside the 25 m on-foot one,
---   so the clamp is not claimed as a V4 gate: branch 1, the only branch that
---   runs while a script camera renders, never reads distance. It strikes on an
---   *unlisted* rendering handle. The clamp exists for other guards and for
---   streaming honesty, and the whitelist is what keeps branch 1 closed.
+--   The previous build called `exports["WaveShield"]:createCam(cam)` directly
+--   from the Susano Lua VM. That VM is not a FiveM resource runtime: `exports`
+--   is not the resource export table there, the pcall failed, and the module
+--   correctly refused to render an unlisted camera. The row therefore looked
+--   dead on the only server where the camera is worth using.
+--
+--   This build creates the camera *inactive*, then asks Susano to inject a
+--   small declaration chunk into a real resource VM. That chunk calls the
+--   guard's `createCam` for each candidate resource and only then calls
+--   `SetCamActive` + `RenderScriptCams`. If no export answers, the camera is
+--   never rendered and the pending check below tears it down. The guard never
+--   sees an unlisted rendering camera, not even for one frame.
+--
+-- Why the camera is clamped to 45 m:
+--   The clamp is not a V4 gate: branch 1, the only branch that runs with a
+--   script camera, never reads distance. It exists for streaming honesty and
+--   for other guards. The camera is inside V4's 50 m vehicle envelope and
+--   outside the 25 m on-foot one, so it is never mistaken for a scripted
+--   gameplay-camera distance anomaly by a different reader.
 --
 -- Why the voice path does not touch the two watched natives:
 --   V4's voice check reads NetworkGetTalkerProximity and
 --   MumbleGetTalkerProximity and bans when either is >= 20 without a matching
---   server-written state bag (misc.lua:1-27). This module never calls either
---   one. It uses MumbleGetVoiceChannelFromServerId +
---   MumbleAddVoiceChannelListen, which route received audio without changing a
---   proximity value. This is the same mechanism as the reference "Crier"
---   implementation in the corpus, minus the proximity read and minus the
---   Susano camera lock.
+--   server-written state bag (misc.lua:1-27). This module writes neither. It
+--   uses MumbleGetVoiceChannelFromServerId + MumbleAddVoiceChannelListen,
+--   which route received audio without changing a proximity value. This is
+--   the same mechanism as the reference "Crier" implementation in the corpus,
+--   minus the proximity read and minus the Susano camera lock.
 --
 -- Why the vehicle gate is guard-dependent:
 --   Electron's freecam module (electron-client.lua, freecam block) punishes a
---   moving final-rendered camera when the ped is not in a vehicle and not
---   parachuting. When any guard other than WaveShield is detected, the module
---   refuses to arm on foot; that is a working restriction, not a broken
---   toggle. On a WaveShield server the createCam whitelist is the gate. On a
---   server with no guard detected there is no gate.
+--   moving final-rendered camera when the ped is not in a vehicle. It is the
+--   only vendor in the corpus with that shape, so it is the only vendor that
+--   gets the vehicle gate. A WaveShield whitelist takes precedence: the
+--   declaration is the gate, and blocking the feature on foot would make a
+--   working path look broken. Unknown guard candidates (staff menus, Seed,
+--   Dynasty) are not camera detectors and do not gate the feature.
 --
 -- Tier:
---   Tier A only. Camera, focus and Mumble natives; no injection, no native
---   hook, no state bag, no server event.
+--   Tier A for the camera and the Mumble path; one scoped Tier B graft for the
+--   `createCam` declaration only. The graft runs in a resource VM, calls one
+--   export and the two camera activation natives, and carries no state.
 -- ============================================================================
 
 local FA = {}
@@ -25703,28 +25771,39 @@ local NORMAL_SPEED   = 8.0
 local FAST_SPEED     = 30.0
 local SLOW_SPEED     = 2.5
 local LOOK_SPEED     = 110.0
-local MAX_RANGE      = 45.0   -- inside V4's 50 m vehicle envelope
+local MAX_RANGE      = 45.0
 local DEFAULT_RANGE  = 30.0
 local MIN_RANGE      = 10.0
 local FOCUS_MS       = 250
 local TARGETS_MS     = 500
 local MAX_LISTENERS  = 64
 
-FA.active      = false
-FA.cam         = 0
-FA.x           = 0.0
-FA.y           = 0.0
-FA.z           = 0.0
-FA.pitch       = 0.0
-FA.yaw         = 0.0
-FA.range       = DEFAULT_RANGE
-FA.listeners   = {}
-FA.lastFocus   = 0
-FA.lastTargets = 0
-FA.whitelisted = false
+local INJECT_PENDING_MS = 900
+local DIRECT_PENDING_MS = 250
+
+FA.active          = false
+FA.pending         = false
+FA.pendingUntil    = 0
+FA.cam             = 0
+FA.x               = 0.0
+FA.y               = 0.0
+FA.z               = 0.0
+FA.pitch           = 0.0
+FA.yaw             = 0.0
+FA.range           = DEFAULT_RANGE
+FA.listeners       = {}
+FA.lastFocus       = 0
+FA.lastTargets     = 0
+FA.whitelisted     = false
+FA.whitelistMode   = nil
+FA.whitelistDirect = false
 FA.whitelistResource = nil
-FA.vehicleOnly = false
-FA.onChange    = nil
+FA.whitelistResources = nil
+FA.whitelistTarget = nil
+FA.vehicleOnly     = false
+FA.spent           = false
+FA.didWork         = false
+FA.onChange        = nil
 
 local function emit(fmt, ...)
     O.log("freecam: " .. tostring(fmt), ...)
@@ -25736,23 +25815,33 @@ local function notify(active)
     end
 end
 
+local function susanoApi()
+    local api = rawget(_G, "Susano")
+    if type(api) ~= "table" then return nil end
+    return api
+end
+
 -- ---------------------------------------------------------------------------
 -- GUARD POLICY
 --
--- One scan, one decision. WaveShield is the only guard whose camera whitelist
--- is documented in the source dump, so it is the only vendor that can allow a
--- script camera outside a vehicle. Every other detected guard gets the
--- conservative vehicle gate.
---
--- The whitelist decision cannot depend on metadata alone. A server can rename
--- the resource, ship an FxAP bundle whose manifest fields are stripped, or run
--- a build where GetResourceMetadata returns nothing. Branch 1 of the detector
--- (modules/client/freecam.lua:73) does not care about metadata: an unlisted
--- rendering camera is a strike even inside a car. So the resource-name scan
--- below is a second, independent signal, and a WaveShield-shaped resource name
--- is enough to require the export. If no export answers, the module refuses to
--- arm instead of creating a camera the guard would flag.
+-- One scan, one decision. WaveShield is the only vendor with a documented
+-- camera declaration, so it is the only vendor that unlocks the on-foot path.
+-- Electron is the only vendor whose freecam check needs a moving vehicle.
+-- Every other candidate (staff menus, Seed, Dynasty) is ignored: treating an
+-- unknown resource as a camera detector turns a working toggle into a refusal.
 -- ---------------------------------------------------------------------------
+local VEHICLE_ONLY_VENDORS = {
+    electron = true,
+}
+
+local function looksLikeWaveShield(low)
+    return string.find(low, "waveshield", 1, true) ~= nil
+        or string.find(low, "wave_shield", 1, true) ~= nil
+        or string.find(low, "wave-shield", 1, true) ~= nil
+        or string.find(low, "waveshld", 1, true) ~= nil
+        or string.find(low, "wshield", 1, true) ~= nil
+end
+
 local function waveShieldCandidates()
     local out = {}
     if type(GetNumResources) ~= "function" or type(GetResourceByFindIndex) ~= "function" then
@@ -25765,10 +25854,7 @@ local function waveShieldCandidates()
     for i = 0, total - 1 do
         local okName, name = pcall(GetResourceByFindIndex, i)
         if okName and type(name) == "string" and name ~= "" then
-            local low = string.lower(name)
-            if string.find(low, "waveshield", 1, true)
-                or string.find(low, "wave_shield", 1, true)
-                or string.find(low, "waveshld", 1, true) then
+            if looksLikeWaveShield(string.lower(name)) then
                 local started = true
                 if type(GetResourceState) == "function" then
                     local okState, state = pcall(GetResourceState, name)
@@ -25782,7 +25868,12 @@ local function waveShieldCandidates()
 end
 
 local function guardPolicy()
-    local p = { any = false, vehicleOnly = false, requireWhitelist = false, resources = {} }
+    local p = {
+        any = false,
+        vehicleOnly = false,
+        requireWhitelist = false,
+        resources = {},
+    }
     local seen = {}
 
     local function addResource(name)
@@ -25802,7 +25893,7 @@ local function guardPolicy()
                 if ac.vendor == "waveshield" then
                     p.requireWhitelist = true
                     addResource(ac.resource)
-                else
+                elseif VEHICLE_ONLY_VENDORS[ac.vendor] then
                     p.vehicleOnly = true
                 end
             end
@@ -25816,18 +25907,112 @@ local function guardPolicy()
         addResource(named[i])
     end
 
+    -- A declaration path is strictly stronger than the vehicle gate. If both
+    -- shapes were detected, the WaveShield path is the one that can render a
+    -- camera without tripping a rendering-cam branch.
+    if p.requireWhitelist then p.vehicleOnly = false end
+
     return p
 end
 
 -- ---------------------------------------------------------------------------
 -- CAMERA DECLARATION
 --
--- The guard's createCam export is a declaration, not a falsification: it tells
--- the guard that this handle was created by a resource it already trusts. The
--- call is wrapped because a renamed or removed export must degrade to "not
--- whitelisted", never throw inside the arm path.
+-- Direct path: only works when the module's own runtime exposes the FiveM
+-- resource `exports` table. It is tried after the injection path so a normal
+-- executor never depends on it.
+--
+-- Injection path: the declaration and the activation are one chunk in a real
+-- resource VM. The camera is created inactive; if no export answers, the
+-- chunk returns before SetCamActive, so the unlisted handle never renders.
 -- ---------------------------------------------------------------------------
-local function whitelistCam(cam, resources)
+local function findInjectableTarget(guards)
+    local api = susanoApi()
+    if not api or type(api.InjectResource) ~= "function" then return nil, api end
+
+    if type(api.GetInjectableResources) == "function" then
+        local ok, list = pcall(api.GetInjectableResources)
+        if ok and type(list) == "table" and #list > 0 then
+            for i = 1, #list do
+                local name = list[i]
+                if type(name) == "string" and name ~= "" then
+                    local isGuard = false
+                    for j = 1, #guards do
+                        if string.lower(name) == string.lower(guards[j]) then
+                            isGuard = true
+                            break
+                        end
+                    end
+                    if not isGuard then return name, api end
+                end
+            end
+            -- Only guard VMs are injectable: do not graft into the guard.
+            return nil, api
+        end
+    end
+
+    return "any", api
+end
+
+local function quotedNames(resources)
+    local out = {}
+    for i = 1, #resources do
+        out[#out + 1] = string.format("%q", tostring(resources[i]))
+    end
+    return table.concat(out, ", ")
+end
+
+local function requestInjectedWhitelist(cam, resources)
+    local target, api = findInjectableTarget(resources)
+    if not target or not api or type(api.InjectResource) ~= "function" then
+        return false, nil
+    end
+
+    local code = ([=[
+local cam = %d
+if not DoesCamExist(cam) then return end
+local names = { %s }
+local tracked = false
+for i = 1, #names do
+    local ok = pcall(function()
+        return exports[names[i]]:createCam(cam)
+    end)
+    if ok then
+        tracked = true
+        break
+    end
+end
+if not tracked then return end
+pcall(SetCamActive, cam, true)
+pcall(RenderScriptCams, true, false, 0, true, true)
+]=]):format(math.floor(cam), quotedNames(resources))
+
+    local ok = pcall(api.InjectResource, target, code)
+    if ok then return true, target end
+    return false, nil
+end
+
+local function requestInjectedUnwhitelist(cam, resources, target)
+    if type(target) ~= "string" or target == "" then return false end
+    if type(resources) ~= "table" or #resources == 0 then return false end
+
+    local api = susanoApi()
+    if not api or type(api.InjectResource) ~= "function" then return false end
+
+    local code = ([=[
+local cam = %d
+local names = { %s }
+for i = 1, #names do
+    pcall(function()
+        return exports[names[i]]:destroyCam(cam)
+    end)
+end
+]=]):format(math.floor(cam), quotedNames(resources))
+
+    return pcall(api.InjectResource, target, code)
+end
+
+local function whitelistDirect(cam, resources)
     if type(resources) ~= "table" or #resources == 0 then return false, nil end
     if type(exports) ~= "table" and type(exports) ~= "userdata" then return false, nil end
 
@@ -25841,11 +26026,40 @@ local function whitelistCam(cam, resources)
     return false, nil
 end
 
-local function unwhitelistCam(cam, resource)
+local function unwhitelistDirect(cam, resource)
     if not resource or type(cam) ~= "number" or cam == 0 then return end
     pcall(function()
         return exports[resource]:destroyCam(cam)
     end)
+end
+
+-- ---------------------------------------------------------------------------
+-- CAMERA PRIMITIVES
+-- ---------------------------------------------------------------------------
+local function createCamera()
+    local okPos, pos = pcall(GetGameplayCamCoord)
+    local okRot, rot = pcall(GetGameplayCamRot, 2)
+    if not okPos or not pos or not pos.x or not okRot or not rot or not rot.z then
+        return 0
+    end
+
+    -- fullCamFov = 55 puts the rendered camera outside the 50..52 band that
+    -- V4's distance branch keys on. The branch is already skipped by
+    -- renderingCam ~= -1, but the value costs nothing and removes the term.
+    local okCam, cam = pcall(CreateCamWithParams, CAM_NAME,
+        pos.x, pos.y, pos.z,
+        rot.x, 0.0, rot.z,
+        CAM_FOV, false, 2)
+    if not okCam or type(cam) ~= "number" or cam == 0 then return 0 end
+
+    FA.x, FA.y, FA.z = pos.x, pos.y, pos.z
+    FA.pitch, FA.yaw = rot.x, rot.z
+    return cam
+end
+
+local function activateCamera(cam)
+    pcall(SetCamActive, cam, true)
+    pcall(RenderScriptCams, true, false, 0, true, true)
 end
 
 -- ---------------------------------------------------------------------------
@@ -25976,6 +26190,32 @@ end
 local function tick(now)
     if not FA.active then return end
 
+    -- The camera is created inactive. It becomes usable only after the
+    -- declaration chunk in the resource VM has called the guard's createCam
+    -- and activated it. GetRenderingCam is the proof: if our handle is the
+    -- rendering camera, the guard's createdCams entry is in place; if not,
+    -- nothing was rendered and the timeout tears the handle down.
+    if FA.pending then
+        if now > FA.pendingUntil then
+            FA.stop("camera never became the rendering camera")
+            return
+        end
+
+        local okRender, rendering = pcall(GetRenderingCam)
+        if okRender and rendering == FA.cam then
+            FA.pending = false
+            FA.didWork = true
+            FA.lastFocus = 0
+            FA.lastTargets = 0
+            setCam()
+            pcall(SetFocusPosAndVel, FA.x, FA.y, FA.z, 0.0, 0.0, 0.0)
+            FA.lastFocus = now
+            updateListeners()
+            emit("camera live (%s)", tostring(FA.whitelistMode))
+        end
+        return
+    end
+
     local ped = PlayerPedId()
     if ped == 0 or not DoesEntityExist(ped) then
         FA.stop("ped gone")
@@ -26001,7 +26241,7 @@ local function tick(now)
         return
     end
 
-    local api = rawget(_G, "Susano")
+    local api = susanoApi()
     local dt = 0.016
     local okDt, frame = pcall(GetFrameTime)
     if okDt and type(frame) == "number" and frame > 0.0 then
@@ -26069,8 +26309,8 @@ function FA.arm()
 
     local policy = guardPolicy()
 
-    -- No guard detected: a script camera is a normal resource camera as far as
-    -- the client is concerned. A detected non-WaveShield guard: in-vehicle only.
+    -- Electron: a moving camera on foot is the shape its freecam module
+    -- punishes. WaveShield has the declaration path instead and is not gated.
     if policy.vehicleOnly and not O.Ctx.inVehicle then
         emit("refused: this guard only allows a camera in a vehicle")
         return false
@@ -26080,65 +26320,66 @@ function FA.arm()
         emit("budget refused")
         return false
     end
+    FA.spent = true
+    FA.didWork = false
 
-    local okPos, pos = pcall(GetGameplayCamCoord)
-    local okRot, rot = pcall(GetGameplayCamRot, 2)
-    if not okPos or not pos or not okRot or not rot then
-        B.refund("freecam")
-        emit("camera read failed")
-        return false
-    end
-
-    -- fullCamFov = 55 puts the rendered camera outside the 50..52 band that
-    -- V4's distance branch keys on. The branch is already skipped by
-    -- renderingCam ~= -1, but the value costs nothing and removes the term.
-    local okCam, cam = pcall(CreateCamWithParams, CAM_NAME,
-        pos.x, pos.y, pos.z,
-        rot.x, 0.0, rot.z,
-        CAM_FOV, true, 2)
-    if not okCam or type(cam) ~= "number" or cam == 0 then
+    local cam = createCamera()
+    if cam == 0 then
+        FA.spent = false
         B.refund("freecam")
         emit("camera creation failed")
         return false
     end
 
     FA.cam = cam
-    FA.x, FA.y, FA.z = pos.x, pos.y, pos.z
-    FA.pitch, FA.yaw = rot.x, rot.z
+    FA.active = true
+    FA.pending = true
     FA.vehicleOnly = policy.vehicleOnly
     FA.whitelisted = false
+    FA.whitelistMode = nil
+    FA.whitelistDirect = false
     FA.whitelistResource = nil
+    FA.whitelistResources = nil
+    FA.whitelistTarget = nil
 
     if policy.requireWhitelist then
-        local okWhitelist, resource = whitelistCam(cam, policy.resources)
-        FA.whitelisted = okWhitelist
-        FA.whitelistResource = resource
-
-        -- Branch 1 has no vehicle gate: an unlisted rendering camera is a
-        -- strike even inside a car. Fail closed rather than pretend the
-        -- vehicle state protects it.
-        if not okWhitelist then
-            pcall(DestroyCam, cam, false)
-            FA.cam = 0
-            B.refund("freecam")
-            emit("refused: WaveShield createCam export unavailable")
+        if #policy.resources == 0 then
+            FA.stop("no whitelist resource")
             return false
         end
+
+        local queued, target = requestInjectedWhitelist(cam, policy.resources)
+        if queued then
+            FA.whitelistResources = policy.resources
+            FA.whitelistTarget = target
+            FA.whitelisted = true
+            FA.whitelistMode = "injected"
+            FA.pendingUntil = O.now() + INJECT_PENDING_MS
+        else
+            -- No usable resource VM. A direct `exports` call is the only
+            -- remaining declaration path; a camera that cannot be declared is
+            -- never activated.
+            local ok, resource = whitelistDirect(cam, policy.resources)
+            if not ok then
+                FA.stop("WaveShield createCam export unavailable")
+                return false
+            end
+            FA.whitelistDirect = true
+            FA.whitelistResource = resource
+            FA.whitelisted = true
+            FA.whitelistMode = "direct"
+            FA.pendingUntil = O.now() + DIRECT_PENDING_MS
+            activateCamera(cam)
+        end
+    else
+        FA.whitelistMode = "none"
+        FA.pendingUntil = O.now() + DIRECT_PENDING_MS
+        activateCamera(cam)
     end
 
-    pcall(SetCamActive, cam, true)
-    pcall(RenderScriptCams, true, false, 0, true, true)
-    setCam()
-    pcall(SetFocusPosAndVel, FA.x, FA.y, FA.z, 0.0, 0.0, 0.0)
-
-    FA.active = true
-    FA.lastFocus = 0
-    FA.lastTargets = 0
-    updateListeners()
-
     notify(true)
-    emit("armed range=%d vehicleOnly=%s whitelisted=%s",
-        math.floor(FA.range), tostring(FA.vehicleOnly), tostring(FA.whitelisted))
+    emit("armed range=%d vehicleOnly=%s whitelist=%s",
+        math.floor(FA.range), tostring(FA.vehicleOnly), tostring(FA.whitelistMode))
     return true
 end
 
@@ -26149,36 +26390,52 @@ function FA.setRange(value)
 end
 
 function FA.stop(reason)
-    if not FA.active and FA.cam == 0 then return end
+    if not FA.active and FA.cam == 0 and not FA.pending then return end
 
     clearListeners()
     pcall(ClearFocus)
 
     local cam = FA.cam
-    local okRender, rendering = false, nil
     if cam ~= 0 then
+        local okRender, rendering = false, nil
         okRender, rendering = pcall(GetRenderingCam)
-    end
 
-    -- Drop the render first. If the whitelist entry disappears while the cam
-    -- is still the rendering camera, freecam.lua:73 sees an unlisted rendering
-    -- camera for one detector window. The whole teardown is one Lua tick, but
-    -- ordering costs nothing and removes the term.
-    if not okRender or rendering == cam then
-        pcall(RenderScriptCams, false, false, 0, true, true)
-    end
+        -- Drop the render first. If the whitelist entry disappears while the
+        -- cam is still the rendering camera, freecam.lua:73 sees an unlisted
+        -- rendering camera for one detector window. The whole teardown is one
+        -- Lua tick, but ordering costs nothing and removes the term.
+        if not okRender or rendering == cam then
+            pcall(RenderScriptCams, false, false, 0, true, true)
+        end
 
-    if cam ~= 0 then
         pcall(SetCamActive, cam, false)
-        unwhitelistCam(cam, FA.whitelistResource)
+
+        if FA.whitelistDirect and FA.whitelistResource then
+            unwhitelistDirect(cam, FA.whitelistResource)
+        elseif FA.whitelistTarget and FA.whitelistResources then
+            requestInjectedUnwhitelist(cam, FA.whitelistResources, FA.whitelistTarget)
+        end
+
         pcall(DestroyCam, cam, false)
     end
 
+    -- A camera that never became live must not consume its budget token.
+    if FA.spent and not FA.didWork then B.refund("freecam") end
+
     FA.cam = 0
     FA.active = false
+    FA.pending = false
+    FA.pendingUntil = 0
     FA.whitelisted = false
+    FA.whitelistMode = nil
+    FA.whitelistDirect = false
     FA.whitelistResource = nil
+    FA.whitelistResources = nil
+    FA.whitelistTarget = nil
     FA.vehicleOnly = false
+    FA.spent = false
+    FA.didWork = false
+
     notify(false)
     if reason then emit("stopped: %s", tostring(reason)) end
 end
@@ -26192,9 +26449,10 @@ function FA.isActive()
 end
 
 function FA.status()
-    return ("active=%s range=%d targets=%d cam=%s whitelisted=%s vehicleOnly=%s"):format(
-        tostring(FA.active), math.floor(FA.range), listenerCount(),
-        tostring(FA.cam ~= 0), tostring(FA.whitelisted), tostring(FA.vehicleOnly))
+    return ("active=%s pending=%s range=%d targets=%d cam=%s whitelisted=%s mode=%s vehicleOnly=%s"):format(
+        tostring(FA.active), tostring(FA.pending), math.floor(FA.range), listenerCount(),
+        tostring(FA.cam ~= 0), tostring(FA.whitelisted), tostring(FA.whitelistMode),
+        tostring(FA.vehicleOnly))
 end
 
 O.every("freecam", 16, tick, 0)
@@ -26958,6 +27216,13 @@ function UI.panic()
     F.clearFloor()
     F.clearRamps()
 
+    -- Attach Ramp creates its own local follower; it is registered with E, but
+    -- clearing the state/globals here also covers a base ramp left by an older
+    -- instance before E.destroyAll runs.
+    if type(Menu.DetachBuggyRamp) == "function" then
+        pcall(Menu.DetachBuggyRamp)
+    end
+
     pcall(function()
         ClearOverrideWeather()
         ClearWeatherTypePersist()
@@ -27382,20 +27647,41 @@ local function installVoice()
 end
 
 -- ---------------------------------------------------------------------------
--- ONLINE > TROLL > LOCK PLAYER
+-- PLAYER > TARGET > LOCK PLAYER
 --
--- One row in the tab the operator already uses for per-player actions. The
--- row acts on Menu.SelectedPlayer, exactly like Attach Player and Ragdoll
--- above it. No new category, no second surface.
+-- The row belongs in Player, not Online > Troll. The target is still chosen
+-- in Online > Player List; this row only arms the action. Once armed it is
+-- permanent: target respawns, vehicle changes and Shift releases all keep the
+-- row on. Holding Shift is the live ram consent and loops the lock until it is
+-- released.
 --
--- The row is removed and re-appended on every load so a stale copy from a
--- previous instance cannot keep an old onClick alive.
+-- Player already has Self / Wardrobe / Movement / Voice. Target is a fifth tab
+-- in the same category, so the feature sits where the operator asked for it
+-- without creating a second top-level surface. The old Online copy is removed
+-- on every load so a stale onClick cannot survive a reload.
 -- ---------------------------------------------------------------------------
 local function installLockPlayer()
-    local tab = findTab("Online", "Troll")
-    if not tab then return false end
+    local category = findCategory("Player")
+    if not category then return false end
 
     removeItem("Online", "Troll", "Lock Player (Shift)")
+    removeItem("Online", "Troll", "Lock Player")
+    removeItem("Player", "Target", "Lock Player (Shift)")
+    removeItem("Player", "Target", "Lock Player")
+
+    category.tabs = category.tabs or {}
+
+    local tab = nil
+    for i = 1, #category.tabs do
+        if category.tabs[i].name == "Target" then
+            tab = category.tabs[i]
+            break
+        end
+    end
+    if not tab then
+        tab = { name = "Target", items = {} }
+        category.tabs[#category.tabs + 1] = tab
+    end
 
     local row
     row = {
@@ -27415,28 +27701,18 @@ local function installLockPlayer()
         end,
     }
 
-    -- The row tracks arm/disarm only. A session that ends because the operator
-    -- left the vehicle or lost the target keeps the row on: the next Shift in
-    -- a vehicle opens a new session. Panic/disarm goes through onChange.
+    -- The row tracks the permanent arm only. A ram session that ends because
+    -- Shift was released, the operator left the vehicle, or the target died
+    -- keeps the row on. Panic/disarm goes through onChange.
     L.onChange = function(active)
         row.value = active
     end
 
-    tab.items = tab.items or {}
-
-    -- Place it first in the Attacks block, next to Ban Player and Shoot Player.
-    -- Fall back to the head of the tab when the separator is not where the base
-    -- loader put it.
-    local at = nil
-    for i = 1, #tab.items do
-        local item = tab.items[i]
-        if item.isSeparator and item.separatorText == "Attacks" then
-            at = i + 1
-            break
-        end
-    end
-
-    table.insert(tab.items, at or 1, row)
+    tab.items = {
+        { name = "", isSeparator = true, separatorText = "Hold Shift to ram" },
+        row,
+        { name = "", isSeparator = true, separatorText = "Selected player first, then nearest" },
+    }
     return true
 end
 
@@ -27493,7 +27769,7 @@ end
 --
 -- Locks the selected player inside their vehicle. Vehicle ownership is taken
 -- once per second at most; the door state is held on CARLOCK_LOCKED_PLAYER_INSIDE.
--- Placed directly under Lock Player so the two per-player locks sit together.
+-- Placed directly under Ragdoll, in the Attacks block.
 -- ---------------------------------------------------------------------------
 local function installCarPrison()
     local tab = findTab("Online", "Troll")
@@ -27525,11 +27801,10 @@ local function installCarPrison()
 
     tab.items = tab.items or {}
 
-    -- Directly after Lock Player when present, otherwise first in Attacks.
+    -- Directly after Ragdoll when present, otherwise first in Attacks.
     local at = nil
     for i = 1, #tab.items do
-        local item = tab.items[i]
-        if item.name == "Lock Player (Shift)" then
+        if tab.items[i].name == "Ragdoll" then
             at = i + 1
             break
         end
@@ -27876,29 +28151,104 @@ end
 -- VEHICLE > PERFORMANCE > ATTACH RAMP
 --
 -- The base loader created two networked ramps on the ground ahead of the
--- vehicle, then left them there. This override makes one local ramp a real
--- child of the vehicle: it follows position and rotation like a front bumper
--- and is removed with Detach Ramp. No ground placement after the attach.
+-- vehicle, then left them there. A later override attached one local ramp as
+-- a child of the vehicle so it followed the bumper, but passed collision=false
+-- to AttachEntityToEntity. That is exactly why the ramp appeared and did
+-- nothing: an attached entity with the collision flag cleared is a visual.
+--
+-- This build keeps the ramp as a normal local world object and moves it with
+-- the vehicle from the scheduler. There is no attachment, so the engine never
+-- switches the object into the no-collision state that attached children can
+-- fall into. The prop is frozen (infinite mass), has collision enabled, and is
+-- explicitly excluded from colliding with the carrier vehicle only. Every
+-- other entity - traffic, the target's car, peds, walls - hits a real solid
+-- surface, which is the buggy-ramp behaviour.
+--
+-- Local, not networked: the ramp exists for this client's physics only. It is
+-- not an entity the server can attribute, it creates no network id, and it is
+-- removed with Detach Ramp or when the carrier vehicle changes. The carrier
+-- and its collision are networked by the game as usual; the ramp adds reach
+-- and a launch face on top of that.
 -- ---------------------------------------------------------------------------
+local rampFixState = nil
+
 local function installRampFix()
     if type(Menu) ~= "table" then return false end
+    if rampFixState then return true end
 
     local RAMP_MODELS = { "prop_mp_ramp_01", "prop_mp_ramp_02", "prop_mp_ramp_03" }
+    local FOLLOW_Z = -0.25
+    local FOLLOW_AHEAD = 1.8
 
-    local function loadRamp()
+    local state = {
+        obj = 0,
+        id = nil,
+        veh = 0,
+        front = 0.0,
+        active = false,
+    }
+
+    -- E.object is the project's local-object path: isNetwork=false, model
+    -- request bounded, registry entry with a TTL, and E.destroyAll on panic.
+    -- A failed model falls through to the next ramp variant instead of
+    -- aborting the whole click.
+    local function spawnRamp(position, heading)
         for i = 1, #RAMP_MODELS do
-            local hash = GetHashKey(RAMP_MODELS[i])
-            if E.requestModel(hash, 3000) then
-                return hash, RAMP_MODELS[i]
+            local obj, id = E.object(RAMP_MODELS[i], position, {
+                heading = heading,
+                freeze = true,
+                collision = true,
+                invincible = true,
+                ttl = 3600000,
+            })
+            if obj and obj ~= 0 and DoesEntityExist(obj) then
+                return obj, id, RAMP_MODELS[i]
             end
         end
-        return nil, nil
+        return nil, nil, nil
+    end
+
+    -- Delete every handle the base, a previous override, or this build left
+    -- behind. The global list is the base loader's contract with Detach Ramp;
+    -- keep it authoritative even though this build owns its own state.
+    local function removeRamp()
+        if state.id then
+            E.destroy(state.id)
+            state.id = nil
+        end
+
+        local handles = _G._buggyRampHandles
+        if type(handles) == "table" then
+            for i = 1, #handles do
+                local obj = handles[i]
+                if type(obj) == "number" and obj ~= 0 and DoesEntityExist(obj) then
+                    pcall(SetEntityInvincible, obj, false)
+                    pcall(DetachEntity, obj, true, true)
+                    pcall(SetEntityAsMissionEntity, obj, true, true)
+                    pcall(DeleteEntity, obj)
+                end
+            end
+        end
+
+        _G._buggyRampHandles = {}
+        _G._buggyRampVeh = nil
+        _G._buggyRampCooldowns = {}
+        _G._buggyRampThread = false
+        _G._buggyRampForceThread = false
+
+        state.obj = 0
+        state.veh = 0
+        state.front = 0.0
+        state.active = false
+    end
+
+    Menu.DetachBuggyRamp = function()
+        removeRamp()
+        O.log("ramp: removed")
     end
 
     Menu.AttachBuggyRamp = function()
-        if type(Menu.DetachBuggyRamp) == "function" then
-            pcall(Menu.DetachBuggyRamp)
-        end
+        removeRamp()
 
         local ped = PlayerPedId()
         local vehicle = GetVehiclePedIsIn(ped, false)
@@ -27907,47 +28257,88 @@ local function installRampFix()
             return false
         end
 
-        local hash, modelName = loadRamp()
-        if not hash then
-            O.log("ramp: no ramp model could be loaded")
-            return false
-        end
-
         local _, vehicleMax = GetModelDimensions(GetEntityModel(vehicle))
-        local front = (vehicleMax and vehicleMax.y or 2.5) + 0.9
-        local coords = GetEntityCoords(vehicle)
-        local obj = CreateObject(hash, coords.x, coords.y, coords.z, false, false, false)
-        SetModelAsNoLongerNeeded(hash)
+        local front = (vehicleMax and vehicleMax.y or 2.5) + FOLLOW_AHEAD
 
-        if not obj or obj == 0 or not DoesEntityExist(obj) then
-            O.log("ramp: local object creation failed")
+        local spawn = GetOffsetFromEntityInWorldCoords(vehicle, 0.0, front, FOLLOW_Z)
+        local heading = GetEntityHeading(vehicle)
+        local obj, id, modelName = spawnRamp(spawn, heading + 180.0)
+
+        if not obj then
+            O.log("ramp: no ramp model could be created")
             return false
         end
 
         pcall(SetEntityAsMissionEntity, obj, true, true)
         pcall(SetEntityInvincible, obj, true)
+
+        -- Collision is the point of this override. A frozen object keeps its
+        -- collision surface and cannot be pushed out of the carrier's path by
+        -- the entities it hits.
         pcall(SetEntityCollision, obj, true, true)
+        pcall(SetEntityRecordsCollisions, obj, true)
+        pcall(FreezeEntityPosition, obj, true)
 
-        -- Local coordinates: Y is forward on the vehicle. The ramp is fixed
-        -- to the front bumper and inherits every vehicle movement.
-        local attached = pcall(AttachEntityToEntity, obj, vehicle, 0,
-            0.0, front, 0.1,
-            0.0, 0.0, 180.0,
-            false, false, false, false, 2, true)
+        -- Orient the ramp the way the base loader did: its incline faces the
+        -- carrier, so the face presented to traffic is the launch face.
+        pcall(SetEntityRotation, obj, 0.0, 0.0, heading + 180.0, 2, true)
+        pcall(SetEntityCoordsNoOffset, obj, spawn.x, spawn.y, spawn.z,
+            false, false, false)
 
-        if not attached then
-            pcall(DeleteObject, obj)
-            O.log("ramp: attach failed")
-            return false
-        end
+        -- Only the pair (ramp, carrier) is ignored. World, peds, other
+        -- vehicles and props all still collide with the ramp.
+        pcall(SetEntityNoCollisionEntity, obj, vehicle, false)
 
         _G._buggyRampHandles = { obj }
         _G._buggyRampVeh = vehicle
         _G._buggyRampCooldowns = {}
-        O.log("ramp: attached %s to vehicle", tostring(modelName))
+
+        state.obj = obj
+        state.id = id
+        state.veh = vehicle
+        state.front = front
+        state.active = true
+
+        O.log("ramp: collidable follower %s ahead=%.1f", tostring(modelName), front)
         return true
     end
 
+    -- Re-place the solid prop relative to the carrier every scheduler tick.
+    -- SetEntityCoordsNoOffset is allowed on a frozen entity (the freeze only
+    -- stops physics from moving it), so the ramp never sags or lags.
+    local function rampTick()
+        if not state.active or state.obj == 0 then return end
+
+        local obj = state.obj
+        if not DoesEntityExist(obj) then
+            removeRamp()
+            return
+        end
+
+        local ped = PlayerPedId()
+        local vehicle = GetVehiclePedIsIn(ped, false)
+        if not vehicle or vehicle == 0 or vehicle ~= state.veh
+            or not DoesEntityExist(vehicle) then
+            removeRamp()
+            return
+        end
+
+        local spawn = GetOffsetFromEntityInWorldCoords(vehicle, 0.0, state.front, FOLLOW_Z)
+        local heading = GetEntityHeading(vehicle)
+
+        pcall(SetEntityCoordsNoOffset, obj, spawn.x, spawn.y, spawn.z,
+            false, false, false)
+        pcall(SetEntityRotation, obj, 0.0, 0.0, heading + 180.0, 2, true)
+
+        -- Re-assert the two properties that matter. A teleport or a model
+        -- stream can clear collision flags on a local prop; the cost is two
+        -- no-op native calls per scheduler tick.
+        pcall(SetEntityCollision, obj, true, true)
+        pcall(SetEntityNoCollisionEntity, obj, vehicle, false)
+    end
+
+    rampFixState = state
+    O.every("rampFix", 0, rampTick, 0)
     return true
 end
 
