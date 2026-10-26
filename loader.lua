@@ -16001,7 +16001,7 @@ end)()
 -- >>> VANGUARD MODULE BEGIN
 -- ============================================================================
 -- VANGUARD  (integrated artifact - edit src/ and rebuild)
--- Generated: 2026-10-25 17:22:27
+-- Generated: 2026-10-26 12:56:01
 --
 -- This block lives in loader.lua and in dist/loader.built.lua at the same
 -- time. It is the only place the local Menu table is in scope. Rebuilding
@@ -16904,12 +16904,11 @@ local FAMILIES = {
     jump      = { strikes = 1, window = 5000,  cost = 1 },
     handling  = { strikes = 1, window = 3000,  cost = 1 },
     entity    = { strikes = 3, window = 5000,  cost = 1 },
-    -- Lock Player spends one token per hold session, not per task re-issue.
-    -- The only writes are remote scripted tasks and a per-player door state on
-    -- our own vehicle; V4 filters neither, but the family caps how often an
-    -- unknown guard could observe a new task batch. Four sessions per six
-    -- seconds covers a grab, a release and a second grab without a
-    -- machine-gun window.
+    -- Lock Player spends one token per armed period, not per Left Ctrl hold,
+    -- target change or respawn. The only writes are velocity, rotation and
+    -- gravity on the operator's own vehicle; there is no remote task, no door
+    -- state and no ownership request. The family caps re-arms, which is the
+    -- only visible action an unknown guard could count.
     lock      = { strikes = 4, window = 6000,  cost = 1 },
     -- Voice changes no proximity value, so V4's voice check never reads it.
     -- The token caps how often an unknown guard could observe a re-arm.
@@ -23496,41 +23495,46 @@ local L = (function(O,S,B,Menu)
 -- ============================================================================
 -- VANGUARD / 17 LOCK PLAYER
 -- ----------------------------------------------------------------------------
--- Player > Target > "Lock Player (Shift)".
+-- Player > Target > "Lock Player (Ctrl)".
 --
 -- What it does:
 --   The row is a permanent arm. Once it is on it stays on until the operator
 --   turns it off; it never expires, it does not need to be re-armed after a
 --   target respawns, and it survives leaving and re-entering a vehicle.
 --
---   While Shift is held, the operator's current vehicle is driven at the
---   Gravitate ceiling (200) into the target, over and over. The target is
---   aimed at whether they are on foot or in a vehicle: the aim entity is the
---   target ped, or the target vehicle when they are seated in one. Release
---   Shift and the car is handed back to normal physics; the row stays armed
---   and the next Shift starts the loop again against the nearest valid
---   player.
+--   While Left Ctrl is held, the operator's current vehicle is driven into the
+--   target at the Lock Speed value (50..200, default 200), over and over.
+--   "Lock Speed" is the slider directly under the row. It is read every tick,
+--   so a live session can be slowed without releasing Left Ctrl: that is what
+--   makes the row usable on a server whose vehicle validator rolls back the
+--   WaveShield-validated 200 (Seed). The aim point follows the target whether
+--   they are on foot or in a vehicle: the aim entity is the target ped, or the
+--   target vehicle when they are seated in one. Release Left Ctrl and the car is handed
+--   back to normal physics; the row stays armed and the next Left Ctrl starts the
+--   loop again against the nearest valid player.
 --
 --   Target order: the player selected in Online > Player List first, then the
---   nearest other player. A selected player that is self, gone, in the
---   operator's own vehicle, or beyond the engagement range does not block the
---   fallback. When nothing is selected the nearest player is used, which is
---   what makes the row work without a manual selection.
+--   nearest living player. A dead player is never locked: the selection falls
+--   through to the nearest living player, and if nobody alive is in range the
+--   car is restored and the row waits. A selected player that is self, dead,
+--   gone, in the operator's own vehicle, or beyond the engagement range does
+--   not block the fallback. When nothing is selected the nearest living
+--   player is used, which is what makes the row work without a selection.
 --
 --   The Vehicle > Performance rows "Gravitate Vehicle" and "Gravitate Speed"
---   are mirrored to ON / 200 for the duration of a ram session, then
---   restored. The base toggle's onClick is never called: its injected loop
---   steers from the gameplay camera, and two drivers writing the same entity
---   every frame would fight. This module implements the same 200-unit
---   velocity directly.
+--   are mirrored to ON / current Lock Speed for the duration of a ram
+--   session, then restored. The base toggle's onClick is never called: its
+--   injected loop steers from the gameplay camera, and two drivers writing the
+--   same entity every frame would fight. This module implements the same
+--   velocity directly and restores the operator's previous slider value.
 --
--- Why the arm is permanent but the ram is Shift-held:
+-- Why the arm is permanent but the ram is held with Left Ctrl:
 --   "Permanent" is the row state: the operator should not have to re-enable
 --   the feature after every target, every respawn, or every vehicle change.
---   "Lock in a loop" is an action: holding Shift is the operator's live
---   consent to keep writing velocity to their own car. Releasing Shift ends
+--   "Lock in a loop" is an action: holding Left Ctrl is the operator's live
+--   consent to keep writing velocity to their own car. Releasing Left Ctrl ends
 --   the ram session and restores gravity/velocity, so the car cannot run away
---   while the operator is doing something else. The next Shift re-enters the
+--   while the operator is doing something else. The next Left Ctrl re-enters the
 --   loop with no menu interaction.
 --
 -- Why this is a local-vehicle write, not a remote-ped task
@@ -23550,40 +23554,68 @@ local L = (function(O,S,B,Menu)
 -- The operator's vehicle is the one entity this client owns and may write
 -- without a request. `SetEntityVelocity` on it is authoritative for this
 -- client and is replicated by the vehicle's owner like every other transform.
--- `SetEntityRotation` only changes yaw; no position teleport is made.
--- `SetVehicleGravityAmount(0)` is the same CFX gravity value the base
--- Gravitate Vehicle feature writes; it is restored to 9.8 on release.
+-- `SetEntityRotation` changes only the orientation (yaw and pitch); no
+-- position teleport is made. `SetVehicleGravityAmount(0)` is the same CFX
+-- gravity value the base Gravitate Vehicle feature writes; it is restored to
+-- 9.8 on release.
 --
--- Why 200
--- -------
--- The Gravitate Speed slider is 50..500 and the base feature writes the raw
--- value as velocity units. The operator asked for the maximum, 200. The
--- module mirrors 200 into the slider while a session is live and restores the
--- operator's previous value on release. It never reads the slider: a missing
--- or renamed item cannot change the driving speed.
+-- Why the speed is a row, not a constant
+-- --------------------------------------
+-- 200 works on WaveShield and remains the default. Seed's vehicle validator
+-- rolls a car moving that fast back to the server position, which turns the
+-- ram into a stutter: the operator asked to adapt per anticheat. The speed is
+-- therefore a slider (50..200, step 10) read every tick. The value is mirrored
+-- into Gravitate Speed while a session is live and the operator's previous
+-- value is restored on release. The row is the only speed authority; a
+-- missing row falls back to the last value used in this game session, then to
+-- 200. The last value is kept in a process-local global, so re-injecting the
+-- loader does not forget the speed that was chosen for the current server.
+--
+-- Why the aim follows the height axis
+-- -----------------------------------
+-- The previous build summed a fixed offset (chest +0.9, vehicle +0.4) and
+-- opened the impact pass on the 3D distance alone. When the operator's car was
+-- above the target, the pass could trigger while the car was still several
+-- metres high, hold a shallow direction for 180 ms (36 m at 200), and sail
+-- over the target. Three changes:
+--   1. The aim offset drops when the car is above the target (ped 0.20 m,
+--      vehicle 0.05 m instead of 0.85 / 0.35), so the intercept is the body,
+--      not the head or the roof.
+--   2. The pass is only entered when the aim point is within 1.5 m of the
+--      car's own height; otherwise the car keeps homing. A pass that has
+--      already started is cancelled the moment the vertical error grows.
+--   3. The vehicle's pitch follows the 3D aim (clamped to +-35 degrees), so
+--      the bumper points at the target instead of the body flying level over
+--      it. The velocity vector is still the only movement source.
 --
 -- Detector surface
 -- ----------------
 --   * The target is never written: no task, no attachment, no ownership
 --     request, no door lock, no position write. The only target reads are
---     GetEntityCoords and IsPedDeadOrDying.
+--     GetEntityCoords, GetVehiclePedIsIn and IsPedDeadOrDying.
 --   * The only entity written is the operator's own vehicle: velocity,
 --     rotation, gravity, engine/repair state. All are local-authoritative.
 --   * V4's speed check ignores players in a vehicle (speedHack.lua:19-24).
 --     Its teleport check requires two in-vehicle samples below 3 m/s
 --     (teleport.lua:3-25). Its noclip check requires a frozen or
---     collision-disabled ped (noclip.lua:39-53). At 200 m/s the vehicle fails
---     every one of those preconditions, and the operator's ped is seated.
+--     collision-disabled ped (noclip.lua:39-53). The operator's ped is seated
+--     at every slider value, so all three preconditions stay false; the speed
+--     magnitude only changes what a server-side handling validator sees.
 --   * No entity is created, no server event is sent, no state bag is written.
 --     The budget family "lock" caps arm/disarm, not target re-acquisition.
 --
 -- Residual risk:
---   * The server sees a vehicle moving faster than its handling data. A
---     server-side vehicle-speed check, or a human report, is the remaining
---     exposure. The base Gravitate Vehicle feature has the same signature.
+--   * Speed. The server sees a vehicle moving faster than its handling data.
+--     WaveShield accepts 200; Seed rolls it back. The Lock Speed slider is the
+--     answer: lower it per server. The vehicle is never teleported, so there
+--     is no position jump to validate; only the velocity/handling mismatch.
 --   * At 200 m/s thin geometry can be tunnelled. The driver holds a short
 --     pass at impact range (PASS_MS) so the collision solver gets a window,
---     but the travel leg is deliberately fast.
+--     but the travel leg is deliberately fast. Lowering Lock Speed also
+--     reduces the tunnelling window.
+--   * A dead target is replaced by the nearest living player. If no living
+--     player is in range, the session ends and the row stays armed. The car is
+--     never left flying at a corpse.
 --
 -- Tier:
 --   Tier A only. No Susano.InjectResource, no native hook, no server event.
@@ -23592,32 +23624,48 @@ local L = (function(O,S,B,Menu)
 local N = {}
 
 local POLL_MS         = 40
-local RAM_SPEED       = 200.0
+local DEFAULT_SPEED   = 200.0
+local MIN_SPEED       = 50.0
+local MAX_SPEED       = 200.0
 local HIT_RANGE       = 9.0
 local PASS_MS         = 180
+local PASS_ALIGN      = 1.5
 local MAX_RANGE       = 900.0
 local NEAREST_RANGE   = 600.0
 local REPAIR_MS       = 500
-local GRAVITATE_SPEED = 200
+local AIM_DROP_ABOVE  = 1.5
+local MAX_PITCH       = 35.0
+local PED_AIM         = 0.85
+local PED_AIM_BELOW   = 0.20
+local VEH_AIM         = 0.35
+local VEH_AIM_BELOW   = 0.05
 local GRAVITATE_ROW   = "Gravitate Vehicle"
-local SPEED_ROW       = "Gravitate Speed"
-local SHIFT_CODES     = { 0xA0, 0xA2, 0x10 }
+local GRAVITATE_SPEED = "Gravitate Speed"
+local SPEED_ROW       = "Lock Speed"
+-- VK_LCONTROL only. No VK_LSHIFT/VK_RSHIFT/VK_SHIFT, no VK_RCONTROL, no
+-- VK_CONTROL. The raw API distinguishes the physical left key, which a control
+-- binding cannot do.
+local CTRL_CODE       = 0xA2
 
--- Runtime state. Nothing here is global; a reload starts clean.
+-- Runtime state. Nothing here is global except the last chosen speed, which is
+-- deliberately process-local: a reload keeps the value the operator picked for
+-- the current server without writing a file or a convar.
 N.active     = false    -- the permanent row state
-N.held       = false    -- Shift is down (the live ram consent)
+N.held       = false    -- Left Ctrl is down (the live ram consent)
 N.session    = false    -- a vehicle/target ram is running
 N.veh        = 0
 N.ped        = 0
 N.player     = -1
 N.targetMode = "none"   -- "selected" or "nearest"
-N.mode       = "idle"   -- "charge", "pass" or "hold"
+N.mode       = "idle"   -- "charge" or "pass"
 N.lastRepair = 0
 N.passUntil  = 0
 N.dirX       = 0.0
 N.dirY       = 0.0
 N.dirZ       = 0.0
 N.lastDist   = 0.0
+N.lastSpeed  = DEFAULT_SPEED
+N.lastVertical = 0.0
 N.impacts    = 0
 N.sessions   = 0
 N.spent      = false
@@ -23636,14 +23684,17 @@ local function notify(active)
 end
 
 -- ---------------------------------------------------------------------------
--- SHIFT
+-- LEFT CTRL
 --
--- The raw key path is the menu path: a Susano overlay can hold the menu open
--- while the game controls are disabled, and GetAsyncKeyState still reports the
--- physical key. The control path is the gameplay path: when the menu is
--- closed, the sprint control (21) is the same physical Shift and is readable
--- by IsControlPressed / IsDisabledControlPressed. Both are checked; either
--- one is enough.
+-- The row is bound to one physical key: VK_LCONTROL (0xA2). It is deliberately
+-- not a control binding. The old build accepted VK_LSHIFT (0xA0) and VK_SHIFT
+-- (0x10), plus Sprint control 21 (which also fires on right Shift); all of
+-- those are gone. VK_RCONTROL (0xA3) and VK_CONTROL (0x11) are also not read,
+-- so the right Ctrl key cannot start a ram. A control binding would be the
+-- wrong tool here:
+-- GetAsyncKeyState reports the physical left key even while the Susano overlay
+-- has the game controls disabled, and it cannot silently accept another key
+-- because the operator rebound Duck or Sprint.
 -- ---------------------------------------------------------------------------
 local function apiKeyDown(code)
     local api = rawget(_G, "Susano")
@@ -23656,16 +23707,8 @@ local function apiKeyDown(code)
     return ok and (down == true or down == 1)
 end
 
-local function shiftHeld()
-    for i = 1, #SHIFT_CODES do
-        if apiKeyDown(SHIFT_CODES[i]) then return true end
-    end
-
-    local okDisabled, disabled = pcall(IsDisabledControlPressed, 0, 21)
-    if okDisabled and disabled == true then return true end
-
-    local okPressed, pressed = pcall(IsControlPressed, 0, 21)
-    return okPressed and pressed == true
+local function ctrlHeld()
+    return apiKeyDown(CTRL_CODE)
 end
 
 -- ---------------------------------------------------------------------------
@@ -23720,7 +23763,16 @@ local function entityCoords(entity)
     return nil
 end
 
--- Nearest other player, measured from the operator's vehicle. Players seated
+-- A dead player is not a target. The death system owns the ped, and a ram
+-- against a corpse is useless (the body has no collision authority) and very
+-- visible (a car orbiting a body). The selection falls through to the nearest
+-- living player; if none exists the row waits with no vehicle write.
+local function isDead(ped)
+    local ok, dead = pcall(IsPedDeadOrDying, ped, true)
+    return ok and dead == true
+end
+
+-- Nearest living player, measured from the operator's vehicle. Players seated
 -- in the operator's own vehicle are skipped: a ram would hit the operator.
 local function nearestPlayer(veh, origin)
     local myPlayer = O.Ctx.player
@@ -23736,7 +23788,14 @@ local function nearestPlayer(veh, origin)
         local player = players[i]
         if player ~= myPlayer then
             local okPed, ped = pcall(GetPlayerPed, player)
-            if okPed and type(ped) == "number" and ped ~= 0 and DoesEntityExist(ped) then
+            -- The ped guard covers the respawn window where the local player
+            -- index changed but the vehicle/context still points at our own
+            -- ped. Without it, a stale index could select the operator as the
+            -- "nearest other player" and start a ram against their own car.
+            local isSelfPed = type(O.Ctx.ped) == "number" and O.Ctx.ped ~= 0
+                and ped == O.Ctx.ped
+            if okPed and type(ped) == "number" and ped ~= 0 and DoesEntityExist(ped)
+                and not isSelfPed and not isDead(ped) then
                 local theirVeh = pedVehicle(ped)
                 if theirVeh == 0 or theirVeh ~= veh then
                     local coords = entityCoords(theirVeh ~= 0 and theirVeh or ped)
@@ -23756,12 +23815,13 @@ local function nearestPlayer(veh, origin)
     return bestPed, bestPlayer
 end
 
--- Selection first, nearest second. A selection that is self, gone, in our own
--- car, or out of range does not block the fallback; that is what makes the
--- row work in every situation without a manual reselect.
+-- Selection first, nearest living second. A selection that is self, dead,
+-- gone, in our own car, or out of range does not block the fallback; that is
+-- what makes the row work in every situation without a manual reselect and
+-- what moves the lock off a corpse as soon as the target dies.
 local function resolveTarget(veh, origin)
     local ped, player = targetPed()
-    if ped ~= 0 then
+    if ped ~= 0 and not isDead(ped) then
         local theirVeh = pedVehicle(ped)
         if theirVeh == 0 or theirVeh ~= veh then
             local coords = entityCoords(theirVeh ~= 0 and theirVeh or ped)
@@ -23777,14 +23837,18 @@ local function resolveTarget(veh, origin)
 end
 
 -- ---------------------------------------------------------------------------
--- GRAVITATE ROWS
+-- GRAVITATE ROWS AND LOCK SPEED
 --
 -- The rows are UI state, not the driver. They are found by name because the
 -- menu can be rebuilt between loads and a saved item reference would then
--- point at a dead table. The previous value is restored on release, so a
+-- point at a dead table. The previous values are restored on release, so a
 -- manual Gravitate session survives a Lock Player session untouched.
+--
+-- The optional category/tab filters exist for Lock Speed: a generic name
+-- lookup could pick a same-named slider from another category. Lock Speed is
+-- scoped to Player > Target, the only place this module puts it.
 -- ---------------------------------------------------------------------------
-local function findItem(name)
+local function findItem(name, categoryName, tabName)
     if type(Menu) ~= "table" then return nil end
 
     local lists = { Menu.Categories, Menu.ExtraCategories }
@@ -23793,16 +23857,22 @@ local function findItem(name)
         if type(list) == "table" then
             for ci = 1, #list do
                 local category = list[ci]
-                local tabs = type(category) == "table" and category.tabs or nil
-                if type(tabs) == "table" then
-                    for ti = 1, #tabs do
-                        local tab = tabs[ti]
-                        local items = type(tab) == "table" and tab.items or nil
-                        if type(items) == "table" then
-                            for ii = 1, #items do
-                                local item = items[ii]
-                                if type(item) == "table" and item.name == name then
-                                    return item
+                local categoryMatches = type(category) == "table"
+                    and (not categoryName or category.name == categoryName)
+                if categoryMatches then
+                    local tabs = category.tabs
+                    if type(tabs) == "table" then
+                        for ti = 1, #tabs do
+                            local tab = tabs[ti]
+                            local tabMatches = type(tab) == "table"
+                                and (not tabName or tab.name == tabName)
+                            local items = tabMatches and tab.items or nil
+                            if type(items) == "table" then
+                                for ii = 1, #items do
+                                    local item = items[ii]
+                                    if type(item) == "table" and item.name == name then
+                                        return item
+                                    end
                                 end
                             end
                         end
@@ -23814,10 +23884,30 @@ local function findItem(name)
     return nil
 end
 
+-- The slider is the single speed authority. It is read every tick so the
+-- operator can lower it while the car is already moving; that is the Seed
+-- case (200 rolls the vehicle back, 80 does not). A missing row falls back to
+-- the last value used in this game session, then to the default. The value is
+-- clamped to the slider's own range so a corrupted config cannot write a
+-- velocity the row cannot display.
+local function lockSpeed()
+    local item = findItem(SPEED_ROW, "Player", "Target")
+    local value = type(item) == "table" and item.value or nil
+    if type(value) ~= "number" then
+        value = tonumber(rawget(_G, "_vgdLockSpeed")) or DEFAULT_SPEED
+    end
+    if value < MIN_SPEED then value = MIN_SPEED end
+    if value > MAX_SPEED then value = MAX_SPEED end
+    if rawget(_G, "_vgdLockSpeed") ~= value then
+        rawset(_G, "_vgdLockSpeed", value)
+    end
+    return value
+end
+
 local function gravitateOn()
     if N.saved == nil then
         local vehItem = findItem(GRAVITATE_ROW)
-        local speedItem = findItem(SPEED_ROW)
+        local speedItem = findItem(GRAVITATE_SPEED)
         N.saved = {
             vehItem = vehItem,
             vehValue = vehItem and vehItem.value or false,
@@ -23828,8 +23918,8 @@ local function gravitateOn()
 
     local vehItem = findItem(GRAVITATE_ROW)
     if vehItem then vehItem.value = true end
-    local speedItem = findItem(SPEED_ROW)
-    if speedItem then speedItem.value = GRAVITATE_SPEED end
+    local speedItem = findItem(GRAVITATE_SPEED)
+    if speedItem then speedItem.value = lockSpeed() end
 end
 
 local function gravitateOff()
@@ -23886,9 +23976,9 @@ end
 -- SESSION
 --
 -- A session is one vehicle/target pair. The row is the permanent state:
--- losing the target, Shift, or the vehicle ends the session, never the arm.
+-- losing the target, Left Ctrl, or the vehicle ends the session, never the arm.
 -- The budget token is spent once in N.arm(), so a target change, a respawn or
--- a second Shift hold does not drain the family.
+-- a second Left Ctrl hold does not drain the family.
 -- ---------------------------------------------------------------------------
 local function endSession(reason)
     local veh = N.veh
@@ -23925,10 +24015,13 @@ local function startSession(veh, ped, player, mode)
     N.lastRepair = 0
     N.passUntil = 0
     N.dirX, N.dirY, N.dirZ = 0.0, 0.0, 0.0
+    N.lastSpeed = lockSpeed()
+    N.lastVertical = 0.0
     N.impacts = 0
 
     gravitateOn()
-    emit("session %d: %s target", N.sessions, tostring(mode))
+    emit("session %d: %s target speed=%d", N.sessions, tostring(mode),
+        math.floor(N.lastSpeed))
 end
 
 -- Same vehicle, new target (respawn, selection change, nearest switch). The
@@ -23941,6 +24034,7 @@ local function retarget(ped, player, mode)
     N.passUntil = 0
     N.dirX, N.dirY, N.dirZ = 0.0, 0.0, 0.0
     N.impacts = 0
+    N.lastVertical = 0.0
     emit("retarget: %s target", tostring(mode))
 end
 
@@ -23975,10 +24069,19 @@ local function drive(veh, dx, dy, dz, speed)
 
     local heading = headingTo(dx, dy)
     if heading then
-        -- Rotation order 2 is the order GetEntityRotation(veh, 2) uses. Pitch
-        -- and roll are zeroed so a collision cannot spin the ram off its aim;
-        -- only the position is left to physics.
-        pcall(SetEntityRotation, veh, 0.0, 0.0, heading, 2, true)
+        -- Rotation order 2 is the order GetEntityRotation(veh, 2) uses. Yaw
+        -- follows the horizontal aim; pitch follows the vertical aim so the
+        -- bumper points at the target instead of the body flying level over a
+        -- lower target. The pitch is clamped: a 70-degree dive at 200 m/s
+        -- tumbles the chassis and the velocity vector is already doing the
+        -- real work. Roll stays zero.
+        local vertical = dz
+        if vertical > 1.0 then vertical = 1.0 end
+        if vertical < -1.0 then vertical = -1.0 end
+        local pitch = math.deg(math.asin(vertical))
+        if pitch > MAX_PITCH then pitch = MAX_PITCH end
+        if pitch < -MAX_PITCH then pitch = -MAX_PITCH end
+        pcall(SetEntityRotation, veh, pitch, 0.0, heading, 2, true)
     end
 
     pcall(SetVehicleGravityAmount, veh, 0.0)
@@ -23995,14 +24098,19 @@ local function tick(now)
         return
     end
 
-    -- The row is permanent; the ram is not. Without Shift the module does no
-    -- target work and no vehicle work at all. Releasing Shift mid-run restores
+    -- The row is permanent; the ram is not. Without Left Ctrl the module does no
+    -- target work and no vehicle work at all. Releasing Left Ctrl mid-run restores
     -- the car and leaves the row armed for the next hold.
-    N.held = shiftHeld()
+    N.held = ctrlHeld()
     if not N.held then
-        if N.session then endSession("shift released") end
+        if N.session then endSession("left ctrl released") end
         return
     end
+
+    -- The slider is live. Reading it before any target work means a session
+    -- that is already moving picks up a change on the next tick, and status
+    -- reports the value the driver will actually use.
+    N.lastSpeed = lockSpeed()
 
     local ped = PlayerPedId()
     if not ped or ped == 0 then
@@ -24061,22 +24169,20 @@ local function tick(now)
         N.targetMode = targetMode
     end
 
+    -- Keep the UI mirror in step with a slider that changed mid-session.
+    -- gravitateOn() saved the operator's own Gravitate Speed first, so this
+    -- write is still restored on release.
+    local gravSpeed = findItem(GRAVITATE_SPEED)
+    if gravSpeed and gravSpeed.value ~= N.lastSpeed then
+        gravSpeed.value = N.lastSpeed
+    end
+
     local okTarget, targetCoords = pcall(GetEntityCoords,
         targetVeh ~= 0 and targetVeh or target)
     if not okTarget or not targetCoords then return end
 
     local distance = O.distance(targetCoords, selfCoords)
     N.lastDist = distance
-
-    -- A dead target is owned by the death system. Hold the session so the ram
-    -- resumes when they respawn, but do not keep a 200 m/s velocity alive
-    -- against a corpse (the car would fly away from the selection).
-    local okDead, targetDead = pcall(IsPedDeadOrDying, target, true)
-    if okDead and targetDead == true then
-        pcall(SetEntityVelocity, veh, 0.0, 0.0, 0.0)
-        N.mode = "hold"
-        return
-    end
 
     -- Repair on a low, jittered cadence. The vehicle must survive a long
     -- hold, and a wreck cannot carry a ram. Every write is on our vehicle.
@@ -24096,10 +24202,23 @@ local function tick(now)
         pcall(FreezeEntityPosition, veh, false)
     end
 
-    -- Aim point: chest height for a ped, centre mass for a vehicle.
+    -- Aim point. A ped is aimed at the chest when the car is level or below,
+    -- and at the body when the car is above: the lower point forces the
+    -- intercept down instead of letting the bumper pass over the head. A
+    -- vehicle is aimed at centre mass for the same reason. `heightError` is
+    -- measured from the target root, which is what GetEntityCoords returns.
+    local heightError = selfCoords.z - targetCoords.z
+    local zOffset
+    if targetVeh ~= 0 then
+        zOffset = heightError > AIM_DROP_ABOVE and VEH_AIM_BELOW or VEH_AIM
+    else
+        zOffset = heightError > AIM_DROP_ABOVE and PED_AIM_BELOW or PED_AIM
+    end
+
     local tx = targetCoords.x
     local ty = targetCoords.y
-    local tz = targetCoords.z + (targetVeh ~= 0 and 0.4 or 0.9)
+    local tz = targetCoords.z + zOffset
+    N.lastVertical = tz - selfCoords.z
 
     local dx, dy, dz = tx - selfCoords.x, ty - selfCoords.y, tz - selfCoords.z
     local len = math.sqrt(dx * dx + dy * dy + dz * dz)
@@ -24110,12 +24229,23 @@ local function tick(now)
     -- the collision solver sees a continuous approach instead of a car that
     -- instantly reverses on the target and vibrates on top of them. After the
     -- pass the next tick homes again: that is the loop.
+    --
+    -- The pass is gated on vertical alignment. Holding the direction while
+    -- the car is still metres above the target is exactly how the old build
+    -- sailed over a lower player; if the vertical error is outside the band,
+    -- the car keeps homing instead of committing to the pass.
+    local aligned = math.abs(N.lastVertical) <= PASS_ALIGN
+
+    if now < N.passUntil and not aligned then
+        N.passUntil = 0
+    end
+
     if now < N.passUntil then
         dx, dy, dz = N.dirX, N.dirY, N.dirZ
         N.mode = "pass"
     else
         N.mode = "charge"
-        if distance <= HIT_RANGE then
+        if distance <= HIT_RANGE and aligned then
             N.dirX, N.dirY, N.dirZ = dx, dy, dz
             N.passUntil = now + O.jitter(PASS_MS, 0.2)
             N.impacts = N.impacts + 1
@@ -24123,7 +24253,7 @@ local function tick(now)
         end
     end
 
-    drive(veh, dx, dy, dz, RAM_SPEED)
+    drive(veh, dx, dy, dz, N.lastSpeed)
 end
 
 -- ---------------------------------------------------------------------------
@@ -24137,7 +24267,7 @@ function N.arm()
     if N.active then return true end
     if N.session or N.saved then endSession("re-arm") end
 
-    -- The token is spent once per armed period, not per Shift hold and not
+    -- The token is spent once per armed period, not per Left Ctrl hold and not
     -- per session. A target respawn or a vehicle change must not drain the
     -- family: the lock is meant to stay on until the operator turns it off.
     if not B.spend("lock") then
@@ -24157,13 +24287,16 @@ function N.arm()
     N.passUntil = 0
     N.dirX, N.dirY, N.dirZ = 0.0, 0.0, 0.0
     N.lastDist = 0.0
+    N.lastSpeed = lockSpeed()
+    N.lastVertical = 0.0
     N.impacts = 0
     N.spent = true
     N.didWork = false
     N.saved = nil
 
     notify(true)
-    emit("armed - permanent, hold Shift to ram selected/nearest")
+    emit("armed - permanent, hold Left Ctrl to ram selected/nearest living (speed=%d)",
+        math.floor(N.lastSpeed))
     return true
 end
 
@@ -24177,7 +24310,7 @@ function N.stop(reason)
         gravitateOff()
     end
 
-    -- A period that never wrote the vehicle (armed then disarmed, or a Shift
+    -- A period that never wrote the vehicle (armed then disarmed, or a Left Ctrl
     -- hold with no target) must not consume its token.
     if N.spent and not N.didWork then B.refund("lock") end
     N.spent = false
@@ -24194,12 +24327,21 @@ function N.isActive()
     return N.active
 end
 
+-- The menu builds its slider from this value. When the row does not exist yet
+-- (first install, or a reload before build) lockSpeed() falls back to the last
+-- speed used in this game session, then to DEFAULT_SPEED, so the slider always
+-- starts on the value the driver will actually use.
+function N.speedValue()
+    return lockSpeed()
+end
+
 function N.status()
     local selected = selectedId()
-    return ("armed=%s held=%s target=%s mode=%s source=%s dist=%d speed=%d impacts=%d sessions=%d"):format(
+    return ("armed=%s held=%s target=%s mode=%s source=%s dist=%d speed=%d height=%+.1f impacts=%d sessions=%d"):format(
         tostring(N.active), tostring(N.held), tostring(selected or "-"),
         tostring(N.mode), tostring(N.targetMode),
-        math.floor(N.lastDist or 0), math.floor(RAM_SPEED), N.impacts, N.sessions)
+        math.floor(N.lastDist or 0), math.floor(N.lastSpeed or DEFAULT_SPEED),
+        N.lastVertical or 0.0, N.impacts, N.sessions)
 end
 
 -- Arm once. The scheduler is the single owner; there is no per-feature thread
@@ -26201,6 +26343,30 @@ local function tick(now)
             return
         end
 
+        -- The pending window is not a blind spot. A guard policy that
+        -- requires a vehicle, a dead operator, or a ped that disappeared must
+        -- tear the pending camera down before it can render, not on the next
+        -- full tick. The injected chunk checks DoesCamExist for the same
+        -- reason: a late chunk must not activate a handle that stop freed.
+        local ped = PlayerPedId()
+        if ped == 0 or not DoesEntityExist(ped) then
+            FA.stop("ped gone while pending")
+            return
+        end
+        if O.Ctx.dead then
+            FA.stop("operator died while pending")
+            return
+        end
+        if FA.vehicleOnly and not O.Ctx.inVehicle then
+            FA.stop("left the vehicle while pending")
+            return
+        end
+        local okCam, camExists = pcall(DoesCamExist, FA.cam)
+        if not okCam or camExists ~= true then
+            FA.stop("camera destroyed while pending")
+            return
+        end
+
         local okRender, rendering = pcall(GetRenderingCam)
         if okRender and rendering == FA.cam then
             FA.pending = false
@@ -27651,9 +27817,17 @@ end
 --
 -- The row belongs in Player, not Online > Troll. The target is still chosen
 -- in Online > Player List; this row only arms the action. Once armed it is
--- permanent: target respawns, vehicle changes and Shift releases all keep the
--- row on. Holding Shift is the live ram consent and loops the lock until it is
--- released.
+-- permanent: target respawns, vehicle changes and Ctrl releases all keep the
+-- row on. Holding Left Ctrl is the live ram consent and loops the lock until
+-- it is released. Shift is not read at all: not VK_LSHIFT, not VK_RSHIFT, not
+-- VK_SHIFT. Right Ctrl is not read either.
+--
+-- "Lock Speed" is the tunable that matters on servers with a vehicle
+-- validator: 200 is validated on WaveShield, Seed rolls a car moving that fast
+-- back to the server position. The slider is live (read every tick), so the
+-- operator can lower it while the car is already ramming. It is placed
+-- directly under the toggle, before the target explanation separator, so the
+-- two controls that belong together are adjacent.
 --
 -- Player already has Self / Wardrobe / Movement / Voice. Target is a fifth tab
 -- in the same category, so the feature sits where the operator asked for it
@@ -27664,10 +27838,22 @@ local function installLockPlayer()
     local category = findCategory("Player")
     if not category then return false end
 
+    -- Preserve the speed the operator already chose. The module keeps the
+    -- last used value in _G as well, so the slider is not reset to 200 by a
+    -- reload in the same game session.
+    local previousSpeed = findItem("Player", "Target", "Lock Speed")
+    local startSpeed = previousSpeed and tonumber(previousSpeed.value) or nil
+    if not startSpeed then startSpeed = L.speedValue() end
+
+    -- Remove every historical spelling on every load, including the Shift row
+    -- a previous build installed. A stale onClick must not survive a reload.
+    removeItem("Online", "Troll", "Lock Player (Ctrl)")
     removeItem("Online", "Troll", "Lock Player (Shift)")
     removeItem("Online", "Troll", "Lock Player")
+    removeItem("Player", "Target", "Lock Player (Ctrl)")
     removeItem("Player", "Target", "Lock Player (Shift)")
     removeItem("Player", "Target", "Lock Player")
+    removeItem("Player", "Target", "Lock Speed")
 
     category.tabs = category.tabs or {}
 
@@ -27685,7 +27871,7 @@ local function installLockPlayer()
 
     local row
     row = {
-        name = "Lock Player (Shift)",
+        name = "Lock Player (Ctrl)",
         type = "toggle",
         value = L.isActive(),
         onClick = function(value)
@@ -27702,16 +27888,26 @@ local function installLockPlayer()
     }
 
     -- The row tracks the permanent arm only. A ram session that ends because
-    -- Shift was released, the operator left the vehicle, or the target died
+    -- Left Ctrl was released, the operator left the vehicle, or the target died
     -- keeps the row on. Panic/disarm goes through onChange.
     L.onChange = function(active)
         row.value = active
     end
 
+    local speedRow = {
+        name = "Lock Speed",
+        type = "slider",
+        value = math.floor(startSpeed + 0.5),
+        min = 50,
+        max = 200,
+        step = 10,
+    }
+
     tab.items = {
-        { name = "", isSeparator = true, separatorText = "Hold Shift to ram" },
+        { name = "", isSeparator = true, separatorText = "Hold Left Ctrl to ram" },
         row,
-        { name = "", isSeparator = true, separatorText = "Selected player first, then nearest" },
+        speedRow,
+        { name = "", isSeparator = true, separatorText = "Selected player first, then nearest living" },
     }
     return true
 end
@@ -28160,15 +28356,28 @@ end
 -- the vehicle from the scheduler. There is no attachment, so the engine never
 -- switches the object into the no-collision state that attached children can
 -- fall into. The prop is frozen (infinite mass), has collision enabled, and is
--- explicitly excluded from colliding with the carrier vehicle only. Every
--- other entity - traffic, the target's car, peds, walls - hits a real solid
--- surface, which is the buggy-ramp behaviour.
+-- explicitly excluded from colliding with the carrier vehicle only.
+--
+-- Orientation is the scoop, not the drive-up face: the low lip points away
+-- from the car and the high edge sits at the bumper. The base loader used
+-- heading + 180 for a ramp planted in front of the car (low edge toward the
+-- car, so the car drives up it). This prop follows the bumper, so the useful
+-- face is the other one: traffic ahead is scooped up the slope instead of
+-- being hit by the vertical back of the prop.
+--
+-- Collision is proved, not assumed. After SetEntityCollision, the module reads
+-- GET_ENTITY_COLLISION_DISABLED. If the engine still reports the prop as a
+-- ghost, it is deleted and the next ramp model is tried; if every model fails,
+-- Attach Ramp returns false instead of leaving a visual with no physics. The
+-- same read gates the follower tick: a teleport or a stream can clear the
+-- flag, and a ramp that cannot collide is removed rather than kept as a lie.
 --
 -- Local, not networked: the ramp exists for this client's physics only. It is
 -- not an entity the server can attribute, it creates no network id, and it is
--- removed with Detach Ramp or when the carrier vehicle changes. The carrier
--- and its collision are networked by the game as usual; the ramp adds reach
--- and a launch face on top of that.
+-- removed with Detach Ramp or when the carrier vehicle changes. The trade-off
+-- is stated in doctrine: locally simulated traffic, peds and world geometry
+-- collide with it; a network-owned vehicle on another client does not see the
+-- prop. A networked ramp would be visible to the server and every client.
 -- ---------------------------------------------------------------------------
 local rampFixState = nil
 
@@ -28178,34 +28387,98 @@ local function installRampFix()
 
     local RAMP_MODELS = { "prop_mp_ramp_01", "prop_mp_ramp_02", "prop_mp_ramp_03" }
     local FOLLOW_Z = -0.25
-    local FOLLOW_AHEAD = 1.8
+    local FRONT_GAP = 0.10
 
     local state = {
         obj = 0,
         id = nil,
         veh = 0,
-        front = 0.0,
+        center = 0.0,
         active = false,
+        collisionWarned = false,
     }
+
+    -- The read half of the collision pair. A missing getter is "unknown", not
+    -- "disabled": do not fail a feature just because a build lacks the read.
+    local function collisionEnabled(obj)
+        local ok, disabled = pcall(GetEntityCollisionDisabled, obj)
+        if not ok or disabled == nil then return nil end
+        return disabled ~= true
+    end
+
+    local function enableCollision(obj)
+        pcall(SetEntityCollision, obj, true, true)
+        pcall(SetEntityRecordsCollisions, obj, true)
+        pcall(FreezeEntityPosition, obj, true)
+        pcall(SetEntityInvincible, obj, true)
+        local proof = collisionEnabled(obj)
+        if proof == false then
+            -- Some builds report the pre-write flag for one read after a
+            -- teleport or a stream. One immediate retry distinguishes that
+            -- transient from a prop whose collision genuinely cannot be
+            -- enabled; only a second false deletes the prop.
+            pcall(SetEntityCollision, obj, true, true)
+            pcall(SetEntityRecordsCollisions, obj, true)
+            proof = collisionEnabled(obj)
+        end
+        return proof
+    end
+
+    local function deleteObject(obj, id)
+        if id then E.destroy(id) end
+        if type(obj) == "number" and obj ~= 0 and DoesEntityExist(obj) then
+            pcall(SetEntityAsMissionEntity, obj, true, true)
+            pcall(DeleteEntity, obj)
+        end
+    end
 
     -- E.object is the project's local-object path: isNetwork=false, model
     -- request bounded, registry entry with a TTL, and E.destroyAll on panic.
-    -- A failed model falls through to the next ramp variant instead of
-    -- aborting the whole click.
-    local function spawnRamp(position, heading)
+    -- The model is loaded before the spawn so GetModelDimensions can place the
+    -- high edge at the bumper and the low lip in front of it. A model whose
+    -- collision stays disabled is deleted and the next variant is tried.
+    local function spawnRamp(vehicle, vehicleFront, heading)
         for i = 1, #RAMP_MODELS do
-            local obj, id = E.object(RAMP_MODELS[i], position, {
-                heading = heading,
-                freeze = true,
-                collision = true,
-                invincible = true,
-                ttl = 3600000,
-            })
-            if obj and obj ~= 0 and DoesEntityExist(obj) then
-                return obj, id, RAMP_MODELS[i]
+            local model = RAMP_MODELS[i]
+            local hash = GetHashKey(model)
+            if E.requestModel(hash, 3000) then
+                local rampMin = GetModelDimensions(hash)
+                local near = 3.0
+                if rampMin and type(rampMin.y) == "number" then
+                    near = math.abs(rampMin.y)
+                end
+
+                local center = vehicleFront + near + FRONT_GAP
+                local spawn = GetOffsetFromEntityInWorldCoords(vehicle, 0.0, center, FOLLOW_Z)
+                local obj, id = E.object(model, spawn, {
+                    heading = heading,
+                    freeze = true,
+                    collision = true,
+                    invincible = true,
+                    ttl = 3600000,
+                })
+
+                if obj and obj ~= 0 and DoesEntityExist(obj) then
+                    pcall(SetEntityAsMissionEntity, obj, true, true)
+                    pcall(SetEntityRotation, obj, 0.0, 0.0, heading, 2, true)
+                    pcall(SetEntityCoordsNoOffset, obj, spawn.x, spawn.y, spawn.z,
+                        false, false, false)
+
+                    local proof = enableCollision(obj)
+                    if proof == false then
+                        O.log("ramp: %s kept collision disabled, trying next", model)
+                        deleteObject(obj, id)
+                    else
+                        -- Only the (ramp, carrier) pair is ignored. Everything
+                        -- else that exists in this client's physics world still
+                        -- collides with the prop.
+                        pcall(SetEntityNoCollisionEntity, obj, vehicle, false)
+                        return obj, id, model, center, proof
+                    end
+                end
             end
         end
-        return nil, nil, nil
+        return nil, nil, nil, 0.0, nil
     end
 
     -- Delete every handle the base, a previous override, or this build left
@@ -28238,8 +28511,9 @@ local function installRampFix()
 
         state.obj = 0
         state.veh = 0
-        state.front = 0.0
+        state.center = 0.0
         state.active = false
+        state.collisionWarned = false
     end
 
     Menu.DetachBuggyRamp = function()
@@ -28257,37 +28531,20 @@ local function installRampFix()
             return false
         end
 
+        local vehicleFront = 2.5
         local _, vehicleMax = GetModelDimensions(GetEntityModel(vehicle))
-        local front = (vehicleMax and vehicleMax.y or 2.5) + FOLLOW_AHEAD
-
-        local spawn = GetOffsetFromEntityInWorldCoords(vehicle, 0.0, front, FOLLOW_Z)
-        local heading = GetEntityHeading(vehicle)
-        local obj, id, modelName = spawnRamp(spawn, heading + 180.0)
-
-        if not obj then
-            O.log("ramp: no ramp model could be created")
-            return false
+        if vehicleMax and type(vehicleMax.y) == "number" then
+            vehicleFront = vehicleMax.y
         end
 
-        pcall(SetEntityAsMissionEntity, obj, true, true)
-        pcall(SetEntityInvincible, obj, true)
+        local heading = GetEntityHeading(vehicle)
+        local obj, id, modelName, center, proof =
+            spawnRamp(vehicle, vehicleFront, heading)
 
-        -- Collision is the point of this override. A frozen object keeps its
-        -- collision surface and cannot be pushed out of the carrier's path by
-        -- the entities it hits.
-        pcall(SetEntityCollision, obj, true, true)
-        pcall(SetEntityRecordsCollisions, obj, true)
-        pcall(FreezeEntityPosition, obj, true)
-
-        -- Orient the ramp the way the base loader did: its incline faces the
-        -- carrier, so the face presented to traffic is the launch face.
-        pcall(SetEntityRotation, obj, 0.0, 0.0, heading + 180.0, 2, true)
-        pcall(SetEntityCoordsNoOffset, obj, spawn.x, spawn.y, spawn.z,
-            false, false, false)
-
-        -- Only the pair (ramp, carrier) is ignored. World, peds, other
-        -- vehicles and props all still collide with the ramp.
-        pcall(SetEntityNoCollisionEntity, obj, vehicle, false)
+        if not obj then
+            O.log("ramp: no collidable ramp model could be created")
+            return false
+        end
 
         _G._buggyRampHandles = { obj }
         _G._buggyRampVeh = vehicle
@@ -28296,10 +28553,13 @@ local function installRampFix()
         state.obj = obj
         state.id = id
         state.veh = vehicle
-        state.front = front
+        state.center = center
         state.active = true
+        state.collisionWarned = false
 
-        O.log("ramp: collidable follower %s ahead=%.1f", tostring(modelName), front)
+        O.log("ramp: collidable scoop %s center=%.1f collision=%s",
+            tostring(modelName), center,
+            proof == nil and "unknown" or tostring(proof))
         return true
     end
 
@@ -28323,17 +28583,35 @@ local function installRampFix()
             return
         end
 
-        local spawn = GetOffsetFromEntityInWorldCoords(vehicle, 0.0, state.front, FOLLOW_Z)
+        local spawn = GetOffsetFromEntityInWorldCoords(vehicle, 0.0, state.center, FOLLOW_Z)
         local heading = GetEntityHeading(vehicle)
 
         pcall(SetEntityCoordsNoOffset, obj, spawn.x, spawn.y, spawn.z,
             false, false, false)
-        pcall(SetEntityRotation, obj, 0.0, 0.0, heading + 180.0, 2, true)
+        pcall(SetEntityRotation, obj, 0.0, 0.0, heading, 2, true)
 
-        -- Re-assert the two properties that matter. A teleport or a model
-        -- stream can clear collision flags on a local prop; the cost is two
-        -- no-op native calls per scheduler tick.
-        pcall(SetEntityCollision, obj, true, true)
+        -- A teleport or a stream can clear the collision flag on a local prop.
+        -- Read it; only write when the read says the prop is a ghost. On a
+        -- build without the getter, keep the old defensive write.
+        local proof = collisionEnabled(obj)
+        if proof == false then
+            if not state.collisionWarned then
+                state.collisionWarned = true
+                O.log("ramp: collision flag cleared, re-enabling")
+            end
+            -- enableCollision retries once and returns the final proof; do not
+            -- read the flag a third time, where a transient could remove a prop
+            -- that the retry just restored.
+            local restored = enableCollision(obj)
+            if restored == false then
+                O.log("ramp: collision could not be restored, removing the ghost prop")
+                removeRamp()
+                return
+            end
+        elseif proof == nil then
+            pcall(SetEntityCollision, obj, true, true)
+        end
+
         pcall(SetEntityNoCollisionEntity, obj, vehicle, false)
     end
 
