@@ -1463,12 +1463,18 @@ local function ToggleThrowVehicle(enable)
         local ANIM_DICT = "anim@mp_rollarcoaster"
         local ANIM_NAME = "hands_up_idle_a_player_one"
         local GRAB_KEY = 38 -- E
-        -- A car is heavy. A 500 N push for one frame is invisible; the
-        -- known-good build sets a real velocity instead (75 m/s + lift), and
-        -- that is also the only throw path that survives a network-owned
-        -- vehicle whose physics the server keeps re-simulating.
-        local THROW_SPEED = 75.0
-        local THROW_LIFT = 8.0
+        -- The carry rig from the proven pickup build: spine3, 2.05 m ahead and
+        -- 0.5 m up, pitched 90 degrees so the car rides flat in front of the
+        -- chest. This is the rig the hands-up clip was authored around; moving
+        -- the car to the forearm made the pose vanish behind the chassis.
+        local CARRY_BONE = 24816
+        -- A car is heavy. A one-frame force is invisible; a real velocity is
+        -- the only throw path that survives a network-owned vehicle whose
+        -- physics the server keeps re-simulating. 120 m/s restores the fast,
+        -- arcade throw the operator remembers while staying inside the engine's
+        -- sane velocity range; 12 m/s of lift keeps the arc readable.
+        local THROW_SPEED = 120.0
+        local THROW_LIFT = 12.0
 
         local animReady = false
         local animMissing = false
@@ -1506,7 +1512,16 @@ local function ToggleThrowVehicle(enable)
             pcall(SetEntityDrawOutlineColor, entity or 0, r, g, b, a)
         end
 
-        local function releaseHeld(entity)
+        -- A drawn weapon holds the upper-body slot and silently prevents the
+        -- hands-up pose from showing. Hiding the weapon (not removing it) lets
+        -- the carry animation play and restores the exact same weapon on drop.
+        local function setWeaponVisible(ped, visible)
+            if type(SetPedCurrentWeaponVisible) ~= "function" then return end
+            pcall(SetPedCurrentWeaponVisible, ped, visible, false, true, true)
+        end
+
+        local function releaseHeld(entity, ped)
+            setWeaponVisible(ped, true)
             if not entity or entity == 0 or not DoesEntityExist(entity) then return end
             pcall(NetworkRequestControlOfEntity, entity)
             pcall(DetachEntity, entity, true, true)
@@ -1521,7 +1536,7 @@ local function ToggleThrowVehicle(enable)
         end
 
         local function resetCarry(ped)
-            if heldEntity then releaseHeld(heldEntity) end
+            if heldEntity then releaseHeld(heldEntity, ped) end
             holdingEntity = false
             heldEntity = nil
             animReady = false
@@ -1536,6 +1551,18 @@ local function ToggleThrowVehicle(enable)
         -- dictionary; a server that strips it made the feature hang after the
         -- grab. After two seconds or 120 frames the pose is simply skipped and
         -- the throw still fires.
+        local function playCarryAnim(ped)
+            -- The grab path already cleared the aim task before attaching. Do
+            -- not clear again on a retry: IsEntityPlayingAnim can report false
+            -- for a frame while the upper-body task is still blending in, and
+            -- clearing restarts the blend forever, which looks like no
+            -- animation at all. Flag 49 is loop + upper body + control, the
+            -- exact combination the proven pose uses.
+            setWeaponVisible(ped, false)
+            pcall(TaskPlayAnim, ped, ANIM_DICT, ANIM_NAME,
+                8.0, -8.0, -1, 49, 0, false, false, false)
+        end
+
         local function updateCarryAnim(ped)
             if animReady then
                 -- The dictionary timed out. Do not retry a task for a pose
@@ -1547,8 +1574,7 @@ local function ToggleThrowVehicle(enable)
                         local now = nowMs()
                         if now - lastAnimTaskAt >= 500 or now == 0 then
                             lastAnimTaskAt = now
-                            pcall(TaskPlayAnim, ped, ANIM_DICT, ANIM_NAME,
-                                8.0, -8.0, -1, 49, 0, false, false, false)
+                            playCarryAnim(ped)
                         end
                     end
                 end
@@ -1563,8 +1589,7 @@ local function ToggleThrowVehicle(enable)
             if loaded then
                 animReady = true
                 animMissing = false
-                pcall(TaskPlayAnim, ped, ANIM_DICT, ANIM_NAME,
-                    8.0, -8.0, -1, 49, 0, false, false, false)
+                playCarryAnim(ped)
                 return
             end
 
@@ -1590,13 +1615,77 @@ local function ToggleThrowVehicle(enable)
             return direction
         end
 
-        -- The carry rig used by the working pickup build: spine3, two metres
-        -- in front of the chest. The old hand-bone offset parked a full car
-        -- inside the first-person camera, which read as "nothing happens".
+        -- Take ownership, release, then write the velocity on three consecutive
+        -- physics frames. A single write can be swallowed by the detach frame
+        -- or by a server that re-simulates the vehicle's network state; that is
+        -- what made the throw feel like a slow drop instead of the fast launch
+        -- the operator remembers. The generation guard is rechecked after every
+        -- wait: disabling Throw Vehicle mid-throw drops the car instead of
+        -- firing a retired thread's throw.
+        local function throwHeld(entity, ped, direction)
+            local function hasControl()
+                if type(NetworkHasControlOfEntity) ~= "function" then return true end
+                local ok, value = pcall(NetworkHasControlOfEntity, entity)
+                return ok and value == true
+            end
+
+            pcall(NetworkRequestControlOfEntity, entity)
+            local waited = 0
+            while not hasControl() and waited < 8
+                and throwVehicleActive
+                and throwVehicleGeneration == generation do
+                Citizen.Wait(0)
+                waited = waited + 1
+                pcall(NetworkRequestControlOfEntity, entity)
+            end
+
+            releaseHeld(entity, ped)
+            pcall(ClearPedTasks, ped)
+
+            if not throwVehicleActive or throwVehicleGeneration ~= generation then
+                return false
+            end
+
+            -- Keep the camera yaw, but normalise the horizontal component so a
+            -- downward look cannot steal speed. Clamp the pitch to a throw arc:
+            -- at the lowest allowed pitch the car still leaves with +6 m/s, so
+            -- aiming at a car on the road never slams it into the tarmac.
+            local flat = math.sqrt(direction.x * direction.x
+                + direction.y * direction.y)
+            local vx, vy = 0.0, 0.0
+            if flat > 0.0001 then
+                vx = direction.x / flat * THROW_SPEED
+                vy = direction.y / flat * THROW_SPEED
+            end
+            local pitch = math.max(-0.05, math.min(0.5, direction.z))
+            local vz = pitch * THROW_SPEED + THROW_LIFT
+
+            if type(SetEntityVelocity) == "function" then
+                pcall(SetEntityVelocity, entity, vx, vy, vz)
+            end
+
+            for _ = 1, 2 do
+                Citizen.Wait(0)
+                if not throwVehicleActive
+                    or throwVehicleGeneration ~= generation
+                    or not DoesEntityExist(entity) then
+                    return false
+                end
+                if type(SetEntityVelocity) == "function" then
+                    pcall(NetworkRequestControlOfEntity, entity)
+                    pcall(SetEntityVelocity, entity, vx, vy, vz)
+                end
+            end
+            return true
+        end
+
+        -- The proven carry transform. The car sits 2.05 m in front of spine3,
+        -- half a metre up, pitched 90 degrees so its long axis is level with
+        -- the chest. Vertex 2 is the attach vertex the original build used.
         local function tryAttach(ped, entity)
-            local bone = 24816
+            local bone = CARRY_BONE
             if type(GetPedBoneIndex) == "function" then
-                local ok, value = pcall(GetPedBoneIndex, ped, 24816)
+                local ok, value = pcall(GetPedBoneIndex, ped, CARRY_BONE)
                 if ok and type(value) == "number" then bone = value end
             end
             pcall(NetworkRequestControlOfEntity, entity)
@@ -1643,14 +1732,7 @@ local function ToggleThrowVehicle(enable)
                         animRequestedAt = 0
                         animWaitFrames = 0
                         lastAnimTaskAt = 0
-                        releaseHeld(entity)
-                        if type(SetEntityVelocity) == "function" then
-                            pcall(SetEntityVelocity, entity,
-                                direction.x * THROW_SPEED,
-                                direction.y * THROW_SPEED,
-                                direction.z * THROW_SPEED + THROW_LIFT)
-                        end
-                        pcall(ClearPedTasks, playerPed)
+                        throwHeld(entity, playerPed, direction)
                     end
                 end
             else
@@ -1757,6 +1839,11 @@ local function ToggleThrowVehicle(enable)
                         animRequestedAt = 0
                         animWaitFrames = 0
                         lastAnimTaskAt = 0
+                        -- Cancel the aim task before attaching. With an active
+                        -- aim task the upper-body carry pose never wins, which
+                        -- is exactly why the animation looked broken.
+                        pcall(ClearPedTasks, playerPed)
+                        setWeaponVisible(playerPed, false)
                         tryAttach(playerPed, target)
                     end
                 else
@@ -1766,7 +1853,7 @@ local function ToggleThrowVehicle(enable)
         end
 
         clearOutline()
-        if heldEntity then releaseHeld(heldEntity) end
+        if heldEntity then releaseHeld(heldEntity, PlayerPedId()) end
         holdingEntity = false
         heldEntity = nil
         pcall(ClearPedTasks, PlayerPedId())
@@ -16342,7 +16429,7 @@ end)()
 -- >>> VANGUARD MODULE BEGIN
 -- ============================================================================
 -- VANGUARD  (integrated artifact - edit src/ and rebuild)
--- Generated: 2026-10-26 15:21:21
+-- Generated: 2026-10-26 16:05:27
 --
 -- This block lives in loader.lua and in dist/loader.built.lua at the same
 -- time. It is the only place the local Menu table is in scope. Rebuilding
@@ -26184,9 +26271,9 @@ local TP = (function(O,Menu)
 -- ============================================================================
 -- VANGUARD / 26 TARGET PANEL
 -- ----------------------------------------------------------------------------
--- Replaces the loader's right-hand player dossier with a card built from the
--- same visual language as the menu: same outer border, same accent from the
--- active theme, same rounded body, same label/value rhythm.
+-- Replaces the loader's right-hand player dossier with a compact card built
+-- from the same visual language as the menu. It is deliberately smaller than
+-- the menu: a quick read while aiming, not a second window.
 --
 -- The data is already collected by Menu.GetSelectedPlayerInfo (loader.lua).
 -- This file only draws. It never reads the ped, never writes an entity and
@@ -26197,8 +26284,9 @@ local TP = (function(O,Menu)
 --
 --   CIBLE  [name]                                   #42
 --   ------------------------------------------------
---   SANTE    150 / 200        [bar]
---   ARMURE    50 / 100        [bar]
+--   SANTE
+--   VIE 150 / 200 [bar]   ARMURE 50 / 100 [bar]
+--   JOUEUR
 --   ARME      Carbine Rifle
 --   DISTANCE  42 m
 --   POSITION  123.4, -456.7, 30.1
@@ -26206,19 +26294,30 @@ local TP = (function(O,Menu)
 --   MODELE    Sultan
 --   PLAQUE    ABC123
 --   VITESSE   87 km/h
---   VIE VEHICULE               [bar]
+--   VIE VEHICULE [bar]
 --   ------------------------------------------------
 --   [EN VIE]
 --
--- The card is deliberately narrower than it is tall: identifiers, vitals and
--- vehicle data are what the operator needs while aiming. The old state pill
--- row, the compass row and the pulsing DIRECT marker were removed because they
--- duplicated information already visible in world and cost vertical space.
+-- The old ETAT block, the compass row and the pulsing DIRECT marker were
+-- removed by the operator. Only the status pill remains.
+--
+-- Palette: near-black blue body, a theme-accent edge and header wash, cool
+-- grey labels, warm-white values, mint health, azure armour and teal vehicle
+-- health. The accent comes from Menu.Colors.SelectedBg, so Green and Cyan
+-- still drive the card without a second colour system.
 -- ============================================================================
 
 local TP = {}
 
 local FALLBACK_ACCENT = { r = 104, g = 168, b = 203 }
+
+-- Body and border palette. Kept as numbers so a missing theme still draws a
+-- complete card instead of falling back to flat black.
+local BODY_R, BODY_G, BODY_B = 0.040, 0.044, 0.055
+local TRACK_R, TRACK_G, TRACK_B = 0.105, 0.115, 0.145
+local LABEL_R, LABEL_G, LABEL_B = 0.555, 0.595, 0.675
+local MUTED_R, MUTED_G, MUTED_B = 0.665, 0.700, 0.775
+local VALUE_R, VALUE_G, VALUE_B = 0.955, 0.965, 1.000
 
 local function clamp01(value)
     value = tonumber(value) or 0.0
@@ -26244,6 +26343,15 @@ local function accentRGB()
     return (color.r or FALLBACK_ACCENT.r) / 255.0,
         (color.g or FALLBACK_ACCENT.g) / 255.0,
         (color.b or FALLBACK_ACCENT.b) / 255.0
+end
+
+-- A tint of the theme accent, used for section labels and the header kicker.
+-- Multiplying by 1.18 then lifting the floor keeps the text legible on the
+-- dark body for both the muted Green and the brighter Cyan.
+local function accentText(r, g, b)
+    return math.min(1.0, r * 1.18 + 0.06),
+        math.min(1.0, g * 1.18 + 0.06),
+        math.min(1.0, b * 1.18 + 0.06)
 end
 
 -- Rounded fill with the same three fallbacks the loader uses. A build without
@@ -26343,9 +26451,15 @@ local function screenSize()
 end
 
 local function healthColor(percent)
-    if percent < 0.25 then return 0.90, 0.28, 0.30 end
-    if percent < 0.55 then return 0.95, 0.70, 0.22 end
-    return 0.30, 0.82, 0.46
+    if percent < 0.22 then return 1.00, 0.42, 0.45 end
+    if percent < 0.50 then return 1.00, 0.72, 0.30 end
+    return 0.36, 0.90, 0.60
+end
+
+local function vehicleColor(percent)
+    if percent < 0.22 then return 1.00, 0.42, 0.45 end
+    if percent < 0.50 then return 1.00, 0.72, 0.30 end
+    return 0.35, 0.84, 0.92
 end
 
 function Menu.DrawPlayerInfoPanel()
@@ -26367,16 +26481,24 @@ function Menu.DrawPlayerInfoPanel()
 
     local screenWidth, screenHeight = screenSize()
     local accentR, accentG, accentB = accentRGB()
+    local accentTextR, accentTextG, accentTextB = accentText(accentR, accentG, accentB)
 
-    -- A deliberate step wider than the menu: the dossier holds two columns of
-    -- text (label + value) and the old 334 px card forced 10-12 px glyphs to
-    -- fit. 400 px at 100 % gives values the same 19 px size as menu rows.
+    -- Compact card. The menu is 360 logical px wide; the dossier is capped at
+    -- 74 % of it and at 344 logical px, with a 284 px floor for readability.
+    -- At the default 110 % scale this lands around 312 x 330 px on screen,
+    -- roughly half the area of the old 440 x 540 dossier.
     local menuWidth = tonumber(sp.width) or (360 * scale)
-    local panelWidth = math.max(400 * scale, menuWidth)
-    local gap = 14 * scale
-    local panelX = sp.x + (sp.width or 360 * scale) + gap
+    local panelWidth = math.max(284 * scale,
+        math.min(menuWidth * 0.74, 344 * scale))
+
+    -- Leave room for the scrollbar when it is drawn outside the menu. The
+    -- panel sits beside the menu, so a right-side bar must not run under it.
+    local scrollbarRight = tonumber(Menu.ScrollbarPosition) == 2
+    local edgeGap = (scrollbarRight and 26 or 14) * scale
+    local panelX = sp.x + menuWidth + edgeGap
     if panelX + panelWidth > screenWidth - 8 then
-        local left = sp.x - gap - panelWidth
+        local leftGap = (not scrollbarRight and 26 or 14) * scale
+        local left = sp.x - leftGap - panelWidth
         if left >= 8 then
             panelX = left
         else
@@ -26384,22 +26506,21 @@ function Menu.DrawPlayerInfoPanel()
         end
     end
 
-    local pad = 20 * scale
+    local pad = 15 * scale
     local innerWidth = panelWidth - pad * 2
     local cx = panelX + pad
 
-    -- Type scale follows the menu's own rhythm: menu item text is 19 px, so
-    -- target values are 19 px too. Labels stay secondary at 13 px, and the
-    -- name is the only display size. Menu.DrawText multiplies all of these by
-    -- Menu.Scale, so the whole card grows with the menu.
-    local FONT_KICKER = 11
-    local FONT_NAME = 26
-    local FONT_ID = 12
-    local FONT_SECTION = 13
-    local FONT_LABEL = 13
-    local FONT_VALUE = 19
-    local FONT_BAR = 13
-    local FONT_FOOTER = 12
+    -- Type scale is one step below the menu (19 px rows) so the card reads as
+    -- secondary information. At the default 110 % scale the values are about
+    -- 15.4 px on screen, the name about 19.8 px and the labels 11.6 px.
+    local FONT_KICKER = 9
+    local FONT_NAME = 18
+    local FONT_ID = 10
+    local FONT_SECTION = 10
+    local FONT_LABEL = 10.5
+    local FONT_VALUE = 14
+    local FONT_BAR = 10
+    local FONT_FOOTER = 10
 
     -- Menu.DrawText places the top of a glyph box at y; the menu itself centres
     -- a 19 px row with a -8 offset. 0.421 reproduces that optical centre for
@@ -26408,15 +26529,17 @@ function Menu.DrawPlayerInfoPanel()
         return centerY - size * 0.421 * scale
     end
 
-    local headerHeight = 70 * scale
-    local sectionHeight = 30 * scale
-    local rowHeight = 36 * scale
-    local barHeight = 42 * scale
-    local footerHeight = 46 * scale
+    local headerHeight = 48 * scale
+    local sectionHeight = 20 * scale
+    local rowHeight = 26 * scale
+    local vitalsHeight = 32 * scale
+    local vehicleBarHeight = 28 * scale
+    local footerHeight = 34 * scale
 
     local healthMax = tonumber(info.maxHealth) or 0
     local health = tonumber(info.health) or 0
     local healthPercent = healthMax > 0 and clamp01(health / healthMax) or 0.0
+    local healthR, healthG, healthB = healthColor(healthPercent)
 
     local armor = tonumber(info.armor) or 0
     local armorPercent = clamp01(armor / 100.0)
@@ -26425,31 +26548,32 @@ function Menu.DrawPlayerInfoPanel()
     local vehicleHealth = tonumber(info.vehHealth) or 0
     local vehiclePercent = vehicleHealthMax > 0
         and clamp01(vehicleHealth / vehicleHealthMax) or 0.0
+    local vehicleR, vehicleG, vehicleB = vehicleColor(vehiclePercent)
 
     local alive = info.isAlive ~= false and health > 0
-    local statusR, statusG, statusB = 0.30, 0.82, 0.46
+    local statusR, statusG, statusB = 0.36, 0.90, 0.60
     local statusLabel = "EN VIE"
     if not alive then
-        statusR, statusG, statusB = 0.90, 0.28, 0.30
+        statusR, statusG, statusB = 1.00, 0.42, 0.45
         statusLabel = "MORT"
     elseif info.isGodmode then
-        statusR, statusG, statusB = 0.95, 0.70, 0.22
+        statusR, statusG, statusB = 1.00, 0.78, 0.30
         statusLabel = "GODMODE"
     end
 
     local function section(label)
         return function(y)
-            fillRect(cx, y + 8.5 * scale, 3 * scale, 13 * scale,
-                accentR, accentG, accentB, 0.95, 1.5 * scale)
-            local labelWidth = textWidth(label, FONT_SECTION, scale)
-            text(cx + 12 * scale,
+            fillRect(cx, y + 6 * scale, 2 * scale, 11 * scale,
+                accentR, accentG, accentB, 0.95, 1 * scale)
+            text(cx + 9 * scale,
                 centeredTextY(y + sectionHeight * 0.5, FONT_SECTION),
-                label, FONT_SECTION, 0.66, 0.66, 0.71, 1.0)
-            local lineX = cx + 12 * scale + labelWidth + 10 * scale
+                label, FONT_SECTION, accentTextR, accentTextG, accentTextB, 0.98)
+            local labelWidth = textWidth(label, FONT_SECTION, scale)
+            local lineX = cx + 9 * scale + labelWidth + 9 * scale
             local lineWidth = cx + innerWidth - lineX
             if lineWidth > 0 then
                 fillRect(lineX, y + sectionHeight * 0.5, lineWidth, 1,
-                    0.20, 0.20, 0.24, 0.55, 0)
+                    accentR, accentG, accentB, 0.18, 0)
             end
         end
     end
@@ -26458,45 +26582,61 @@ function Menu.DrawPlayerInfoPanel()
         return function(y)
             local center = y + rowHeight * 0.5
             text(cx, centeredTextY(center, FONT_LABEL),
-                label, FONT_LABEL, 0.58, 0.58, 0.64, 1.0)
+                label, FONT_LABEL, LABEL_R, LABEL_G, LABEL_B, 1.0)
             local valueSize = size or FONT_VALUE
-            local shown = fitText(value, innerWidth * 0.62, valueSize, scale)
+            local shown = fitText(value, innerWidth * 0.70, valueSize, scale)
             local width = textWidth(shown, valueSize, scale)
             text(cx + innerWidth - width, centeredTextY(center, valueSize),
-                shown, valueSize, r or 0.97, g or 0.97, b or 0.99, 1.0)
+                shown, valueSize, r or VALUE_R, g or VALUE_G, b or VALUE_B, 1.0)
         end
     end
 
-    local function bar(label, percent, valueText, r, g, b)
+    local function vital(x, y, width, label, percent, valueText, r, g, b)
+        local labelCenter = y + 7 * scale
+        text(x, centeredTextY(labelCenter, FONT_BAR),
+            label, FONT_BAR, LABEL_R, LABEL_G, LABEL_B, 1.0)
+        local valueWidth = textWidth(valueText, FONT_BAR, scale)
+        text(x + width - valueWidth, centeredTextY(labelCenter, FONT_BAR),
+            valueText, FONT_BAR, r, g, b, 0.98)
+
+        local barY = y + 18 * scale
+        local barH = 6 * scale
+        fillRect(x, barY, width, barH, TRACK_R, TRACK_G, TRACK_B, 0.95,
+            barH * 0.5)
+        local filled = width * percent
+        if filled > 0 then
+            fillRect(x, barY, filled, barH, r, g, b, 0.94, barH * 0.5)
+            fillRect(x + 1 * scale, barY + 1 * scale,
+                math.max(0, filled - 2 * scale), 1, 1, 1, 1, 0.20,
+                0.5 * scale)
+        end
+    end
+
+    local function barRow(label, percent, valueText, r, g, b)
         return function(y)
-            -- Labels share a line, then the bar owns the lower half. Aligning
-            -- both labels to the same centre keeps the two vitals in step.
-            local labelCenter = y + 13 * scale
+            local labelCenter = y + 7 * scale
             text(cx, centeredTextY(labelCenter, FONT_BAR),
-                label, FONT_BAR, 0.58, 0.58, 0.64, 1.0)
+                label, FONT_BAR, LABEL_R, LABEL_G, LABEL_B, 1.0)
             local valueWidth = textWidth(valueText, FONT_BAR, scale)
             text(cx + innerWidth - valueWidth,
-                centeredTextY(labelCenter, FONT_BAR), valueText,
-                FONT_BAR, r, g, b, 0.98)
+                centeredTextY(labelCenter, FONT_BAR),
+                valueText, FONT_BAR, r, g, b, 0.98)
 
-            local barY = y + 26 * scale
-            fillRect(cx, barY, innerWidth, 9 * scale, 0.14, 0.14, 0.17, 0.95,
-                4.5 * scale)
+            local barY = y + 18 * scale
+            local barH = 5 * scale
+            fillRect(cx, barY, innerWidth, barH, TRACK_R, TRACK_G, TRACK_B,
+                0.95, barH * 0.5)
             local filled = innerWidth * percent
             if filled > 0 then
-                fillRect(cx, barY, filled, 9 * scale, r, g, b, 0.92,
-                    4.5 * scale)
-                -- One-pixel top highlight: it reads as a lit bar rather than a
-                -- flat rectangle, and costs one draw call.
-                fillRect(cx + 2 * scale, barY + 1 * scale,
-                    math.max(0, filled - 4 * scale), 1, 1, 1, 1, 0.22,
+                fillRect(cx, barY, filled, barH, r, g, b, 0.94, barH * 0.5)
+                fillRect(cx + 1 * scale, barY + 1 * scale,
+                    math.max(0, filled - 2 * scale), 1, 1, 1, 1, 0.20,
                     0.5 * scale)
             end
         end
     end
 
     local blocks = {}
-
     local function add(height, draw)
         blocks[#blocks + 1] = { height = height, draw = draw }
     end
@@ -26504,86 +26644,93 @@ function Menu.DrawPlayerInfoPanel()
     -- Header -----------------------------------------------------------------
     add(headerHeight, function(y)
         text(cx, y + 2 * scale, "CIBLE", FONT_KICKER,
-            accentR * 0.88, accentG * 0.88, accentB * 0.88, 0.90)
+            accentTextR, accentTextG, accentTextB, 0.92)
 
         local idText = "#" .. tostring(info.serverId or "?")
-        local idWidth = textWidth(idText, FONT_ID, scale) + 20 * scale
-        local idX = panelX + panelWidth - pad - idWidth
-        fillRect(idX, y + 9 * scale, idWidth, 24 * scale,
-            accentR, accentG, accentB, 0.12, 6 * scale)
-        fillRect(idX, y + 33 * scale, idWidth, 1,
-            accentR, accentG, accentB, 0.45, 0)
-        text(idX + 10 * scale, centeredTextY(y + 21 * scale, FONT_ID),
-            idText, FONT_ID, accentR, accentG, accentB, 0.98)
+        local idWidth = textWidth(idText, FONT_ID, scale) + 16 * scale
+        local idX = cx + innerWidth - idWidth
+        fillRect(idX, y + 8 * scale, idWidth, 20 * scale,
+            accentR, accentG, accentB, 0.14, 5 * scale)
+        fillRect(idX, y + 8 * scale, 2 * scale, 20 * scale,
+            accentR, accentG, accentB, 0.90, 1 * scale)
+        text(idX + 8 * scale, centeredTextY(y + 18 * scale, FONT_ID),
+            idText, FONT_ID, accentTextR, accentTextG, accentTextB, 0.98)
 
-        local nameX = cx + 18 * scale
-        local nameMax = math.max(0, idX - nameX - 12 * scale)
+        local nameX = cx + 12 * scale
+        local nameMax = math.max(0, idX - nameX - 8 * scale)
         local name = fitText(info.name or "Inconnu", nameMax, FONT_NAME, scale)
+        local nameY = y + 17 * scale
+        local nameCenter = nameY + FONT_NAME * 0.421 * scale
         -- A sub-pixel shadow is enough to make the name read as bold without
         -- loading a second font.
-        local nameY = y + 23 * scale
-        local nameCenter = nameY + FONT_NAME * 0.421 * scale
-        text(nameX + 0.8 * scale, nameY + 0.8 * scale,
-            name, FONT_NAME, 0, 0, 0, 0.62)
-        text(nameX, nameY, name, FONT_NAME, 0.98, 0.98, 1.0, 1.0)
-        fillRect(cx + 2 * scale, nameCenter - 4.5 * scale,
-            9 * scale, 9 * scale, statusR, statusG, statusB, 1.0, 4.5 * scale)
+        text(nameX + 0.7 * scale, nameY + 0.7 * scale,
+            name, FONT_NAME, 0, 0, 0, 0.60)
+        text(nameX, nameY, name, FONT_NAME,
+            VALUE_R, VALUE_G, VALUE_B, 1.0)
+        fillRect(cx + 2 * scale, nameCenter - 3 * scale,
+            6 * scale, 6 * scale, statusR, statusG, statusB, 1.0, 3 * scale)
 
-        fillRect(cx, y + 62 * scale, innerWidth, 1,
-            0.22, 0.22, 0.26, 0.55, 0)
+        fillRect(cx, y + 42 * scale, innerWidth, 1,
+            accentR, accentG, accentB, 0.20, 0)
     end)
 
     -- Vitals -----------------------------------------------------------------
     add(sectionHeight, section("SANTE"))
-    add(barHeight, bar("VIE", healthPercent,
-        ("%d / %d"):format(whole(health), whole(healthMax)),
-        healthColor(healthPercent)))
-    add(barHeight, bar("ARMURE", armorPercent,
-        ("%d / 100"):format(whole(armor)),
-        0.32, 0.62, 0.95))
+    add(vitalsHeight, function(y)
+        local colGap = 10 * scale
+        local colWidth = (innerWidth - colGap) * 0.5
+        vital(cx, y, colWidth, "VIE", healthPercent,
+            ("%d / %d"):format(whole(health), whole(healthMax)),
+            healthR, healthG, healthB)
+        vital(cx + colWidth + colGap, y, colWidth, "ARMURE", armorPercent,
+            ("%d / 100"):format(whole(armor)),
+            0.36, 0.68, 1.00)
+    end)
 
     -- Player -----------------------------------------------------------------
     add(sectionHeight, section("JOUEUR"))
     add(rowHeight, row("ARME", info.weapon or "Inconnu"))
     add(rowHeight, row("DISTANCE",
         ("%d m"):format(whole(info.distance)),
-        accentR, accentG, accentB, FONT_VALUE + 1))
+        accentTextR, accentTextG, accentTextB, FONT_VALUE + 1))
     local coords = info.coords
     if type(coords) == "table" then
         add(rowHeight, row("POSITION",
             ("%.1f, %.1f, %.1f"):format(coords.x or 0, coords.y or 0, coords.z or 0),
-            0.64, 0.64, 0.70, FONT_VALUE - 1))
+            MUTED_R, MUTED_G, MUTED_B, FONT_VALUE - 1))
     end
 
     -- Vehicle ----------------------------------------------------------------
     if info.inVehicle then
         add(sectionHeight, section("VEHICULE"))
-        add(rowHeight, row("MODELE", info.vehicle or "Inconnu", 0.93, 0.93, 0.95))
+        add(rowHeight, row("MODELE", info.vehicle or "Inconnu"))
         local plate = tostring(info.vehPlate or "")
         plate = plate:gsub("%s+$", "")
         add(rowHeight, row("PLAQUE", plate ~= "" and plate or "-",
-            0.72, 0.72, 0.78, FONT_VALUE - 1))
+            MUTED_R, MUTED_G, MUTED_B, FONT_VALUE - 1))
         add(rowHeight, row("VITESSE",
             ("%d km/h"):format(whole(info.speed)),
-            0.93, 0.93, 0.95))
-        add(barHeight, bar("VIE VEHICULE", vehiclePercent,
+            VALUE_R, VALUE_G, VALUE_B))
+        add(vehicleBarHeight, barRow("VIE VEHICULE", vehiclePercent,
             ("%d / %d"):format(whole(vehicleHealth), whole(vehicleHealthMax)),
-            healthColor(vehiclePercent)))
+            vehicleR, vehicleG, vehicleB))
     end
 
     -- Footer -----------------------------------------------------------------
     local footer = function(y)
-        fillRect(cx, y + 2 * scale, innerWidth, 1, 0.20, 0.20, 0.24, 0.50, 0)
-
-        local labelWidth = textWidth(statusLabel, FONT_FOOTER, scale) + 26 * scale
-        local pillTop = y + 10 * scale
-        local pillHeight = 28 * scale
-        local pillCenter = pillTop + pillHeight * 0.5
-        fillRect(cx, pillTop, labelWidth, pillHeight,
-            statusR, statusG, statusB, 0.13, pillHeight * 0.5)
-        fillRect(cx + 1 * scale, pillTop, 2 * scale, pillHeight,
-            statusR, statusG, statusB, 0.90, 1 * scale)
-        text(cx + 13 * scale, centeredTextY(pillCenter, FONT_FOOTER),
+        fillRect(cx, y + 1 * scale, innerWidth, 1,
+            accentR, accentG, accentB, 0.18, 0)
+        local pillHeight = 22 * scale
+        local pillY = y + 7 * scale
+        local labelWidth = textWidth(statusLabel, FONT_FOOTER, scale)
+            + 22 * scale
+        fillRect(cx, pillY, labelWidth, pillHeight,
+            statusR, statusG, statusB, 0.14, pillHeight * 0.5)
+        fillRect(cx + 1 * scale, pillY + 3 * scale, 2 * scale,
+            pillHeight - 6 * scale, statusR, statusG, statusB, 0.92,
+            1 * scale)
+        text(cx + 10 * scale,
+            centeredTextY(pillY + pillHeight * 0.5, FONT_FOOTER),
             statusLabel, FONT_FOOTER, statusR, statusG, statusB, 1.0)
     end
     add(footerHeight, footer)
@@ -26592,7 +26739,7 @@ function Menu.DrawPlayerInfoPanel()
     for i = 1, #blocks do contentHeight = contentHeight + blocks[i].height end
 
     local chromeHeight = pad * 2
-    local panelHeight = math.max(chromeHeight + contentHeight, 440 * scale)
+    local panelHeight = math.max(chromeHeight + contentHeight, 300 * scale)
 
     -- If the card is taller than its content (minimum height), put the spare
     -- space before the footer. The footer then sits on the bottom edge instead
@@ -26609,22 +26756,28 @@ function Menu.DrawPlayerInfoPanel()
         panelY = math.max(8, screenHeight - panelHeight - 8)
     end
 
-    -- Background. These are the menu's own values: 0.216 / 0.059 border and
-    -- body (library.lua DrawBackground), with the theme accent doing the only
-    -- colour work. The card therefore changes with the theme instead of
-    -- looking like a second design.
-    fillRect(panelX, panelY, panelWidth, panelHeight, 0.216, 0.216, 0.216, 0.98,
-        8 * scale)
+    -- Background. The border and header wash are the theme accent; the body is
+    -- a near-black blue rather than pure grey, and every value is warm white.
+    -- The card therefore changes with Green/Cyan without looking like a second
+    -- design system.
+    fillRect(panelX, panelY, panelWidth, panelHeight,
+        accentR, accentG, accentB, 0.45, 7 * scale)
     fillRect(panelX + 1, panelY + 1, panelWidth - 2, panelHeight - 2,
-        0.059, 0.059, 0.059, 0.985, 7 * scale)
-    -- A very light accent wash on the header, then the hard accent line. It
-    -- mirrors the menu header without competing with the text.
-    fillRect(panelX + 1, panelY + 1, panelWidth - 2, 70 * scale,
-        accentR, accentG, accentB, 0.050, 7 * scale)
+        BODY_R, BODY_G, BODY_B, 0.985, 6 * scale)
+    -- Header wash: three low-alpha bands fake a downward gradient with three
+    -- draw calls and no extra texture.
+    fillRect(panelX + 1, panelY + 1, panelWidth - 2, 40 * scale,
+        accentR, accentG, accentB, 0.085, 6 * scale)
+    fillRect(panelX + 1, panelY + 28 * scale, panelWidth - 2, 20 * scale,
+        accentR, accentG, accentB, 0.045, 0)
+    fillRect(panelX + 1, panelY + 1, panelWidth - 2, 1,
+        1.0, 1.0, 1.0, 0.055, 0)
+    -- Left accent rail and the hard header line. They echo the menu selector
+    -- without competing with the text.
+    fillRect(panelX + 1, panelY + 10 * scale, 2 * scale,
+        panelHeight - 20 * scale, accentR, accentG, accentB, 0.62, 1 * scale)
     fillRect(panelX + pad, panelY + 1, panelWidth - pad * 2, 2 * scale,
-        accentR, accentG, accentB, 0.90, 1 * scale)
-    fillRect(panelX + 1, panelY + 10 * scale, 2 * scale, panelHeight - 20 * scale,
-        accentR, accentG, accentB, 0.35, 1 * scale)
+        accentR, accentG, accentB, 0.88, 1 * scale)
 
     local y = panelY + pad
     for i = 1, #blocks do
@@ -26636,6 +26789,94 @@ end
 return TP
 
 end)(O,Menu)
+
+-- ---------------------------------------------------------------------------
+-- PART: 27_scrollbar.lua
+-- ---------------------------------------------------------------------------
+local SC = (function(Menu)
+-- ============================================================================
+-- VANGUARD / 27 SCROLLBAR
+-- ----------------------------------------------------------------------------
+-- The library records Settings > General > Scroll Bar Position in
+-- Menu.ScrollbarPosition, but its DrawScrollbar always draws to the left of the
+-- menu. The variable was therefore a dead setting: selecting "Right" changed
+-- the selector label and nothing else.
+--
+-- This wrapper keeps the library's own renderer (arrows, track, thumb, colours
+-- and the smoothing state) and only changes the X it receives. The base
+-- function draws at `x - width - padding`; feeding it a shifted X makes the
+-- same renderer draw at `menuRight + padding` when the setting is Right.
+--
+-- It installs once at load. The wrapper captures the original function, so a
+-- second Vanguard injection cannot wrap its own wrapper and drift the bar.
+-- ============================================================================
+
+local SC = {}
+
+local function scaledPosition()
+    if type(Menu) ~= "table" then return nil end
+    if type(Menu.GetScaledPosition) ~= "function" then return nil end
+    local ok, sp = pcall(Menu.GetScaledPosition)
+    if ok and type(sp) == "table" then return sp end
+    return nil
+end
+
+local function scale()
+    return (type(Menu) == "table" and tonumber(Menu.Scale)) or 1.0
+end
+
+-- Geometry shared by the wrapper and the tests. Returns the actual X where the
+-- scrollbar background starts, plus the width and padding used.
+function SC.xFor(x, width, position)
+    local sp = scaledPosition() or {}
+    local sw = tonumber(sp.scrollbarWidth) or (12.0 * scale())
+    local pad = tonumber(sp.scrollbarPadding) or (5.0 * scale())
+    width = tonumber(width) or tonumber(sp.width) or (360.0 * scale())
+    if tonumber(position) == 2 then
+        return x + width + pad, sw, pad
+    end
+    return x - sw - pad, sw, pad
+end
+
+function SC.install()
+    if type(Menu) ~= "table" then return false end
+    if Menu.__vgd_scrollbarInstalled then return true end
+    if type(Menu.DrawScrollbar) ~= "function" then return false end
+
+    local base = Menu.DrawScrollbar
+
+    Menu.DrawScrollbar = function(x, startY, visibleHeight, selectedIndex,
+                                  totalItems, isMainMenu, menuWidth)
+        local width = tonumber(menuWidth)
+        if not width then
+            local sp = scaledPosition()
+            width = (sp and tonumber(sp.width)) or (360.0 * scale())
+        end
+
+        if tonumber(Menu.ScrollbarPosition) == 2 then
+            local _, sw, pad = SC.xFor(x, width, 2)
+            -- The base draws at fakeX - sw - pad. Solve for the fakeX that
+            -- lands on x + width + pad without duplicating its draw code.
+            local fakeX = x + width + sw + pad * 2
+            return base(fakeX, startY, visibleHeight, selectedIndex,
+                totalItems, isMainMenu, width)
+        end
+
+        return base(x, startY, visibleHeight, selectedIndex,
+            totalItems, isMainMenu, width)
+    end
+
+    -- Test seams. They are functions, not menu rows and not layout state.
+    Menu.__vgd_scrollbarX = SC.xFor
+    Menu.__vgd_scrollbarInstalled = true
+    return true
+end
+
+SC.install()
+
+return SC
+
+end)(Menu)
 
 -- ---------------------------------------------------------------------------
 -- PART: 07_menu.lua
@@ -27482,6 +27723,70 @@ local function installCombatUnlock()
 end
 
 -- ---------------------------------------------------------------------------
+-- SETTINGS DEFAULTS
+--
+-- The base menu ships Flocon with value = true and the loader also sets
+-- Menu.ShowSnowflakes = true, but a stale instance or a stripped library can
+-- leave the row false while the flag is false. The operator asked for the snow
+-- mode to be on by default, so make the row and the renderer flag agree once,
+-- at build time. This is not a per-frame sync: the toggle still works.
+--
+-- Scroll Bar Position is normalised here as well. The library only stores the
+-- selector index in Menu.ScrollbarPosition; src/27_scrollbar.lua is what reads
+-- it. A nil or out-of-range value means Left.
+-- ---------------------------------------------------------------------------
+local function installSettingsDefaults()
+    local settings = findCategory("Settings")
+    if not settings then
+        settings = addCategory({ name = "Settings", hasTabs = true, tabs = {} })
+        if not settings then settings = findCategory("Settings") end
+    end
+    if not settings then return false end
+
+    settings.hasTabs = true
+    settings.tabs = settings.tabs or {}
+
+    local general = nil
+    for _, candidate in ipairs(settings.tabs) do
+        if candidate.name == "General" then
+            general = candidate
+            break
+        end
+    end
+    if not general then
+        general = { name = "General", items = {} }
+        table.insert(settings.tabs, 1, general)
+    end
+    general.items = general.items or {}
+
+    local flocon = findItem("Settings", "General", "Flocon")
+    if not flocon then
+        flocon = { name = "Flocon", type = "toggle", value = true }
+        general.items[#general.items + 1] = flocon
+    end
+    flocon.value = true
+    Menu.ShowSnowflakes = true
+
+    local scroll = findItem("Settings", "General", "Scroll Bar Position")
+    if not scroll then
+        scroll = {
+            name = "Scroll Bar Position",
+            type = "selector",
+            options = { "Left", "Right" },
+            selected = 1,
+        }
+        general.items[#general.items + 1] = scroll
+    end
+
+    local position = tonumber(Menu.ScrollbarPosition) or 1
+    if position ~= 1 and position ~= 2 then position = 1 end
+    Menu.ScrollbarPosition = position
+    scroll.selected = (position == 2) and 2 or 1
+
+    return true
+end
+
+-- ---------------------------------------------------------------------------
 -- PROTECTION
 -- Only local-ped recovery. No hooks, no spoof, no firewall, no entity edits.
 --
@@ -27784,18 +28089,27 @@ end
 -- fall into. The prop is frozen (infinite mass), has collision enabled, and is
 -- explicitly excluded from colliding with the carrier vehicle only.
 --
--- The ramp sits behind the rear bumper (the other side from the old front
--- scoop) and is turned so its low lip points away from the carrier. A car
--- following behind meets the low lip and rides up the slope instead of
--- hitting the vertical back of the prop. The heading offset is therefore
--- heading + 180, not the carrier heading.
+-- The ramp sits in front of the front bumper. Its high edge is nearest the
+-- carrier and its low lip points forward, away from it. A vehicle ahead meets
+-- the low lip and rides up the slope. The carrier never collides with the prop
+-- because the (ramp, carrier) pair is the only collision pair disabled.
 --
--- The prop is ground-snapped, not pinned to a fixed vehicle-space Z. A low
--- sports car has its origin only a few centimetres above the road; the old
--- FOLLOW_Z = -0.25 pushed the prop through the tarmac. Every spawn and every
--- follower tick now queries the ground under the desired X/Y and places the
--- model's lowest point on it. The ramp follows the road height instead of
--- floating on high cars or sinking under low ones.
+-- The prop's Z is a single offset captured at spawn, not a per-frame ground
+-- query. This is the fix for the rapid up/down the operator saw. The old
+-- follower sampled GetGroundZFor_3dCoord directly under a live collidable
+-- ramp. That native can return the prop's own deck; the ramp was then lifted,
+-- the next read returned the road, and it dropped. Repeating that every frame
+-- produced the sawtooth. A spawn-only read cannot see the prop (it does not
+-- exist yet), and a constant offset cannot oscillate.
+--
+-- The offset is measured from the carrier's own world-space anchor at the
+-- ramp centre: `spawnZ - flat.z`. The tick applies that same offset to the
+-- current anchor. The carrier's anchor already follows suspension, pitch and
+-- road height, so the ramp rides them with the car instead of fighting them.
+-- The spawn probe uses GetGroundZFor_3dCoord with includeWater=false; if it
+-- fails, the carrier's model bottom is used as a safe ground estimate. The
+-- model's lowest point is then placed at ground + bottom + 3 cm. A low sports
+-- car cannot sink; a tall car cannot make the ramp float.
 --
 -- Collision is proved, not assumed. After SetEntityCollision, the module reads
 -- GET_ENTITY_COLLISION_DISABLED. If the engine still reports the prop as a
@@ -27827,51 +28141,27 @@ local function installRampFix()
         veh = 0,
         center = 0.0,
         bottom = 0.0,
+        zOffset = 0.0,
         active = false,
         collisionWarned = false,
     }
 
-    -- Ground height under an X/Y, independent of the carrier's ride height.
+    -- Ground height under an X/Y. This runs ONCE at spawn, before the prop
+    -- exists, and never from the follower. That ordering is deliberate: the
+    -- old per-tick read could sample the ramp's own deck and oscillate.
     --
     -- * GetGroundZFor_3dCoord(..., false) does not accept water as ground, so
     --   a bridge over water returns the deck/road rather than the water plane.
-    --   The native reports ground elevation, not a dynamic prop deck.
-    -- * The query starts at referenceZ + 3, not + 8: under an overpass it
-    --   stays below the bridge deck, so the answer is the road the car is on.
-    -- * If the ground read is far from the reference, a world-only shape test
-    --   is used. Flag 1 tests map collision, never objects, so it also cannot
-    --   hit the ramp or the carrier.
-    -- * A guard build can hide a native; every call is pcall'd and the caller
-    --   keeps its last known Z if both readers fail.
-    local function groundZAt(x, y, referenceZ, ignoreEntity)
+    -- * The query starts at referenceZ + 3: under an overpass it stays below
+    --   the bridge deck, so the answer is the road the car is on.
+    -- * A guard build can hide the native; the caller falls back to the
+    --   carrier's model bottom instead of leaving the prop at an arbitrary Z.
+    local function groundZAt(x, y, referenceZ)
         local ok, found, ground =
             pcall(GetGroundZFor_3dCoord, x, y, referenceZ + 3.0, false)
-        local groundValid = ok and found and type(ground) == "number"
-            and ground > -1000.0
-        -- A terrain read far below the car is usually an overpass whose deck
-        -- was filtered out. Let the world ray find the surface the car is on.
-        if groundValid and math.abs(ground - referenceZ) <= 8.0 then
+        if ok and found and type(ground) == "number" and ground > -1000.0 then
             return ground
         end
-
-        local rayOk, ray = pcall(StartShapeTestRay, x, y, referenceZ + 3.0,
-            x, y, referenceZ - 35.0, 1, ignoreEntity or 0, 0)
-        if rayOk and ray and ray ~= 0 then
-            local resultOk, result, hit, endCoords = pcall(GetShapeTestResult, ray)
-            local tries = 0
-            while resultOk and result == 1 and tries < 4 do
-                Citizen.Wait(0)
-                resultOk, result, hit, endCoords = pcall(GetShapeTestResult, ray)
-                tries = tries + 1
-            end
-            if resultOk and hit == 1 and endCoords
-                and type(endCoords.z) == "number"
-                and endCoords.z <= referenceZ + 3.0 then
-                return endCoords.z
-            end
-        end
-
-        if groundValid then return ground end
         return nil
     end
 
@@ -27912,34 +28202,52 @@ local function installRampFix()
     -- E.object is the project's local-object path: isNetwork=false, model
     -- request bounded, registry entry with a TTL, and E.destroyAll on panic.
     -- The model is loaded before the spawn so GetModelDimensions can place the
-    -- high edge at the rear bumper and the low lip behind it. A model whose
+    -- high edge at the front bumper and the low lip ahead of it. A model whose
     -- collision stays disabled is deleted and the next variant is tried.
-    local function spawnRamp(vehicle, vehicleBack, heading)
+    local function spawnRamp(vehicle, vehicleFront, vehicleBottom, heading)
         for i = 1, #RAMP_MODELS do
             local model = RAMP_MODELS[i]
             local hash = GetHashKey(model)
             if E.requestModel(hash, 3000) then
-                local dimsOk, rampMin = pcall(GetModelDimensions, hash)
-                if not dimsOk then rampMin = nil end
-                local near = 3.0
+                local dimsOk, rampMin, rampMax =
+                    pcall(GetModelDimensions, hash)
+                local highEdge = 3.0
                 local bottom = 0.0
-                if rampMin then
-                    if type(rampMin.y) == "number" then
-                        near = math.abs(rampMin.y)
-                    end
+                if dimsOk and rampMin then
                     if type(rampMin.z) == "number" then
                         bottom = math.max(0.0, -rampMin.z)
                     end
                 end
+                if dimsOk and rampMax and type(rampMax.y) == "number" then
+                    highEdge = math.max(0.5, math.abs(rampMax.y))
+                elseif dimsOk and rampMin and type(rampMin.y) == "number" then
+                    highEdge = math.max(0.5, math.abs(rampMin.y))
+                end
 
-                -- vehicleBack is the negative Y extent of the carrier. Place
-                -- the ramp centre one half-length behind it, so the high edge
-                -- sits at the rear bumper and the low lip points backwards.
-                local center = vehicleBack - near - RAMP_GAP
+                -- vehicleFront is the positive Y extent of the carrier. The
+                -- ramp's high edge is its local +Y end (verified on the real
+                -- prop mesh), so rotate it 180 degrees: the high edge points
+                -- back at the carrier and the low lip points forward. Put that
+                -- high edge at the bumper:
+                --   center - highEdge = vehicleFront + gap.
+                local center = vehicleFront + highEdge + RAMP_GAP
                 local flat = GetOffsetFromEntityInWorldCoords(vehicle, 0.0, center, 0.0)
-                local ground = groundZAt(flat.x, flat.y, flat.z, vehicle)
-                local spawnZ = ground and (ground + bottom + GROUND_CLEARANCE)
-                    or flat.z
+
+                -- Anchor Z to the carrier's origin, not to the forward offset
+                -- point. GetOffsetFromEntityInWorldCoords includes the chassis
+                -- pitch lever arm: braking or accelerating rotates the car
+                -- around its origin and made the old ramp dive with the nose.
+                local coordsOk, vehicleCoords = pcall(GetEntityCoords, vehicle)
+                local vehicleZ = coordsOk and vehicleCoords
+                    and type(vehicleCoords.z) == "number"
+                    and vehicleCoords.z or flat.z
+
+                local ground = groundZAt(flat.x, flat.y, flat.z)
+                -- Model bottom is the carrier's lowest point relative to its
+                -- origin. On a normal car that is the tyre contact plane, so it
+                -- is a safe ground estimate when the native is unavailable.
+                local baseZ = ground or (vehicleZ + (vehicleBottom or 0.0))
+                local spawnZ = baseZ + bottom + GROUND_CLEARANCE
                 local spawn = vector3(flat.x, flat.y, spawnZ)
                 local rampHeading = (heading + 180.0) % 360.0
                 local obj, id = E.object(model, spawn, {
@@ -27965,12 +28273,13 @@ local function installRampFix()
                         -- else that exists in this client's physics world still
                         -- collides with the prop.
                         pcall(SetEntityNoCollisionEntity, obj, vehicle, false)
-                        return obj, id, model, center, proof, bottom
+                        return obj, id, model, center, proof, bottom,
+                            spawnZ - vehicleZ
                     end
                 end
             end
         end
-        return nil, nil, nil, 0.0, nil, 0.0
+        return nil, nil, nil, 0.0, nil, 0.0, 0.0
     end
 
     -- Delete every handle the base, a previous override, or this build left
@@ -28005,6 +28314,7 @@ local function installRampFix()
         state.veh = 0
         state.center = 0.0
         state.bottom = 0.0
+        state.zOffset = 0.0
         state.active = false
         state.collisionWarned = false
     end
@@ -28024,18 +28334,25 @@ local function installRampFix()
             return false
         end
 
-        local vehicleBack = -2.5
+        local vehicleFront = 2.5
+        local vehicleBottom = 0.0
         local modelOk, vehicleModel = pcall(GetEntityModel, vehicle)
         if modelOk and type(vehicleModel) == "number" then
-            local dimsOk, vehicleMin = pcall(GetModelDimensions, vehicleModel)
-            if dimsOk and vehicleMin and type(vehicleMin.y) == "number" then
-                vehicleBack = math.min(0.0, vehicleMin.y)
+            local dimsOk, vehicleMin, vehicleMax =
+                pcall(GetModelDimensions, vehicleModel)
+            if dimsOk and vehicleMax and type(vehicleMax.y) == "number" then
+                -- Front is local +Y. A negative or zero max would put the ramp
+                -- inside the car, so keep a sane positive overhang.
+                vehicleFront = math.max(0.0, vehicleMax.y)
+            end
+            if dimsOk and vehicleMin and type(vehicleMin.z) == "number" then
+                vehicleBottom = vehicleMin.z
             end
         end
 
         local heading = GetEntityHeading(vehicle)
-        local obj, id, modelName, center, proof, bottom =
-            spawnRamp(vehicle, vehicleBack, heading)
+        local obj, id, modelName, center, proof, bottom, zOffset =
+            spawnRamp(vehicle, vehicleFront, vehicleBottom, heading)
 
         if not obj then
             O.log("ramp: no collidable ramp model could be created")
@@ -28051,11 +28368,12 @@ local function installRampFix()
         state.veh = vehicle
         state.center = center
         state.bottom = bottom or 0.0
+        state.zOffset = zOffset or 0.0
         state.active = true
         state.collisionWarned = false
 
-        O.log("ramp: collidable rear scoop %s center=%.1f collision=%s",
-            tostring(modelName), center,
+        O.log("ramp: collidable front scoop %s center=%.1f z=%.2f collision=%s",
+            tostring(modelName), center, state.zOffset,
             proof == nil and "unknown" or tostring(proof))
         return true
     end
@@ -28081,12 +28399,18 @@ local function installRampFix()
         end
 
         local flat = GetOffsetFromEntityInWorldCoords(vehicle, 0.0, state.center, 0.0)
-        -- Ignore the ramp itself in the fallback ray; otherwise it can find
-        -- its own deck and climb a few centimetres every tick.
-        local ground = groundZAt(flat.x, flat.y, flat.z, obj)
-        local coordsOk, current = pcall(GetEntityCoords, obj)
-        local z = ground and (ground + state.bottom + GROUND_CLEARANCE)
-            or (coordsOk and current and current.z or flat.z)
+        -- Deliberately no ground query here. The spawn offset already encodes
+        -- the ground height relative to the carrier; re-reading it under a live
+        -- collidable prop is what made the old ramp climb and fall every frame.
+        -- Z comes from the chassis origin, not from the forward offset point:
+        -- the offset point includes the pitch lever arm, so a nose-dive under
+        -- braking used to drag the ramp into the road. The origin is stable
+        -- under pitch and roll; the spawn offset keeps it planted.
+        local coordsOk, vehicleCoords = pcall(GetEntityCoords, vehicle)
+        local vehicleZ = coordsOk and vehicleCoords
+            and type(vehicleCoords.z) == "number"
+            and vehicleCoords.z or flat.z
+        local z = vehicleZ + state.zOffset
         local heading = (GetEntityHeading(vehicle) + 180.0) % 360.0
 
         pcall(SetEntityCoordsNoOffset, obj, flat.x, flat.y, z,
@@ -28332,6 +28656,7 @@ local function build()
     installLockPlayer()
     installUncuff()
     installCombatUnlock()
+    installSettingsDefaults()
     installProtection()
     installCrasher()
     installVehicleSpoof()
