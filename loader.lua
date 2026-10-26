@@ -132,6 +132,35 @@ LibraryCode = string.gsub(
 -- PATCH: Footer text + centered logo image
 -- Footer text + logo are now embedded directly in library.lua
 
+-- The menu is green by default. Replace the library's initial cyan banner
+-- before the chunk starts its first download, so the first frame cannot flash
+-- or finish on the wrong image. The theme table below owns every later switch.
+LibraryCode = string.gsub(
+    LibraryCode,
+    'imageUrl%s*=%s*"[^"]*"',
+    'imageUrl = "https://i.imgur.com/Ua3Qkk5.png"',
+    1
+)
+
+-- Drop the library's own banner downloads. The theme patch below owns the
+-- requests and the per-URL cache; leaving the library's module-scope thread
+-- alive would let a slow green reply overwrite a Cyan selection made while it
+-- was still downloading. The library's ApplyTheme call is removed too: the
+-- replacement below is the only banner loader and already calls it.
+LibraryCode = string.gsub(
+    LibraryCode,
+    'if%s*Menu%.Banner%.enabled%s*and%s*Menu%.Banner%.imageUrl%s*then%s*'
+        .. 'Menu%.LoadBannerTexture%(Menu%.Banner%.imageUrl%)%s*end',
+    ''
+)
+-- Fallback for a remote library whose initial block is formatted differently:
+-- neutralise the call itself rather than leave a second download thread alive.
+LibraryCode = string.gsub(
+    LibraryCode,
+    'Menu%.LoadBannerTexture%s*%(%s*Menu%.Banner%.imageUrl%s*%)',
+    'do end'
+)
+
 local chunk, err = load(LibraryCode)
 if not chunk then
     print("[Menu] Erreur compilation: " .. tostring(err))
@@ -139,6 +168,101 @@ if not chunk then
 end
 
 local Menu = chunk()
+
+-- ============================================
+-- VANGUARD THEME PATCH
+-- ============================================
+-- The library is downloaded at runtime, so its palette is not guaranteed to
+-- match this build. Only two themes exist: Green (default, moss banner) and
+-- Cyan (sky banner). Each theme owns both its accent and its image; an unknown
+-- name falls back to Green instead of creating a third colour.
+do
+    local themes = {
+        Green = {
+            r = 76, g = 143, b = 88,
+            image = "https://i.imgur.com/Ua3Qkk5.png",
+        },
+        Cyan = {
+            r = 104, g = 168, b = 203,
+            image = "https://i.imgur.com/3HLMxX5.png",
+        },
+    }
+
+    Menu.Banner = Menu.Banner or { enabled = true, height = 100 }
+    Menu.Banner.enabled = true
+    Menu.Banner.height = Menu.Banner.height or 100
+    Menu.Colors = Menu.Colors or {}
+    Menu.BannerCache = Menu.BannerCache or {}
+    Menu.bannerRequest = Menu.bannerRequest or 0
+    Menu.bannerLoadingUrl = nil
+
+    function Menu.LoadBannerTexture(url)
+        if not url or url == "" then return end
+        if not Susano or not Susano.HttpGet or not Susano.LoadTextureFromBuffer then return end
+
+        local cached = Menu.BannerCache[url]
+        if cached and cached.id and cached.id ~= 0 then
+            Menu.bannerRequest = Menu.bannerRequest + 1
+            Menu.bannerLoadingUrl = nil
+            Menu.bannerTexture = cached.id
+            Menu.bannerWidth = cached.width or 0
+            Menu.bannerHeight = cached.height or 0
+            return cached.id
+        end
+
+        if Menu.bannerLoadingUrl == url then return nil end
+
+        Menu.bannerRequest = Menu.bannerRequest + 1
+        local request = Menu.bannerRequest
+        Menu.bannerLoadingUrl = url
+
+        local function load()
+            local ok, status, body = pcall(Susano.HttpGet, url)
+            local textureId, width, height = nil, 0, 0
+            if ok and status == 200 and body and #body > 0 then
+                local decoded, id, w, h = pcall(Susano.LoadTextureFromBuffer, body)
+                if decoded and id and id ~= 0 then
+                    textureId, width, height = id, w or 0, h or 0
+                    Menu.BannerCache[url] = { id = id, width = width, height = height }
+                end
+            end
+
+            if request ~= Menu.bannerRequest then
+                -- A newer theme won the race; keep the decoded image cached
+                -- but do not replace the visible banner.
+                return
+            end
+
+            if Menu.bannerLoadingUrl == url then Menu.bannerLoadingUrl = nil end
+            if textureId then
+                Menu.bannerTexture = textureId
+                Menu.bannerWidth = width
+                Menu.bannerHeight = height
+            else
+                Menu.bannerTexture = nil
+                Menu.bannerWidth = 0
+                Menu.bannerHeight = 0
+            end
+        end
+
+        if CreateThread then
+            CreateThread(load)
+        else
+            load()
+        end
+        return nil
+    end
+
+    function Menu.ApplyTheme(themeName)
+        local theme = themes[themeName] or themes.Green
+        Menu.Colors.HeaderPink = { r = theme.r, g = theme.g, b = theme.b }
+        Menu.Colors.SelectedBg = { r = theme.r, g = theme.g, b = theme.b }
+        Menu.Banner.imageUrl = theme.image
+        Menu.LoadBannerTexture(theme.image)
+    end
+
+    Menu.ApplyTheme("Green")
+end
 
 -- ============================================
 -- BOLD TEXT: Override DrawText with shadow pass
@@ -1060,16 +1184,16 @@ Menu.Categories = {
             { name = "Editor Mode", type = "toggle", value = false },
             { name = "Menu Size", type = "slider", value = 110.0, min = 50.0, max = 200.0, step = 1.0 },
             { name = "", isSeparator = true, separatorText = "Design" },
-            { name = "Menu Theme", type = "selector", options = {"Blue", "Purple", "Pink", "Red", "Green"}, selected = 5 },
+            { name = "Menu Theme", type = "selector", options = {"Green", "Cyan"}, selected = 1 },
             { name = "Flocon", type = "toggle", value = true },
             { name = "Scroll Bar Position", type = "selector", options = {"Left", "Right"}, selected = 1 }
         }}
     }}
 }
 
--- Appliquer le thÃ¨me  par dÃ©faut au dÃ©marrage
+-- Appliquer le thème vert par défaut au démarrage
 if Menu.ApplyTheme then
-    Menu.ApplyTheme("Blue")
+    Menu.ApplyTheme("Green")
 end
 
 -- Load category icons + footer logo after categories are defined
@@ -1321,12 +1445,32 @@ local function DeleteAllProps()
 end
 
 local throwVehicleActive = false
+local throwVehicleGeneration = 0
 local function ToggleThrowVehicle(enable)
     throwVehicleActive = enable
+    -- Bump on every click. Without this, off -> on before the old thread
+    -- reaches its loop condition would leave two threads aiming and attaching
+    -- at once; the old one would also clear an outline it no longer owns.
+    throwVehicleGeneration = throwVehicleGeneration + 1
+    local generation = throwVehicleGeneration
     if enable then
         Citizen.CreateThread(function()
             local holdingEntity = false
             local heldEntity = nil
+            local outlinedEntity = nil
+            local outlineHasControl = nil
+
+            -- The ESP outline is a per-entity draw flag. It is not cleared when
+            -- the thread stops, so every path that leaves the aimed vehicle
+            -- must turn it off explicitly; otherwise disabling Throw Vehicle
+            -- leaves the last car glowing red or green forever.
+            local function clearOutline()
+                if outlinedEntity and outlinedEntity ~= 0 and SetEntityDrawOutline then
+                    pcall(SetEntityDrawOutline, outlinedEntity, false)
+                end
+                outlinedEntity = nil
+                outlineHasControl = nil
+            end
 
             local function RotationToDirection(rotation)
                 local adjustedRotation = vector3((math.pi / 180) * rotation.x, (math.pi / 180) * rotation.y, (math.pi / 180) * rotation.z)
@@ -1334,12 +1478,13 @@ local function ToggleThrowVehicle(enable)
                 return direction
             end
 
-            while throwVehicleActive do
+            while throwVehicleActive and throwVehicleGeneration == generation do
                 Citizen.Wait(0)
                 local playerPed = PlayerPedId()
                 local screenW, screenH = GetScreenSize()
 
                 if holdingEntity and heldEntity and DoesEntityExist(heldEntity) then
+                    clearOutline()
                     if not IsEntityPlayingAnim(playerPed, 'anim@mp_rollarcoaster', 'hands_up_idle_a_player_one', 3) then
                         RequestAnimDict('anim@mp_rollarcoaster')
                         while not HasAnimDictLoaded('anim@mp_rollarcoaster') do
@@ -1374,13 +1519,24 @@ local function ToggleThrowVehicle(enable)
                     if hit == 1 and DoesEntityExist(entityHit) then
                         local entityType = GetEntityType(entityHit)
                         if entityType == 2 then
-                            if SetEntityDrawOutline then
-                                SetEntityDrawOutline(entityHit, true)
-                                if NetworkHasControlOfEntity(entityHit) then
-                                    SetEntityDrawOutlineColor(0, 255, 0, 255)
-                                else
-                                    SetEntityDrawOutlineColor(255, 0, 0, 255)
+                            if outlinedEntity ~= entityHit then
+                                clearOutline()
+                                if SetEntityDrawOutline then
+                                    SetEntityDrawOutline(entityHit, true)
+                                    outlinedEntity = entityHit
                                 end
+                            end
+
+                            local hasControl = NetworkHasControlOfEntity(entityHit)
+                            if outlinedEntity == entityHit and outlineHasControl ~= hasControl then
+                                if SetEntityDrawOutlineColor then
+                                    if hasControl then
+                                        SetEntityDrawOutlineColor(0, 255, 0, 255)
+                                    else
+                                        SetEntityDrawOutlineColor(255, 0, 0, 255)
+                                    end
+                                end
+                                outlineHasControl = hasControl
                             end
 
                             local min, max = GetModelDimensions(GetEntityModel(entityHit))
@@ -1407,25 +1563,33 @@ local function ToggleThrowVehicle(enable)
 
                             if hasScreen then
                                 local r, g, b = 255, 0, 0
-                                if NetworkHasControlOfEntity(entityHit) then
+                                if hasControl then
                                     r, g, b = 0, 255, 0
                                 end
                                 Draw2DBox(minX, minY, maxX, maxY, r, g, b, 255, screenW, screenH)
                             end
 
                             if IsControlJustReleased(0, 38) then
+                                clearOutline()
                                 holdingEntity = true
                                 heldEntity = entityHit
                                 NetworkRequestControlOfEntity(heldEntity)
                                 AttachEntityToEntity(heldEntity, playerPed, GetPedBoneIndex(playerPed, 60309), 1.0, 0.5, 0.0, 0.0, 0.0, 0.0, true, true, false, false, 1, true)
                             end
+                        else
+                            clearOutline()
                         end
+                    else
+                        clearOutline()
                     end
                 end
             end
 
+            clearOutline()
             if heldEntity then
-                DetachEntity(heldEntity, true, true)
+                if DoesEntityExist(heldEntity) then
+                    pcall(DetachEntity, heldEntity, true, true)
+                end
                 ClearPedTasks(PlayerPedId())
             end
         end)
@@ -16001,7 +16165,7 @@ end)()
 -- >>> VANGUARD MODULE BEGIN
 -- ============================================================================
 -- VANGUARD  (integrated artifact - edit src/ and rebuild)
--- Generated: 2026-10-26 13:51:36
+-- Generated: 2026-10-26 14:28:08
 --
 -- This block lives in loader.lua and in dist/loader.built.lua at the same
 -- time. It is the only place the local Menu table is in scope. Rebuilding
@@ -26053,9 +26217,13 @@ function Menu.DrawPlayerInfoPanel()
     local screenWidth, screenHeight = screenSize()
     local accentR, accentG, accentB = accentRGB()
 
-    local panelWidth = 334 * scale
-    local gap = 12 * scale
-    local panelX = sp.x + (sp.width or 360) + gap
+    -- Match the menu's own width. The old 334 px card forced 10-12 px labels
+    -- and was hard to read next to 19 px menu rows. The card is now the same
+    -- visual weight as the menu and the type scale below is readable at 1.1x.
+    local menuWidth = tonumber(sp.width) or (360 * scale)
+    local panelWidth = math.max(340 * scale, menuWidth * 0.98)
+    local gap = 14 * scale
+    local panelX = sp.x + (sp.width or 360 * scale) + gap
     if panelX + panelWidth > screenWidth - 8 then
         local left = sp.x - gap - panelWidth
         if left >= 8 then
@@ -26065,7 +26233,7 @@ function Menu.DrawPlayerInfoPanel()
         end
     end
 
-    local pad = 15 * scale
+    local pad = 17 * scale
     local innerWidth = panelWidth - pad * 2
     local cx = panelX + pad
 
@@ -26073,22 +26241,22 @@ function Menu.DrawPlayerInfoPanel()
     -- separators, 10-11 px secondary values. Menu.DrawText multiplies all of
     -- these by Menu.Scale, so the card grows with the menu instead of staying
     -- fixed while the menu gets bigger.
-    local FONT_KICKER = 9
-    local FONT_NAME = 19
-    local FONT_ID = 10
-    local FONT_SECTION = 10
-    local FONT_LABEL = 10
-    local FONT_VALUE = 12
-    local FONT_BAR = 10
-    local FONT_PILL = 10
-    local FONT_FOOTER = 9
+    local FONT_KICKER = 10
+    local FONT_NAME = 23
+    local FONT_ID = 11
+    local FONT_SECTION = 12
+    local FONT_LABEL = 12
+    local FONT_VALUE = 16
+    local FONT_BAR = 12
+    local FONT_PILL = 11
+    local FONT_FOOTER = 11
 
-    local headerHeight = 62 * scale
-    local sectionHeight = 22 * scale
-    local rowHeight = 26 * scale
-    local barHeight = 30 * scale
-    local footerHeight = 32 * scale
-    local pillRowHeight = 24 * scale
+    local headerHeight = 74 * scale
+    local sectionHeight = 26 * scale
+    local rowHeight = 30 * scale
+    local barHeight = 36 * scale
+    local footerHeight = 36 * scale
+    local pillRowHeight = 26 * scale
 
     local healthMax = tonumber(info.maxHealth) or 0
     local health = tonumber(info.health) or 0
@@ -26127,15 +26295,15 @@ function Menu.DrawPlayerInfoPanel()
 
     local function section(label)
         return function(y)
-            fillRect(cx, y + 8 * scale, 3 * scale, 9 * scale,
+            fillRect(cx, y + 9 * scale, 3 * scale, 11 * scale,
                 accentR, accentG, accentB, 0.95, 1.5 * scale)
             local labelWidth = textWidth(label, FONT_SECTION, scale)
-            text(cx + 10 * scale, y + 3 * scale, label, FONT_SECTION,
+            text(cx + 11 * scale, y + 4 * scale, label, FONT_SECTION,
                 0.62, 0.62, 0.66, 1.0)
-            local lineX = cx + 10 * scale + labelWidth + 9 * scale
+            local lineX = cx + 11 * scale + labelWidth + 9 * scale
             local lineWidth = cx + innerWidth - lineX
             if lineWidth > 0 then
-                fillRect(lineX, y + 8 * scale, lineWidth, 1,
+                fillRect(lineX, y + 9 * scale, lineWidth, 1,
                     0.20, 0.20, 0.24, 0.55, 0)
             end
         end
@@ -26143,28 +26311,28 @@ function Menu.DrawPlayerInfoPanel()
 
     local function row(label, value, r, g, b, size)
         return function(y)
-            text(cx, y + 7 * scale, label, FONT_LABEL, 0.46, 0.46, 0.51, 1.0)
+            text(cx, y + 7 * scale, label, FONT_LABEL, 0.50, 0.50, 0.55, 1.0)
             local valueSize = size or FONT_VALUE
             local shown = fitText(value, innerWidth * 0.64, valueSize, scale)
             local width = textWidth(shown, valueSize, scale)
             text(cx + innerWidth - width, y + 4 * scale, shown, valueSize,
-                r or 0.93, g or 0.93, b or 0.95, 1.0)
+                r or 0.95, g or 0.95, b or 0.97, 1.0)
         end
     end
 
     local function bar(label, percent, valueText, r, g, b)
         return function(y)
-            text(cx, y + 1 * scale, label, FONT_BAR, 0.46, 0.46, 0.51, 1.0)
+            text(cx, y + 1 * scale, label, FONT_BAR, 0.50, 0.50, 0.55, 1.0)
             local valueWidth = textWidth(valueText, FONT_BAR, scale)
             text(cx + innerWidth - valueWidth, y, valueText, FONT_BAR,
-                r, g, b, 0.95)
+                r, g, b, 0.97)
 
-            local barY = y + 15 * scale
-            fillRect(cx, barY, innerWidth, 7 * scale, 0.14, 0.14, 0.17, 0.95,
-                3.5 * scale)
+            local barY = y + 18 * scale
+            fillRect(cx, barY, innerWidth, 8 * scale, 0.14, 0.14, 0.17, 0.95,
+                4 * scale)
             local filled = innerWidth * percent
             if filled > 0 then
-                fillRect(cx, barY, filled, 7 * scale, r, g, b, 0.92, 3.5 * scale)
+                fillRect(cx, barY, filled, 8 * scale, r, g, b, 0.92, 4 * scale)
                 -- One-pixel top highlight: it reads as a lit bar rather than a
                 -- flat rectangle, and costs one draw call.
                 fillRect(cx + 2 * scale, barY + 1 * scale,
@@ -26181,31 +26349,31 @@ function Menu.DrawPlayerInfoPanel()
 
     -- Header -----------------------------------------------------------------
     add(headerHeight, function(y)
-        text(cx, y + 1 * scale, "CIBLE", FONT_KICKER,
+        text(cx, y + 2 * scale, "CIBLE", FONT_KICKER,
             accentR * 0.88, accentG * 0.88, accentB * 0.88, 0.90)
 
         local idText = "#" .. tostring(info.serverId or "?")
-        local idWidth = textWidth(idText, FONT_ID, scale) + 16 * scale
+        local idWidth = textWidth(idText, FONT_ID, scale) + 18 * scale
         local idX = panelX + panelWidth - pad - idWidth
-        fillRect(idX, y + 9 * scale, idWidth, 20 * scale,
-            accentR, accentG, accentB, 0.11, 5 * scale)
-        fillRect(idX, y + 28 * scale, idWidth, 1,
-            accentR, accentG, accentB, 0.40, 0)
-        text(idX + 8 * scale, y + 13 * scale, idText, FONT_ID,
+        fillRect(idX, y + 8 * scale, idWidth, 22 * scale,
+            accentR, accentG, accentB, 0.12, 5 * scale)
+        fillRect(idX, y + 30 * scale, idWidth, 1,
+            accentR, accentG, accentB, 0.45, 0)
+        text(idX + 9 * scale, y + 13 * scale, idText, FONT_ID,
             accentR, accentG, accentB, 0.98)
 
-        local nameX = cx + 14 * scale
-        local nameMax = math.max(0, idX - nameX - 8 * scale)
+        local nameX = cx + 16 * scale
+        local nameMax = math.max(0, idX - nameX - 10 * scale)
         local name = fitText(info.name or "Inconnu", nameMax, FONT_NAME, scale)
-        -- A sub-pixel shadow is enough to make the 19 px name read as bold
-        -- without loading a second font.
-        text(nameX + 0.8 * scale, y + 16 * scale + 0.8 * scale,
+        -- A sub-pixel shadow is enough to make the name read as bold without
+        -- loading a second font.
+        text(nameX + 0.8 * scale, y + 22 * scale + 0.8 * scale,
             name, FONT_NAME, 0, 0, 0, 0.60)
-        text(nameX, y + 16 * scale, name, FONT_NAME, 0.97, 0.97, 0.99, 1.0)
-        fillRect(cx, y + 27 * scale, 7 * scale, 7 * scale,
-            statusR, statusG, statusB, 1.0, 3.5 * scale)
+        text(nameX, y + 22 * scale, name, FONT_NAME, 0.97, 0.97, 0.99, 1.0)
+        fillRect(cx + 2 * scale, y + 31 * scale, 8 * scale, 8 * scale,
+            statusR, statusG, statusB, 1.0, 4 * scale)
 
-        fillRect(cx, y + 56 * scale, innerWidth, 1,
+        fillRect(cx, y + 66 * scale, innerWidth, 1,
             0.22, 0.22, 0.26, 0.55, 0)
     end)
 
@@ -26262,11 +26430,11 @@ function Menu.DrawPlayerInfoPanel()
                 for i = 1, #pillRows[r] do
                     local entry = pillRows[r][i]
                     local state = entry.state
-                    fillRect(x, rowY, entry.width, 20 * scale,
-                        state.r, state.g, state.b, 0.12, 10 * scale)
-                    fillRect(x + 1 * scale, rowY + 5 * scale, 2 * scale, 10 * scale,
+                    fillRect(x, rowY, entry.width, 22 * scale,
+                        state.r, state.g, state.b, 0.12, 11 * scale)
+                    fillRect(x + 1 * scale, rowY + 6 * scale, 2 * scale, 11 * scale,
                         state.r, state.g, state.b, 0.88, 1 * scale)
-                    text(x + 8 * scale, rowY + 5 * scale, state.label, FONT_PILL,
+                    text(x + 9 * scale, rowY + 6 * scale, state.label, FONT_PILL,
                         state.r, state.g, state.b, 1.0)
                     x = x + entry.width + 6 * scale
                 end
@@ -26279,12 +26447,12 @@ function Menu.DrawPlayerInfoPanel()
     local footer = function(y)
         fillRect(cx, y + 2 * scale, innerWidth, 1, 0.20, 0.20, 0.24, 0.50, 0)
 
-        local labelWidth = textWidth(statusLabel, FONT_FOOTER, scale) + 20 * scale
-        fillRect(cx, y + 8 * scale, labelWidth, 20 * scale,
-            statusR, statusG, statusB, 0.13, 10 * scale)
-        fillRect(cx + 1 * scale, y + 8 * scale, 2 * scale, 20 * scale,
+        local labelWidth = textWidth(statusLabel, FONT_FOOTER, scale) + 22 * scale
+        fillRect(cx, y + 8 * scale, labelWidth, 22 * scale,
+            statusR, statusG, statusB, 0.13, 11 * scale)
+        fillRect(cx + 1 * scale, y + 8 * scale, 2 * scale, 22 * scale,
             statusR, statusG, statusB, 0.90, 1 * scale)
-        text(cx + 10 * scale, y + 12 * scale, statusLabel, FONT_FOOTER,
+        text(cx + 11 * scale, y + 13 * scale, statusLabel, FONT_FOOTER,
             statusR, statusG, statusB, 1.0)
 
         local live = "DIRECT"
@@ -26292,9 +26460,9 @@ function Menu.DrawPlayerInfoPanel()
         local timer = 0
         if type(GetGameTimer) == "function" then timer = GetGameTimer() or 0 end
         local pulse = 0.55 + 0.35 * math.abs(math.sin(timer / 650.0))
-        fillRect(cx + innerWidth - liveWidth - 12 * scale, y + 15 * scale,
+        fillRect(cx + innerWidth - liveWidth - 13 * scale, y + 16 * scale,
             5 * scale, 5 * scale, 0.32, 0.82, 0.48, pulse, 2.5 * scale)
-        text(cx + innerWidth - liveWidth, y + 12 * scale, live, FONT_FOOTER,
+        text(cx + innerWidth - liveWidth, y + 13 * scale, live, FONT_FOOTER,
             0.42, 0.60, 0.46, 0.90)
     end
     add(footerHeight, footer)
@@ -26303,7 +26471,7 @@ function Menu.DrawPlayerInfoPanel()
     for i = 1, #blocks do contentHeight = contentHeight + blocks[i].height end
 
     local chromeHeight = pad * 2
-    local panelHeight = math.max(chromeHeight + contentHeight, 348 * scale)
+    local panelHeight = math.max(chromeHeight + contentHeight, 400 * scale)
 
     -- If the card is taller than its content (minimum height), put the spare
     -- space before the footer. The footer then sits on the bottom edge instead
@@ -26330,7 +26498,7 @@ function Menu.DrawPlayerInfoPanel()
         0.059, 0.059, 0.059, 0.985, 7 * scale)
     -- A very light accent wash on the header, then the hard accent line. It
     -- mirrors the menu header without competing with the text.
-    fillRect(panelX + 1, panelY + 1, panelWidth - 2, 64 * scale,
+    fillRect(panelX + 1, panelY + 1, panelWidth - 2, 74 * scale,
         accentR, accentG, accentB, 0.050, 7 * scale)
     fillRect(panelX + pad, panelY + 1, panelWidth - pad * 2, 2 * scale,
         accentR, accentG, accentB, 0.90, 1 * scale)
@@ -26360,9 +26528,10 @@ local U = (function(O,S,E,D,F,V,M,SN,C,A,ST,SB,VS,K,N,L,VC,CU,UC,FA,TP,Menu)
 --
 --   Exploit > Bypass    separate profiles: WaveShield, FiveGuard, Electron AC,
 --                       Reason AC, Seed, Dynasty, Raven; each target is isolated
---   Exploit > Crasher   Menu Staff [SEED] plus one direct action per crash
---                       method; no top-level Crasher category
---   Protection          anti-freeze, anti-attach and anti-spectate, armed at load
+--   Exploit > Exploit   Menu Staff [SEED] plus one direct action per crash
+--                       method; the tab was renamed from "Crasher" and still
+--                       replaces the old teleport surface
+--   Settings > Protection anti-freeze, anti-attach and anti-spectate, armed at load
 --   Vehicle > Spoofed   real local vehicles over the one you already stole
 --
 -- Removed on purpose:
@@ -26683,16 +26852,17 @@ local function seedClick()
 end
 
 -- ---------------------------------------------------------------------------
--- EXPLOIT > CRASHER (tab collapse)
+-- EXPLOIT > EXPLOIT (tab collapse)
 --
--- Older builds shipped a top-level "Crasher" category, and some base builds
--- shipped a teleport tab in Exploit. Both are folded into one Crasher tab:
--- the operator gets the crash methods where the teleport row used to be, and
--- the category list loses one entry. The merge keeps any real server action
--- that was already in the tab (notably Menu Staff) and drops only teleport
--- artifacts. Running it twice is safe; it always converges to one tab.
+-- Older builds shipped a top-level "Crasher" category, a tab named "Crasher",
+-- and some base builds shipped a teleport tab in Exploit. All of them are
+-- folded into one tab named "Exploit": the operator gets the crash methods
+-- where the teleport row used to be, and the category list loses one entry.
+-- The merge keeps any real server action that was already in the tab
+-- (notably Menu Staff) and drops only teleport artifacts. Running it twice is
+-- safe; it always converges to one tab.
 -- ---------------------------------------------------------------------------
-local function collapseExploitCrasherTab()
+local function collapseExploitTab()
     local category = findCategory("Exploit")
     if not category then return nil end
 
@@ -26708,8 +26878,8 @@ local function collapseExploitCrasherTab()
     local isOpen = openCategory == category
 
     -- Remember the open tab by object, not by index. Merging can remove tabs
-    -- and moving Crasher to the front shifts every index; an index-based
-    -- restore would land on a different tab after a reload.
+    -- and moving the merged tab to the front shifts every index; an
+    -- index-based restore would land on a different tab after a reload.
     local selected = nil
     if isOpen and type(Menu.CurrentTab) == "number" then
         selected = category.tabs[Menu.CurrentTab]
@@ -26717,21 +26887,22 @@ local function collapseExploitCrasherTab()
 
     local target = nil
     for _, candidate in ipairs(category.tabs) do
-        if candidate.name == "Crasher" then target = candidate break end
+        if candidate.name == "Exploit" then target = candidate break end
     end
     if not target then
         for _, candidate in ipairs(category.tabs) do
-            if candidate.name == "Exploits" or candidate.name == "Teleport" then
+            if candidate.name == "Crasher" or candidate.name == "Exploits"
+                or candidate.name == "Teleport" then
                 target = candidate
                 break
             end
         end
     end
     if not target then
-        target = { name = "Crasher", items = {} }
+        target = { name = "Exploit", items = {} }
     end
 
-    target.name = "Crasher"
+    target.name = "Exploit"
     target.items = target.items or {}
 
     local merged = {}
@@ -26740,7 +26911,7 @@ local function collapseExploitCrasherTab()
         if candidate == target then
             kept[#kept + 1] = candidate
         elseif candidate.name == "Exploits" or candidate.name == "Teleport"
-            or candidate.name == "Crasher" then
+            or candidate.name == "Crasher" or candidate.name == "Exploit" then
             merged[#merged + 1] = candidate
             for _, item in ipairs(candidate.items or {}) do
                 local duplicate = false
@@ -26773,7 +26944,7 @@ local function collapseExploitCrasherTab()
     end
 
     -- Restore the selected tab. If it was one of the merged tabs, its items now
-    -- live in Crasher, so Crasher is the closest correct selection.
+    -- live in Exploit, so Exploit is the closest correct selection.
     if isOpen then
         if selected then
             local rebound = nil
@@ -26800,12 +26971,12 @@ local function collapseExploitCrasherTab()
 end
 
 local function installSeed()
-    local tab = collapseExploitCrasherTab()
+    local tab = collapseExploitTab()
     if not tab then return false end
 
-    local seed = findItem("Exploit", "Crasher", "Menu Staff")
+    local seed = findItem("Exploit", "Exploit", "Menu Staff")
     if not seed then
-        seed = findItem("Exploit", "Crasher", "Menu Staff [SEED]")
+        seed = findItem("Exploit", "Exploit", "Menu Staff [SEED]")
     end
     if not seed then
         seed = { name = "Menu Staff", type = "action" }
@@ -27238,37 +27409,57 @@ local function installProtection()
         antiSpectate.value = A.flags.antiSpectate
     end
 
-    -- The category is ours. Replacing it on a second load prevents a stale
-    -- copy with old closures (and old row values) from surviving a reload
-    -- while A.defaultsOn() has already armed the new module.
+    -- The three protections now live under Settings, not in a top-level
+    -- category. The category is removed on every load so an older loader
+    -- instance cannot leave a second copy behind. Settings is a base category;
+    -- if a stripped build does not ship it, create it with the same tab so the
+    -- rows are still reachable.
     removeCategory("Protection")
 
-    addCategory({
-        name = "Protection",
-        hasTabs = true,
-        tabs = {
-            {
-                name = "Protection",
-                items = {
-                    { name = "", isSeparator = true, separatorText = "Local ped" },
-                    antiFreeze,
-                    antiAttach,
-                    antiSpectate,
-                },
-            },
-        },
-    })
+    local settings = findCategory("Settings")
+    if not settings then
+        settings = addCategory({
+            name = "Settings",
+            hasTabs = true,
+            tabs = {},
+        })
+        if not settings then settings = findCategory("Settings") end
+    end
+    if not settings then return false end
+    settings.hasTabs = true
+    settings.tabs = settings.tabs or {}
+
+    local protectionTab = nil
+    for _, candidate in ipairs(settings.tabs) do
+        if candidate.name == "Protection" then
+            protectionTab = candidate
+            break
+        end
+    end
+    if not protectionTab then
+        protectionTab = { name = "Protection", items = {} }
+        settings.tabs[#settings.tabs + 1] = protectionTab
+    end
+
+    protectionTab.items = {
+        { name = "", isSeparator = true, separatorText = "Local ped" },
+        antiFreeze,
+        antiAttach,
+        antiSpectate,
+    }
     return true
 end
 
 -- ---------------------------------------------------------------------------
--- EXPLOIT > CRASHER
+-- EXPLOIT > EXPLOIT (CRASH METHODS)
 --
 -- Each method is its own action: click the method and it starts. There is no
 -- separate selector, no Crash button, no target/intensity/stop row. The tab
 -- lives inside Exploit instead of a top-level category: fewer top-level rows,
 -- and the crash methods sit next to the other exploit actions. Any stale
 -- top-level Crasher category from an older loader is removed on every load.
+-- The tab itself is named "Exploit"; "Crasher" is only the historical module
+-- name and the old tab label that is merged into it.
 -- ---------------------------------------------------------------------------
 local CRASH_ROWS = {
     "Method", "Crash", "Intensity", "Target: nearest", "Launch crash",
@@ -27291,7 +27482,7 @@ end
 local function installCrasher()
     removeCategory("Crasher")
 
-    local tab = collapseExploitCrasherTab()
+    local tab = collapseExploitTab()
     if not tab then return false end
 
     -- If the operator already has this tab open, remember the selected row by
@@ -27314,7 +27505,8 @@ local function installCrasher()
     removeItem("Online", "Troll", "Crash Method")
     for i = #tab.items, 1, -1 do
         local item = tab.items[i]
-        if item.separatorText == "Crasher" then
+        if item.separatorText == "Crasher" or item.separatorText == "Crash"
+            or item.separatorText == "Exploit" then
             table.remove(tab.items, i)
         elseif isCrashRowName(item.name) then
             table.remove(tab.items, i)
@@ -27327,14 +27519,14 @@ local function installCrasher()
     -- Prepend the crash block instead of appending it. The base Exploits tab
     -- also carries the server rows (Staff Mode, Disable Weapon Damage, Menu
     -- Staff, Revive); with ItemsPerPage = 8, appending would push PTFX storm
-    -- onto a second page. The tab is called Crasher, so its methods come first
-    -- and the server rows stay available underneath.
+    -- onto a second page. The crash methods come first and the server rows stay
+    -- available underneath.
     local power = { 3, 3, 2 }
     local crashItems = {
         {
             name = "",
             isSeparator = true,
-            separatorText = "Crasher",
+            separatorText = "Crash",
         },
     }
 
@@ -27355,7 +27547,7 @@ local function installCrasher()
         table.insert(tab.items, 1, crashItems[i])
     end
 
-    -- A reload with Crasher open must not jump to the newly prepended block.
+    -- A reload with this tab open must not jump to the newly prepended block.
     -- Restore the exact row object that was selected before the insert; if it
     -- no longer exists (an old Teleport row, for example), clamp the index so
     -- the menu cannot point past the rebuilt list.
@@ -27386,7 +27578,7 @@ local function installCrasher()
         if not restored then Menu.CurrentItem = 1 end
     end
 
-    -- Keep Crasher as the first tab in Exploit, so it replaces the old
+    -- Keep this tab as the first tab in Exploit, so it replaces the old
     -- teleport surface where the operator expects it.
     category = findCategory("Exploit")
     if category and category.tabs then
@@ -27398,7 +27590,7 @@ local function installCrasher()
     return true
 end
 
--- Internal test seam: the smoke harness opens Exploit > Crasher, selects a
+-- Internal test seam: the smoke harness opens Exploit > Exploit, selects a
 -- row, calls this installer again, and verifies the selection survives the
 -- prepend. It is not a menu row.
 Menu.__vgd_installCrasher = installCrasher
@@ -27914,7 +28106,7 @@ end
 Menu.__vgd_cleanupRetiredTroll = cleanupRetiredTrollRows
 
 local function removeLegacyEntries()
-    -- The old base "Crash Method" is superseded by the Crasher category.
+    -- The old base "Crash Method" is superseded by Exploit > Exploit.
     removeItem("Online", "Troll", "Crash Method")
     cleanupRetiredTrollRows()
 
@@ -28021,6 +28213,7 @@ end
 UI.boot()
 
 return UI
+
 
 end)(O,S,E,D,F,V,M,SN,C,A,ST,SB,VS,K,N,L,VC,CU,UC,FA,TP,Menu)
 
