@@ -1459,27 +1459,36 @@ local function ToggleThrowVehicle(enable)
         local holdingEntity = false
         local heldEntity = nil
         local outlinedEntity = nil
+        -- Control is requested, never awaited. The proven old build attached
+        -- the aimed car on the same frame as the E release; a remote-owned car
+        -- may take a few frames to hand ownership over, but the carry pose and
+        -- the attach do not depend on it. Gating the grab on ownership was the
+        -- deviation that made the feature feel dead on busy OneSync servers.
+        local nextControlRequestAt = 0
 
         local ANIM_DICT = "anim@mp_rollarcoaster"
         local ANIM_NAME = "hands_up_idle_a_player_one"
         local GRAB_KEY = 38 -- E
-        -- The carry rig from the proven pickup build: spine3, 2.05 m ahead and
-        -- 0.5 m up, pitched 90 degrees so the car rides flat in front of the
-        -- chest. This is the rig the hands-up clip was authored around; moving
-        -- the car to the forearm made the pose vanish behind the chassis.
-        local CARRY_BONE = 24816
-        -- A car is heavy. A one-frame force is invisible; a real velocity is
-        -- the only throw path that survives a network-owned vehicle whose
-        -- physics the server keeps re-simulating. 120 m/s restores the fast,
-        -- arcade throw the operator remembers while staying inside the engine's
-        -- sane velocity range; 12 m/s of lift keeps the arc readable.
-        local THROW_SPEED = 120.0
-        local THROW_LIFT = 12.0
+        -- The proven old-build carry rig. The car hangs from the right hand,
+        -- one metre forward and half a metre up. The hands-up clip was
+        -- authored around this transform. The later spine3/2.05 m rig hid the
+        -- arms behind the chassis and is why the animation looked absent.
+        local CARRY_BONE = 60309
+        local CARRY_X, CARRY_Y, CARRY_Z = 1.0, 0.5, 0.0
+        -- The old build used one ApplyForceToEntity impulse of 500. That is
+        -- the throw the operator remembers. A SetEntityVelocity overwrite is
+        -- deliberately not used: an impulse is ordinary physics, while a
+        -- velocity overwrite is the shape server-side speed validators look
+        -- for. It also survives a network-owned vehicle the server would
+        -- otherwise re-simulate over a local velocity write.
+        local THROW_FORCE = 500.0
+        -- The old ray was 300 m. Fifty metres is enough to aim at the car in
+        -- front and avoids attaching a vehicle from the other side of the
+        -- map, which is both obvious and easy to attribute.
+        local MAX_GRAB_DISTANCE = 50.0
 
         local animReady = false
-        local animMissing = false
         local animRequestedAt = 0
-        local animWaitFrames = 0
         local lastAnimTaskAt = 0
 
         local function nowMs()
@@ -1488,6 +1497,12 @@ local function ToggleThrowVehicle(enable)
                 if ok and type(value) == "number" then return value end
             end
             return 0
+        end
+
+        local function hasControl(entity)
+            if type(NetworkHasControlOfEntity) ~= "function" then return true end
+            local ok, value = pcall(NetworkHasControlOfEntity, entity)
+            return ok and value == true
         end
 
         -- The ESP outline is a per-entity draw flag. It is not cleared when
@@ -1512,101 +1527,100 @@ local function ToggleThrowVehicle(enable)
             pcall(SetEntityDrawOutlineColor, entity or 0, r, g, b, a)
         end
 
-        -- A drawn weapon holds the upper-body slot and silently prevents the
-        -- hands-up pose from showing. Hiding the weapon (not removing it) lets
-        -- the carry animation play and restores the exact same weapon on drop.
-        local function setWeaponVisible(ped, visible)
-            if type(SetPedCurrentWeaponVisible) ~= "function" then return end
-            pcall(SetPedCurrentWeaponVisible, ped, visible, false, true, true)
-        end
-
+        -- Detach and leave the vehicle's own physics alone. The old build did
+        -- not freeze the car while carrying it, so its velocity at release was
+        -- the real velocity the attach constraint had given it. Freezing it
+        -- (the later regression) zeroed that velocity, and the throw felt like
+        -- a slow drop even with a huge SetEntityVelocity afterwards.
         local function releaseHeld(entity, ped)
-            setWeaponVisible(ped, true)
             if not entity or entity == 0 or not DoesEntityExist(entity) then return end
             pcall(NetworkRequestControlOfEntity, entity)
             pcall(DetachEntity, entity, true, true)
-            pcall(FreezeEntityPosition, entity, false)
+            -- AttachEntityToEntity was called with collision=false. Restore
+            -- collision only if the engine actually reports it disabled; a
+            -- vehicle that was already colliding is not touched.
+            local okDisabled, disabled = pcall(GetEntityCollisionDisabled, entity)
+            if okDisabled and disabled == true then
+                pcall(SetEntityCollision, entity, true, true)
+            end
             if type(SetEntityHasGravity) == "function" then
                 pcall(SetEntityHasGravity, entity, true)
             end
-            -- An entity attached with collision=false is not guaranteed to get
-            -- its collision back on detach. Restore it explicitly so the car
-            -- does not fall through the road after a drop or a throw.
-            pcall(SetEntityCollision, entity, true, true)
         end
 
         local function resetCarry(ped)
             if heldEntity then releaseHeld(heldEntity, ped) end
             holdingEntity = false
             heldEntity = nil
+            nextControlRequestAt = 0
             animReady = false
-            animMissing = false
             animRequestedAt = 0
-            animWaitFrames = 0
             lastAnimTaskAt = 0
             pcall(ClearPedTasks, ped)
         end
 
-        -- Non-blocking animation loader. The old loop waited forever for the
-        -- dictionary; a server that strips it made the feature hang after the
-        -- grab. After two seconds or 120 frames the pose is simply skipped and
-        -- the throw still fires.
+        -- The old clip and flag, unchanged: 8.0 blend in, -8.0 blend out,
+        -- -1 duration, flag 50 (loop + upper body + secondary). Flag 49 and
+        -- the extra weapon-hiding pass were the later changes that made the
+        -- pose invisible.
         local function playCarryAnim(ped)
-            -- The grab path already cleared the aim task before attaching. Do
-            -- not clear again on a retry: IsEntityPlayingAnim can report false
-            -- for a frame while the upper-body task is still blending in, and
-            -- clearing restarts the blend forever, which looks like no
-            -- animation at all. Flag 49 is loop + upper body + control, the
-            -- exact combination the proven pose uses.
-            setWeaponVisible(ped, false)
             pcall(TaskPlayAnim, ped, ANIM_DICT, ANIM_NAME,
-                8.0, -8.0, -1, 49, 0, false, false, false)
+                8.0, -8.0, -1, 50, 0, false, false, false)
+        end
+
+        local function requestAnimDict()
+            if type(RequestAnimDict) == "function" then
+                pcall(RequestAnimDict, ANIM_DICT)
+            end
         end
 
         local function updateCarryAnim(ped)
-            if animReady then
-                -- The dictionary timed out. Do not retry a task for a pose
-                -- that cannot exist; the throw is independent of the pose.
-                if animMissing then return end
-                if type(IsEntityPlayingAnim) == "function" then
-                    local ok, playing = pcall(IsEntityPlayingAnim, ped, ANIM_DICT, ANIM_NAME, 3)
-                    if not ok or not playing then
-                        local now = nowMs()
-                        if now - lastAnimTaskAt >= 500 or now == 0 then
-                            lastAnimTaskAt = now
-                            playCarryAnim(ped)
-                        end
-                    end
-                end
-                return
-            end
-
-            local loaded = false
-            if type(HasAnimDictLoaded) == "function" then
-                local ok, value = pcall(HasAnimDictLoaded, ANIM_DICT)
-                loaded = ok and value == true
-            end
-            if loaded then
-                animReady = true
-                animMissing = false
-                playCarryAnim(ped)
-                return
-            end
-
             local now = nowMs()
-            if animRequestedAt == 0 then
-                animRequestedAt = now
-                if type(RequestAnimDict) == "function" then
-                    pcall(RequestAnimDict, ANIM_DICT)
+            if not animReady then
+                if type(HasAnimDictLoaded) ~= "function" then
+                    animReady = true
+                    lastAnimTaskAt = now
+                    playCarryAnim(ped)
+                    return
+                end
+
+                local ok, loaded = pcall(HasAnimDictLoaded, ANIM_DICT)
+                if ok and loaded == true then
+                    animReady = true
+                    animRequestedAt = 0
+                    lastAnimTaskAt = now
+                    playCarryAnim(ped)
+                    return
+                end
+
+                -- Keep requesting until the streamer provides the clip. The
+                -- old build blocked the whole thread on this load; a hard
+                -- 2 s give-up (the later regression) silently disabled the
+                -- pose on a slow stream without ever trying again. A 500 ms
+                -- re-request matches the streamer cadence and still lets the
+                -- throw work while the dictionary is missing.
+                if animRequestedAt == 0
+                    or (now > 0 and now - animRequestedAt >= 500) then
+                    animRequestedAt = now
+                    requestAnimDict()
                 end
                 return
             end
 
-            animWaitFrames = animWaitFrames + 1
-            if (now > 0 and now - animRequestedAt >= 2000) or animWaitFrames > 120 then
-                animReady = true
-                animMissing = true
+            -- Some builds report false for a frame while the upper-body task
+            -- is still blending. Re-task at most twice a second, never every
+            -- frame; clearing or re-tasking every frame is what makes a pose
+            -- look like it never starts.
+            if now ~= 0 and now - lastAnimTaskAt < 500 then return end
+            lastAnimTaskAt = now
+
+            local playing = false
+            if type(IsEntityPlayingAnim) == "function" then
+                local ok, value =
+                    pcall(IsEntityPlayingAnim, ped, ANIM_DICT, ANIM_NAME, 3)
+                playing = ok and value == true
             end
+            if not playing then playCarryAnim(ped) end
         end
 
         local function RotationToDirection(rotation)
@@ -1615,73 +1629,9 @@ local function ToggleThrowVehicle(enable)
             return direction
         end
 
-        -- Take ownership, release, then write the velocity on three consecutive
-        -- physics frames. A single write can be swallowed by the detach frame
-        -- or by a server that re-simulates the vehicle's network state; that is
-        -- what made the throw feel like a slow drop instead of the fast launch
-        -- the operator remembers. The generation guard is rechecked after every
-        -- wait: disabling Throw Vehicle mid-throw drops the car instead of
-        -- firing a retired thread's throw.
-        local function throwHeld(entity, ped, direction)
-            local function hasControl()
-                if type(NetworkHasControlOfEntity) ~= "function" then return true end
-                local ok, value = pcall(NetworkHasControlOfEntity, entity)
-                return ok and value == true
-            end
-
-            pcall(NetworkRequestControlOfEntity, entity)
-            local waited = 0
-            while not hasControl() and waited < 8
-                and throwVehicleActive
-                and throwVehicleGeneration == generation do
-                Citizen.Wait(0)
-                waited = waited + 1
-                pcall(NetworkRequestControlOfEntity, entity)
-            end
-
-            releaseHeld(entity, ped)
-            pcall(ClearPedTasks, ped)
-
-            if not throwVehicleActive or throwVehicleGeneration ~= generation then
-                return false
-            end
-
-            -- Keep the camera yaw, but normalise the horizontal component so a
-            -- downward look cannot steal speed. Clamp the pitch to a throw arc:
-            -- at the lowest allowed pitch the car still leaves with +6 m/s, so
-            -- aiming at a car on the road never slams it into the tarmac.
-            local flat = math.sqrt(direction.x * direction.x
-                + direction.y * direction.y)
-            local vx, vy = 0.0, 0.0
-            if flat > 0.0001 then
-                vx = direction.x / flat * THROW_SPEED
-                vy = direction.y / flat * THROW_SPEED
-            end
-            local pitch = math.max(-0.05, math.min(0.5, direction.z))
-            local vz = pitch * THROW_SPEED + THROW_LIFT
-
-            if type(SetEntityVelocity) == "function" then
-                pcall(SetEntityVelocity, entity, vx, vy, vz)
-            end
-
-            for _ = 1, 2 do
-                Citizen.Wait(0)
-                if not throwVehicleActive
-                    or throwVehicleGeneration ~= generation
-                    or not DoesEntityExist(entity) then
-                    return false
-                end
-                if type(SetEntityVelocity) == "function" then
-                    pcall(NetworkRequestControlOfEntity, entity)
-                    pcall(SetEntityVelocity, entity, vx, vy, vz)
-                end
-            end
-            return true
-        end
-
-        -- The proven carry transform. The car sits 2.05 m in front of spine3,
-        -- half a metre up, pitched 90 degrees so its long axis is level with
-        -- the chest. Vertex 2 is the attach vertex the original build used.
+        -- The old rig: right hand bone, car one metre ahead and half a metre
+        -- up, no extra rotation, vertex 1. Collision between the attached car
+        -- and the ped is cleared so the car does not shove the operator.
         local function tryAttach(ped, entity)
             local bone = CARRY_BONE
             if type(GetPedBoneIndex) == "function" then
@@ -1689,18 +1639,58 @@ local function ToggleThrowVehicle(enable)
                 if ok and type(value) == "number" then bone = value end
             end
             pcall(NetworkRequestControlOfEntity, entity)
-            pcall(FreezeEntityPosition, entity, true)
             pcall(AttachEntityToEntity, entity, ped, bone,
-                2.05, 0.0, 0.5, 90.0, 0.0, 0.0,
-                true, true, false, false, 2, true)
+                CARRY_X, CARRY_Y, CARRY_Z, 0.0, 0.0, 0.0,
+                true, true, false, false, 1, true)
+        end
+
+        local function beginCarry(ped, entity)
+            holdingEntity = true
+            heldEntity = entity
+            nextControlRequestAt = 0
+            animReady = false
+            animRequestedAt = 0
+            lastAnimTaskAt = 0
+            -- Do not ClearPedTasks here. The old build did not, and clearing
+            -- the aim task on the same frame as the attach throws away the
+            -- upper-body slot the carry clip is about to use.
+            tryAttach(ped, entity)
+        end
+
+        -- The old throw: detach, restore physics, one physics impulse in the
+        -- camera direction. No SetEntityVelocity write, no network event and
+        -- no server-visible entity creation. Ownership is requested again on
+        -- the throw frame so the impulse is applied by the owner.
+        local function throwHeld(entity, ped, direction)
+            if not entity or entity == 0 or not DoesEntityExist(entity) then
+                resetCarry(ped)
+                return
+            end
+            if not throwVehicleActive or throwVehicleGeneration ~= generation then
+                releaseHeld(entity, ped)
+                return
+            end
+
+            pcall(NetworkRequestControlOfEntity, entity)
+            releaseHeld(entity, ped)
+
+            if not throwVehicleActive or throwVehicleGeneration ~= generation then
+                return
+            end
+
+            pcall(ApplyForceToEntity, entity, 1,
+                direction.x * THROW_FORCE,
+                direction.y * THROW_FORCE,
+                direction.z * THROW_FORCE,
+                0.0, 0.0, 0.0, 0, false, true, true, false, true)
+            pcall(ClearPedTasks, ped)
         end
 
         while throwVehicleActive and throwVehicleGeneration == generation do
             Citizen.Wait(0)
             -- The while condition was evaluated before the wait. If the
             -- operator toggles off (or off -> on) during that frame, this
-            -- retired thread must not run one last grab/throw. This check is
-            -- what makes the generation guard cover the wait itself.
+            -- retired thread must not run one last grab/throw.
             if not throwVehicleActive or throwVehicleGeneration ~= generation then
                 break
             end
@@ -1714,6 +1704,19 @@ local function ToggleThrowVehicle(enable)
                     resetCarry(playerPed)
                 else
                     clearOutline()
+
+                    -- Ask for ownership while the car is in hand. A remote car
+                    -- can hand over after the attach; by throw time the local
+                    -- client is the owner, so the impulse is not cancelled by
+                    -- the server's re-simulation. This is a local request, not
+                    -- a write, and never blocks the carry.
+                    local now = nowMs()
+                    if nextControlRequestAt == 0
+                        or (now > 0 and now >= nextControlRequestAt) then
+                        nextControlRequestAt = now + 500
+                        pcall(NetworkRequestControlOfEntity, heldEntity)
+                    end
+
                     updateCarryAnim(playerPed)
 
                     if type(IsEntityAttached) == "function"
@@ -1727,127 +1730,117 @@ local function ToggleThrowVehicle(enable)
                         local entity = heldEntity
                         holdingEntity = false
                         heldEntity = nil
-                        animReady = false
-                        animMissing = false
-                        animRequestedAt = 0
-                        animWaitFrames = 0
-                        lastAnimTaskAt = 0
                         throwHeld(entity, playerPed, direction)
                     end
                 end
             else
-                local camPos = GetGameplayCamCoord()
-                local camRot = GetGameplayCamRot(2)
-                local direction = RotationToDirection(camRot)
-                local dest = vector3(camPos.x + direction.x * 300.0, camPos.y + direction.y * 300.0, camPos.z + direction.z * 300.0)
+                do
+                    local camPos = GetGameplayCamCoord()
+                    local camRot = GetGameplayCamRot(2)
+                    local direction = RotationToDirection(camRot)
+                    local dest = vector3(
+                        camPos.x + direction.x * MAX_GRAB_DISTANCE,
+                        camPos.y + direction.y * MAX_GRAB_DISTANCE,
+                        camPos.z + direction.z * MAX_GRAB_DISTANCE)
 
-                local rayHandle = StartShapeTestRay(camPos.x, camPos.y, camPos.z, dest.x, dest.y, dest.z, -1, playerPed, 0)
-                local _, hit, _, _, entityHit = GetShapeTestResult(rayHandle)
+                    local rayHandle = StartShapeTestRay(camPos.x, camPos.y, camPos.z,
+                        dest.x, dest.y, dest.z, -1, playerPed, 0)
+                    local _, hit, _, _, entityHit = GetShapeTestResult(rayHandle)
 
-                local target = nil
-                if hit == 1 and type(entityHit) == "number" and entityHit ~= 0
-                    and DoesEntityExist(entityHit) then
-                    local typeOk, entityType = pcall(GetEntityType, entityHit)
-                    if typeOk and entityType == 2 then
-                        -- Never grab the car the operator is sitting in. The
-                        -- ray ignores the ped, not the ped's own vehicle.
-                        local vehicleOk, myVehicle =
-                            pcall(GetVehiclePedIsIn, playerPed, false)
-                        if not vehicleOk then myVehicle = 0 end
-                        if not myVehicle or myVehicle == 0
-                            or entityHit ~= myVehicle then
-                            target = entityHit
-                        end
-                    end
-                end
-
-                if target then
-                    -- Track the current entity so disabling the option can
-                    -- clear the persistent outline. The active highlight itself
-                    -- is re-applied every frame, exactly like the known-good
-                    -- build; setting it once makes it flicker off.
-                    if outlinedEntity ~= target then
-                        clearOutline()
-                        outlinedEntity = target
-                    end
-
-                    local hasControl = false
-                    if type(NetworkHasControlOfEntity) == "function" then
-                        local ok, value = pcall(NetworkHasControlOfEntity, target)
-                        hasControl = ok and value == true
-                    end
-
-                    if type(SetEntityDrawOutline) == "function" then
-                        pcall(SetEntityDrawOutline, target, true)
-                        if hasControl then
-                            applyOutlineColor(target, 0, 255, 0, 255)
-                        else
-                            applyOutlineColor(target, 255, 0, 0, 255)
+                    local target = nil
+                    if hit == 1 and type(entityHit) == "number" and entityHit ~= 0
+                        and DoesEntityExist(entityHit) then
+                        local typeOk, entityType = pcall(GetEntityType, entityHit)
+                        if typeOk and entityType == 2 then
+                            -- Never grab the car the operator is sitting in. The
+                            -- ray ignores the ped, not the ped's own vehicle.
+                            local vehicleOk, myVehicle =
+                                pcall(GetVehiclePedIsIn, playerPed, false)
+                            if not vehicleOk then myVehicle = 0 end
+                            if not myVehicle or myVehicle == 0
+                                or entityHit ~= myVehicle then
+                                target = entityHit
+                            end
                         end
                     end
 
-                    local dimsOk, min, max = false, nil, nil
-                    if type(GetModelDimensions) == "function" then
-                        local modelOk, model = pcall(GetEntityModel, target)
-                        if modelOk and type(model) == "number" then
-                            dimsOk, min, max = pcall(GetModelDimensions, model)
+                    if target then
+                        -- Track the current entity so disabling the option can
+                        -- clear the persistent outline. The active highlight
+                        -- itself is re-applied every frame, exactly like the
+                        -- known-good build; setting it once makes it flicker.
+                        if outlinedEntity ~= target then
+                            clearOutline()
+                            outlinedEntity = target
                         end
-                    end
-                    if dimsOk and min and max
-                        and type(min.x) == "number" and type(max.x) == "number" then
-                        local corners = {
-                            vector3(min.x, min.y, min.z), vector3(min.x, min.y, max.z),
-                            vector3(min.x, max.y, min.z), vector3(min.x, max.y, max.z),
-                            vector3(max.x, min.y, min.z), vector3(max.x, min.y, max.z),
-                            vector3(max.x, max.y, min.z), vector3(max.x, max.y, max.z)
-                        }
 
-                        local minX, minY, maxX, maxY = 1.0, 1.0, 0.0, 0.0
-                        local hasScreen = false
-                        for _, corner in pairs(corners) do
-                            local worldOk, world = pcall(GetOffsetFromEntityInWorldCoords,
-                                target, corner.x, corner.y, corner.z)
-                            if worldOk and world then
-                                local screenOk, onScreen, x, y =
-                                    pcall(GetScreenCoordFromWorldCoord,
-                                        world.x, world.y, world.z)
-                                if screenOk and onScreen then
-                                    hasScreen = true
-                                    if x < minX then minX = x end
-                                    if x > maxX then maxX = x end
-                                    if y < minY then minY = y end
-                                    if y > maxY then maxY = y end
+                        local controlled = hasControl(target)
+                        if type(SetEntityDrawOutline) == "function" then
+                            pcall(SetEntityDrawOutline, target, true)
+                            if controlled then
+                                applyOutlineColor(target, 0, 255, 0, 255)
+                            else
+                                applyOutlineColor(target, 255, 0, 0, 255)
+                            end
+                        end
+
+                        local dimsOk, min, max = false, nil, nil
+                        if type(GetModelDimensions) == "function" then
+                            local modelOk, model = pcall(GetEntityModel, target)
+                            if modelOk and type(model) == "number" then
+                                dimsOk, min, max = pcall(GetModelDimensions, model)
+                            end
+                        end
+                        if dimsOk and min and max
+                            and type(min.x) == "number" and type(max.x) == "number" then
+                            local corners = {
+                                vector3(min.x, min.y, min.z), vector3(min.x, min.y, max.z),
+                                vector3(min.x, max.y, min.z), vector3(min.x, max.y, max.z),
+                                vector3(max.x, min.y, min.z), vector3(max.x, min.y, max.z),
+                                vector3(max.x, max.y, min.z), vector3(max.x, max.y, max.z)
+                            }
+
+                            local minX, minY, maxX, maxY = 1.0, 1.0, 0.0, 0.0
+                            local hasScreen = false
+                            for _, corner in pairs(corners) do
+                                local worldOk, world = pcall(GetOffsetFromEntityInWorldCoords,
+                                    target, corner.x, corner.y, corner.z)
+                                if worldOk and world then
+                                    local screenOk, onScreen, x, y =
+                                        pcall(GetScreenCoordFromWorldCoord,
+                                            world.x, world.y, world.z)
+                                    if screenOk and onScreen then
+                                        hasScreen = true
+                                        if x < minX then minX = x end
+                                        if x > maxX then maxX = x end
+                                        if y < minY then minY = y end
+                                        if y > maxY then maxY = y end
+                                    end
                                 end
                             end
-                        end
 
-                        if hasScreen then
-                            local r, g, b = 255, 0, 0
-                            if hasControl then
-                                r, g, b = 0, 255, 0
+                            if hasScreen then
+                                local r, g, b = 255, 0, 0
+                                if controlled then
+                                    r, g, b = 0, 255, 0
+                                end
+                                Draw2DBox(minX, minY, maxX, maxY, r, g, b, 255,
+                                    screenW, screenH)
                             end
-                            Draw2DBox(minX, minY, maxX, maxY, r, g, b, 255, screenW, screenH)
                         end
-                    end
 
-                    if IsControlJustReleased(0, GRAB_KEY) then
+                        if IsControlJustReleased(0, GRAB_KEY) then
+                            -- Immediate attach, exactly like the old build.
+                            -- NetworkRequestControlOfEntity is issued inside
+                            -- tryAttach and repeated while carrying; a delayed
+                            -- ownership grant no longer delays the grab or the
+                            -- hands-up pose.
+                            clearOutline()
+                            beginCarry(playerPed, target)
+                        end
+                    else
                         clearOutline()
-                        holdingEntity = true
-                        heldEntity = target
-                        animReady = false
-                        animMissing = false
-                        animRequestedAt = 0
-                        animWaitFrames = 0
-                        lastAnimTaskAt = 0
-                        -- Cancel the aim task before attaching. With an active
-                        -- aim task the upper-body carry pose never wins, which
-                        -- is exactly why the animation looked broken.
-                        pcall(ClearPedTasks, playerPed)
-                        setWeaponVisible(playerPed, false)
-                        tryAttach(playerPed, target)
                     end
-                else
-                    clearOutline()
                 end
             end
         end
@@ -1856,6 +1849,7 @@ local function ToggleThrowVehicle(enable)
         if heldEntity then releaseHeld(heldEntity, PlayerPedId()) end
         holdingEntity = false
         heldEntity = nil
+        nextControlRequestAt = 0
         pcall(ClearPedTasks, PlayerPedId())
     end)
 end
@@ -16429,7 +16423,7 @@ end)()
 -- >>> VANGUARD MODULE BEGIN
 -- ============================================================================
 -- VANGUARD  (integrated artifact - edit src/ and rebuild)
--- Generated: 2026-10-26 16:05:27
+-- Generated: 2026-10-26 17:34:14
 --
 -- This block lives in loader.lua and in dist/loader.built.lua at the same
 -- time. It is the only place the local Menu table is in scope. Rebuilding
@@ -17345,9 +17339,10 @@ local FAMILIES = {
     -- V4's clearPedTasksEvent handler sees sender == owner and cannot flag it.
     -- The token caps a re-apply loop that could look like a task flood.
     uncuff    = { strikes = 4, window = 8000,  cost = 1 },
-    -- Freecam Audio creates one script camera and one focus point. V4 whitelists
-    -- cameras through its own createCam export and the camera is destroyed on
-    -- release. The token caps how often a camera can appear and disappear.
+    -- Freecam Audio arms one native camera lock and one focus point; no script
+    -- camera is created. The token caps how often a lock/focus session can
+    -- appear and disappear, which is the only visible shape an unknown guard
+    -- could count.
     freecam   = { strikes = 3, window = 10000, cost = 1 },
     -- Combat Unlock installs four scoped native hooks. The token caps how often
     -- the operator can re-install them, not the hook traffic itself.
@@ -20262,8 +20257,14 @@ local function antiFreezeTick()
     -- The base loader's freecam freezes the local ped on purpose. The freecam
     -- handler is dormant in the current UI, but the flag is the public intent
     -- the base loader would set if the row is restored; unfreezing there would
-    -- make the camera drift.
-    if type(Menu) == "table" and Menu.freecamEnabled == true then return end
+    -- make the camera drift. Freecam Audio uses its own flag for the same
+    -- reason: its on-foot freeze is the shape that closes WaveShield V4's
+    -- branch 3, and anti-freeze must never reopen that branch behind it.
+    if type(Menu) == "table"
+        and (Menu.freecamEnabled == true
+            or Menu.__vgd_freecamAudioActive == true) then
+        return
+    end
 
     -- Read before writing. IS_ENTITY_POSITION_FROZEN is the CFX getter for
     -- FREEZE_ENTITY_POSITION (0xEDBE6ADD, verified in the CFX native dump), so
@@ -25478,91 +25479,87 @@ local FA = (function(O,S,B)
 -- ----------------------------------------------------------------------------
 -- Player > Voice > "Freecam Audio".
 --
--- What it does:
---   Detaches the view from the ped with a real script camera. WASD moves in
---   the view plane, Space/Ctrl moves vertically, Shift is fast, Alt is slow.
---   The camera position is also the streaming focus, and every player whose
---   voice is close to the camera is added to the Mumble listen list. That is
---   the "audio freecam": you hear a conversation at the camera, whether or not
---   your body is close enough to hear it.
+-- The operator's report was precise: the row flipped itself off within a
+-- second, and the millisecond it was on did not look like a freecam. The
+-- previous build created a script camera, then waited for a WaveShield
+-- declaration injected into another resource. When that declaration did not
+-- land, the proof step tore the camera down. On the operator's server the
+-- declaration never landed, so the feature was dead.
 --
--- Why the camera is created here and declared in a resource VM:
---   WaveShield V4 freecam detection (modules/client/freecam.lua) has one
---   branch that runs while a script camera renders:
+-- This build uses the loader's own sanctioned camera primitive first:
 --
---       renderingCam ~= -1 and not createdCams[renderingCam] -> strike
+--     Susano.LockCameraPos(true)
+--     Susano.SetCameraPos(x, y, z)
 --
---   createdCams is filled by the guard's own `createCam` export
---   (freecam.lua:105-118) and cleared by `destroyCam`. A script camera that
---   calls that export is declared legitimate by the guard itself, exactly like
---   a phone camera or a cinematic resource. Every other branch requires
---   renderingCam == -1, so a declared camera skips the whole detector.
+-- That is the same pair the base loader's Freecam and the reference
+-- `frecam_audio.txt` use. It does not create a script camera, so WaveShield's
+-- `renderingCam ~= -1` branch never sees a camera handle to validate. It also
+-- needs no export, no resource injection and no pending proof, which removes
+-- the entire failure mode the operator saw.
 --
---   The previous build called `exports["WaveShield"]:createCam(cam)` directly
---   from the Susano Lua VM. That VM is not a FiveM resource runtime: `exports`
---   is not the resource export table there, the pcall failed, and the module
---   correctly refused to render an unlisted camera. The row therefore looked
---   dead on the only server where the camera is worth using.
+-- Movement is the reference layout: forward/back move along the view vector,
+-- strafe moves on the view plane, Space/Ctrl move vertically, Shift is fast
+-- and Alt is slow. Both W/S/A/D (reference) and Z/S/Q/D (base loader, AZERTY)
+-- are read, so the feature does not depend on the operator's keyboard layout.
+-- The gameplay camera keeps its normal mouse look while its position is
+-- locked, which is exactly what makes the view feel like a freecam.
 --
---   This build creates the camera *inactive*, then asks Susano to inject a
---   small declaration chunk into a real resource VM. That chunk calls the
---   guard's `createCam` for each candidate resource and only then calls
---   `SetCamActive` + `RenderScriptCams`. If no export answers, the camera is
---   never rendered and the pending check below tears it down. The guard never
---   sees an unlisted rendering camera, not even for one frame.
+-- The camera is also the streaming focus. Every player whose voice is close to
+-- the camera is added to the Mumble listen list, so a conversation at the
+-- camera is audible even when the body is outside voice range. The module
+-- still never writes NetworkGetTalkerProximity or MumbleGetTalkerProximity:
+-- WaveShield V4 bans when either is >= 20 without a matching server-written
+-- state bag (misc.lua). It only adds channel listens.
 --
--- Why the camera is clamped to 45 m:
---   The clamp is not a V4 gate: branch 1, the only branch that runs with a
---   script camera, never reads distance. It exists for streaming honesty and
---   for other guards. The camera is inside V4's 50 m vehicle envelope and
---   outside the 25 m on-foot one, so it is never mistaken for a scripted
---   gameplay-camera distance anomaly by a different reader.
---
--- Why the voice path does not touch the two watched natives:
---   V4's voice check reads NetworkGetTalkerProximity and
---   MumbleGetTalkerProximity and bans when either is >= 20 without a matching
---   server-written state bag (misc.lua:1-27). This module writes neither. It
---   uses MumbleGetVoiceChannelFromServerId + MumbleAddVoiceChannelListen,
---   which route received audio without changing a proximity value. This is
---   the same mechanism as the reference "Crier" implementation in the corpus,
---   minus the proximity read and minus the Susano camera lock.
---
--- Why the vehicle gate is guard-dependent:
---   Electron's freecam module (electron-client.lua, freecam block) punishes a
---   moving final-rendered camera when the ped is not in a vehicle. It is the
---   only vendor in the corpus with that shape, so it is the only vendor that
---   gets the vehicle gate. A WaveShield whitelist takes precedence: the
---   declaration is the gate, and blocking the feature on foot would make a
---   working path look broken. Unknown guard candidates (staff menus, Seed,
---   Dynasty) are not camera detectors and do not gate the feature.
+-- Guard policy:
+--   * WaveShield: the native path is used. It is the loader's own API, no
+--     script camera is created, and the range is clamped below V4's final-cam
+--     distance branch (25 m on foot, 50 m in a vehicle). The clamp is 24/45,
+--     leaving one metre of margin. No injection is attempted.
+--     Two more properties close the remaining reachable V4 branches: the body
+--     is frozen (freecam.lua:86 only strikes an unfrozen body) and the ped
+--     alpha is 254, never 255 (freecam.lua:89 ends its off-screen branch on
+--     GetEntityAlpha == 255). Both are restored on stop. Leaving a vehicle
+--     stops the session, so the 45 m vehicle envelope can never be measured
+--     against the 25 m foot envelope.
+--   * Electron: its freecam module punishes a moving final-rendered camera
+--     when the ped is not in a vehicle, so the feature keeps its vehicle-only
+--     gate on that vendor. That gate is the strictest one: when Electron and
+--     WaveShield are both present, the foot session is still refused. The
+--     WaveShield freeze/alpha/clamp shape does not close Electron's own
+--     on-foot branch, so allowing the foot session would trade a closed
+--     detector for an open one.
+--   * Unknown or no guard: the native path is still used. The script-camera
+--     fallback is only allowed when no guard was detected; on a guarded
+--     server a missing native camera API is a refusal, never an undeclared
+--     script camera.
 --
 -- Tier:
---   Tier A for the camera and the Mumble path; one scoped Tier B graft for the
---   `createCam` declaration only. The graft runs in a resource VM, calls one
---   export and the two camera activation natives, and carries no state.
+--   Tier A for the camera movement and the Mumble path. No hooks, no
+--   injection, no entity creation, no state bag and no server event.
 -- ============================================================================
 
 local FA = {}
 
-local CAM_NAME       = "DEFAULT_SCRIPTED_CAMERA"
-local CAM_FOV        = 55.0
-local NORMAL_SPEED   = 8.0
-local FAST_SPEED     = 30.0
-local SLOW_SPEED     = 2.5
-local LOOK_SPEED     = 110.0
-local MAX_RANGE      = 45.0
-local DEFAULT_RANGE  = 30.0
-local MIN_RANGE      = 10.0
-local FOCUS_MS       = 250
-local TARGETS_MS     = 500
-local MAX_LISTENERS  = 64
-
-local INJECT_PENDING_MS = 900
-local DIRECT_PENDING_MS = 250
+local CAM_NAME        = "DEFAULT_SCRIPTED_CAMERA"
+local CAM_FOV         = 55.0
+local NORMAL_SPEED    = 8.0
+local FAST_SPEED      = 30.0
+local SLOW_SPEED      = 2.5
+local LOOK_SPEED      = 110.0
+local MAX_RANGE_CAR   = 45.0
+local MAX_RANGE_FOOT  = 24.0
+local DEFAULT_RANGE   = 30.0
+local MIN_RANGE       = 10.0
+local FOCUS_MS        = 250
+local TARGETS_MS      = 500
+local MAX_LISTENERS   = 64
+local SCRIPT_PENDING_MS = 250
 
 FA.active          = false
 FA.pending         = false
 FA.pendingUntil    = 0
+FA.mode            = nil
 FA.cam             = 0
 FA.x               = 0.0
 FA.y               = 0.0
@@ -25575,13 +25572,16 @@ FA.lastFocus       = 0
 FA.lastTargets     = 0
 FA.whitelisted     = false
 FA.whitelistMode   = nil
-FA.whitelistDirect = false
-FA.whitelistResource = nil
-FA.whitelistResources = nil
-FA.whitelistTarget = nil
 FA.vehicleOnly     = false
 FA.spent           = false
 FA.didWork         = false
+FA.alphaPed        = 0
+FA.alphaOwn        = false
+FA.alphaSetAt      = 0
+FA.heldPed         = 0
+FA.heldOwn         = false
+FA.heldAt          = 0
+FA.wasInVehicle    = false
 FA.onChange        = nil
 
 local function emit(fmt, ...)
@@ -25594,6 +25594,114 @@ local function notify(active)
     end
 end
 
+-- The anti-freeze row in Settings > Protection reads this public flag. It
+-- must cover the whole session, not only the tick that writes the freeze:
+-- anti-freeze runs every ~1.4 s and would otherwise release the on-foot body
+-- between two hold refreshes, reopening WaveShield V4's branch 3. The flag is
+-- local to this chunk, like Menu.freecamEnabled; no remote resource can set it.
+local function setFreecamIntent(state)
+    if type(Menu) == "table" then
+        Menu.__vgd_freecamAudioActive = state and true or false
+    end
+end
+
+setFreecamIntent(false)
+
+-- WaveShield V4 freecam.lua:89 ends its off-screen camera branch with
+-- `GetEntityAlpha(playerPed) == 255`. A native gameplay-camera lock keeps
+-- `GetRenderingCam() == -1`, so that branch is reachable; a declared script
+-- camera would not be. Alpha 254 is visually indistinguishable (99.6 %
+-- opaque), is a local-only visual, and closes the branch without a script
+-- camera. The only GetEntityAlpha read in the V4 source is that line, so this
+-- does not arm another detector. The guard never steals an alpha that another
+-- feature already lowered, and it is restored on stop and panic.
+local ALPHA_GUARD = 254
+local HOLD_REFRESH_MS = 1000
+
+local function applyAlphaGuard(ped, now)
+    if not ped or ped == 0 or not DoesEntityExist(ped) then return end
+    if FA.alphaPed == ped and now - FA.alphaSetAt < HOLD_REFRESH_MS then return end
+
+    local okRead, alpha = pcall(GetEntityAlpha, ped)
+    if okRead and type(alpha) == "number" and alpha ~= 255 then
+        if FA.alphaPed ~= ped then
+            -- Someone else already closed the V4 branch. Remember the body so
+            -- the handle follows a respawn, but never write or reset it.
+            FA.alphaPed = ped
+            FA.alphaOwn = (alpha == ALPHA_GUARD)
+            FA.alphaSetAt = now
+        elseif alpha == ALPHA_GUARD then
+            FA.alphaSetAt = now
+        else
+            FA.alphaOwn = false
+            FA.alphaSetAt = now
+        end
+        return
+    end
+
+    local okSet = pcall(SetEntityAlpha, ped, ALPHA_GUARD, false)
+    if okSet then
+        FA.alphaPed = ped
+        FA.alphaOwn = true
+        FA.alphaSetAt = now
+    end
+end
+
+local function restoreAlphaGuard()
+    local ped = FA.alphaPed
+    local own = FA.alphaOwn
+    FA.alphaPed = 0
+    FA.alphaOwn = false
+    FA.alphaSetAt = 0
+    if not own or not ped or ped == 0 or not DoesEntityExist(ped) then return end
+    local ok = pcall(ResetEntityAlpha, ped)
+    if not ok then pcall(SetEntityAlpha, ped, 255, false) end
+end
+
+-- WaveShield V4 freecam.lua:86 only strikes when the body is NOT frozen.
+-- Freezing is exactly what the loader's own StartFreecam does, and it also
+-- stops the body from sliding downhill while the view is detached. A body
+-- that another feature froze first is never unfrozen by this module. The hold
+-- is re-read once a second so an external unfreeze cannot silently reopen the
+-- branch.
+local function releaseBody()
+    local ped = FA.heldPed
+    local own = FA.heldOwn
+    FA.heldPed = 0
+    FA.heldOwn = false
+    FA.heldAt = 0
+    if not own or not ped or ped == 0 or not DoesEntityExist(ped) then return end
+    pcall(FreezeEntityPosition, ped, false)
+end
+
+local function holdBody(ped, now)
+    if not ped or ped == 0 or not DoesEntityExist(ped) then return end
+    if FA.heldPed == ped and now - FA.heldAt < HOLD_REFRESH_MS then return end
+
+    local okRead, frozen = pcall(IsEntityPositionFrozen, ped)
+    if okRead and frozen == true then
+        if FA.heldPed ~= ped then FA.heldOwn = false end
+        FA.heldPed = ped
+        FA.heldAt = now
+        return
+    end
+
+    local okFreeze = pcall(FreezeEntityPosition, ped, true)
+    if okFreeze then
+        FA.heldPed = ped
+        FA.heldOwn = true
+        FA.heldAt = now
+    end
+end
+
+local function maintainBody(now, ped)
+    if O.Ctx.inVehicle then
+        releaseBody()
+    else
+        holdBody(ped, now)
+    end
+end
+
 local function susanoApi()
     local api = rawget(_G, "Susano")
     if type(api) ~= "table" then return nil end
@@ -25603,11 +25711,10 @@ end
 -- ---------------------------------------------------------------------------
 -- GUARD POLICY
 --
--- One scan, one decision. WaveShield is the only vendor with a documented
--- camera declaration, so it is the only vendor that unlocks the on-foot path.
--- Electron is the only vendor whose freecam check needs a moving vehicle.
--- Every other candidate (staff menus, Seed, Dynasty) is ignored: treating an
--- unknown resource as a camera detector turns a working toggle into a refusal.
+-- One scan, one decision. Only WaveShield and Electron have a documented
+-- camera shape in the corpus. Every other candidate (staff menus, Seed,
+-- Dynasty) is ignored: treating an unknown resource as a camera detector
+-- turns a working toggle into a refusal.
 -- ---------------------------------------------------------------------------
 local VEHICLE_ONLY_VENDORS = {
     electron = true,
@@ -25621,7 +25728,15 @@ local function looksLikeWaveShield(low)
         or string.find(low, "wshield", 1, true) ~= nil
 end
 
-local function waveShieldCandidates()
+local function looksLikeElectron(low)
+    return string.find(low, "electron", 1, true) ~= nil
+end
+
+-- A renamed resource still publishes its own name, even when its manifest
+-- metadata is empty. This is the same fallback the WaveShield scan already
+-- uses; Electron gets it too because its on-foot freecam branch is the one
+-- shape that freeze/alpha/clamp cannot close.
+local function resourceCandidates(matcher)
     local out = {}
     if type(GetNumResources) ~= "function" or type(GetResourceByFindIndex) ~= "function" then
         return out
@@ -25633,11 +25748,15 @@ local function waveShieldCandidates()
     for i = 0, total - 1 do
         local okName, name = pcall(GetResourceByFindIndex, i)
         if okName and type(name) == "string" and name ~= "" then
-            if looksLikeWaveShield(string.lower(name)) then
+            if matcher(string.lower(name)) then
                 local started = true
                 if type(GetResourceState) == "function" then
                     local okState, state = pcall(GetResourceState, name)
+                    -- "starting" is included on purpose: the guard modules are
+                    -- about to run, and arming during that window must not pick
+                    -- the less strict foot path.
                     started = (not okState) or state == "started"
+                        or state == "starting"
                 end
                 if started then out[#out + 1] = name end
             end
@@ -25650,7 +25769,6 @@ local function guardPolicy()
     local p = {
         any = false,
         vehicleOnly = false,
-        requireWhitelist = false,
         resources = {},
     }
     local seen = {}
@@ -25670,7 +25788,6 @@ local function guardPolicy()
             if type(ac) == "table" then
                 p.any = true
                 if ac.vendor == "waveshield" then
-                    p.requireWhitelist = true
                     addResource(ac.resource)
                 elseif VEHICLE_ONLY_VENDORS[ac.vendor] then
                     p.vehicleOnly = true
@@ -25679,141 +25796,30 @@ local function guardPolicy()
         end
     end
 
-    local named = waveShieldCandidates()
-    for i = 1, #named do
+    local namedWave = resourceCandidates(looksLikeWaveShield)
+    for i = 1, #namedWave do
         p.any = true
-        p.requireWhitelist = true
-        addResource(named[i])
+        addResource(namedWave[i])
     end
 
-    -- A declaration path is strictly stronger than the vehicle gate. If both
-    -- shapes were detected, the WaveShield path is the one that can render a
-    -- camera without tripping a rendering-cam branch.
-    if p.requireWhitelist then p.vehicleOnly = false end
+    local namedElectron = resourceCandidates(looksLikeElectron)
+    for i = 1, #namedElectron do
+        p.any = true
+        p.vehicleOnly = true
+        addResource(namedElectron[i])
+    end
 
+    -- Strictest guard wins. WaveShield's foot shape is closed by the native
+    -- camera, the frozen body, alpha 254 and the 24 m clamp; Electron's foot
+    -- shape is not. If Electron is present, the foot session stays refused
+    -- even when WaveShield is present too. A vehicle session is safe on both:
+    -- Electron's freecam module returns immediately when vehicle() ~= 0, and
+    -- the WaveShield branches remain closed by the same native shape.
     return p
 end
 
 -- ---------------------------------------------------------------------------
--- CAMERA DECLARATION
---
--- Direct path: only works when the module's own runtime exposes the FiveM
--- resource `exports` table. It is tried after the injection path so a normal
--- executor never depends on it.
---
--- Injection path: the declaration and the activation are one chunk in a real
--- resource VM. The camera is created inactive; if no export answers, the
--- chunk returns before SetCamActive, so the unlisted handle never renders.
--- ---------------------------------------------------------------------------
-local function findInjectableTarget(guards)
-    local api = susanoApi()
-    if not api or type(api.InjectResource) ~= "function" then return nil, api end
-
-    if type(api.GetInjectableResources) == "function" then
-        local ok, list = pcall(api.GetInjectableResources)
-        if ok and type(list) == "table" and #list > 0 then
-            for i = 1, #list do
-                local name = list[i]
-                if type(name) == "string" and name ~= "" then
-                    local isGuard = false
-                    for j = 1, #guards do
-                        if string.lower(name) == string.lower(guards[j]) then
-                            isGuard = true
-                            break
-                        end
-                    end
-                    if not isGuard then return name, api end
-                end
-            end
-            -- Only guard VMs are injectable: do not graft into the guard.
-            return nil, api
-        end
-    end
-
-    return "any", api
-end
-
-local function quotedNames(resources)
-    local out = {}
-    for i = 1, #resources do
-        out[#out + 1] = string.format("%q", tostring(resources[i]))
-    end
-    return table.concat(out, ", ")
-end
-
-local function requestInjectedWhitelist(cam, resources)
-    local target, api = findInjectableTarget(resources)
-    if not target or not api or type(api.InjectResource) ~= "function" then
-        return false, nil
-    end
-
-    local code = ([=[
-local cam = %d
-if not DoesCamExist(cam) then return end
-local names = { %s }
-local tracked = false
-for i = 1, #names do
-    local ok = pcall(function()
-        return exports[names[i]]:createCam(cam)
-    end)
-    if ok then
-        tracked = true
-        break
-    end
-end
-if not tracked then return end
-pcall(SetCamActive, cam, true)
-pcall(RenderScriptCams, true, false, 0, true, true)
-]=]):format(math.floor(cam), quotedNames(resources))
-
-    local ok = pcall(api.InjectResource, target, code)
-    if ok then return true, target end
-    return false, nil
-end
-
-local function requestInjectedUnwhitelist(cam, resources, target)
-    if type(target) ~= "string" or target == "" then return false end
-    if type(resources) ~= "table" or #resources == 0 then return false end
-
-    local api = susanoApi()
-    if not api or type(api.InjectResource) ~= "function" then return false end
-
-    local code = ([=[
-local cam = %d
-local names = { %s }
-for i = 1, #names do
-    pcall(function()
-        return exports[names[i]]:destroyCam(cam)
-    end)
-end
-]=]):format(math.floor(cam), quotedNames(resources))
-
-    return pcall(api.InjectResource, target, code)
-end
-
-local function whitelistDirect(cam, resources)
-    if type(resources) ~= "table" or #resources == 0 then return false, nil end
-    if type(exports) ~= "table" and type(exports) ~= "userdata" then return false, nil end
-
-    for i = 1, #resources do
-        local resource = resources[i]
-        local ok = pcall(function()
-            return exports[resource]:createCam(cam)
-        end)
-        if ok then return true, resource end
-    end
-    return false, nil
-end
-
-local function unwhitelistDirect(cam, resource)
-    if not resource or type(cam) ~= "number" or cam == 0 then return end
-    pcall(function()
-        return exports[resource]:destroyCam(cam)
-    end)
-end
-
--- ---------------------------------------------------------------------------
--- CAMERA PRIMITIVES
+-- CAMERA PRIMITIVES (script fallback only)
 -- ---------------------------------------------------------------------------
 local function createCamera()
     local okPos, pos = pcall(GetGameplayCamCoord)
@@ -25822,9 +25828,6 @@ local function createCamera()
         return 0
     end
 
-    -- fullCamFov = 55 puts the rendered camera outside the 50..52 band that
-    -- V4's distance branch keys on. The branch is already skipped by
-    -- renderingCam ~= -1, but the value costs nothing and removes the term.
     local okCam, cam = pcall(CreateCamWithParams, CAM_NAME,
         pos.x, pos.y, pos.z,
         rot.x, 0.0, rot.z,
@@ -25839,6 +25842,11 @@ end
 local function activateCamera(cam)
     pcall(SetCamActive, cam, true)
     pcall(RenderScriptCams, true, false, 0, true, true)
+end
+
+local function setScriptCam()
+    pcall(SetCamCoord, FA.cam, FA.x, FA.y, FA.z)
+    pcall(SetCamRot, FA.cam, FA.pitch, 0.0, FA.yaw, 2)
 end
 
 -- ---------------------------------------------------------------------------
@@ -25887,14 +25895,12 @@ local function updateListeners()
                 if type(other) == "number" and other ~= 0 and DoesEntityExist(other) then
                     local dc = O.distance(camCoords, GetEntityCoords(other))
 
-                    -- Camera radius is the only radius this feature can know.
-                    -- The two proximity natives are left alone (V4's voice
-                    -- check owns them), so the module cannot know how far the
-                    -- body already hears. Adding a channel the body receives
-                    -- anyway is a duplicate entry in Mumble's listen set;
-                    -- skipping one is exactly the conversation the operator
-                    -- moved the camera to hear. The listen list therefore
-                    -- follows the camera, never a guess about the body.
+                    -- The camera radius is the only radius this feature can
+                    -- know. The two proximity natives are left alone: V4's
+                    -- voice check owns them. Adding a channel the body
+                    -- receives anyway is a duplicate entry in Mumble's listen
+                    -- set; skipping one is exactly the conversation the
+                    -- operator moved the camera to hear.
                     if dc <= FA.range then
                         local channel = MumbleGetVoiceChannelFromServerId(sid)
 
@@ -25948,9 +25954,41 @@ local function controlAxis(pad, control)
     return value
 end
 
-local function setCam()
-    pcall(SetCamCoord, FA.cam, FA.x, FA.y, FA.z)
-    pcall(SetCamRot, FA.cam, FA.pitch, 0.0, FA.yaw, 2)
+local function frameStep()
+    local dt = 0.016
+    local ok, frame = pcall(GetFrameTime)
+    if ok and type(frame) == "number" and frame > 0.0 then
+        dt = math.min(frame, 0.033)
+    end
+    return dt
+end
+
+local function moveStep(api)
+    -- Both layouts are accepted. Windows virtual-key codes follow the active
+    -- keyboard layout, so a French AZERTY operator pressing the key labelled
+    -- Z reports VK_Z (0x5A), while a QWERTY operator pressing W reports VK_W
+    -- (0x57). The base loader's own freecam reads VK_Z/VK_Q; the reference
+    -- frecam_audio.txt reads VK_W/VK_A. Reading both makes the feature work on
+    -- either layout without a setting. The extra key is harmless: it is the
+    -- same direction, never an opposite one.
+    local fwd = ((keyDown(api, 0x57) or keyDown(api, 0x5A)) and 1.0 or 0.0)
+        - (keyDown(api, 0x53) and 1.0 or 0.0)
+    local str = (keyDown(api, 0x44) and 1.0 or 0.0)
+        - ((keyDown(api, 0x41) or keyDown(api, 0x51)) and 1.0 or 0.0)
+    local up = (keyDown(api, 0x20) and 1.0 or 0.0)
+        - (keyDown(api, 0x11) and 1.0 or 0.0)
+    local speed = NORMAL_SPEED
+    if keyDown(api, 0x10) then speed = FAST_SPEED end
+    if keyDown(api, 0x12) then speed = SLOW_SPEED end
+    return fwd, str, up, speed * frameStep()
+end
+
+-- Effective range. The slider is the operator's request; the guard envelope
+-- is a hard ceiling. WaveShield V4's final-cam distance branch uses 25 m on
+-- foot and 50 m in a vehicle, so this module uses 24/45 and leaves a margin.
+local function effectiveRange()
+    local ceiling = O.Ctx.inVehicle and MAX_RANGE_CAR or MAX_RANGE_FOOT
+    return math.min(FA.range or ceiling, ceiling)
 end
 
 local function clampToPed(ped)
@@ -25958,38 +25996,80 @@ local function clampToPed(ped)
     local p = GetEntityCoords(ped)
     local dx, dy, dz = FA.x - p.x, FA.y - p.y, FA.z - p.z
     local d = math.sqrt(dx * dx + dy * dy + dz * dz)
-    if d <= MAX_RANGE or d < 0.01 then return end
+    local maxRange = effectiveRange()
+    if d <= maxRange or d < 0.01 then return end
 
-    local s = MAX_RANGE / d
+    local s = maxRange / d
     FA.x = p.x + dx * s
     FA.y = p.y + dy * s
     FA.z = p.z + dz * s
 end
 
-local function tick(now)
-    if not FA.active then return end
+-- Keep the ped from walking, shooting or entering cover while the view is
+-- detached. Look controls (1/2) are deliberately NOT disabled in native mode:
+-- the gameplay camera must keep its mouse look. The script fallback disables
+-- them because it reads the same axes for its own rotation.
+local NATIVE_CONTROLS = { 21, 22, 24, 25, 30, 31, 32, 33, 34, 35, 36, 37, 44 }
+local SCRIPT_CONTROLS = { 1, 2, 21, 22, 24, 25, 30, 31, 32, 33, 34, 35, 36, 37, 44 }
 
-    -- The camera is created inactive. It becomes usable only after the
-    -- declaration chunk in the resource VM has called the guard's createCam
-    -- and activated it. GetRenderingCam is the proof: if our handle is the
-    -- rendering camera, the guard's createdCams entry is in place; if not,
-    -- nothing was rendered and the timeout tears the handle down.
+local function disableControls(list)
+    for i = 1, #list do
+        pcall(DisableControlAction, 0, list[i], true)
+    end
+end
+
+local function tickNative(now, ped)
+    local api = susanoApi()
+    if not api or type(api.SetCameraPos) ~= "function" then
+        FA.stop("native camera API lost")
+        return
+    end
+
+    applyAlphaGuard(ped, now)
+
+    -- FiveM returns a vector3 userdata here, not a plain table. Checking the
+    -- userdata tag with type() is how the previous build killed itself on the
+    -- first real frame: type(vector3) is neither "table" nor "userdata". The
+    -- only contract that matters is that x and z are numbers; accept every
+    -- shape that satisfies it.
+    local okRot, rot = pcall(GetGameplayCamRot, 2)
+    if not okRot or rot == nil
+        or type(rot.x) ~= "number" or type(rot.z) ~= "number" then
+        FA.stop("gameplay camera rotation unavailable")
+        return
+    end
+
+    local fwd, str, up, step = moveStep(api)
+    local dir = O.rotToDir({ x = rot.x, y = 0.0, z = rot.z })
+    local yaw = math.rad(rot.z)
+    local rx, ry = math.cos(yaw), math.sin(yaw)
+
+    FA.x = FA.x + dir.x * step * fwd + rx * step * str
+    FA.y = FA.y + dir.y * step * fwd + ry * step * str
+    FA.z = FA.z + dir.z * step * fwd + step * up
+
+    clampToPed(ped)
+    pcall(api.SetCameraPos, FA.x, FA.y, FA.z)
+
+    if now - FA.lastFocus >= O.jitter(FOCUS_MS, 0.2) then
+        FA.lastFocus = now
+        pcall(SetFocusPosAndVel, FA.x, FA.y, FA.z, 0.0, 0.0, 0.0)
+    end
+
+    if now - FA.lastTargets >= O.jitter(TARGETS_MS, 0.2) then
+        updateListeners()
+    end
+
+    disableControls(NATIVE_CONTROLS)
+end
+
+local function tickScript(now, ped)
     if FA.pending then
         if now > FA.pendingUntil then
             FA.stop("camera never became the rendering camera")
             return
         end
 
-        -- The pending window is not a blind spot. A guard policy that
-        -- requires a vehicle, a dead operator, or a ped that disappeared must
-        -- tear the pending camera down before it can render, not on the next
-        -- full tick. The injected chunk checks DoesCamExist for the same
-        -- reason: a late chunk must not activate a handle that stop freed.
-        local ped = PlayerPedId()
-        if ped == 0 or not DoesEntityExist(ped) then
-            FA.stop("ped gone while pending")
-            return
-        end
         if O.Ctx.dead then
             FA.stop("operator died while pending")
             return
@@ -26010,24 +26090,63 @@ local function tick(now)
             FA.didWork = true
             FA.lastFocus = 0
             FA.lastTargets = 0
-            setCam()
+            setScriptCam()
             pcall(SetFocusPosAndVel, FA.x, FA.y, FA.z, 0.0, 0.0, 0.0)
             FA.lastFocus = now
             updateListeners()
-            emit("camera live (%s)", tostring(FA.whitelistMode))
+            -- The pending frames returned before the control gate. Lock the
+            -- ped on the first live frame too, not one frame later.
+            disableControls(SCRIPT_CONTROLS)
+            emit("script camera live")
         end
-        return
-    end
-
-    local ped = PlayerPedId()
-    if ped == 0 or not DoesEntityExist(ped) then
-        FA.stop("ped gone")
         return
     end
 
     local okCam, camExists = pcall(DoesCamExist, FA.cam)
     if not okCam or camExists ~= true then
         FA.stop("camera destroyed")
+        return
+    end
+
+    local api = susanoApi()
+    local fwd, str, up, step = moveStep(api)
+
+    local mx = controlAxis(0, 1)
+    local my = controlAxis(0, 2)
+    FA.yaw = FA.yaw - mx * LOOK_SPEED * frameStep()
+    FA.pitch = FA.pitch - my * LOOK_SPEED * frameStep()
+    if FA.pitch > 89.0 then FA.pitch = 89.0 end
+    if FA.pitch < -89.0 then FA.pitch = -89.0 end
+
+    local dir = O.rotToDir({ x = FA.pitch, y = 0.0, z = FA.yaw })
+    local yaw = math.rad(FA.yaw)
+    local rx, ry = math.cos(yaw), math.sin(yaw)
+
+    FA.x = FA.x + dir.x * step * fwd + rx * step * str
+    FA.y = FA.y + dir.y * step * fwd + ry * step * str
+    FA.z = FA.z + dir.z * step * fwd + step * up
+
+    clampToPed(ped)
+    setScriptCam()
+
+    if now - FA.lastFocus >= O.jitter(FOCUS_MS, 0.2) then
+        FA.lastFocus = now
+        pcall(SetFocusPosAndVel, FA.x, FA.y, FA.z, 0.0, 0.0, 0.0)
+    end
+
+    if now - FA.lastTargets >= O.jitter(TARGETS_MS, 0.2) then
+        updateListeners()
+    end
+
+    disableControls(SCRIPT_CONTROLS)
+end
+
+local function tick(now)
+    if not FA.active then return end
+
+    local ped = PlayerPedId()
+    if ped == 0 or not DoesEntityExist(ped) then
+        FA.stop("ped gone")
         return
     end
 
@@ -26044,62 +26163,22 @@ local function tick(now)
         return
     end
 
-    local api = susanoApi()
-    local dt = 0.016
-    local okDt, frame = pcall(GetFrameTime)
-    if okDt and type(frame) == "number" and frame > 0.0 then
-        dt = math.min(frame, 0.033)
+    -- The vehicle envelope is wider than the foot envelope. Stop on the
+    -- transition instead of letting a 45 m vehicle camera be measured against
+    -- the 25 m foot branch for a frame. Entering a vehicle is safe and does
+    -- not stop the session; the next exit does.
+    if FA.wasInVehicle and not O.Ctx.inVehicle then
+        FA.stop("left the vehicle")
+        return
     end
+    FA.wasInVehicle = O.Ctx.inVehicle and true or false
 
-    -- Look. The script camera steals the render, but the disabled-look axis is
-    -- still produced by the pad, so it is the stable source for mouse delta.
-    local mx = controlAxis(0, 1)
-    local my = controlAxis(0, 2)
-    FA.yaw = FA.yaw - mx * LOOK_SPEED * dt
-    FA.pitch = FA.pitch - my * LOOK_SPEED * dt
-    if FA.pitch > 89.0 then FA.pitch = 89.0 end
-    if FA.pitch < -89.0 then FA.pitch = -89.0 end
+    maintainBody(now, ped)
 
-    local fwd = (keyDown(api, 0x57) and 1.0 or 0.0) - (keyDown(api, 0x53) and 1.0 or 0.0)
-    local str = (keyDown(api, 0x44) and 1.0 or 0.0) - (keyDown(api, 0x41) and 1.0 or 0.0)
-    local up  = (keyDown(api, 0x20) and 1.0 or 0.0) - (keyDown(api, 0x11) and 1.0 or 0.0)
-
-    local speed = NORMAL_SPEED
-    if keyDown(api, 0x10) then speed = FAST_SPEED end
-    if keyDown(api, 0x12) then speed = SLOW_SPEED end
-    local step = speed * dt
-
-    -- The forward vector is the project's single rotation-to-direction helper,
-    -- the same one O.aimPoint uses. Reusing it keeps the freecam view and the
-    -- movement vector in one convention; a second copy of the trig is exactly
-    -- how a camera ends up strafing when it should be advancing.
-    local dir = O.rotToDir({ x = FA.pitch, y = 0.0, z = FA.yaw })
-    local rx = math.cos(math.rad(FA.yaw))
-    local ry = math.sin(math.rad(FA.yaw))
-
-    FA.x = FA.x + dir.x * step * fwd + rx * step * str
-    FA.y = FA.y + dir.y * step * fwd + ry * step * str
-    FA.z = FA.z + dir.z * step * fwd + step * up
-
-    clampToPed(ped)
-    setCam()
-
-    if now - FA.lastFocus >= O.jitter(FOCUS_MS, 0.2) then
-        FA.lastFocus = now
-        pcall(SetFocusPosAndVel, FA.x, FA.y, FA.z, 0.0, 0.0, 0.0)
-    end
-
-    if now - FA.lastTargets >= O.jitter(TARGETS_MS, 0.2) then
-        updateListeners()
-    end
-
-    -- Keep the movement and attack layer out of the way. Look (1, 2) is
-    -- disabled as well: the script camera receives its rotation from
-    -- GetDisabledControlNormal, and leaving the gameplay camera live would let
-    -- the same mouse motion turn two cameras at once. Disabling a control is
-    -- per-frame state, so nothing survives the teardown even on a crash.
-    for _, control in ipairs({ 1, 2, 21, 22, 24, 25, 30, 31, 32, 33, 34, 35, 36, 37, 44 }) do
-        pcall(DisableControlAction, 0, control, true)
+    if FA.mode == "native" then
+        tickNative(now, ped)
+    else
+        tickScript(now, ped)
     end
 end
 
@@ -26113,7 +26192,9 @@ function FA.arm()
     local policy = guardPolicy()
 
     -- Electron: a moving camera on foot is the shape its freecam module
-    -- punishes. WaveShield has the declaration path instead and is not gated.
+    -- punishes, and no WaveShield-shaped property closes that branch. The
+    -- vehicle gate therefore applies whenever Electron is present, even if
+    -- WaveShield is present too. WaveShield-only servers keep the foot path.
     if policy.vehicleOnly and not O.Ctx.inVehicle then
         emit("refused: this guard only allows a camera in a vehicle")
         return false
@@ -26126,6 +26207,57 @@ function FA.arm()
     FA.spent = true
     FA.didWork = false
 
+    local api = susanoApi()
+    if api
+        and type(api.LockCameraPos) == "function"
+        and type(api.SetCameraPos) == "function" then
+        local okPos, pos = pcall(GetGameplayCamCoord)
+        if okPos and pos
+            and type(pos.x) == "number"
+            and type(pos.y) == "number"
+            and type(pos.z) == "number" then
+            local okLock = pcall(api.LockCameraPos, true)
+            if okLock then
+                local ped = PlayerPedId()
+                local now = O.now()
+                FA.x, FA.y, FA.z = pos.x, pos.y, pos.z
+                FA.pitch, FA.yaw = 0.0, 0.0
+                FA.cam = 0
+                FA.mode = "native"
+                FA.active = true
+                setFreecamIntent(true)
+                FA.pending = false
+                FA.pendingUntil = 0
+                FA.vehicleOnly = policy.vehicleOnly
+                FA.whitelisted = false
+                FA.whitelistMode = "native"
+                FA.didWork = true
+                FA.lastFocus = now
+                FA.lastTargets = 0
+                FA.wasInVehicle = O.Ctx.inVehicle and true or false
+                applyAlphaGuard(ped, now)
+                if not O.Ctx.inVehicle then holdBody(ped, now) end
+                pcall(api.SetCameraPos, FA.x, FA.y, FA.z)
+                pcall(SetFocusPosAndVel, FA.x, FA.y, FA.z, 0.0, 0.0, 0.0)
+                notify(true)
+                emit("armed native range=%d vehicleOnly=%s",
+                    math.floor(FA.range), tostring(FA.vehicleOnly))
+                return true
+            end
+            pcall(api.LockCameraPos, false)
+        end
+    end
+
+    -- A script camera is only acceptable when no guard is present. On a
+    -- guarded server a missing native API is a refusal, not an unlisted
+    -- rendering camera.
+    if policy.any then
+        FA.spent = false
+        B.refund("freecam")
+        emit("refused: native camera unavailable and a guard was detected")
+        return false
+    end
+
     local cam = createCamera()
     if cam == 0 then
         FA.spent = false
@@ -26135,109 +26267,83 @@ function FA.arm()
     end
 
     FA.cam = cam
+    FA.mode = "script"
     FA.active = true
+    setFreecamIntent(true)
     FA.pending = true
+    FA.pendingUntil = O.now() + SCRIPT_PENDING_MS
     FA.vehicleOnly = policy.vehicleOnly
     FA.whitelisted = false
-    FA.whitelistMode = nil
-    FA.whitelistDirect = false
-    FA.whitelistResource = nil
-    FA.whitelistResources = nil
-    FA.whitelistTarget = nil
+    FA.whitelistMode = "script"
+    FA.lastFocus = 0
+    FA.lastTargets = 0
+    FA.wasInVehicle = O.Ctx.inVehicle and true or false
+    if not O.Ctx.inVehicle then holdBody(PlayerPedId(), O.now()) end
 
-    if policy.requireWhitelist then
-        if #policy.resources == 0 then
-            FA.stop("no whitelist resource")
-            return false
-        end
-
-        local queued, target = requestInjectedWhitelist(cam, policy.resources)
-        if queued then
-            FA.whitelistResources = policy.resources
-            FA.whitelistTarget = target
-            FA.whitelisted = true
-            FA.whitelistMode = "injected"
-            FA.pendingUntil = O.now() + INJECT_PENDING_MS
-        else
-            -- No usable resource VM. A direct `exports` call is the only
-            -- remaining declaration path; a camera that cannot be declared is
-            -- never activated.
-            local ok, resource = whitelistDirect(cam, policy.resources)
-            if not ok then
-                FA.stop("WaveShield createCam export unavailable")
-                return false
-            end
-            FA.whitelistDirect = true
-            FA.whitelistResource = resource
-            FA.whitelisted = true
-            FA.whitelistMode = "direct"
-            FA.pendingUntil = O.now() + DIRECT_PENDING_MS
-            activateCamera(cam)
-        end
-    else
-        FA.whitelistMode = "none"
-        FA.pendingUntil = O.now() + DIRECT_PENDING_MS
-        activateCamera(cam)
-    end
-
+    activateCamera(cam)
     notify(true)
-    emit("armed range=%d vehicleOnly=%s whitelist=%s",
-        math.floor(FA.range), tostring(FA.vehicleOnly), tostring(FA.whitelistMode))
+    emit("armed script fallback range=%d vehicleOnly=%s",
+        math.floor(FA.range), tostring(FA.vehicleOnly))
     return true
 end
 
 function FA.setRange(value)
     if type(value) ~= "number" then return FA.range end
-    FA.range = math.max(MIN_RANGE, math.min(MAX_RANGE, value))
+    FA.range = math.max(MIN_RANGE, math.min(MAX_RANGE_CAR, value))
     return FA.range
 end
 
 function FA.stop(reason)
-    if not FA.active and FA.cam == 0 and not FA.pending then return end
+    -- Clear the anti-freeze exemption before any early return. A stale true
+    -- would make Settings > Protection stop repairing a real external freeze.
+    setFreecamIntent(false)
 
-    clearListeners()
-    pcall(ClearFocus)
+    if not FA.active and FA.cam == 0 and not FA.pending
+        and FA.alphaPed == 0 and FA.heldPed == 0 then
+        return
+    end
 
-    local cam = FA.cam
-    if cam ~= 0 then
-        local okRender, rendering = false, nil
-        okRender, rendering = pcall(GetRenderingCam)
-
-        -- Drop the render first. If the whitelist entry disappears while the
-        -- cam is still the rendering camera, freecam.lua:73 sees an unlisted
-        -- rendering camera for one detector window. The whole teardown is one
-        -- Lua tick, but ordering costs nothing and removes the term.
-        if not okRender or rendering == cam then
+    -- Restore the camera first: the body hold and the alpha guard exist only
+    -- for a detached view. Releasing them before the camera returns would
+    -- leave one frame in which the freecam shape and the guard shape disagree.
+    if FA.mode == "native" then
+        local api = susanoApi()
+        if api and type(api.LockCameraPos) == "function" then
+            pcall(api.LockCameraPos, false)
+        end
+    elseif FA.cam ~= 0 then
+        local okRender, rendering = pcall(GetRenderingCam)
+        -- Drop the render before the handle. If the cam is destroyed while it
+        -- is still the rendering camera, the guard can see an unlisted cam for
+        -- one detector window.
+        if not okRender or rendering == FA.cam then
             pcall(RenderScriptCams, false, false, 0, true, true)
         end
-
-        pcall(SetCamActive, cam, false)
-
-        if FA.whitelistDirect and FA.whitelistResource then
-            unwhitelistDirect(cam, FA.whitelistResource)
-        elseif FA.whitelistTarget and FA.whitelistResources then
-            requestInjectedUnwhitelist(cam, FA.whitelistResources, FA.whitelistTarget)
-        end
-
-        pcall(DestroyCam, cam, false)
+        pcall(SetCamActive, FA.cam, false)
+        pcall(DestroyCam, FA.cam, false)
     end
+
+    releaseBody()
+    restoreAlphaGuard()
+    clearListeners()
+    pcall(ClearFocus)
 
     -- A camera that never became live must not consume its budget token.
     if FA.spent and not FA.didWork then B.refund("freecam") end
 
     FA.cam = 0
+    FA.mode = nil
     FA.active = false
     FA.pending = false
     FA.pendingUntil = 0
     FA.whitelisted = false
     FA.whitelistMode = nil
-    FA.whitelistDirect = false
-    FA.whitelistResource = nil
-    FA.whitelistResources = nil
-    FA.whitelistTarget = nil
     FA.vehicleOnly = false
     FA.spent = false
     FA.didWork = false
+    FA.wasInVehicle = false
+    FA.pitch = 0.0
+    FA.yaw = 0.0
 
     notify(false)
     if reason then emit("stopped: %s", tostring(reason)) end
@@ -26252,10 +26358,10 @@ function FA.isActive()
 end
 
 function FA.status()
-    return ("active=%s pending=%s range=%d targets=%d cam=%s whitelisted=%s mode=%s vehicleOnly=%s"):format(
-        tostring(FA.active), tostring(FA.pending), math.floor(FA.range), listenerCount(),
-        tostring(FA.cam ~= 0), tostring(FA.whitelisted), tostring(FA.whitelistMode),
-        tostring(FA.vehicleOnly))
+    return ("active=%s pending=%s mode=%s range=%d targets=%d cam=%s whitelisted=%s vehicleOnly=%s"):format(
+        tostring(FA.active), tostring(FA.pending), tostring(FA.mode),
+        math.floor(FA.range), listenerCount(), tostring(FA.cam ~= 0),
+        tostring(FA.whitelisted), tostring(FA.vehicleOnly))
 end
 
 O.every("freecam", 16, tick, 0)
@@ -26273,7 +26379,11 @@ local TP = (function(O,Menu)
 -- ----------------------------------------------------------------------------
 -- Replaces the loader's right-hand player dossier with a compact card built
 -- from the same visual language as the menu. It is deliberately smaller than
--- the menu: a quick read while aiming, not a second window.
+-- the menu: a quick read while aiming, not a second window. The previous pass
+-- made it so compact that the 10-14 px type was unreadable in game; this pass
+-- keeps the same footprint but moves the type up one full step and raises the
+-- label/value contrast. The card is still about half the area of the old
+-- 440 x 540 dossier.
 --
 -- The data is already collected by Menu.GetSelectedPlayerInfo (loader.lua).
 -- This file only draws. It never reads the ped, never writes an entity and
@@ -26285,7 +26395,7 @@ local TP = (function(O,Menu)
 --   CIBLE  [name]                                   #42
 --   ------------------------------------------------
 --   SANTE
---   VIE 150 / 200 [bar]   ARMURE 50 / 100 [bar]
+--   VIE 200 / 200 [bar]    ARMURE 50 / 100 [bar]
 --   JOUEUR
 --   ARME      Carbine Rifle
 --   DISTANCE  42 m
@@ -26301,23 +26411,24 @@ local TP = (function(O,Menu)
 -- The old ETAT block, the compass row and the pulsing DIRECT marker were
 -- removed by the operator. Only the status pill remains.
 --
--- Palette: near-black blue body, a theme-accent edge and header wash, cool
--- grey labels, warm-white values, mint health, azure armour and teal vehicle
--- health. The accent comes from Menu.Colors.SelectedBg, so Green and Cyan
--- still drive the card without a second colour system.
+-- Palette: blue-black body, a theme-accent edge and header wash, bright cool
+-- labels, warm-white values, mint health, azure armour and teal vehicle
+-- health. The accent still comes from Menu.Colors.SelectedBg, so Green and
+-- Cyan drive the card without a second colour system.
 -- ============================================================================
 
 local TP = {}
 
 local FALLBACK_ACCENT = { r = 104, g = 168, b = 203 }
 
--- Body and border palette. Kept as numbers so a missing theme still draws a
--- complete card instead of falling back to flat black.
-local BODY_R, BODY_G, BODY_B = 0.040, 0.044, 0.055
-local TRACK_R, TRACK_G, TRACK_B = 0.105, 0.115, 0.145
-local LABEL_R, LABEL_G, LABEL_B = 0.555, 0.595, 0.675
-local MUTED_R, MUTED_G, MUTED_B = 0.665, 0.700, 0.775
-local VALUE_R, VALUE_G, VALUE_B = 0.955, 0.965, 1.000
+-- Body and border palette. The label colours are deliberately bright: on a
+-- dark body and behind the in-game HUD, 10 px grey (the previous pass) was
+-- effectively invisible in the operator's screenshot.
+local BODY_R, BODY_G, BODY_B = 0.045, 0.052, 0.070
+local TRACK_R, TRACK_G, TRACK_B = 0.180, 0.195, 0.250
+local LABEL_R, LABEL_G, LABEL_B = 0.820, 0.850, 0.920
+local MUTED_R, MUTED_G, MUTED_B = 0.880, 0.900, 0.950
+local VALUE_R, VALUE_G, VALUE_B = 1.000, 1.000, 1.000
 
 local function clamp01(value)
     value = tonumber(value) or 0.0
@@ -26345,13 +26456,13 @@ local function accentRGB()
         (color.b or FALLBACK_ACCENT.b) / 255.0
 end
 
--- A tint of the theme accent, used for section labels and the header kicker.
--- Multiplying by 1.18 then lifting the floor keeps the text legible on the
--- dark body for both the muted Green and the brighter Cyan.
+-- A tint of the theme accent used for section labels and the header kicker.
+-- The floor is high enough that the muted Green accent stays readable on the
+-- body; the Cyan theme lands near a pale ice blue.
 local function accentText(r, g, b)
-    return math.min(1.0, r * 1.18 + 0.06),
-        math.min(1.0, g * 1.18 + 0.06),
-        math.min(1.0, b * 1.18 + 0.06)
+    return math.min(1.0, r * 0.85 + 0.32),
+        math.min(1.0, g * 0.85 + 0.32),
+        math.min(1.0, b * 0.85 + 0.32)
 end
 
 -- Rounded fill with the same three fallbacks the loader uses. A build without
@@ -26376,6 +26487,16 @@ end
 local function text(x, y, value, size, r, g, b, a)
     if not Menu or type(Menu.DrawText) ~= "function" then return end
     Menu.DrawText(x, y, tostring(value), size, r, g, b, a or 1.0)
+end
+
+-- A one-pixel dark shadow makes the larger values read as semibold without
+-- loading a second font. The shadow goes first so the real glyph is on top.
+local function textStrong(x, y, value, size, r, g, b, a)
+    -- A one-pixel shadow gives the default ImGui face a semibold weight. It is
+    -- drawn first so the real glyph is always on top; labels use it too now,
+    -- because the screenshot showed the old labels vanishing into the body.
+    text(x + 1.0, y + 1.0, value, size, 0.0, 0.0, 0.0, (a or 1.0) * 0.78)
+    text(x, y, value, size, r, g, b, a or 1.0)
 end
 
 -- Width of a string at the same size Menu.DrawText will use. Menu.DrawText
@@ -26453,13 +26574,13 @@ end
 local function healthColor(percent)
     if percent < 0.22 then return 1.00, 0.42, 0.45 end
     if percent < 0.50 then return 1.00, 0.72, 0.30 end
-    return 0.36, 0.90, 0.60
+    return 0.36, 0.95, 0.64
 end
 
 local function vehicleColor(percent)
     if percent < 0.22 then return 1.00, 0.42, 0.45 end
     if percent < 0.50 then return 1.00, 0.72, 0.30 end
-    return 0.35, 0.84, 0.92
+    return 0.36, 0.90, 0.98
 end
 
 function Menu.DrawPlayerInfoPanel()
@@ -26483,13 +26604,13 @@ function Menu.DrawPlayerInfoPanel()
     local accentR, accentG, accentB = accentRGB()
     local accentTextR, accentTextG, accentTextB = accentText(accentR, accentG, accentB)
 
-    -- Compact card. The menu is 360 logical px wide; the dossier is capped at
-    -- 74 % of it and at 344 logical px, with a 284 px floor for readability.
-    -- At the default 110 % scale this lands around 312 x 330 px on screen,
-    -- roughly half the area of the old 440 x 540 dossier.
+    -- Compact card: slightly wider than the last pass, but still clearly
+    -- narrower than the menu. At the default 110 % scale this is 350 px wide;
+    -- the old dossier was 440 px. The width buys a readable value column
+    -- without turning the card into a second menu.
     local menuWidth = tonumber(sp.width) or (360 * scale)
-    local panelWidth = math.max(284 * scale,
-        math.min(menuWidth * 0.74, 344 * scale))
+    local panelWidth = math.max(318 * scale,
+        math.min(menuWidth * 0.88, 372 * scale))
 
     -- Leave room for the scrollbar when it is drawn outside the menu. The
     -- panel sits beside the menu, so a right-side bar must not run under it.
@@ -26506,21 +26627,23 @@ function Menu.DrawPlayerInfoPanel()
         end
     end
 
-    local pad = 15 * scale
+    local pad = 16 * scale
     local innerWidth = panelWidth - pad * 2
     local cx = panelX + pad
 
-    -- Type scale is one step below the menu (19 px rows) so the card reads as
-    -- secondary information. At the default 110 % scale the values are about
-    -- 15.4 px on screen, the name about 19.8 px and the labels 11.6 px.
-    local FONT_KICKER = 9
-    local FONT_NAME = 18
-    local FONT_ID = 10
-    local FONT_SECTION = 10
-    local FONT_LABEL = 10.5
-    local FONT_VALUE = 14
-    local FONT_BAR = 10
-    local FONT_FOOTER = 10
+    -- Two steps above the old 10.5 / 17 / 18 pass. At the default 110 %
+    -- scale the on-screen sizes are: name 28.6 px, value 20.4 px, label
+    -- 15.95 px, section 14.85 px, bar 14.85 px. The card is still compact;
+    -- the type is now the menu's own size or larger.
+    local FONT_KICKER = 13
+    local FONT_NAME = 28
+    local FONT_ID = 14
+    local FONT_SECTION = 14.5
+    local FONT_LABEL = 15.5
+    local FONT_VALUE = 20
+    local FONT_VALUE_SMALL = 16.5
+    local FONT_BAR = 14.5
+    local FONT_FOOTER = 15
 
     -- Menu.DrawText places the top of a glyph box at y; the menu itself centres
     -- a 19 px row with a -8 offset. 0.421 reproduces that optical centre for
@@ -26529,12 +26652,12 @@ function Menu.DrawPlayerInfoPanel()
         return centerY - size * 0.421 * scale
     end
 
-    local headerHeight = 48 * scale
-    local sectionHeight = 20 * scale
-    local rowHeight = 26 * scale
-    local vitalsHeight = 32 * scale
-    local vehicleBarHeight = 28 * scale
-    local footerHeight = 34 * scale
+    local headerHeight = 56 * scale
+    local sectionHeight = 24 * scale
+    local rowHeight = 31 * scale
+    local vitalsHeight = 40 * scale
+    local vehicleBarHeight = 33 * scale
+    local footerHeight = 40 * scale
 
     local healthMax = tonumber(info.maxHealth) or 0
     local health = tonumber(info.health) or 0
@@ -26551,7 +26674,7 @@ function Menu.DrawPlayerInfoPanel()
     local vehicleR, vehicleG, vehicleB = vehicleColor(vehiclePercent)
 
     local alive = info.isAlive ~= false and health > 0
-    local statusR, statusG, statusB = 0.36, 0.90, 0.60
+    local statusR, statusG, statusB = 0.36, 0.95, 0.64
     local statusLabel = "EN VIE"
     if not alive then
         statusR, statusG, statusB = 1.00, 0.42, 0.45
@@ -26563,74 +26686,79 @@ function Menu.DrawPlayerInfoPanel()
 
     local function section(label)
         return function(y)
-            fillRect(cx, y + 6 * scale, 2 * scale, 11 * scale,
-                accentR, accentG, accentB, 0.95, 1 * scale)
-            text(cx + 9 * scale,
+            fillRect(cx, y + 7 * scale, 3 * scale, 13 * scale,
+                accentR, accentG, accentB, 0.95, 1.5 * scale)
+            textStrong(cx + 10 * scale,
                 centeredTextY(y + sectionHeight * 0.5, FONT_SECTION),
-                label, FONT_SECTION, accentTextR, accentTextG, accentTextB, 0.98)
+                label, FONT_SECTION, accentTextR, accentTextG, accentTextB, 1.0)
             local labelWidth = textWidth(label, FONT_SECTION, scale)
-            local lineX = cx + 9 * scale + labelWidth + 9 * scale
+            local lineX = cx + 10 * scale + labelWidth + 10 * scale
             local lineWidth = cx + innerWidth - lineX
             if lineWidth > 0 then
                 fillRect(lineX, y + sectionHeight * 0.5, lineWidth, 1,
-                    accentR, accentG, accentB, 0.18, 0)
+                    accentR, accentG, accentB, 0.28, 0)
             end
         end
     end
 
+    -- Left-aligned value column. The old card pushed every value to the far
+    -- right edge, which made a short word like "Unarmed" sit a whole card away
+    -- from its label. A fixed 34 % column cuts the eye travel and leaves room
+    -- for the 21-character coordinate string at the smaller value size.
     local function row(label, value, r, g, b, size)
         return function(y)
             local center = y + rowHeight * 0.5
-            text(cx, centeredTextY(center, FONT_LABEL),
+            textStrong(cx, centeredTextY(center, FONT_LABEL),
                 label, FONT_LABEL, LABEL_R, LABEL_G, LABEL_B, 1.0)
             local valueSize = size or FONT_VALUE
-            local shown = fitText(value, innerWidth * 0.70, valueSize, scale)
-            local width = textWidth(shown, valueSize, scale)
-            text(cx + innerWidth - width, centeredTextY(center, valueSize),
+            local valueX = cx + innerWidth * 0.34
+            local shown = fitText(value, cx + innerWidth - valueX,
+                valueSize, scale)
+            textStrong(valueX, centeredTextY(center, valueSize),
                 shown, valueSize, r or VALUE_R, g or VALUE_G, b or VALUE_B, 1.0)
         end
     end
 
     local function vital(x, y, width, label, percent, valueText, r, g, b)
-        local labelCenter = y + 7 * scale
-        text(x, centeredTextY(labelCenter, FONT_BAR),
+        local labelCenter = y + 10 * scale
+        textStrong(x, centeredTextY(labelCenter, FONT_BAR),
             label, FONT_BAR, LABEL_R, LABEL_G, LABEL_B, 1.0)
         local valueWidth = textWidth(valueText, FONT_BAR, scale)
-        text(x + width - valueWidth, centeredTextY(labelCenter, FONT_BAR),
-            valueText, FONT_BAR, r, g, b, 0.98)
+        textStrong(x + width - valueWidth, centeredTextY(labelCenter, FONT_BAR),
+            valueText, FONT_BAR, r, g, b, 1.0)
 
-        local barY = y + 18 * scale
-        local barH = 6 * scale
+        local barY = y + 24 * scale
+        local barH = 7 * scale
         fillRect(x, barY, width, barH, TRACK_R, TRACK_G, TRACK_B, 0.95,
             barH * 0.5)
         local filled = width * percent
         if filled > 0 then
-            fillRect(x, barY, filled, barH, r, g, b, 0.94, barH * 0.5)
+            fillRect(x, barY, filled, barH, r, g, b, 0.96, barH * 0.5)
             fillRect(x + 1 * scale, barY + 1 * scale,
-                math.max(0, filled - 2 * scale), 1, 1, 1, 1, 0.20,
+                math.max(0, filled - 2 * scale), 1, 1, 1, 1, 0.22,
                 0.5 * scale)
         end
     end
 
     local function barRow(label, percent, valueText, r, g, b)
         return function(y)
-            local labelCenter = y + 7 * scale
-            text(cx, centeredTextY(labelCenter, FONT_BAR),
+            local labelCenter = y + 10 * scale
+            textStrong(cx, centeredTextY(labelCenter, FONT_BAR),
                 label, FONT_BAR, LABEL_R, LABEL_G, LABEL_B, 1.0)
             local valueWidth = textWidth(valueText, FONT_BAR, scale)
-            text(cx + innerWidth - valueWidth,
+            textStrong(cx + innerWidth - valueWidth,
                 centeredTextY(labelCenter, FONT_BAR),
-                valueText, FONT_BAR, r, g, b, 0.98)
+                valueText, FONT_BAR, r, g, b, 1.0)
 
-            local barY = y + 18 * scale
-            local barH = 5 * scale
+            local barY = y + 24 * scale
+            local barH = 7 * scale
             fillRect(cx, barY, innerWidth, barH, TRACK_R, TRACK_G, TRACK_B,
                 0.95, barH * 0.5)
             local filled = innerWidth * percent
             if filled > 0 then
-                fillRect(cx, barY, filled, barH, r, g, b, 0.94, barH * 0.5)
+                fillRect(cx, barY, filled, barH, r, g, b, 0.96, barH * 0.5)
                 fillRect(cx + 1 * scale, barY + 1 * scale,
-                    math.max(0, filled - 2 * scale), 1, 1, 1, 1, 0.20,
+                    math.max(0, filled - 2 * scale), 1, 1, 1, 1, 0.22,
                     0.5 * scale)
             end
         end
@@ -26643,48 +26771,47 @@ function Menu.DrawPlayerInfoPanel()
 
     -- Header -----------------------------------------------------------------
     add(headerHeight, function(y)
-        text(cx, y + 2 * scale, "CIBLE", FONT_KICKER,
-            accentTextR, accentTextG, accentTextB, 0.92)
+        textStrong(cx, y + 1 * scale, "CIBLE", FONT_KICKER,
+            accentTextR, accentTextG, accentTextB, 0.95)
 
         local idText = "#" .. tostring(info.serverId or "?")
-        local idWidth = textWidth(idText, FONT_ID, scale) + 16 * scale
+        local idWidth = textWidth(idText, FONT_ID, scale) + 20 * scale
+        local idHeight = 28 * scale
         local idX = cx + innerWidth - idWidth
-        fillRect(idX, y + 8 * scale, idWidth, 20 * scale,
-            accentR, accentG, accentB, 0.14, 5 * scale)
-        fillRect(idX, y + 8 * scale, 2 * scale, 20 * scale,
-            accentR, accentG, accentB, 0.90, 1 * scale)
-        text(idX + 8 * scale, centeredTextY(y + 18 * scale, FONT_ID),
-            idText, FONT_ID, accentTextR, accentTextG, accentTextB, 0.98)
+        local idY = y + 9 * scale
+        fillRect(idX, idY, idWidth, idHeight,
+            accentR, accentG, accentB, 0.18, 6 * scale)
+        fillRect(idX, idY, 2.5 * scale, idHeight,
+            accentR, accentG, accentB, 0.95, 1.5 * scale)
+        textStrong(idX + 9 * scale,
+            centeredTextY(idY + idHeight * 0.5, FONT_ID),
+            idText, FONT_ID, accentTextR, accentTextG, accentTextB, 1.0)
 
-        local nameX = cx + 12 * scale
-        local nameMax = math.max(0, idX - nameX - 8 * scale)
+        local nameX = cx + 14 * scale
+        local nameMax = math.max(0, idX - nameX - 10 * scale)
         local name = fitText(info.name or "Inconnu", nameMax, FONT_NAME, scale)
         local nameY = y + 17 * scale
         local nameCenter = nameY + FONT_NAME * 0.421 * scale
-        -- A sub-pixel shadow is enough to make the name read as bold without
-        -- loading a second font.
-        text(nameX + 0.7 * scale, nameY + 0.7 * scale,
-            name, FONT_NAME, 0, 0, 0, 0.60)
-        text(nameX, nameY, name, FONT_NAME,
+        textStrong(nameX, nameY, name, FONT_NAME,
             VALUE_R, VALUE_G, VALUE_B, 1.0)
-        fillRect(cx + 2 * scale, nameCenter - 3 * scale,
-            6 * scale, 6 * scale, statusR, statusG, statusB, 1.0, 3 * scale)
+        fillRect(cx + 2 * scale, nameCenter - 4 * scale,
+            8 * scale, 8 * scale, statusR, statusG, statusB, 1.0, 4 * scale)
 
-        fillRect(cx, y + 42 * scale, innerWidth, 1,
-            accentR, accentG, accentB, 0.20, 0)
+        fillRect(cx, y + 54 * scale, innerWidth, 1,
+            accentR, accentG, accentB, 0.30, 0)
     end)
 
     -- Vitals -----------------------------------------------------------------
     add(sectionHeight, section("SANTE"))
     add(vitalsHeight, function(y)
-        local colGap = 10 * scale
+        local colGap = 12 * scale
         local colWidth = (innerWidth - colGap) * 0.5
         vital(cx, y, colWidth, "VIE", healthPercent,
             ("%d / %d"):format(whole(health), whole(healthMax)),
             healthR, healthG, healthB)
         vital(cx + colWidth + colGap, y, colWidth, "ARMURE", armorPercent,
             ("%d / 100"):format(whole(armor)),
-            0.36, 0.68, 1.00)
+            0.42, 0.72, 1.00)
     end)
 
     -- Player -----------------------------------------------------------------
@@ -26692,12 +26819,16 @@ function Menu.DrawPlayerInfoPanel()
     add(rowHeight, row("ARME", info.weapon or "Inconnu"))
     add(rowHeight, row("DISTANCE",
         ("%d m"):format(whole(info.distance)),
-        accentTextR, accentTextG, accentTextB, FONT_VALUE + 1))
+        accentTextR, accentTextG, accentTextB))
     local coords = info.coords
-    if type(coords) == "table" then
+    -- FiveM returns a vector3 userdata, not a table. The previous test used a
+    -- table and the live card silently dropped the row; accept any object that
+    -- exposes numeric x/y/z.
+    if coords and type(coords.x) == "number" and type(coords.y) == "number"
+        and type(coords.z) == "number" then
         add(rowHeight, row("POSITION",
-            ("%.1f, %.1f, %.1f"):format(coords.x or 0, coords.y or 0, coords.z or 0),
-            MUTED_R, MUTED_G, MUTED_B, FONT_VALUE - 1))
+            ("%.1f, %.1f, %.1f"):format(coords.x, coords.y, coords.z),
+            MUTED_R, MUTED_G, MUTED_B, FONT_VALUE_SMALL))
     end
 
     -- Vehicle ----------------------------------------------------------------
@@ -26707,7 +26838,7 @@ function Menu.DrawPlayerInfoPanel()
         local plate = tostring(info.vehPlate or "")
         plate = plate:gsub("%s+$", "")
         add(rowHeight, row("PLAQUE", plate ~= "" and plate or "-",
-            MUTED_R, MUTED_G, MUTED_B, FONT_VALUE - 1))
+            MUTED_R, MUTED_G, MUTED_B, FONT_VALUE_SMALL))
         add(rowHeight, row("VITESSE",
             ("%d km/h"):format(whole(info.speed)),
             VALUE_R, VALUE_G, VALUE_B))
@@ -26719,17 +26850,17 @@ function Menu.DrawPlayerInfoPanel()
     -- Footer -----------------------------------------------------------------
     local footer = function(y)
         fillRect(cx, y + 1 * scale, innerWidth, 1,
-            accentR, accentG, accentB, 0.18, 0)
-        local pillHeight = 22 * scale
-        local pillY = y + 7 * scale
+            accentR, accentG, accentB, 0.22, 0)
+        local pillHeight = 32 * scale
+        local pillY = y + 5 * scale
         local labelWidth = textWidth(statusLabel, FONT_FOOTER, scale)
-            + 22 * scale
+            + 30 * scale
         fillRect(cx, pillY, labelWidth, pillHeight,
-            statusR, statusG, statusB, 0.14, pillHeight * 0.5)
-        fillRect(cx + 1 * scale, pillY + 3 * scale, 2 * scale,
-            pillHeight - 6 * scale, statusR, statusG, statusB, 0.92,
-            1 * scale)
-        text(cx + 10 * scale,
+            statusR, statusG, statusB, 0.16, pillHeight * 0.5)
+        fillRect(cx + 2 * scale, pillY + 4 * scale, 3 * scale,
+            pillHeight - 8 * scale, statusR, statusG, statusB, 0.95,
+            1.5 * scale)
+        textStrong(cx + 13 * scale,
             centeredTextY(pillY + pillHeight * 0.5, FONT_FOOTER),
             statusLabel, FONT_FOOTER, statusR, statusG, statusB, 1.0)
     end
@@ -26739,11 +26870,14 @@ function Menu.DrawPlayerInfoPanel()
     for i = 1, #blocks do contentHeight = contentHeight + blocks[i].height end
 
     local chromeHeight = pad * 2
-    local panelHeight = math.max(chromeHeight + contentHeight, 300 * scale)
+    -- No large minimum height. The previous 300 logical px floor left a visible
+    -- empty band under DISTANCE when the target was on foot. The card now ends
+    -- with its content; only a tiny floor keeps the shadow/rounding sane.
+    local panelHeight = math.max(chromeHeight + contentHeight, 276 * scale)
 
-    -- If the card is taller than its content (minimum height), put the spare
-    -- space before the footer. The footer then sits on the bottom edge instead
-    -- of floating under the last row.
+    -- If the card is taller than its content, put the spare space before the
+    -- footer. The footer then sits on the bottom edge instead of floating under
+    -- the last row.
     local spare = panelHeight - (chromeHeight + contentHeight)
     if spare > 0 then
         local footerBlock = table.remove(blocks)
@@ -26757,27 +26891,26 @@ function Menu.DrawPlayerInfoPanel()
     end
 
     -- Background. The border and header wash are the theme accent; the body is
-    -- a near-black blue rather than pure grey, and every value is warm white.
-    -- The card therefore changes with Green/Cyan without looking like a second
-    -- design system.
+    -- a near-black blue, and every value is warm white. The card therefore
+    -- changes with Green/Cyan without looking like a second design system.
     fillRect(panelX, panelY, panelWidth, panelHeight,
-        accentR, accentG, accentB, 0.45, 7 * scale)
+        accentR, accentG, accentB, 0.70, 8 * scale)
     fillRect(panelX + 1, panelY + 1, panelWidth - 2, panelHeight - 2,
-        BODY_R, BODY_G, BODY_B, 0.985, 6 * scale)
+        BODY_R, BODY_G, BODY_B, 0.992, 7 * scale)
     -- Header wash: three low-alpha bands fake a downward gradient with three
     -- draw calls and no extra texture.
-    fillRect(panelX + 1, panelY + 1, panelWidth - 2, 40 * scale,
-        accentR, accentG, accentB, 0.085, 6 * scale)
-    fillRect(panelX + 1, panelY + 28 * scale, panelWidth - 2, 20 * scale,
-        accentR, accentG, accentB, 0.045, 0)
+    fillRect(panelX + 1, panelY + 1, panelWidth - 2, 48 * scale,
+        accentR, accentG, accentB, 0.120, 7 * scale)
+    fillRect(panelX + 1, panelY + 32 * scale, panelWidth - 2, 18 * scale,
+        accentR, accentG, accentB, 0.055, 0)
     fillRect(panelX + 1, panelY + 1, panelWidth - 2, 1,
-        1.0, 1.0, 1.0, 0.055, 0)
+        1.0, 1.0, 1.0, 0.065, 0)
     -- Left accent rail and the hard header line. They echo the menu selector
     -- without competing with the text.
-    fillRect(panelX + 1, panelY + 10 * scale, 2 * scale,
-        panelHeight - 20 * scale, accentR, accentG, accentB, 0.62, 1 * scale)
+    fillRect(panelX + 1, panelY + 10 * scale, 2.5 * scale,
+        panelHeight - 20 * scale, accentR, accentG, accentB, 0.72, 1.25 * scale)
     fillRect(panelX + pad, panelY + 1, panelWidth - pad * 2, 2 * scale,
-        accentR, accentG, accentB, 0.88, 1 * scale)
+        accentR, accentG, accentB, 0.95, 1 * scale)
 
     local y = panelY + pad
     for i = 1, #blocks do
@@ -26840,13 +26973,20 @@ end
 
 function SC.install()
     if type(Menu) ~= "table" then return false end
-    if Menu.__vgd_scrollbarInstalled then return true end
+    -- Idempotent against our own wrapper, but not against a library reload
+    -- that replaced DrawScrollbar: in that case the new renderer is wrapped
+    -- again instead of leaving the setting dead behind a stale boolean.
+    if Menu.__vgd_scrollbarWrapped ~= nil
+        and Menu.DrawScrollbar == Menu.__vgd_scrollbarWrapped then
+        return true
+    end
     if type(Menu.DrawScrollbar) ~= "function" then return false end
 
     local base = Menu.DrawScrollbar
+    local wrapped
 
-    Menu.DrawScrollbar = function(x, startY, visibleHeight, selectedIndex,
-                                  totalItems, isMainMenu, menuWidth)
+    wrapped = function(x, startY, visibleHeight, selectedIndex,
+                       totalItems, isMainMenu, menuWidth)
         local width = tonumber(menuWidth)
         if not width then
             local sp = scaledPosition()
@@ -26866,8 +27006,10 @@ function SC.install()
             totalItems, isMainMenu, width)
     end
 
+    Menu.DrawScrollbar = wrapped
     -- Test seams. They are functions, not menu rows and not layout state.
     Menu.__vgd_scrollbarX = SC.xFor
+    Menu.__vgd_scrollbarWrapped = wrapped
     Menu.__vgd_scrollbarInstalled = true
     return true
 end
@@ -27767,6 +27909,47 @@ local function installSettingsDefaults()
     flocon.value = true
     Menu.ShowSnowflakes = true
 
+    -- Flocon density: the shipped `library.lua` seeds 15 particles
+    -- (`for i = 1, 15`), so the target is 23 for a true ~1.5x snowfall. The
+    -- target is derived from the seed actually present rather than hard-coded,
+    -- because another library build in the corpus seeds 80: that one becomes
+    -- 120, still 1.5x. The state record makes the append idempotent across
+    -- re-injections and re-derives the base if the library table is replaced
+    -- or reseeded with a different count. The renderer only reads
+    -- x/y/speedY/speedX/size, so the extra records use that shape.
+    local particles = Menu.Particles
+    if type(particles) ~= "table" then
+        particles = {}
+        Menu.Particles = particles
+    end
+
+    local particleState = rawget(Menu, "__vgd_particleState")
+    local particleCount = #particles
+    if type(particleState) ~= "table"
+        or particleState.table ~= particles
+        or (particleCount ~= particleState.base
+            and particleCount ~= particleState.target) then
+        local base = particleCount
+        if base <= 0 then base = 15 end
+        particleState = {
+            table = particles,
+            base = base,
+            target = math.ceil(base * 1.5),
+        }
+        rawset(Menu, "__vgd_particleState", particleState)
+    end
+
+    while #particles < particleState.target do
+        particles[#particles + 1] = {
+            x = math.random(0, 100) / 100,
+            y = math.random(0, 100) / 100,
+            speedY = math.random(20, 100) / 10000,
+            speedX = math.random(-20, 20) / 10000,
+            size = math.random(1, 2),
+            life = math.random(10, 50),
+        }
+    end
+
     local scroll = findItem("Settings", "General", "Scroll Bar Position")
     if not scroll then
         scroll = {
@@ -28077,53 +28260,38 @@ end
 -- ---------------------------------------------------------------------------
 -- VEHICLE > PERFORMANCE > ATTACH RAMP
 --
--- The base loader created two networked ramps on the ground ahead of the
--- vehicle, then left them there. A later override attached one local ramp as
--- a child of the vehicle so it followed the bumper, but passed collision=false
--- to AttachEntityToEntity. That is exactly why the ramp appeared and did
--- nothing: an attached entity with the collision flag cleared is a visual.
+-- Operator report: the ramp was alive but it corrected its trajectory every
+-- frame, which looked and felt like a scripted object, and the small 1.08 m
+-- prop sent big vehicles into accidents instead of a clean launch. This build
+-- makes the ramp a single fixed local prop and uses the largest sane wedge in
+-- the base game.
 --
--- This build keeps the ramp as a normal local world object and moves it with
--- the vehicle from the scheduler. There is no attachment, so the engine never
--- switches the object into the no-collision state that attached children can
--- fall into. The prop is frozen (infinite mass), has collision enabled, and is
--- explicitly excluded from colliding with the carrier vehicle only.
+--   * one local object, created once, never networked, never attached;
+--   * no per-frame SetEntityCoords / SetEntityRotation / ground query;
+--   * profile table per model: slope axis, yaw offset, low-lip offset and the
+--     model's lowest point are measured from the real GLB mesh, not guessed;
+--   * preferred model xs_prop_arena_pipe_ramp_01a: 5.96 m wide, 10.85 m long,
+--     2.68 m high, ~13 degrees. That is 50 % wider and 78 % longer than the
+--     old 4.02 x 5.86 wedge, with a gentler slope, which is what keeps a heavy
+--     vehicle from tripping over its own centre of gravity. prop_mp_ramp_03
+--     (4.02 x 5.86 x 2.42, ~23 degrees) is the first fallback; prop_mp_ramp_02
+--     (1.53 m high) is the last;
+--   * spawn Z puts the model's own lowest point 1 cm above the highest ground
+--     sampled under the high edge, the origin and the low lip. The long arena
+--     ramp is probed at both ends and the origin at spawn, so a slope cannot
+--     bury one end in the tarmac;
+--   * the high edge faces the carrier's front bumper, low lip points forward;
+--   * collision is proved; a ghost prop is deleted and the next model tried;
+--   * only the (ramp, carrier) pair is excluded from collision;
+--   * TTL 180 s and Detach Ramp/panic remove it. One instance maximum.
 --
--- The ramp sits in front of the front bumper. Its high edge is nearest the
--- carrier and its low lip points forward, away from it. A vehicle ahead meets
--- the low lip and rides up the slope. The carrier never collides with the prop
--- because the (ramp, carrier) pair is the only collision pair disabled.
---
--- The prop's Z is a single offset captured at spawn, not a per-frame ground
--- query. This is the fix for the rapid up/down the operator saw. The old
--- follower sampled GetGroundZFor_3dCoord directly under a live collidable
--- ramp. That native can return the prop's own deck; the ramp was then lifted,
--- the next read returned the road, and it dropped. Repeating that every frame
--- produced the sawtooth. A spawn-only read cannot see the prop (it does not
--- exist yet), and a constant offset cannot oscillate.
---
--- The offset is measured from the carrier's own world-space anchor at the
--- ramp centre: `spawnZ - flat.z`. The tick applies that same offset to the
--- current anchor. The carrier's anchor already follows suspension, pitch and
--- road height, so the ramp rides them with the car instead of fighting them.
--- The spawn probe uses GetGroundZFor_3dCoord with includeWater=false; if it
--- fails, the carrier's model bottom is used as a safe ground estimate. The
--- model's lowest point is then placed at ground + bottom + 3 cm. A low sports
--- car cannot sink; a tall car cannot make the ramp float.
---
--- Collision is proved, not assumed. After SetEntityCollision, the module reads
--- GET_ENTITY_COLLISION_DISABLED. If the engine still reports the prop as a
--- ghost, it is deleted and the next ramp model is tried; if every model fails,
--- Attach Ramp returns false instead of leaving a visual with no physics. The
--- same read gates the follower tick: a teleport or a stream can clear the
--- flag, and a ramp that cannot collide is removed rather than kept as a lie.
---
--- Local, not networked: the ramp exists for this client's physics only. It is
--- not an entity the server can attribute, it creates no network id, and it is
--- removed with Detach Ramp or when the carrier vehicle changes. The trade-off
--- is stated in doctrine: locally simulated traffic, peds and world geometry
--- collide with it; a network-owned vehicle on another client does not see the
--- prop. A networked ramp would be visible to the server and every client.
+-- Why a fixed prop is the safer choice:
+--   A local object created with isNetwork=false has no net id, no owner, no
+--   population type and never raises the server's entityCreating event. It
+--   exists only in this client's physics world. WaveShield V4's entity module
+--   scans the CVehicle pool, not local objects. The previous follower added a
+--   per-frame write stream and a ground query; both are gone. The remaining
+--   surface is one CreateObject at the operator's request.
 -- ---------------------------------------------------------------------------
 local rampFixState = nil
 
@@ -28131,31 +28299,61 @@ local function installRampFix()
     if type(Menu) ~= "table" then return false end
     if rampFixState then return true end
 
-    local RAMP_MODELS = { "prop_mp_ramp_01", "prop_mp_ramp_02", "prop_mp_ramp_03" }
-    local RAMP_GAP = 0.10
-    local GROUND_CLEARANCE = 0.03
+    -- Profiles were measured from the actual GLB meshes after applying the
+    -- exporter's -90 degree X rotation, so the axes below are GTA model axes.
+    --   axis   : the local axis on which the ramp rises
+    --   yaw    : added to the carrier heading so that axis points back at it
+    --   bottom : the model's lowest point, origin-relative (fallback only;
+    --            GetModelDimensions supplies the live value when it exists)
+    --   low    : the low lip's signed coordinate on that axis
+    --   high   : distance from the entity origin to the high edge on that axis
+    -- The arena ramp rises on local +X and is very asymmetric (the origin sits
+    -- 1.54 m from the high edge and 9.31 m from the low lip). The MP ramps
+    -- rise on local +Y and are almost symmetric. Every value below comes from
+    -- the mesh, not from a guessed bounding box.
+    local RAMP_MODELS = {
+        {
+            name = "xs_prop_arena_pipe_ramp_01a",
+            axis = "x",
+            yaw = 90.0,
+            bottom = -0.005,
+            low = -9.314,
+            high = 1.544,
+        },
+        {
+            name = "prop_mp_ramp_03",
+            axis = "y",
+            yaw = 180.0,
+            bottom = -0.775,
+            low = -2.932,
+            high = 2.932,
+        },
+        {
+            name = "prop_mp_ramp_02",
+            axis = "y",
+            yaw = 180.0,
+            bottom = -0.775,
+            low = -2.932,
+            high = 2.932,
+        },
+    }
+    local RAMP_GAP = 0.15
+    local GROUND_CLEARANCE = 0.01
+    local RAMP_TTL_MS = 180000
 
     local state = {
         obj = 0,
         id = nil,
         veh = 0,
-        center = 0.0,
-        bottom = 0.0,
-        zOffset = 0.0,
         active = false,
-        collisionWarned = false,
+        model = nil,
+        spawn = nil,
     }
 
-    -- Ground height under an X/Y. This runs ONCE at spawn, before the prop
-    -- exists, and never from the follower. That ordering is deliberate: the
-    -- old per-tick read could sample the ramp's own deck and oscillate.
-    --
-    -- * GetGroundZFor_3dCoord(..., false) does not accept water as ground, so
-    --   a bridge over water returns the deck/road rather than the water plane.
-    -- * The query starts at referenceZ + 3: under an overpass it stays below
-    --   the bridge deck, so the answer is the road the car is on.
-    -- * A guard build can hide the native; the caller falls back to the
-    --   carrier's model bottom instead of leaving the prop at an arbitrary Z.
+    -- Spawn-only ground probe. It runs before the prop exists, so it cannot
+    -- sample the ramp's own deck. The tick that used to call this every frame
+    -- is gone; a fixed prop cannot sawtooth. Called at most three times per
+    -- spawn attempt (high edge, origin and low lip), never after that.
     local function groundZAt(x, y, referenceZ)
         local ok, found, ground =
             pcall(GetGroundZFor_3dCoord, x, y, referenceZ + 3.0, false)
@@ -28165,8 +28363,6 @@ local function installRampFix()
         return nil
     end
 
-    -- The read half of the collision pair. A missing getter is "unknown", not
-    -- "disabled": do not fail a feature just because a build lacks the read.
     local function collisionEnabled(obj)
         local ok, disabled = pcall(GetEntityCollisionDisabled, obj)
         if not ok or disabled == nil then return nil end
@@ -28181,9 +28377,8 @@ local function installRampFix()
         local proof = collisionEnabled(obj)
         if proof == false then
             -- Some builds report the pre-write flag for one read after a
-            -- teleport or a stream. One immediate retry distinguishes that
-            -- transient from a prop whose collision genuinely cannot be
-            -- enabled; only a second false deletes the prop.
+            -- teleport or a stream. One retry distinguishes that transient
+            -- from a prop whose collision genuinely cannot be enabled.
             pcall(SetEntityCollision, obj, true, true)
             pcall(SetEntityRecordsCollisions, obj, true)
             proof = collisionEnabled(obj)
@@ -28199,63 +28394,89 @@ local function installRampFix()
         end
     end
 
-    -- E.object is the project's local-object path: isNetwork=false, model
-    -- request bounded, registry entry with a TTL, and E.destroyAll on panic.
-    -- The model is loaded before the spawn so GetModelDimensions can place the
-    -- high edge at the front bumper and the low lip ahead of it. A model whose
-    -- collision stays disabled is deleted and the next variant is tried.
     local function spawnRamp(vehicle, vehicleFront, vehicleBottom, heading)
         for i = 1, #RAMP_MODELS do
-            local model = RAMP_MODELS[i]
+            local profile = RAMP_MODELS[i]
+            local model = profile.name
             local hash = GetHashKey(model)
             if E.requestModel(hash, 3000) then
-                local dimsOk, rampMin, rampMax =
-                    pcall(GetModelDimensions, hash)
-                local highEdge = 3.0
-                local bottom = 0.0
-                if dimsOk and rampMin then
+                local high = profile.high
+                local low = profile.low
+                local bottom = profile.bottom
+                local dimsOk, rampMin, rampMax = pcall(GetModelDimensions, hash)
+                if dimsOk and rampMin and rampMax then
+                    local axisMin = profile.axis == "x" and rampMin.x or rampMin.y
+                    local axisMax = profile.axis == "x" and rampMax.x or rampMax.y
+                    if type(axisMax) == "number" and axisMax > 0.5 then
+                        high = axisMax
+                    end
+                    if type(axisMin) == "number" and axisMin < -0.5 then
+                        low = axisMin
+                    end
                     if type(rampMin.z) == "number" then
-                        bottom = math.max(0.0, -rampMin.z)
+                        bottom = rampMin.z
                     end
                 end
-                if dimsOk and rampMax and type(rampMax.y) == "number" then
-                    highEdge = math.max(0.5, math.abs(rampMax.y))
-                elseif dimsOk and rampMin and type(rampMin.y) == "number" then
-                    highEdge = math.max(0.5, math.abs(rampMin.y))
+
+                local rampHeading = (heading + profile.yaw) % 360.0
+                -- Unit vector of the rise axis in world space. With the yaw
+                -- above it points back toward the carrier, so local +axis is
+                -- the high edge and local -axis is the low lip.
+                local rad = math.rad(rampHeading)
+                local axisX, axisY
+                if profile.axis == "x" then
+                    axisX, axisY = math.cos(rad), -math.sin(rad)
+                else
+                    axisX, axisY = math.sin(rad), math.cos(rad)
                 end
 
-                -- vehicleFront is the positive Y extent of the carrier. The
-                -- ramp's high edge is its local +Y end (verified on the real
-                -- prop mesh), so rotate it 180 degrees: the high edge points
-                -- back at the carrier and the low lip points forward. Put that
-                -- high edge at the bumper:
-                --   center - highEdge = vehicleFront + gap.
-                local center = vehicleFront + highEdge + RAMP_GAP
+                -- Put the high edge at the bumper:
+                --   origin + high * axis = vehicleFront + gap.
+                local center = vehicleFront + high + RAMP_GAP
                 local flat = GetOffsetFromEntityInWorldCoords(vehicle, 0.0, center, 0.0)
 
-                -- Anchor Z to the carrier's origin, not to the forward offset
-                -- point. GetOffsetFromEntityInWorldCoords includes the chassis
-                -- pitch lever arm: braking or accelerating rotates the car
-                -- around its origin and made the old ramp dive with the nose.
+                -- Anchor Z to the carrier's origin, not the forward offset
+                -- point: the offset point includes the chassis pitch lever
+                -- arm. The origin is stable under pitch and roll.
                 local coordsOk, vehicleCoords = pcall(GetEntityCoords, vehicle)
                 local vehicleZ = coordsOk and vehicleCoords
                     and type(vehicleCoords.z) == "number"
                     and vehicleCoords.z or flat.z
 
-                local ground = groundZAt(flat.x, flat.y, flat.z)
-                -- Model bottom is the carrier's lowest point relative to its
-                -- origin. On a normal car that is the tyre contact plane, so it
-                -- is a safe ground estimate when the native is unavailable.
+                -- Probe both ends and the origin at spawn. The long arena deck
+                -- spans 10.85 m; a single centre probe could leave the low lip
+                -- under a kerb, and the high edge is 1.54 m on the other side
+                -- of the origin, so it needs its own read on a slope. The
+                -- highest ground wins, so nothing is buried; the model's own
+                -- underside is then placed 1 cm above it.
+                local edgeX = flat.x + axisX * high
+                local edgeY = flat.y + axisY * high
+                local edgeGround = groundZAt(edgeX, edgeY, vehicleZ)
+                local centerGround = groundZAt(flat.x, flat.y, vehicleZ)
+                local lipX = flat.x + axisX * low
+                local lipY = flat.y + axisY * low
+                local lipGround = groundZAt(lipX, lipY, vehicleZ)
+                local ground = edgeGround
+                if centerGround and (not ground or centerGround > ground) then
+                    ground = centerGround
+                end
+                if lipGround and (not ground or lipGround > ground) then
+                    ground = lipGround
+                end
+
+                -- Model bottom is the lowest physical point of the prop. If
+                -- the ground native fails, the carrier's lowest point is the
+                -- next best contact plane (its tyres are on the road).
                 local baseZ = ground or (vehicleZ + (vehicleBottom or 0.0))
-                local spawnZ = baseZ + bottom + GROUND_CLEARANCE
+                local spawnZ = baseZ + GROUND_CLEARANCE - bottom
                 local spawn = vector3(flat.x, flat.y, spawnZ)
-                local rampHeading = (heading + 180.0) % 360.0
+
                 local obj, id = E.object(model, spawn, {
                     heading = rampHeading,
                     freeze = true,
                     collision = true,
                     invincible = true,
-                    ttl = 3600000,
+                    ttl = RAMP_TTL_MS,
                 })
 
                 if obj and obj ~= 0 and DoesEntityExist(obj) then
@@ -28270,21 +28491,23 @@ local function installRampFix()
                         deleteObject(obj, id)
                     else
                         -- Only the (ramp, carrier) pair is ignored. Everything
-                        -- else that exists in this client's physics world still
-                        -- collides with the prop.
+                        -- else in this client's physics world still collides.
+                        -- The carrier is protected from the high edge it just
+                        -- spawned against; a vehicle approaching the low lip is
+                        -- the one that rides the slope.
                         pcall(SetEntityNoCollisionEntity, obj, vehicle, false)
-                        return obj, id, model, center, proof, bottom,
-                            spawnZ - vehicleZ
+                        return obj, id, model, center, proof, spawnZ, spawn,
+                            rampHeading, high
                     end
                 end
             end
         end
-        return nil, nil, nil, 0.0, nil, 0.0, 0.0
+        return nil, nil, nil, 0.0, nil, 0.0, nil, 0.0, 0.0
     end
 
-    -- Delete every handle the base, a previous override, or this build left
-    -- behind. The global list is the base loader's contract with Detach Ramp;
-    -- keep it authoritative even though this build owns its own state.
+    -- Delete every handle the base loader, a previous override, or this build
+    -- left behind. The global list is the base loader's contract with Detach
+    -- Ramp; keep it authoritative even though this build owns its own state.
     local function removeRamp()
         if state.id then
             E.destroy(state.id)
@@ -28312,11 +28535,9 @@ local function installRampFix()
 
         state.obj = 0
         state.veh = 0
-        state.center = 0.0
-        state.bottom = 0.0
-        state.zOffset = 0.0
         state.active = false
-        state.collisionWarned = false
+        state.model = nil
+        state.spawn = nil
     end
 
     Menu.DetachBuggyRamp = function()
@@ -28341,8 +28562,6 @@ local function installRampFix()
             local dimsOk, vehicleMin, vehicleMax =
                 pcall(GetModelDimensions, vehicleModel)
             if dimsOk and vehicleMax and type(vehicleMax.y) == "number" then
-                -- Front is local +Y. A negative or zero max would put the ramp
-                -- inside the car, so keep a sane positive overhang.
                 vehicleFront = math.max(0.0, vehicleMax.y)
             end
             if dimsOk and vehicleMin and type(vehicleMin.z) == "number" then
@@ -28351,7 +28570,7 @@ local function installRampFix()
         end
 
         local heading = GetEntityHeading(vehicle)
-        local obj, id, modelName, center, proof, bottom, zOffset =
+        local obj, id, modelName, center, proof, spawnZ, spawn, rampHeading, high =
             spawnRamp(vehicle, vehicleFront, vehicleBottom, heading)
 
         if not obj then
@@ -28366,87 +28585,32 @@ local function installRampFix()
         state.obj = obj
         state.id = id
         state.veh = vehicle
-        state.center = center
-        state.bottom = bottom or 0.0
-        state.zOffset = zOffset or 0.0
         state.active = true
-        state.collisionWarned = false
+        state.model = modelName
+        state.spawn = spawn
 
-        O.log("ramp: collidable front scoop %s center=%.1f z=%.2f collision=%s",
-            tostring(modelName), center, state.zOffset,
-            proof == nil and "unknown" or tostring(proof))
+        O.log("ramp: fixed %s center=%.1f highEdge=%.1f z=%.2f collision=%s ttl=%ds",
+            tostring(modelName), center, vehicleFront + RAMP_GAP,
+            spawnZ, proof == nil and "unknown" or tostring(proof),
+            math.floor(RAMP_TTL_MS / 1000))
         return true
     end
 
-    -- Re-place the solid prop relative to the carrier every scheduler tick.
-    -- SetEntityCoordsNoOffset is allowed on a frozen entity (the freeze only
-    -- stops physics from moving it), so the ramp never sags or lags.
-    local function rampTick()
-        if not state.active or state.obj == 0 then return end
-
+    -- Read-only seam. The ramp is deliberately not scheduled: nothing moves,
+    -- rotates, queries the ground or rewrites collision after the spawn. The
+    -- function only lets the harness prove that a tick cannot move the prop.
+    local function rampCheck()
+        if not state.active then return false end
         local obj = state.obj
-        if not DoesEntityExist(obj) then
+        if obj == 0 or not DoesEntityExist(obj) then
             removeRamp()
-            return
+            return false
         end
-
-        local ped = PlayerPedId()
-        local vehicle = GetVehiclePedIsIn(ped, false)
-        if not vehicle or vehicle == 0 or vehicle ~= state.veh
-            or not DoesEntityExist(vehicle) then
-            removeRamp()
-            return
-        end
-
-        local flat = GetOffsetFromEntityInWorldCoords(vehicle, 0.0, state.center, 0.0)
-        -- Deliberately no ground query here. The spawn offset already encodes
-        -- the ground height relative to the carrier; re-reading it under a live
-        -- collidable prop is what made the old ramp climb and fall every frame.
-        -- Z comes from the chassis origin, not from the forward offset point:
-        -- the offset point includes the pitch lever arm, so a nose-dive under
-        -- braking used to drag the ramp into the road. The origin is stable
-        -- under pitch and roll; the spawn offset keeps it planted.
-        local coordsOk, vehicleCoords = pcall(GetEntityCoords, vehicle)
-        local vehicleZ = coordsOk and vehicleCoords
-            and type(vehicleCoords.z) == "number"
-            and vehicleCoords.z or flat.z
-        local z = vehicleZ + state.zOffset
-        local heading = (GetEntityHeading(vehicle) + 180.0) % 360.0
-
-        pcall(SetEntityCoordsNoOffset, obj, flat.x, flat.y, z,
-            false, false, false)
-        pcall(SetEntityRotation, obj, 0.0, 0.0, heading, 2, true)
-
-        -- A teleport or a stream can clear the collision flag on a local prop.
-        -- Read it; only write when the read says the prop is a ghost. On a
-        -- build without the getter, keep the old defensive write.
-        local proof = collisionEnabled(obj)
-        if proof == false then
-            if not state.collisionWarned then
-                state.collisionWarned = true
-                O.log("ramp: collision flag cleared, re-enabling")
-            end
-            -- enableCollision retries once and returns the final proof; do not
-            -- read the flag a third time, where a transient could remove a prop
-            -- that the retry just restored.
-            local restored = enableCollision(obj)
-            if restored == false then
-                O.log("ramp: collision could not be restored, removing the ghost prop")
-                removeRamp()
-                return
-            end
-        elseif proof == nil then
-            pcall(SetEntityCollision, obj, true, true)
-        end
-
-        pcall(SetEntityNoCollisionEntity, obj, vehicle, false)
+        return true
     end
 
     rampFixState = state
-    -- Internal seam for the harness: drives one follower tick without a live
-    -- scheduler. It is a function, not a menu row.
-    Menu.__vgd_rampTick = rampTick
-    O.every("rampFix", 0, rampTick, 0)
+    Menu.__vgd_rampTick = rampCheck
     return true
 end
 
