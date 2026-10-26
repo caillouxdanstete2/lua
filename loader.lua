@@ -1453,106 +1453,283 @@ local function ToggleThrowVehicle(enable)
     -- at once; the old one would also clear an outline it no longer owns.
     throwVehicleGeneration = throwVehicleGeneration + 1
     local generation = throwVehicleGeneration
-    if enable then
-        Citizen.CreateThread(function()
-            local holdingEntity = false
-            local heldEntity = nil
-            local outlinedEntity = nil
-            local outlineHasControl = nil
+    if not enable then return end
 
-            -- The ESP outline is a per-entity draw flag. It is not cleared when
-            -- the thread stops, so every path that leaves the aimed vehicle
-            -- must turn it off explicitly; otherwise disabling Throw Vehicle
-            -- leaves the last car glowing red or green forever.
-            local function clearOutline()
-                if outlinedEntity and outlinedEntity ~= 0 and SetEntityDrawOutline then
-                    pcall(SetEntityDrawOutline, outlinedEntity, false)
-                end
-                outlinedEntity = nil
-                outlineHasControl = nil
+    Citizen.CreateThread(function()
+        local holdingEntity = false
+        local heldEntity = nil
+        local outlinedEntity = nil
+
+        local ANIM_DICT = "anim@mp_rollarcoaster"
+        local ANIM_NAME = "hands_up_idle_a_player_one"
+        local GRAB_KEY = 38 -- E
+        -- A car is heavy. A 500 N push for one frame is invisible; the
+        -- known-good build sets a real velocity instead (75 m/s + lift), and
+        -- that is also the only throw path that survives a network-owned
+        -- vehicle whose physics the server keeps re-simulating.
+        local THROW_SPEED = 75.0
+        local THROW_LIFT = 8.0
+
+        local animReady = false
+        local animMissing = false
+        local animRequestedAt = 0
+        local animWaitFrames = 0
+        local lastAnimTaskAt = 0
+
+        local function nowMs()
+            if type(GetGameTimer) == "function" then
+                local ok, value = pcall(GetGameTimer)
+                if ok and type(value) == "number" then return value end
             end
+            return 0
+        end
 
-            local function RotationToDirection(rotation)
-                local adjustedRotation = vector3((math.pi / 180) * rotation.x, (math.pi / 180) * rotation.y, (math.pi / 180) * rotation.z)
-                local direction = vector3(-math.sin(adjustedRotation.z) * math.abs(math.cos(adjustedRotation.x)), math.cos(adjustedRotation.z) * math.abs(math.cos(adjustedRotation.x)), math.sin(adjustedRotation.x))
-                return direction
+        -- The ESP outline is a per-entity draw flag. It is not cleared when
+        -- the thread stops, so every path that leaves the aimed vehicle must
+        -- turn it off explicitly; otherwise disabling Throw Vehicle leaves the
+        -- last car glowing red or green forever.
+        local function clearOutline()
+            if outlinedEntity and outlinedEntity ~= 0
+                and type(SetEntityDrawOutline) == "function" then
+                pcall(SetEntityDrawOutline, outlinedEntity, false)
             end
+            outlinedEntity = nil
+        end
 
-            while throwVehicleActive and throwVehicleGeneration == generation do
-                Citizen.Wait(0)
-                local playerPed = PlayerPedId()
-                local screenW, screenH = GetScreenSize()
+        local function applyOutlineColor(entity, r, g, b, a)
+            if type(SetEntityDrawOutlineColor) ~= "function" then return end
+            local ok = pcall(SetEntityDrawOutlineColor, r, g, b, a)
+            if ok then return end
+            -- Defensive: a few menu builds expose the colour setter with the
+            -- entity first. Try that shape once; a colour helper must never
+            -- kill the throw loop.
+            pcall(SetEntityDrawOutlineColor, entity or 0, r, g, b, a)
+        end
 
-                if holdingEntity and heldEntity and DoesEntityExist(heldEntity) then
-                    clearOutline()
-                    if not IsEntityPlayingAnim(playerPed, 'anim@mp_rollarcoaster', 'hands_up_idle_a_player_one', 3) then
-                        RequestAnimDict('anim@mp_rollarcoaster')
-                        while not HasAnimDictLoaded('anim@mp_rollarcoaster') do
-                            Citizen.Wait(100)
+        local function releaseHeld(entity)
+            if not entity or entity == 0 or not DoesEntityExist(entity) then return end
+            pcall(NetworkRequestControlOfEntity, entity)
+            pcall(DetachEntity, entity, true, true)
+            pcall(FreezeEntityPosition, entity, false)
+            if type(SetEntityHasGravity) == "function" then
+                pcall(SetEntityHasGravity, entity, true)
+            end
+            -- An entity attached with collision=false is not guaranteed to get
+            -- its collision back on detach. Restore it explicitly so the car
+            -- does not fall through the road after a drop or a throw.
+            pcall(SetEntityCollision, entity, true, true)
+        end
+
+        local function resetCarry(ped)
+            if heldEntity then releaseHeld(heldEntity) end
+            holdingEntity = false
+            heldEntity = nil
+            animReady = false
+            animMissing = false
+            animRequestedAt = 0
+            animWaitFrames = 0
+            lastAnimTaskAt = 0
+            pcall(ClearPedTasks, ped)
+        end
+
+        -- Non-blocking animation loader. The old loop waited forever for the
+        -- dictionary; a server that strips it made the feature hang after the
+        -- grab. After two seconds or 120 frames the pose is simply skipped and
+        -- the throw still fires.
+        local function updateCarryAnim(ped)
+            if animReady then
+                -- The dictionary timed out. Do not retry a task for a pose
+                -- that cannot exist; the throw is independent of the pose.
+                if animMissing then return end
+                if type(IsEntityPlayingAnim) == "function" then
+                    local ok, playing = pcall(IsEntityPlayingAnim, ped, ANIM_DICT, ANIM_NAME, 3)
+                    if not ok or not playing then
+                        local now = nowMs()
+                        if now - lastAnimTaskAt >= 500 or now == 0 then
+                            lastAnimTaskAt = now
+                            pcall(TaskPlayAnim, ped, ANIM_DICT, ANIM_NAME,
+                                8.0, -8.0, -1, 49, 0, false, false, false)
                         end
-                        TaskPlayAnim(playerPed, 'anim@mp_rollarcoaster', 'hands_up_idle_a_player_one', 8.0, -8.0, -1, 50, 0, false, false, false)
+                    end
+                end
+                return
+            end
+
+            local loaded = false
+            if type(HasAnimDictLoaded) == "function" then
+                local ok, value = pcall(HasAnimDictLoaded, ANIM_DICT)
+                loaded = ok and value == true
+            end
+            if loaded then
+                animReady = true
+                animMissing = false
+                pcall(TaskPlayAnim, ped, ANIM_DICT, ANIM_NAME,
+                    8.0, -8.0, -1, 49, 0, false, false, false)
+                return
+            end
+
+            local now = nowMs()
+            if animRequestedAt == 0 then
+                animRequestedAt = now
+                if type(RequestAnimDict) == "function" then
+                    pcall(RequestAnimDict, ANIM_DICT)
+                end
+                return
+            end
+
+            animWaitFrames = animWaitFrames + 1
+            if (now > 0 and now - animRequestedAt >= 2000) or animWaitFrames > 120 then
+                animReady = true
+                animMissing = true
+            end
+        end
+
+        local function RotationToDirection(rotation)
+            local adjustedRotation = vector3((math.pi / 180) * rotation.x, (math.pi / 180) * rotation.y, (math.pi / 180) * rotation.z)
+            local direction = vector3(-math.sin(adjustedRotation.z) * math.abs(math.cos(adjustedRotation.x)), math.cos(adjustedRotation.z) * math.abs(math.cos(adjustedRotation.x)), math.sin(adjustedRotation.x))
+            return direction
+        end
+
+        -- The carry rig used by the working pickup build: spine3, two metres
+        -- in front of the chest. The old hand-bone offset parked a full car
+        -- inside the first-person camera, which read as "nothing happens".
+        local function tryAttach(ped, entity)
+            local bone = 24816
+            if type(GetPedBoneIndex) == "function" then
+                local ok, value = pcall(GetPedBoneIndex, ped, 24816)
+                if ok and type(value) == "number" then bone = value end
+            end
+            pcall(NetworkRequestControlOfEntity, entity)
+            pcall(FreezeEntityPosition, entity, true)
+            pcall(AttachEntityToEntity, entity, ped, bone,
+                2.05, 0.0, 0.5, 90.0, 0.0, 0.0,
+                true, true, false, false, 2, true)
+        end
+
+        while throwVehicleActive and throwVehicleGeneration == generation do
+            Citizen.Wait(0)
+            -- The while condition was evaluated before the wait. If the
+            -- operator toggles off (or off -> on) during that frame, this
+            -- retired thread must not run one last grab/throw. This check is
+            -- what makes the generation guard cover the wait itself.
+            if not throwVehicleActive or throwVehicleGeneration ~= generation then
+                break
+            end
+            local playerPed = PlayerPedId()
+            local screenW, screenH = GetScreenSize()
+
+            if holdingEntity then
+                if not heldEntity or heldEntity == 0 or not DoesEntityExist(heldEntity) then
+                    -- The server deleted the car or it streamed out. Clear the
+                    -- dead handle without trying to throw it.
+                    resetCarry(playerPed)
+                else
+                    clearOutline()
+                    updateCarryAnim(playerPed)
+
+                    if type(IsEntityAttached) == "function"
+                        and not IsEntityAttached(heldEntity) then
+                        tryAttach(playerPed, heldEntity)
                     end
 
-                    if IsControlJustReleased(0, 38) then
+                    if IsControlJustReleased(0, GRAB_KEY) then
                         local camRot = GetGameplayCamRot(2)
                         local direction = RotationToDirection(camRot)
-                        DetachEntity(heldEntity, true, true)
-                        ApplyForceToEntity(heldEntity, 1, direction.x * 500.0, direction.y * 500.0, direction.z * 500.0, 0.0, 0.0, 0.0, 0, false, true, true, false, true)
+                        local entity = heldEntity
                         holdingEntity = false
                         heldEntity = nil
-                        ClearPedTasks(playerPed)
+                        animReady = false
+                        animMissing = false
+                        animRequestedAt = 0
+                        animWaitFrames = 0
+                        lastAnimTaskAt = 0
+                        releaseHeld(entity)
+                        if type(SetEntityVelocity) == "function" then
+                            pcall(SetEntityVelocity, entity,
+                                direction.x * THROW_SPEED,
+                                direction.y * THROW_SPEED,
+                                direction.z * THROW_SPEED + THROW_LIFT)
+                        end
+                        pcall(ClearPedTasks, playerPed)
+                    end
+                end
+            else
+                local camPos = GetGameplayCamCoord()
+                local camRot = GetGameplayCamRot(2)
+                local direction = RotationToDirection(camRot)
+                local dest = vector3(camPos.x + direction.x * 300.0, camPos.y + direction.y * 300.0, camPos.z + direction.z * 300.0)
+
+                local rayHandle = StartShapeTestRay(camPos.x, camPos.y, camPos.z, dest.x, dest.y, dest.z, -1, playerPed, 0)
+                local _, hit, _, _, entityHit = GetShapeTestResult(rayHandle)
+
+                local target = nil
+                if hit == 1 and type(entityHit) == "number" and entityHit ~= 0
+                    and DoesEntityExist(entityHit) then
+                    local typeOk, entityType = pcall(GetEntityType, entityHit)
+                    if typeOk and entityType == 2 then
+                        -- Never grab the car the operator is sitting in. The
+                        -- ray ignores the ped, not the ped's own vehicle.
+                        local vehicleOk, myVehicle =
+                            pcall(GetVehiclePedIsIn, playerPed, false)
+                        if not vehicleOk then myVehicle = 0 end
+                        if not myVehicle or myVehicle == 0
+                            or entityHit ~= myVehicle then
+                            target = entityHit
+                        end
+                    end
+                end
+
+                if target then
+                    -- Track the current entity so disabling the option can
+                    -- clear the persistent outline. The active highlight itself
+                    -- is re-applied every frame, exactly like the known-good
+                    -- build; setting it once makes it flicker off.
+                    if outlinedEntity ~= target then
+                        clearOutline()
+                        outlinedEntity = target
                     end
 
-                    if heldEntity and not IsEntityAttached(heldEntity) and holdingEntity then
-                        NetworkRequestControlOfEntity(heldEntity)
-                        AttachEntityToEntity(heldEntity, playerPed, GetPedBoneIndex(playerPed, 60309), 1.0, 0.5, 0.0, 0.0, 0.0, 0.0, true, true, false, false, 1, true)
+                    local hasControl = false
+                    if type(NetworkHasControlOfEntity) == "function" then
+                        local ok, value = pcall(NetworkHasControlOfEntity, target)
+                        hasControl = ok and value == true
                     end
-                else
-                    local camPos = GetGameplayCamCoord()
-                    local camRot = GetGameplayCamRot(2)
-                    local direction = RotationToDirection(camRot)
-                    local dest = vector3(camPos.x + direction.x * 300.0, camPos.y + direction.y * 300.0, camPos.z + direction.z * 300.0)
 
-                    local rayHandle = StartShapeTestRay(camPos.x, camPos.y, camPos.z, dest.x, dest.y, dest.z, -1, playerPed, 0)
-                    local _, hit, _, _, entityHit = GetShapeTestResult(rayHandle)
+                    if type(SetEntityDrawOutline) == "function" then
+                        pcall(SetEntityDrawOutline, target, true)
+                        if hasControl then
+                            applyOutlineColor(target, 0, 255, 0, 255)
+                        else
+                            applyOutlineColor(target, 255, 0, 0, 255)
+                        end
+                    end
 
-                    if hit == 1 and DoesEntityExist(entityHit) then
-                        local entityType = GetEntityType(entityHit)
-                        if entityType == 2 then
-                            if outlinedEntity ~= entityHit then
-                                clearOutline()
-                                if SetEntityDrawOutline then
-                                    SetEntityDrawOutline(entityHit, true)
-                                    outlinedEntity = entityHit
-                                end
-                            end
+                    local dimsOk, min, max = false, nil, nil
+                    if type(GetModelDimensions) == "function" then
+                        local modelOk, model = pcall(GetEntityModel, target)
+                        if modelOk and type(model) == "number" then
+                            dimsOk, min, max = pcall(GetModelDimensions, model)
+                        end
+                    end
+                    if dimsOk and min and max
+                        and type(min.x) == "number" and type(max.x) == "number" then
+                        local corners = {
+                            vector3(min.x, min.y, min.z), vector3(min.x, min.y, max.z),
+                            vector3(min.x, max.y, min.z), vector3(min.x, max.y, max.z),
+                            vector3(max.x, min.y, min.z), vector3(max.x, min.y, max.z),
+                            vector3(max.x, max.y, min.z), vector3(max.x, max.y, max.z)
+                        }
 
-                            local hasControl = NetworkHasControlOfEntity(entityHit)
-                            if outlinedEntity == entityHit and outlineHasControl ~= hasControl then
-                                if SetEntityDrawOutlineColor then
-                                    if hasControl then
-                                        SetEntityDrawOutlineColor(0, 255, 0, 255)
-                                    else
-                                        SetEntityDrawOutlineColor(255, 0, 0, 255)
-                                    end
-                                end
-                                outlineHasControl = hasControl
-                            end
-
-                            local min, max = GetModelDimensions(GetEntityModel(entityHit))
-                            local corners = {
-                                vector3(min.x, min.y, min.z), vector3(min.x, min.y, max.z),
-                                vector3(min.x, max.y, min.z), vector3(min.x, max.y, max.z),
-                                vector3(max.x, min.y, min.z), vector3(max.x, min.y, max.z),
-                                vector3(max.x, max.y, min.z), vector3(max.x, max.y, max.z)
-                            }
-
-                            local minX, minY, maxX, maxY = 1.0, 1.0, 0.0, 0.0
-                            local hasScreen = false
-                            for _, corner in pairs(corners) do
-                                local world = GetOffsetFromEntityInWorldCoords(entityHit, corner.x, corner.y, corner.z)
-                                local onScreen, x, y = GetScreenCoordFromWorldCoord(world.x, world.y, world.z)
-                                if onScreen then
+                        local minX, minY, maxX, maxY = 1.0, 1.0, 0.0, 0.0
+                        local hasScreen = false
+                        for _, corner in pairs(corners) do
+                            local worldOk, world = pcall(GetOffsetFromEntityInWorldCoords,
+                                target, corner.x, corner.y, corner.z)
+                            if worldOk and world then
+                                local screenOk, onScreen, x, y =
+                                    pcall(GetScreenCoordFromWorldCoord,
+                                        world.x, world.y, world.z)
+                                if screenOk and onScreen then
                                     hasScreen = true
                                     if x < minX then minX = x end
                                     if x > maxX then maxX = x end
@@ -1560,40 +1737,40 @@ local function ToggleThrowVehicle(enable)
                                     if y > maxY then maxY = y end
                                 end
                             end
-
-                            if hasScreen then
-                                local r, g, b = 255, 0, 0
-                                if hasControl then
-                                    r, g, b = 0, 255, 0
-                                end
-                                Draw2DBox(minX, minY, maxX, maxY, r, g, b, 255, screenW, screenH)
-                            end
-
-                            if IsControlJustReleased(0, 38) then
-                                clearOutline()
-                                holdingEntity = true
-                                heldEntity = entityHit
-                                NetworkRequestControlOfEntity(heldEntity)
-                                AttachEntityToEntity(heldEntity, playerPed, GetPedBoneIndex(playerPed, 60309), 1.0, 0.5, 0.0, 0.0, 0.0, 0.0, true, true, false, false, 1, true)
-                            end
-                        else
-                            clearOutline()
                         end
-                    else
-                        clearOutline()
-                    end
-                end
-            end
 
-            clearOutline()
-            if heldEntity then
-                if DoesEntityExist(heldEntity) then
-                    pcall(DetachEntity, heldEntity, true, true)
+                        if hasScreen then
+                            local r, g, b = 255, 0, 0
+                            if hasControl then
+                                r, g, b = 0, 255, 0
+                            end
+                            Draw2DBox(minX, minY, maxX, maxY, r, g, b, 255, screenW, screenH)
+                        end
+                    end
+
+                    if IsControlJustReleased(0, GRAB_KEY) then
+                        clearOutline()
+                        holdingEntity = true
+                        heldEntity = target
+                        animReady = false
+                        animMissing = false
+                        animRequestedAt = 0
+                        animWaitFrames = 0
+                        lastAnimTaskAt = 0
+                        tryAttach(playerPed, target)
+                    end
+                else
+                    clearOutline()
                 end
-                ClearPedTasks(PlayerPedId())
             end
-        end)
-    end
+        end
+
+        clearOutline()
+        if heldEntity then releaseHeld(heldEntity) end
+        holdingEntity = false
+        heldEntity = nil
+        pcall(ClearPedTasks, PlayerPedId())
+    end)
 end
 
 -- Render ESP for a single ped
@@ -16165,7 +16342,7 @@ end)()
 -- >>> VANGUARD MODULE BEGIN
 -- ============================================================================
 -- VANGUARD  (integrated artifact - edit src/ and rebuild)
--- Generated: 2026-10-26 14:28:08
+-- Generated: 2026-10-26 15:21:21
 --
 -- This block lives in loader.lua and in dist/loader.built.lua at the same
 -- time. It is the only place the local Menu table is in scope. Rebuilding
@@ -26024,16 +26201,19 @@ local TP = (function(O,Menu)
 --   ARMURE    50 / 100        [bar]
 --   ARME      Carbine Rifle
 --   DISTANCE  42 m
---   DIRECTION NO 315
 --   POSITION  123.4, -456.7, 30.1
 --   VEHICULE
 --   MODELE    Sultan
 --   PLAQUE    ABC123
 --   VITESSE   87 km/h
 --   VIE VEHICULE               [bar]
---   ETAT      [VISE] [SPRINT]
 --   ------------------------------------------------
---   [EN VIE]                                  * LIVE
+--   [EN VIE]
+--
+-- The card is deliberately narrower than it is tall: identifiers, vitals and
+-- vehicle data are what the operator needs while aiming. The old state pill
+-- row, the compass row and the pulsing DIRECT marker were removed because they
+-- duplicated information already visible in world and cost vertical space.
 -- ============================================================================
 
 local TP = {}
@@ -26162,39 +26342,10 @@ local function screenSize()
     return width, height
 end
 
-local function compass(heading)
-    local directions = { "N", "NE", "E", "SE", "S", "SO", "O", "NO" }
-    local normalized = (tonumber(heading) or 0.0) % 360.0
-    local index = math.floor((normalized + 22.5) / 45.0) % 8 + 1
-    return directions[index] or "N"
-end
-
 local function healthColor(percent)
     if percent < 0.25 then return 0.90, 0.28, 0.30 end
     if percent < 0.55 then return 0.95, 0.70, 0.22 end
     return 0.30, 0.82, 0.46
-end
-
--- Wrap pills on measured width so a translated state never runs off the card.
--- One layout pass feeds both the reserved height and the draw call; that keeps
--- the card from clipping or leaving a gap when a language changes a label.
-local function layoutPills(states, maxWidth, scale)
-    local rows = { {} }
-    local used = 0.0
-    for i = 1, #states do
-        local state = states[i]
-        local width = textWidth(state.label, 10, scale) + 14 * scale
-        local gap = (#rows[#rows] > 0 and 6 * scale or 0)
-        if #rows[#rows] > 0 and used + gap + width > maxWidth then
-            rows[#rows + 1] = {}
-            used = 0.0
-            gap = 0.0
-        end
-        local row = rows[#rows]
-        row[#row + 1] = { state = state, width = width }
-        used = used + gap + width
-    end
-    return rows
 end
 
 function Menu.DrawPlayerInfoPanel()
@@ -26217,11 +26368,11 @@ function Menu.DrawPlayerInfoPanel()
     local screenWidth, screenHeight = screenSize()
     local accentR, accentG, accentB = accentRGB()
 
-    -- Match the menu's own width. The old 334 px card forced 10-12 px labels
-    -- and was hard to read next to 19 px menu rows. The card is now the same
-    -- visual weight as the menu and the type scale below is readable at 1.1x.
+    -- A deliberate step wider than the menu: the dossier holds two columns of
+    -- text (label + value) and the old 334 px card forced 10-12 px glyphs to
+    -- fit. 400 px at 100 % gives values the same 19 px size as menu rows.
     local menuWidth = tonumber(sp.width) or (360 * scale)
-    local panelWidth = math.max(340 * scale, menuWidth * 0.98)
+    local panelWidth = math.max(400 * scale, menuWidth)
     local gap = 14 * scale
     local panelX = sp.x + (sp.width or 360 * scale) + gap
     if panelX + panelWidth > screenWidth - 8 then
@@ -26233,30 +26384,35 @@ function Menu.DrawPlayerInfoPanel()
         end
     end
 
-    local pad = 17 * scale
+    local pad = 20 * scale
     local innerWidth = panelWidth - pad * 2
     local cx = panelX + pad
 
-    -- Type scale follows the menu's own rhythm: 19 px item text, 14 px
-    -- separators, 10-11 px secondary values. Menu.DrawText multiplies all of
-    -- these by Menu.Scale, so the card grows with the menu instead of staying
-    -- fixed while the menu gets bigger.
-    local FONT_KICKER = 10
-    local FONT_NAME = 23
-    local FONT_ID = 11
-    local FONT_SECTION = 12
-    local FONT_LABEL = 12
-    local FONT_VALUE = 16
-    local FONT_BAR = 12
-    local FONT_PILL = 11
-    local FONT_FOOTER = 11
+    -- Type scale follows the menu's own rhythm: menu item text is 19 px, so
+    -- target values are 19 px too. Labels stay secondary at 13 px, and the
+    -- name is the only display size. Menu.DrawText multiplies all of these by
+    -- Menu.Scale, so the whole card grows with the menu.
+    local FONT_KICKER = 11
+    local FONT_NAME = 26
+    local FONT_ID = 12
+    local FONT_SECTION = 13
+    local FONT_LABEL = 13
+    local FONT_VALUE = 19
+    local FONT_BAR = 13
+    local FONT_FOOTER = 12
 
-    local headerHeight = 74 * scale
-    local sectionHeight = 26 * scale
-    local rowHeight = 30 * scale
-    local barHeight = 36 * scale
-    local footerHeight = 36 * scale
-    local pillRowHeight = 26 * scale
+    -- Menu.DrawText places the top of a glyph box at y; the menu itself centres
+    -- a 19 px row with a -8 offset. 0.421 reproduces that optical centre for
+    -- every size, so labels, values and status share one alignment rule.
+    local function centeredTextY(centerY, size)
+        return centerY - size * 0.421 * scale
+    end
+
+    local headerHeight = 70 * scale
+    local sectionHeight = 30 * scale
+    local rowHeight = 36 * scale
+    local barHeight = 42 * scale
+    local footerHeight = 46 * scale
 
     local healthMax = tonumber(info.maxHealth) or 0
     local health = tonumber(info.health) or 0
@@ -26281,29 +26437,18 @@ function Menu.DrawPlayerInfoPanel()
         statusLabel = "GODMODE"
     end
 
-    local states = {}
-    local function addState(label, r, g, b)
-        states[#states + 1] = { label = label, r = r, g = g, b = b }
-    end
-    if info.isAiming then addState("VISE", accentR, accentG, accentB) end
-    if info.isInCover then addState("COUVERT", 0.35, 0.62, 0.95) end
-    if info.isSprinting then addState("SPRINT", 0.35, 0.82, 0.48) end
-    if info.isSwimming then addState("NAGE", 0.30, 0.65, 0.95) end
-    if info.isFalling then addState("CHUTE", 0.95, 0.70, 0.22) end
-    if info.isRagdoll then addState("RAGDOLL", 0.90, 0.35, 0.35) end
-    if info.isInvisible then addState("INVISIBLE", 0.72, 0.45, 0.95) end
-
     local function section(label)
         return function(y)
-            fillRect(cx, y + 9 * scale, 3 * scale, 11 * scale,
+            fillRect(cx, y + 8.5 * scale, 3 * scale, 13 * scale,
                 accentR, accentG, accentB, 0.95, 1.5 * scale)
             local labelWidth = textWidth(label, FONT_SECTION, scale)
-            text(cx + 11 * scale, y + 4 * scale, label, FONT_SECTION,
-                0.62, 0.62, 0.66, 1.0)
-            local lineX = cx + 11 * scale + labelWidth + 9 * scale
+            text(cx + 12 * scale,
+                centeredTextY(y + sectionHeight * 0.5, FONT_SECTION),
+                label, FONT_SECTION, 0.66, 0.66, 0.71, 1.0)
+            local lineX = cx + 12 * scale + labelWidth + 10 * scale
             local lineWidth = cx + innerWidth - lineX
             if lineWidth > 0 then
-                fillRect(lineX, y + 9 * scale, lineWidth, 1,
+                fillRect(lineX, y + sectionHeight * 0.5, lineWidth, 1,
                     0.20, 0.20, 0.24, 0.55, 0)
             end
         end
@@ -26311,32 +26456,41 @@ function Menu.DrawPlayerInfoPanel()
 
     local function row(label, value, r, g, b, size)
         return function(y)
-            text(cx, y + 7 * scale, label, FONT_LABEL, 0.50, 0.50, 0.55, 1.0)
+            local center = y + rowHeight * 0.5
+            text(cx, centeredTextY(center, FONT_LABEL),
+                label, FONT_LABEL, 0.58, 0.58, 0.64, 1.0)
             local valueSize = size or FONT_VALUE
-            local shown = fitText(value, innerWidth * 0.64, valueSize, scale)
+            local shown = fitText(value, innerWidth * 0.62, valueSize, scale)
             local width = textWidth(shown, valueSize, scale)
-            text(cx + innerWidth - width, y + 4 * scale, shown, valueSize,
-                r or 0.95, g or 0.95, b or 0.97, 1.0)
+            text(cx + innerWidth - width, centeredTextY(center, valueSize),
+                shown, valueSize, r or 0.97, g or 0.97, b or 0.99, 1.0)
         end
     end
 
     local function bar(label, percent, valueText, r, g, b)
         return function(y)
-            text(cx, y + 1 * scale, label, FONT_BAR, 0.50, 0.50, 0.55, 1.0)
+            -- Labels share a line, then the bar owns the lower half. Aligning
+            -- both labels to the same centre keeps the two vitals in step.
+            local labelCenter = y + 13 * scale
+            text(cx, centeredTextY(labelCenter, FONT_BAR),
+                label, FONT_BAR, 0.58, 0.58, 0.64, 1.0)
             local valueWidth = textWidth(valueText, FONT_BAR, scale)
-            text(cx + innerWidth - valueWidth, y, valueText, FONT_BAR,
-                r, g, b, 0.97)
+            text(cx + innerWidth - valueWidth,
+                centeredTextY(labelCenter, FONT_BAR), valueText,
+                FONT_BAR, r, g, b, 0.98)
 
-            local barY = y + 18 * scale
-            fillRect(cx, barY, innerWidth, 8 * scale, 0.14, 0.14, 0.17, 0.95,
-                4 * scale)
+            local barY = y + 26 * scale
+            fillRect(cx, barY, innerWidth, 9 * scale, 0.14, 0.14, 0.17, 0.95,
+                4.5 * scale)
             local filled = innerWidth * percent
             if filled > 0 then
-                fillRect(cx, barY, filled, 8 * scale, r, g, b, 0.92, 4 * scale)
+                fillRect(cx, barY, filled, 9 * scale, r, g, b, 0.92,
+                    4.5 * scale)
                 -- One-pixel top highlight: it reads as a lit bar rather than a
                 -- flat rectangle, and costs one draw call.
                 fillRect(cx + 2 * scale, barY + 1 * scale,
-                    math.max(0, filled - 4 * scale), 1, 1, 1, 1, 0.22, 0.5 * scale)
+                    math.max(0, filled - 4 * scale), 1, 1, 1, 1, 0.22,
+                    0.5 * scale)
             end
         end
     end
@@ -26353,27 +26507,29 @@ function Menu.DrawPlayerInfoPanel()
             accentR * 0.88, accentG * 0.88, accentB * 0.88, 0.90)
 
         local idText = "#" .. tostring(info.serverId or "?")
-        local idWidth = textWidth(idText, FONT_ID, scale) + 18 * scale
+        local idWidth = textWidth(idText, FONT_ID, scale) + 20 * scale
         local idX = panelX + panelWidth - pad - idWidth
-        fillRect(idX, y + 8 * scale, idWidth, 22 * scale,
-            accentR, accentG, accentB, 0.12, 5 * scale)
-        fillRect(idX, y + 30 * scale, idWidth, 1,
+        fillRect(idX, y + 9 * scale, idWidth, 24 * scale,
+            accentR, accentG, accentB, 0.12, 6 * scale)
+        fillRect(idX, y + 33 * scale, idWidth, 1,
             accentR, accentG, accentB, 0.45, 0)
-        text(idX + 9 * scale, y + 13 * scale, idText, FONT_ID,
-            accentR, accentG, accentB, 0.98)
+        text(idX + 10 * scale, centeredTextY(y + 21 * scale, FONT_ID),
+            idText, FONT_ID, accentR, accentG, accentB, 0.98)
 
-        local nameX = cx + 16 * scale
-        local nameMax = math.max(0, idX - nameX - 10 * scale)
+        local nameX = cx + 18 * scale
+        local nameMax = math.max(0, idX - nameX - 12 * scale)
         local name = fitText(info.name or "Inconnu", nameMax, FONT_NAME, scale)
         -- A sub-pixel shadow is enough to make the name read as bold without
         -- loading a second font.
-        text(nameX + 0.8 * scale, y + 22 * scale + 0.8 * scale,
-            name, FONT_NAME, 0, 0, 0, 0.60)
-        text(nameX, y + 22 * scale, name, FONT_NAME, 0.97, 0.97, 0.99, 1.0)
-        fillRect(cx + 2 * scale, y + 31 * scale, 8 * scale, 8 * scale,
-            statusR, statusG, statusB, 1.0, 4 * scale)
+        local nameY = y + 23 * scale
+        local nameCenter = nameY + FONT_NAME * 0.421 * scale
+        text(nameX + 0.8 * scale, nameY + 0.8 * scale,
+            name, FONT_NAME, 0, 0, 0, 0.62)
+        text(nameX, nameY, name, FONT_NAME, 0.98, 0.98, 1.0, 1.0)
+        fillRect(cx + 2 * scale, nameCenter - 4.5 * scale,
+            9 * scale, 9 * scale, statusR, statusG, statusB, 1.0, 4.5 * scale)
 
-        fillRect(cx, y + 66 * scale, innerWidth, 1,
+        fillRect(cx, y + 62 * scale, innerWidth, 1,
             0.22, 0.22, 0.26, 0.55, 0)
     end)
 
@@ -26392,10 +26548,6 @@ function Menu.DrawPlayerInfoPanel()
     add(rowHeight, row("DISTANCE",
         ("%d m"):format(whole(info.distance)),
         accentR, accentG, accentB, FONT_VALUE + 1))
-    add(rowHeight, row("DIRECTION",
-        ("%s  %d"):format(compass(info.heading),
-            whole((tonumber(info.heading) or 0) % 360)),
-        accentR, accentG, accentB))
     local coords = info.coords
     if type(coords) == "table" then
         add(rowHeight, row("POSITION",
@@ -26419,51 +26571,20 @@ function Menu.DrawPlayerInfoPanel()
             healthColor(vehiclePercent)))
     end
 
-    -- States -----------------------------------------------------------------
-    if #states > 0 then
-        add(sectionHeight, section("ETAT"))
-        local pillRows = layoutPills(states, innerWidth, scale)
-        add(#pillRows * pillRowHeight, function(y)
-            local rowY = y
-            for r = 1, #pillRows do
-                local x = cx
-                for i = 1, #pillRows[r] do
-                    local entry = pillRows[r][i]
-                    local state = entry.state
-                    fillRect(x, rowY, entry.width, 22 * scale,
-                        state.r, state.g, state.b, 0.12, 11 * scale)
-                    fillRect(x + 1 * scale, rowY + 6 * scale, 2 * scale, 11 * scale,
-                        state.r, state.g, state.b, 0.88, 1 * scale)
-                    text(x + 9 * scale, rowY + 6 * scale, state.label, FONT_PILL,
-                        state.r, state.g, state.b, 1.0)
-                    x = x + entry.width + 6 * scale
-                end
-                rowY = rowY + pillRowHeight
-            end
-        end)
-    end
-
     -- Footer -----------------------------------------------------------------
     local footer = function(y)
         fillRect(cx, y + 2 * scale, innerWidth, 1, 0.20, 0.20, 0.24, 0.50, 0)
 
-        local labelWidth = textWidth(statusLabel, FONT_FOOTER, scale) + 22 * scale
-        fillRect(cx, y + 8 * scale, labelWidth, 22 * scale,
-            statusR, statusG, statusB, 0.13, 11 * scale)
-        fillRect(cx + 1 * scale, y + 8 * scale, 2 * scale, 22 * scale,
+        local labelWidth = textWidth(statusLabel, FONT_FOOTER, scale) + 26 * scale
+        local pillTop = y + 10 * scale
+        local pillHeight = 28 * scale
+        local pillCenter = pillTop + pillHeight * 0.5
+        fillRect(cx, pillTop, labelWidth, pillHeight,
+            statusR, statusG, statusB, 0.13, pillHeight * 0.5)
+        fillRect(cx + 1 * scale, pillTop, 2 * scale, pillHeight,
             statusR, statusG, statusB, 0.90, 1 * scale)
-        text(cx + 11 * scale, y + 13 * scale, statusLabel, FONT_FOOTER,
-            statusR, statusG, statusB, 1.0)
-
-        local live = "DIRECT"
-        local liveWidth = textWidth(live, FONT_FOOTER, scale)
-        local timer = 0
-        if type(GetGameTimer) == "function" then timer = GetGameTimer() or 0 end
-        local pulse = 0.55 + 0.35 * math.abs(math.sin(timer / 650.0))
-        fillRect(cx + innerWidth - liveWidth - 13 * scale, y + 16 * scale,
-            5 * scale, 5 * scale, 0.32, 0.82, 0.48, pulse, 2.5 * scale)
-        text(cx + innerWidth - liveWidth, y + 13 * scale, live, FONT_FOOTER,
-            0.42, 0.60, 0.46, 0.90)
+        text(cx + 13 * scale, centeredTextY(pillCenter, FONT_FOOTER),
+            statusLabel, FONT_FOOTER, statusR, statusG, statusB, 1.0)
     end
     add(footerHeight, footer)
 
@@ -26471,7 +26592,7 @@ function Menu.DrawPlayerInfoPanel()
     for i = 1, #blocks do contentHeight = contentHeight + blocks[i].height end
 
     local chromeHeight = pad * 2
-    local panelHeight = math.max(chromeHeight + contentHeight, 400 * scale)
+    local panelHeight = math.max(chromeHeight + contentHeight, 440 * scale)
 
     -- If the card is taller than its content (minimum height), put the spare
     -- space before the footer. The footer then sits on the bottom edge instead
@@ -26498,7 +26619,7 @@ function Menu.DrawPlayerInfoPanel()
         0.059, 0.059, 0.059, 0.985, 7 * scale)
     -- A very light accent wash on the header, then the hard accent line. It
     -- mirrors the menu header without competing with the text.
-    fillRect(panelX + 1, panelY + 1, panelWidth - 2, 74 * scale,
+    fillRect(panelX + 1, panelY + 1, panelWidth - 2, 70 * scale,
         accentR, accentG, accentB, 0.050, 7 * scale)
     fillRect(panelX + pad, panelY + 1, panelWidth - pad * 2, 2 * scale,
         accentR, accentG, accentB, 0.90, 1 * scale)
@@ -27663,12 +27784,18 @@ end
 -- fall into. The prop is frozen (infinite mass), has collision enabled, and is
 -- explicitly excluded from colliding with the carrier vehicle only.
 --
--- Orientation is the scoop, not the drive-up face: the low lip points away
--- from the car and the high edge sits at the bumper. The base loader used
--- heading + 180 for a ramp planted in front of the car (low edge toward the
--- car, so the car drives up it). This prop follows the bumper, so the useful
--- face is the other one: traffic ahead is scooped up the slope instead of
--- being hit by the vertical back of the prop.
+-- The ramp sits behind the rear bumper (the other side from the old front
+-- scoop) and is turned so its low lip points away from the carrier. A car
+-- following behind meets the low lip and rides up the slope instead of
+-- hitting the vertical back of the prop. The heading offset is therefore
+-- heading + 180, not the carrier heading.
+--
+-- The prop is ground-snapped, not pinned to a fixed vehicle-space Z. A low
+-- sports car has its origin only a few centimetres above the road; the old
+-- FOLLOW_Z = -0.25 pushed the prop through the tarmac. Every spawn and every
+-- follower tick now queries the ground under the desired X/Y and places the
+-- model's lowest point on it. The ramp follows the road height instead of
+-- floating on high cars or sinking under low ones.
 --
 -- Collision is proved, not assumed. After SetEntityCollision, the module reads
 -- GET_ENTITY_COLLISION_DISABLED. If the engine still reports the prop as a
@@ -27691,17 +27818,62 @@ local function installRampFix()
     if rampFixState then return true end
 
     local RAMP_MODELS = { "prop_mp_ramp_01", "prop_mp_ramp_02", "prop_mp_ramp_03" }
-    local FOLLOW_Z = -0.25
-    local FRONT_GAP = 0.10
+    local RAMP_GAP = 0.10
+    local GROUND_CLEARANCE = 0.03
 
     local state = {
         obj = 0,
         id = nil,
         veh = 0,
         center = 0.0,
+        bottom = 0.0,
         active = false,
         collisionWarned = false,
     }
+
+    -- Ground height under an X/Y, independent of the carrier's ride height.
+    --
+    -- * GetGroundZFor_3dCoord(..., false) does not accept water as ground, so
+    --   a bridge over water returns the deck/road rather than the water plane.
+    --   The native reports ground elevation, not a dynamic prop deck.
+    -- * The query starts at referenceZ + 3, not + 8: under an overpass it
+    --   stays below the bridge deck, so the answer is the road the car is on.
+    -- * If the ground read is far from the reference, a world-only shape test
+    --   is used. Flag 1 tests map collision, never objects, so it also cannot
+    --   hit the ramp or the carrier.
+    -- * A guard build can hide a native; every call is pcall'd and the caller
+    --   keeps its last known Z if both readers fail.
+    local function groundZAt(x, y, referenceZ, ignoreEntity)
+        local ok, found, ground =
+            pcall(GetGroundZFor_3dCoord, x, y, referenceZ + 3.0, false)
+        local groundValid = ok and found and type(ground) == "number"
+            and ground > -1000.0
+        -- A terrain read far below the car is usually an overpass whose deck
+        -- was filtered out. Let the world ray find the surface the car is on.
+        if groundValid and math.abs(ground - referenceZ) <= 8.0 then
+            return ground
+        end
+
+        local rayOk, ray = pcall(StartShapeTestRay, x, y, referenceZ + 3.0,
+            x, y, referenceZ - 35.0, 1, ignoreEntity or 0, 0)
+        if rayOk and ray and ray ~= 0 then
+            local resultOk, result, hit, endCoords = pcall(GetShapeTestResult, ray)
+            local tries = 0
+            while resultOk and result == 1 and tries < 4 do
+                Citizen.Wait(0)
+                resultOk, result, hit, endCoords = pcall(GetShapeTestResult, ray)
+                tries = tries + 1
+            end
+            if resultOk and hit == 1 and endCoords
+                and type(endCoords.z) == "number"
+                and endCoords.z <= referenceZ + 3.0 then
+                return endCoords.z
+            end
+        end
+
+        if groundValid then return ground end
+        return nil
+    end
 
     -- The read half of the collision pair. A missing getter is "unknown", not
     -- "disabled": do not fail a feature just because a build lacks the read.
@@ -27740,23 +27912,38 @@ local function installRampFix()
     -- E.object is the project's local-object path: isNetwork=false, model
     -- request bounded, registry entry with a TTL, and E.destroyAll on panic.
     -- The model is loaded before the spawn so GetModelDimensions can place the
-    -- high edge at the bumper and the low lip in front of it. A model whose
+    -- high edge at the rear bumper and the low lip behind it. A model whose
     -- collision stays disabled is deleted and the next variant is tried.
-    local function spawnRamp(vehicle, vehicleFront, heading)
+    local function spawnRamp(vehicle, vehicleBack, heading)
         for i = 1, #RAMP_MODELS do
             local model = RAMP_MODELS[i]
             local hash = GetHashKey(model)
             if E.requestModel(hash, 3000) then
-                local rampMin = GetModelDimensions(hash)
+                local dimsOk, rampMin = pcall(GetModelDimensions, hash)
+                if not dimsOk then rampMin = nil end
                 local near = 3.0
-                if rampMin and type(rampMin.y) == "number" then
-                    near = math.abs(rampMin.y)
+                local bottom = 0.0
+                if rampMin then
+                    if type(rampMin.y) == "number" then
+                        near = math.abs(rampMin.y)
+                    end
+                    if type(rampMin.z) == "number" then
+                        bottom = math.max(0.0, -rampMin.z)
+                    end
                 end
 
-                local center = vehicleFront + near + FRONT_GAP
-                local spawn = GetOffsetFromEntityInWorldCoords(vehicle, 0.0, center, FOLLOW_Z)
+                -- vehicleBack is the negative Y extent of the carrier. Place
+                -- the ramp centre one half-length behind it, so the high edge
+                -- sits at the rear bumper and the low lip points backwards.
+                local center = vehicleBack - near - RAMP_GAP
+                local flat = GetOffsetFromEntityInWorldCoords(vehicle, 0.0, center, 0.0)
+                local ground = groundZAt(flat.x, flat.y, flat.z, vehicle)
+                local spawnZ = ground and (ground + bottom + GROUND_CLEARANCE)
+                    or flat.z
+                local spawn = vector3(flat.x, flat.y, spawnZ)
+                local rampHeading = (heading + 180.0) % 360.0
                 local obj, id = E.object(model, spawn, {
-                    heading = heading,
+                    heading = rampHeading,
                     freeze = true,
                     collision = true,
                     invincible = true,
@@ -27765,7 +27952,7 @@ local function installRampFix()
 
                 if obj and obj ~= 0 and DoesEntityExist(obj) then
                     pcall(SetEntityAsMissionEntity, obj, true, true)
-                    pcall(SetEntityRotation, obj, 0.0, 0.0, heading, 2, true)
+                    pcall(SetEntityRotation, obj, 0.0, 0.0, rampHeading, 2, true)
                     pcall(SetEntityCoordsNoOffset, obj, spawn.x, spawn.y, spawn.z,
                         false, false, false)
 
@@ -27778,12 +27965,12 @@ local function installRampFix()
                         -- else that exists in this client's physics world still
                         -- collides with the prop.
                         pcall(SetEntityNoCollisionEntity, obj, vehicle, false)
-                        return obj, id, model, center, proof
+                        return obj, id, model, center, proof, bottom
                     end
                 end
             end
         end
-        return nil, nil, nil, 0.0, nil
+        return nil, nil, nil, 0.0, nil, 0.0
     end
 
     -- Delete every handle the base, a previous override, or this build left
@@ -27817,6 +28004,7 @@ local function installRampFix()
         state.obj = 0
         state.veh = 0
         state.center = 0.0
+        state.bottom = 0.0
         state.active = false
         state.collisionWarned = false
     end
@@ -27836,15 +28024,18 @@ local function installRampFix()
             return false
         end
 
-        local vehicleFront = 2.5
-        local _, vehicleMax = GetModelDimensions(GetEntityModel(vehicle))
-        if vehicleMax and type(vehicleMax.y) == "number" then
-            vehicleFront = vehicleMax.y
+        local vehicleBack = -2.5
+        local modelOk, vehicleModel = pcall(GetEntityModel, vehicle)
+        if modelOk and type(vehicleModel) == "number" then
+            local dimsOk, vehicleMin = pcall(GetModelDimensions, vehicleModel)
+            if dimsOk and vehicleMin and type(vehicleMin.y) == "number" then
+                vehicleBack = math.min(0.0, vehicleMin.y)
+            end
         end
 
         local heading = GetEntityHeading(vehicle)
-        local obj, id, modelName, center, proof =
-            spawnRamp(vehicle, vehicleFront, heading)
+        local obj, id, modelName, center, proof, bottom =
+            spawnRamp(vehicle, vehicleBack, heading)
 
         if not obj then
             O.log("ramp: no collidable ramp model could be created")
@@ -27859,10 +28050,11 @@ local function installRampFix()
         state.id = id
         state.veh = vehicle
         state.center = center
+        state.bottom = bottom or 0.0
         state.active = true
         state.collisionWarned = false
 
-        O.log("ramp: collidable scoop %s center=%.1f collision=%s",
+        O.log("ramp: collidable rear scoop %s center=%.1f collision=%s",
             tostring(modelName), center,
             proof == nil and "unknown" or tostring(proof))
         return true
@@ -27888,10 +28080,16 @@ local function installRampFix()
             return
         end
 
-        local spawn = GetOffsetFromEntityInWorldCoords(vehicle, 0.0, state.center, FOLLOW_Z)
-        local heading = GetEntityHeading(vehicle)
+        local flat = GetOffsetFromEntityInWorldCoords(vehicle, 0.0, state.center, 0.0)
+        -- Ignore the ramp itself in the fallback ray; otherwise it can find
+        -- its own deck and climb a few centimetres every tick.
+        local ground = groundZAt(flat.x, flat.y, flat.z, obj)
+        local coordsOk, current = pcall(GetEntityCoords, obj)
+        local z = ground and (ground + state.bottom + GROUND_CLEARANCE)
+            or (coordsOk and current and current.z or flat.z)
+        local heading = (GetEntityHeading(vehicle) + 180.0) % 360.0
 
-        pcall(SetEntityCoordsNoOffset, obj, spawn.x, spawn.y, spawn.z,
+        pcall(SetEntityCoordsNoOffset, obj, flat.x, flat.y, z,
             false, false, false)
         pcall(SetEntityRotation, obj, 0.0, 0.0, heading, 2, true)
 
@@ -27921,6 +28119,9 @@ local function installRampFix()
     end
 
     rampFixState = state
+    -- Internal seam for the harness: drives one follower tick without a live
+    -- scheduler. It is a function, not a menu row.
+    Menu.__vgd_rampTick = rampTick
     O.every("rampFix", 0, rampTick, 0)
     return true
 end
