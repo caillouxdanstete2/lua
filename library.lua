@@ -75,86 +75,111 @@ end
 
 Menu.Banner = {
     enabled = true,
-    imageUrl = "https://i.imgur.com/3HLMxX5.png",
+    imageUrl = "https://i.imgur.com/Ua3Qkk5.png",
     height = 100
 }
 
 Menu.bannerTexture = nil
 Menu.bannerWidth = 0
 Menu.bannerHeight = 0
+Menu.BannerCache = {}
+Menu.bannerRequest = 0
+Menu.bannerLoadingUrl = nil
 
+-- Load a banner for the active theme. The old implementation started one
+-- thread per call and let a late reply overwrite the newest choice; switching
+-- Green -> Cyan -> Green could therefore end on the wrong image. The request
+-- counter makes the newest call win, and the per-URL cache means each of the
+-- two themes is decoded once.
 function Menu.LoadBannerTexture(url)
     if not url or url == "" then return end
     if not Susano or not Susano.HttpGet or not Susano.LoadTextureFromBuffer then return end
 
-    if CreateThread then
-        CreateThread(function()
-            local success, result = pcall(function()
-                local status, body = Susano.HttpGet(url)
-                if status == 200 and body and #body > 0 then
-                    local textureId, width, height = Susano.LoadTextureFromBuffer(body)
-                    if textureId and textureId ~= 0 then
-                        Menu.bannerTexture = textureId
-                        Menu.bannerWidth = width
-                        Menu.bannerHeight = height
-                        return textureId
-                    end
-                end
-                return nil
-            end)
-            if not success then
+    local cached = Menu.BannerCache and Menu.BannerCache[url]
+    if cached and cached.id and cached.id ~= 0 then
+        -- Invalidate any download still in flight for the other theme.
+        Menu.bannerRequest = (Menu.bannerRequest or 0) + 1
+        Menu.bannerLoadingUrl = nil
+        Menu.bannerTexture = cached.id
+        Menu.bannerWidth = cached.width or 0
+        Menu.bannerHeight = cached.height or 0
+        return cached.id
+    end
+
+    if Menu.bannerLoadingUrl == url then return nil end
+
+    Menu.bannerRequest = (Menu.bannerRequest or 0) + 1
+    local request = Menu.bannerRequest
+    Menu.bannerLoadingUrl = url
+
+    local function load()
+        local ok, status, body = pcall(Susano.HttpGet, url)
+        local textureId, width, height = nil, 0, 0
+        if ok and status == 200 and body and #body > 0 then
+            local decoded, id, w, h = pcall(Susano.LoadTextureFromBuffer, body)
+            if decoded and id and id ~= 0 then
+                textureId, width, height = id, w or 0, h or 0
+                Menu.BannerCache[url] = { id = id, width = width, height = height }
             end
-        end)
-    else
-        local success, result = pcall(function()
-            local status, body = Susano.HttpGet(url)
-            if status == 200 and body and #body > 0 then
-                local textureId, width, height = Susano.LoadTextureFromBuffer(body)
-                if textureId and textureId ~= 0 then
-                    Menu.bannerTexture = textureId
-                    Menu.bannerWidth = width
-                    Menu.bannerHeight = height
-                    print("Banner texture loaded successfully")
-                    return textureId
-                end
-            end
-            return nil
-        end)
-        if not success then
+        end
+
+        if request ~= Menu.bannerRequest then
+            -- A newer theme was selected while this image was downloading.
+            -- Keep the decoded image in the cache, but do not let it replace
+            -- the current banner.
+            return
+        end
+
+        if Menu.bannerLoadingUrl == url then Menu.bannerLoadingUrl = nil end
+        if textureId then
+            Menu.bannerTexture = textureId
+            Menu.bannerWidth = width
+            Menu.bannerHeight = height
+        else
+            -- Never leave the previous theme's image attached to the new
+            -- colour. The banner falls back to the flat accent block.
+            Menu.bannerTexture = nil
+            Menu.bannerWidth = 0
+            Menu.bannerHeight = 0
         end
     end
+
+    if CreateThread then
+        CreateThread(load)
+    else
+        load()
+    end
+    return nil
 end
 
 Menu.Colors = {
-    HeaderPink = { r = 104, g = 168, b = 203 },
-    SelectedBg = { r = 104, g = 168, b = 203 },
+    HeaderPink = { r = 76, g = 143, b = 88 },
+    SelectedBg = { r = 76, g = 143, b = 88 },
     TextWhite = { r = 255, g = 255, b = 255 },
     BackgroundDark = { r = 0, g = 0, b = 0 },
     FooterBlack = { r = 0, g = 0, b = 0 }
 }
 
+-- Only two themes are supported. Each one owns both its accent and its banner:
+-- the cyan banner is the original one and the green banner is the default.
+-- An unknown name falls back to Green instead of inventing a third colour.
+local THEMES = {
+    Green = {
+        r = 76, g = 143, b = 88,
+        image = "https://i.imgur.com/Ua3Qkk5.png",
+    },
+    Cyan = {
+        r = 104, g = 168, b = 203,
+        image = "https://i.imgur.com/3HLMxX5.png",
+    },
+}
+
 function Menu.ApplyTheme(themeName)
-    if themeName == "Blue" then
-        Menu.Colors.HeaderPink = { r = 104, g = 168, b = 203 }
-        Menu.Colors.SelectedBg = { r = 104, g = 168, b = 203 }
-        Menu.Banner.imageUrl = "https://i.imgur.com/3HLMxX5.png"
-    elseif themeName == "Green" then
-        Menu.Colors.HeaderPink = { r = 76, g = 143, b = 88 }
-        Menu.Colors.SelectedBg = { r = 76, g = 143, b = 88 }
-        Menu.Banner.imageUrl = "https://i.imgur.com/3HLMxX5.png"
-    elseif themeName == "Red" then
-        Menu.Colors.HeaderPink = { r = 211, g = 64, b = 60 }
-        Menu.Colors.SelectedBg = { r = 211, g = 64, b = 60 }
-        Menu.Banner.imageUrl = "https://i.imgur.com/3HLMxX5.png"
-    elseif themeName == "Purple" then
-        Menu.Colors.HeaderPink = { r = 91, g = 55, b = 131 }
-        Menu.Colors.SelectedBg = { r = 91, g = 55, b = 131 }
-        Menu.Banner.imageUrl = "https://i.imgur.com/3HLMxX5.png"
-    else
-        Menu.Colors.HeaderPink = { r = 255, g = 20, b = 147 }
-        Menu.Colors.SelectedBg = { r = 255, g = 20, b = 147 }
-        Menu.Banner.imageUrl = "https://i.imgur.com/3HLMxX5.png"
-    end
+    local theme = THEMES[themeName] or THEMES.Green
+    Menu.Colors.HeaderPink = { r = theme.r, g = theme.g, b = theme.b }
+    Menu.Colors.SelectedBg = { r = theme.r, g = theme.g, b = theme.b }
+    Menu.Banner.imageUrl = theme.image
+    Menu.BannerCache = Menu.BannerCache or {}
 
     if Menu.Banner.enabled and Menu.Banner.imageUrl then
         Menu.LoadBannerTexture(Menu.Banner.imageUrl)
