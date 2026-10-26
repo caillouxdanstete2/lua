@@ -1469,12 +1469,14 @@ local function ToggleThrowVehicle(enable)
         local ANIM_DICT = "anim@mp_rollarcoaster"
         local ANIM_NAME = "hands_up_idle_a_player_one"
         local GRAB_KEY = 38 -- E
-        -- The proven old-build carry rig. The car hangs from the right hand,
-        -- one metre forward and half a metre up. The hands-up clip was
-        -- authored around this transform. The later spine3/2.05 m rig hid the
-        -- arms behind the chassis and is why the animation looked absent.
-        local CARRY_BONE = 60309
-        local CARRY_X, CARRY_Y, CARRY_Z = 1.0, 0.5, 0.0
+        -- The car is carried above the player's head, not in the hand. The
+        -- old hand rig put the chassis in front of the chest: it covered the
+        -- hands-up clip and its collision knocked the operator down. Bone 0
+        -- is the ped root, so the offset is in the ped's own frame and the
+        -- car follows the body without pulling an arm down.
+        local CARRY_BONE = 0
+        local CARRY_X, CARRY_Y, CARRY_Z = 0.0, 0.0, 2.6
+        local carryOffsetZ = CARRY_Z
         -- The old build used one ApplyForceToEntity impulse of 500. That is
         -- the throw the operator remembers. A SetEntityVelocity overwrite is
         -- deliberately not used: an impulse is ordinary physics, while a
@@ -1482,6 +1484,11 @@ local function ToggleThrowVehicle(enable)
         -- for. It also survives a network-owned vehicle the server would
         -- otherwise re-simulate over a local velocity write.
         local THROW_FORCE = 500.0
+        -- A level or downward camera must not drive the car into the operator
+        -- on release. The horizontal impulse stays the old 500; the vertical
+        -- component is lifted to a small positive floor so the car always
+        -- leaves upward instead of landing on the player.
+        local THROW_LIFT = 0.15
         -- The old ray was 300 m. Fifty metres is enough to aim at the car in
         -- front and avoids attaching a vehicle from the other side of the
         -- map, which is both obvious and easy to attribute.
@@ -1490,6 +1497,7 @@ local function ToggleThrowVehicle(enable)
         local animReady = false
         local animRequestedAt = 0
         local lastAnimTaskAt = 0
+        local animCleared = false
 
         local function nowMs()
             if type(GetGameTimer) == "function" then
@@ -1537,11 +1545,22 @@ local function ToggleThrowVehicle(enable)
             pcall(NetworkRequestControlOfEntity, entity)
             pcall(DetachEntity, entity, true, true)
             -- AttachEntityToEntity was called with collision=false. Restore
-            -- collision only if the engine actually reports it disabled; a
-            -- vehicle that was already colliding is not touched.
+            -- collision with the world only if the engine actually reports it
+            -- disabled; a vehicle that was already colliding is not touched.
             local okDisabled, disabled = pcall(GetEntityCollisionDisabled, entity)
             if okDisabled and disabled == true then
                 pcall(SetEntityCollision, entity, true, true)
+            end
+            -- Re-enabling collision must not re-enable it against the operator.
+            -- The car was above the head a frame ago; a direct hit on release is
+            -- what killed the operator. Keep this pair non-colliding for the
+            -- rest of the entity's life. The pair is local physics only.
+            if type(ped) == "number" and ped ~= 0 then
+                pcall(SetEntityNoCollisionEntity, entity, ped, false)
+                local vehOk, myVehicle = pcall(GetVehiclePedIsIn, ped, false)
+                if vehOk and type(myVehicle) == "number" and myVehicle ~= 0 then
+                    pcall(SetEntityNoCollisionEntity, entity, myVehicle, false)
+                end
             end
             if type(SetEntityHasGravity) == "function" then
                 pcall(SetEntityHasGravity, entity, true)
@@ -1556,6 +1575,8 @@ local function ToggleThrowVehicle(enable)
             animReady = false
             animRequestedAt = 0
             lastAnimTaskAt = 0
+            animCleared = false
+            carryOffsetZ = CARRY_Z
             pcall(ClearPedTasks, ped)
         end
 
@@ -1574,13 +1595,26 @@ local function ToggleThrowVehicle(enable)
             end
         end
 
+        -- The first pose is applied on a clean task slot. If the operator was
+        -- aiming or holding a weapon, the aim task owns the upper-body slot and
+        -- the hands-up clip can be silently ignored; one ClearPedTasks before
+        -- the first TaskPlayAnim releases it. Re-tasks do not clear again, so
+        -- the clip is not restarted every 500 ms.
+        local function startCarryAnim(ped)
+            if not animCleared then
+                animCleared = true
+                pcall(ClearPedTasks, ped)
+            end
+            playCarryAnim(ped)
+        end
+
         local function updateCarryAnim(ped)
             local now = nowMs()
             if not animReady then
                 if type(HasAnimDictLoaded) ~= "function" then
                     animReady = true
                     lastAnimTaskAt = now
-                    playCarryAnim(ped)
+                    startCarryAnim(ped)
                     return
                 end
 
@@ -1589,7 +1623,7 @@ local function ToggleThrowVehicle(enable)
                     animReady = true
                     animRequestedAt = 0
                     lastAnimTaskAt = now
-                    playCarryAnim(ped)
+                    startCarryAnim(ped)
                     return
                 end
 
@@ -1629,19 +1663,84 @@ local function ToggleThrowVehicle(enable)
             return direction
         end
 
-        -- The old rig: right hand bone, car one metre ahead and half a metre
-        -- up, no extra rotation, vertex 1. Collision between the attached car
-        -- and the ped is cleared so the car does not shove the operator.
+        -- The car must clear the head, not the hand. Bone 0 is the ped root,
+        -- whose height differs between rigs and stance. Measure the head above
+        -- the ped origin and place the model's lowest point 0.25 m above it;
+        -- if the head cannot be read, fall back to the fixed 2.6 m offset.
+        local function carryHeight(ped, entity)
+            local pedZ, headZ = nil, nil
+            local okPed, pedCoords = pcall(GetEntityCoords, ped)
+            if okPed and pedCoords and type(pedCoords.z) == "number" then
+                pedZ = pedCoords.z
+            end
+            if type(GetPedBoneCoords) == "function" then
+                local okHead, headCoords =
+                    pcall(GetPedBoneCoords, ped, 31086, 0.0, 0.0, 0.0)
+                if okHead and headCoords and type(headCoords.z) == "number" then
+                    headZ = headCoords.z
+                end
+            end
+
+            local headHeight = nil
+            local offset = CARRY_Z
+            if pedZ and headZ then
+                local height = headZ - pedZ
+                if height > 0.5 and height < 3.0 then
+                    headHeight = height
+                    offset = height + 0.95
+                end
+            end
+
+            -- Place the model's lowest point 0.25 m above the head, whatever
+            -- its height. A fixed origin offset floats a low car too high and
+            -- puts a tall van through the operator's skull; min.z from the
+            -- live model box is the only value that makes both cases right.
+            -- If the dimensions are unreadable, the head + 0.95 m fallback is
+            -- the proven clearance for a normal sedan.
+            if headHeight and entity and type(GetEntityModel) == "function"
+                and type(GetModelDimensions) == "function" then
+                local okModel, model = pcall(GetEntityModel, entity)
+                if okModel and type(model) == "number" and model ~= 0 then
+                    local okDims, vehicleMin = pcall(GetModelDimensions, model)
+                    if okDims and vehicleMin
+                        and type(vehicleMin.z) == "number" then
+                        offset = headHeight + 0.25 - vehicleMin.z
+                    end
+                end
+            end
+            return offset
+        end
+
+        -- The car is carried above the head on the ped root, not in the hand.
+        -- No extra rotation, vertex 0, fixed rotation. Collision between the
+        -- attached car and the ped is disabled by the attach call and cleared
+        -- again every frame, so the chassis cannot shove or ragdoll the
+        -- operator while it is in the air. Soft pinning is kept from the
+        -- proven old build: a rigid constraint transmits every car/world
+        -- contact straight into the ped and is what made the operator fall.
         local function tryAttach(ped, entity)
             local bone = CARRY_BONE
-            if type(GetPedBoneIndex) == "function" then
+            -- Bone 0 is the entity root and must be passed literally. Some
+            -- builds return -1 for GetPedBoneIndex(ped, 0), which would attach
+            -- the car to an invalid bone and make it drop on the operator.
+            if CARRY_BONE ~= 0 and type(GetPedBoneIndex) == "function" then
                 local ok, value = pcall(GetPedBoneIndex, ped, CARRY_BONE)
-                if ok and type(value) == "number" then bone = value end
+                if ok and type(value) == "number" and value >= 0 then
+                    bone = value
+                end
             end
             pcall(NetworkRequestControlOfEntity, entity)
             pcall(AttachEntityToEntity, entity, ped, bone,
-                CARRY_X, CARRY_Y, CARRY_Z, 0.0, 0.0, 0.0,
-                true, true, false, false, 1, true)
+                CARRY_X, CARRY_Y, carryOffsetZ, 0.0, 0.0, 0.0,
+                true, true, false, false, 0, true)
+            pcall(SetEntityNoCollisionEntity, entity, ped, false)
+            -- The car's full weight hanging from the ped constraint is what
+            -- pulled the operator over even with collision disabled. Gravity
+            -- is a local physics flag; releaseHeld restores it before the
+            -- throw force and on every stop path.
+            if type(SetEntityHasGravity) == "function" then
+                pcall(SetEntityHasGravity, entity, false)
+            end
         end
 
         local function beginCarry(ped, entity)
@@ -1651,9 +1750,11 @@ local function ToggleThrowVehicle(enable)
             animReady = false
             animRequestedAt = 0
             lastAnimTaskAt = 0
-            -- Do not ClearPedTasks here. The old build did not, and clearing
-            -- the aim task on the same frame as the attach throws away the
-            -- upper-body slot the carry clip is about to use.
+            animCleared = false
+            carryOffsetZ = carryHeight(ped, entity)
+            -- Do not ClearPedTasks here. The first pose clears the aim task in
+            -- startCarryAnim, on the frame the clip is actually ready, so the
+            -- attach and the animation are not competing for the same slot.
             tryAttach(ped, entity)
         end
 
@@ -1678,11 +1779,21 @@ local function ToggleThrowVehicle(enable)
                 return
             end
 
+            -- The horizontal impulse is still the old 500. A downward or level
+            -- camera is lifted to THROW_LIFT so the car always leaves upward;
+            -- it was the car dropping back on the operator that killed them.
+            local lift = direction.z
+            if type(lift) ~= "number" or lift < THROW_LIFT then
+                lift = THROW_LIFT
+            end
             pcall(ApplyForceToEntity, entity, 1,
                 direction.x * THROW_FORCE,
                 direction.y * THROW_FORCE,
-                direction.z * THROW_FORCE,
+                lift * THROW_FORCE,
                 0.0, 0.0, 0.0, 0, false, true, true, false, true)
+            -- releaseHeld already set this pair; repeat it after the impulse
+            -- in case a build clears the pair when the entity starts moving.
+            pcall(SetEntityNoCollisionEntity, entity, ped, false)
             pcall(ClearPedTasks, ped)
         end
 
@@ -1718,6 +1829,14 @@ local function ToggleThrowVehicle(enable)
                     end
 
                     updateCarryAnim(playerPed)
+
+                    -- Keep the carried chassis non-colliding with the operator
+                    -- for every frame of the carry. The attach call already
+                    -- passes collision=false, but a networked vehicle can have
+                    -- its local collision re-applied when ownership changes;
+                    -- this pair write is what stops the car from knocking the
+                    -- operator over mid-carry.
+                    pcall(SetEntityNoCollisionEntity, heldEntity, playerPed, false)
 
                     if type(IsEntityAttached) == "function"
                         and not IsEntityAttached(heldEntity) then
@@ -16423,7 +16542,7 @@ end)()
 -- >>> VANGUARD MODULE BEGIN
 -- ============================================================================
 -- VANGUARD  (integrated artifact - edit src/ and rebuild)
--- Generated: 2026-10-26 17:34:14
+-- Generated: 2026-10-26 18:28:28
 --
 -- This block lives in loader.lua and in dist/loader.built.lua at the same
 -- time. It is the only place the local Menu table is in scope. Rebuilding
@@ -17203,7 +17322,10 @@ function E.object(model, pos, opts)
         SetEntityVelocity(obj, opts.velocity.x, opts.velocity.y, opts.velocity.z)
     end
 
-    local id = register("object", obj, opts.ttl or 90000, nil)
+    -- opts.restore lets an attached object detach before the TTL sweep
+    -- deletes it. Without it, DeleteObject is called on a still-attached
+    -- child; the game usually copes, but an explicit detach is deterministic.
+    local id = register("object", obj, opts.ttl or 90000, opts.restore)
     return obj, id
 end
 
@@ -26411,24 +26533,25 @@ local TP = (function(O,Menu)
 -- The old ETAT block, the compass row and the pulsing DIRECT marker were
 -- removed by the operator. Only the status pill remains.
 --
--- Palette: blue-black body, a theme-accent edge and header wash, bright cool
--- labels, warm-white values, mint health, azure armour and teal vehicle
--- health. The accent still comes from Menu.Colors.SelectedBg, so Green and
--- Cyan drive the card without a second colour system.
+-- Palette: the same grey chrome as the menu, a near-black body, bright cool
+-- labels and warm-white values. Only the vitals keep a functional colour.
 -- ============================================================================
 
 local TP = {}
 
-local FALLBACK_ACCENT = { r = 104, g = 168, b = 203 }
-
--- Body and border palette. The label colours are deliberately bright: on a
--- dark body and behind the in-game HUD, 10 px grey (the previous pass) was
--- effectively invisible in the operator's screenshot.
-local BODY_R, BODY_G, BODY_B = 0.045, 0.052, 0.070
-local TRACK_R, TRACK_G, TRACK_B = 0.180, 0.195, 0.250
-local LABEL_R, LABEL_G, LABEL_B = 0.820, 0.850, 0.920
-local MUTED_R, MUTED_G, MUTED_B = 0.880, 0.900, 0.950
+-- Chrome palette. The border and body are the same greys the menu itself
+-- uses (library.lua draws a 0.216 border around a 0.059 body), so the right
+-- card belongs to the menu instead of introducing a second accent system.
+-- Only the health/armour bars and the status pip keep a functional colour.
+local CHROME_R, CHROME_G, CHROME_B = 0.216, 0.216, 0.216
+local RAIL_R, RAIL_G, RAIL_B = 0.430, 0.430, 0.430
+local BODY_R, BODY_G, BODY_B = 0.059, 0.059, 0.059
+local TRACK_R, TRACK_G, TRACK_B = 0.160, 0.160, 0.160
+local LABEL_R, LABEL_G, LABEL_B = 0.800, 0.810, 0.830
+local SECTION_R, SECTION_G, SECTION_B = 0.760, 0.770, 0.790
+local MUTED_R, MUTED_G, MUTED_B = 0.840, 0.850, 0.870
 local VALUE_R, VALUE_G, VALUE_B = 1.000, 1.000, 1.000
+local BADGE_R, BADGE_G, BADGE_B = 0.150, 0.150, 0.150
 
 local function clamp01(value)
     value = tonumber(value) or 0.0
@@ -26447,22 +26570,6 @@ local function whole(value)
         return 0
     end
     return math.floor(value + 0.5)
-end
-
-local function accentRGB()
-    local color = Menu and Menu.Colors and Menu.Colors.SelectedBg or FALLBACK_ACCENT
-    return (color.r or FALLBACK_ACCENT.r) / 255.0,
-        (color.g or FALLBACK_ACCENT.g) / 255.0,
-        (color.b or FALLBACK_ACCENT.b) / 255.0
-end
-
--- A tint of the theme accent used for section labels and the header kicker.
--- The floor is high enough that the muted Green accent stays readable on the
--- body; the Cyan theme lands near a pale ice blue.
-local function accentText(r, g, b)
-    return math.min(1.0, r * 0.85 + 0.32),
-        math.min(1.0, g * 0.85 + 0.32),
-        math.min(1.0, b * 0.85 + 0.32)
 end
 
 -- Rounded fill with the same three fallbacks the loader uses. A build without
@@ -26601,8 +26708,6 @@ function Menu.DrawPlayerInfoPanel()
     end
 
     local screenWidth, screenHeight = screenSize()
-    local accentR, accentG, accentB = accentRGB()
-    local accentTextR, accentTextG, accentTextB = accentText(accentR, accentG, accentB)
 
     -- Compact card: slightly wider than the last pass, but still clearly
     -- narrower than the menu. At the default 110 % scale this is 350 px wide;
@@ -26687,16 +26792,16 @@ function Menu.DrawPlayerInfoPanel()
     local function section(label)
         return function(y)
             fillRect(cx, y + 7 * scale, 3 * scale, 13 * scale,
-                accentR, accentG, accentB, 0.95, 1.5 * scale)
+                RAIL_R, RAIL_G, RAIL_B, 0.95, 1.5 * scale)
             textStrong(cx + 10 * scale,
                 centeredTextY(y + sectionHeight * 0.5, FONT_SECTION),
-                label, FONT_SECTION, accentTextR, accentTextG, accentTextB, 1.0)
+                label, FONT_SECTION, SECTION_R, SECTION_G, SECTION_B, 1.0)
             local labelWidth = textWidth(label, FONT_SECTION, scale)
             local lineX = cx + 10 * scale + labelWidth + 10 * scale
             local lineWidth = cx + innerWidth - lineX
             if lineWidth > 0 then
                 fillRect(lineX, y + sectionHeight * 0.5, lineWidth, 1,
-                    accentR, accentG, accentB, 0.28, 0)
+                    CHROME_R, CHROME_G, CHROME_B, 0.35, 0)
             end
         end
     end
@@ -26772,7 +26877,7 @@ function Menu.DrawPlayerInfoPanel()
     -- Header -----------------------------------------------------------------
     add(headerHeight, function(y)
         textStrong(cx, y + 1 * scale, "CIBLE", FONT_KICKER,
-            accentTextR, accentTextG, accentTextB, 0.95)
+            SECTION_R, SECTION_G, SECTION_B, 0.95)
 
         local idText = "#" .. tostring(info.serverId or "?")
         local idWidth = textWidth(idText, FONT_ID, scale) + 20 * scale
@@ -26780,25 +26885,22 @@ function Menu.DrawPlayerInfoPanel()
         local idX = cx + innerWidth - idWidth
         local idY = y + 9 * scale
         fillRect(idX, idY, idWidth, idHeight,
-            accentR, accentG, accentB, 0.18, 6 * scale)
+            BADGE_R, BADGE_G, BADGE_B, 0.95, 6 * scale)
         fillRect(idX, idY, 2.5 * scale, idHeight,
-            accentR, accentG, accentB, 0.95, 1.5 * scale)
+            RAIL_R, RAIL_G, RAIL_B, 0.95, 1.5 * scale)
         textStrong(idX + 9 * scale,
             centeredTextY(idY + idHeight * 0.5, FONT_ID),
-            idText, FONT_ID, accentTextR, accentTextG, accentTextB, 1.0)
+            idText, FONT_ID, VALUE_R, VALUE_G, VALUE_B, 1.0)
 
-        local nameX = cx + 14 * scale
+        local nameX = cx
         local nameMax = math.max(0, idX - nameX - 10 * scale)
         local name = fitText(info.name or "Inconnu", nameMax, FONT_NAME, scale)
         local nameY = y + 17 * scale
-        local nameCenter = nameY + FONT_NAME * 0.421 * scale
         textStrong(nameX, nameY, name, FONT_NAME,
             VALUE_R, VALUE_G, VALUE_B, 1.0)
-        fillRect(cx + 2 * scale, nameCenter - 4 * scale,
-            8 * scale, 8 * scale, statusR, statusG, statusB, 1.0, 4 * scale)
 
         fillRect(cx, y + 54 * scale, innerWidth, 1,
-            accentR, accentG, accentB, 0.30, 0)
+            CHROME_R, CHROME_G, CHROME_B, 0.45, 0)
     end)
 
     -- Vitals -----------------------------------------------------------------
@@ -26819,7 +26921,7 @@ function Menu.DrawPlayerInfoPanel()
     add(rowHeight, row("ARME", info.weapon or "Inconnu"))
     add(rowHeight, row("DISTANCE",
         ("%d m"):format(whole(info.distance)),
-        accentTextR, accentTextG, accentTextB))
+        VALUE_R, VALUE_G, VALUE_B))
     local coords = info.coords
     -- FiveM returns a vector3 userdata, not a table. The previous test used a
     -- table and the live card silently dropped the row; accept any object that
@@ -26850,19 +26952,19 @@ function Menu.DrawPlayerInfoPanel()
     -- Footer -----------------------------------------------------------------
     local footer = function(y)
         fillRect(cx, y + 1 * scale, innerWidth, 1,
-            accentR, accentG, accentB, 0.22, 0)
+            CHROME_R, CHROME_G, CHROME_B, 0.35, 0)
         local pillHeight = 32 * scale
         local pillY = y + 5 * scale
         local labelWidth = textWidth(statusLabel, FONT_FOOTER, scale)
             + 30 * scale
         fillRect(cx, pillY, labelWidth, pillHeight,
-            statusR, statusG, statusB, 0.16, pillHeight * 0.5)
+            BADGE_R, BADGE_G, BADGE_B, 0.95, pillHeight * 0.5)
         fillRect(cx + 2 * scale, pillY + 4 * scale, 3 * scale,
             pillHeight - 8 * scale, statusR, statusG, statusB, 0.95,
             1.5 * scale)
         textStrong(cx + 13 * scale,
             centeredTextY(pillY + pillHeight * 0.5, FONT_FOOTER),
-            statusLabel, FONT_FOOTER, statusR, statusG, statusB, 1.0)
+            statusLabel, FONT_FOOTER, VALUE_R, VALUE_G, VALUE_B, 1.0)
     end
     add(footerHeight, footer)
 
@@ -26890,27 +26992,18 @@ function Menu.DrawPlayerInfoPanel()
         panelY = math.max(8, screenHeight - panelHeight - 8)
     end
 
-    -- Background. The border and header wash are the theme accent; the body is
-    -- a near-black blue, and every value is warm white. The card therefore
-    -- changes with Green/Cyan without looking like a second design system.
+    -- Background. The border is the menu's own grey (0.216), the body is the
+    -- menu's near-black (0.059), and the only colour left is in the vitals.
     fillRect(panelX, panelY, panelWidth, panelHeight,
-        accentR, accentG, accentB, 0.70, 8 * scale)
+        CHROME_R, CHROME_G, CHROME_B, 0.98, 8 * scale)
     fillRect(panelX + 1, panelY + 1, panelWidth - 2, panelHeight - 2,
         BODY_R, BODY_G, BODY_B, 0.992, 7 * scale)
-    -- Header wash: three low-alpha bands fake a downward gradient with three
-    -- draw calls and no extra texture.
+    -- One low-alpha grey band gives the header a little depth without a
+    -- second accent colour.
     fillRect(panelX + 1, panelY + 1, panelWidth - 2, 48 * scale,
-        accentR, accentG, accentB, 0.120, 7 * scale)
-    fillRect(panelX + 1, panelY + 32 * scale, panelWidth - 2, 18 * scale,
-        accentR, accentG, accentB, 0.055, 0)
+        CHROME_R, CHROME_G, CHROME_B, 0.10, 7 * scale)
     fillRect(panelX + 1, panelY + 1, panelWidth - 2, 1,
-        1.0, 1.0, 1.0, 0.065, 0)
-    -- Left accent rail and the hard header line. They echo the menu selector
-    -- without competing with the text.
-    fillRect(panelX + 1, panelY + 10 * scale, 2.5 * scale,
-        panelHeight - 20 * scale, accentR, accentG, accentB, 0.72, 1.25 * scale)
-    fillRect(panelX + pad, panelY + 1, panelWidth - pad * 2, 2 * scale,
-        accentR, accentG, accentB, 0.95, 1 * scale)
+        1.0, 1.0, 1.0, 0.05, 0)
 
     local y = panelY + pad
     for i = 1, #blocks do
@@ -28260,38 +28353,32 @@ end
 -- ---------------------------------------------------------------------------
 -- VEHICLE > PERFORMANCE > ATTACH RAMP
 --
--- Operator report: the ramp was alive but it corrected its trajectory every
--- frame, which looked and felt like a scripted object, and the small 1.08 m
--- prop sent big vehicles into accidents instead of a clean launch. This build
--- makes the ramp a single fixed local prop and uses the largest sane wedge in
--- the base game.
+-- Operator report: the previous build spawned a large arena wedge on the
+-- ground in front of the car and did not attach it. It read as a loose prop:
+-- it stayed behind when the car moved, and the carrier had no collision with
+-- it. This build mounts a compact wedge on the front of the car.
 --
---   * one local object, created once, never networked, never attached;
---   * no per-frame SetEntityCoords / SetEntityRotation / ground query;
---   * profile table per model: slope axis, yaw offset, low-lip offset and the
---     model's lowest point are measured from the real GLB mesh, not guessed;
---   * preferred model xs_prop_arena_pipe_ramp_01a: 5.96 m wide, 10.85 m long,
---     2.68 m high, ~13 degrees. That is 50 % wider and 78 % longer than the
---     old 4.02 x 5.86 wedge, with a gentler slope, which is what keeps a heavy
---     vehicle from tripping over its own centre of gravity. prop_mp_ramp_03
---     (4.02 x 5.86 x 2.42, ~23 degrees) is the first fallback; prop_mp_ramp_02
---     (1.53 m high) is the last;
---   * spawn Z puts the model's own lowest point 1 cm above the highest ground
---     sampled under the high edge, the origin and the low lip. The long arena
---     ramp is probed at both ends and the origin at spawn, so a slope cannot
---     bury one end in the tarmac;
---   * the high edge faces the carrier's front bumper, low lip points forward;
---   * collision is proved; a ghost prop is deleted and the next model tried;
---   * only the (ramp, carrier) pair is excluded from collision;
+--   * one local object (isNetwork=false), never networked;
+--   * one AttachEntityToEntity call at spawn, then no per-tick writes;
+--   * compact prop_mp_ramp_01 (4.02 m wide, 6.00 m long, 1.07 m high) so the
+--     ramp is proportional to a car; prop_mp_ramp_02/03 are collision-proven
+--     fallbacks;
+--   * the low lip is tucked 1.5 m under the bumper and the high edge points
+--     forward, so the visible deck is 4.5 m long and rises in front of the car;
+--   * the ramp's underside is 0.15 m above the car's lowest point, so it does
+--     not scrape the road;
+--   * collision is enabled and proved; a ghost model is deleted and the next
+--     one is tried;
+--   * only the (ramp, carrier) pair is excluded, so the ramp cannot push the
+--     car that carries it;
 --   * TTL 180 s and Detach Ramp/panic remove it. One instance maximum.
 --
--- Why a fixed prop is the safer choice:
---   A local object created with isNetwork=false has no net id, no owner, no
---   population type and never raises the server's entityCreating event. It
---   exists only in this client's physics world. WaveShield V4's entity module
---   scans the CVehicle pool, not local objects. The previous follower added a
---   per-frame write stream and a ground query; both are gone. The remaining
---   surface is one CreateObject at the operator's request.
+-- Why this is the safer shape:
+--   A local object has no net id, no owner and no entityCreating event. The
+--   attachment is a single local native at spawn; there is no per-frame
+--   SetEntityCoords/SetEntityRotation/ground query and no network write. The
+--   ramp is not visible to other clients and cannot be attributed to us by the
+--   server.
 -- ---------------------------------------------------------------------------
 local rampFixState = nil
 
@@ -28299,46 +28386,28 @@ local function installRampFix()
     if type(Menu) ~= "table" then return false end
     if rampFixState then return true end
 
-    -- Profiles were measured from the actual GLB meshes after applying the
-    -- exporter's -90 degree X rotation, so the axes below are GTA model axes.
-    --   axis   : the local axis on which the ramp rises
-    --   yaw    : added to the carrier heading so that axis points back at it
-    --   bottom : the model's lowest point, origin-relative (fallback only;
-    --            GetModelDimensions supplies the live value when it exists)
-    --   low    : the low lip's signed coordinate on that axis
-    --   high   : distance from the entity origin to the high edge on that axis
-    -- The arena ramp rises on local +X and is very asymmetric (the origin sits
-    -- 1.54 m from the high edge and 9.31 m from the low lip). The MP ramps
-    -- rise on local +Y and are almost symmetric. Every value below comes from
-    -- the mesh, not from a guessed bounding box.
+    -- Mesh measurements from the shipped GLBs. Every wedge rises on local +Y:
+    -- local +Y is the high edge, local -Y is the low lip, local -Z is the
+    -- underside. length is the full deck; half is the origin-to-edge distance.
     local RAMP_MODELS = {
         {
-            name = "xs_prop_arena_pipe_ramp_01a",
-            axis = "x",
-            yaw = 90.0,
-            bottom = -0.005,
-            low = -9.314,
-            high = 1.544,
-        },
-        {
-            name = "prop_mp_ramp_03",
-            axis = "y",
-            yaw = 180.0,
-            bottom = -0.775,
-            low = -2.932,
-            high = 2.932,
+            name = "prop_mp_ramp_01",
+            length = 6.004,
+            bottom = -0.536,
         },
         {
             name = "prop_mp_ramp_02",
-            axis = "y",
-            yaw = 180.0,
+            length = 5.864,
             bottom = -0.775,
-            low = -2.932,
-            high = 2.932,
+        },
+        {
+            name = "prop_mp_ramp_03",
+            length = 5.864,
+            bottom = -0.775,
         },
     }
-    local RAMP_GAP = 0.15
-    local GROUND_CLEARANCE = 0.01
+    local RAMP_SINK = 1.5          -- low lip hidden under the front bumper
+    local RAMP_CLEARANCE = 0.15    -- underside above the car's lowest point
     local RAMP_TTL_MS = 180000
 
     local state = {
@@ -28347,21 +28416,8 @@ local function installRampFix()
         veh = 0,
         active = false,
         model = nil,
-        spawn = nil,
+        attach = nil,
     }
-
-    -- Spawn-only ground probe. It runs before the prop exists, so it cannot
-    -- sample the ramp's own deck. The tick that used to call this every frame
-    -- is gone; a fixed prop cannot sawtooth. Called at most three times per
-    -- spawn attempt (high edge, origin and low lip), never after that.
-    local function groundZAt(x, y, referenceZ)
-        local ok, found, ground =
-            pcall(GetGroundZFor_3dCoord, x, y, referenceZ + 3.0, false)
-        if ok and found and type(ground) == "number" and ground > -1000.0 then
-            return ground
-        end
-        return nil
-    end
 
     local function collisionEnabled(obj)
         local ok, disabled = pcall(GetEntityCollisionDisabled, obj)
@@ -28372,13 +28428,12 @@ local function installRampFix()
     local function enableCollision(obj)
         pcall(SetEntityCollision, obj, true, true)
         pcall(SetEntityRecordsCollisions, obj, true)
-        pcall(FreezeEntityPosition, obj, true)
         pcall(SetEntityInvincible, obj, true)
         local proof = collisionEnabled(obj)
         if proof == false then
-            -- Some builds report the pre-write flag for one read after a
-            -- teleport or a stream. One retry distinguishes that transient
-            -- from a prop whose collision genuinely cannot be enabled.
+            -- Some builds report the pre-write flag for one read after an
+            -- attach. One retry distinguishes that transient from a prop whose
+            -- collision genuinely cannot be enabled.
             pcall(SetEntityCollision, obj, true, true)
             pcall(SetEntityRecordsCollisions, obj, true)
             proof = collisionEnabled(obj)
@@ -28386,129 +28441,109 @@ local function installRampFix()
         return proof
     end
 
+    local function detachRestore(obj)
+        pcall(DetachEntity, obj, true, true)
+    end
+
     local function deleteObject(obj, id)
         if id then E.destroy(id) end
         if type(obj) == "number" and obj ~= 0 and DoesEntityExist(obj) then
+            pcall(DetachEntity, obj, true, true)
             pcall(SetEntityAsMissionEntity, obj, true, true)
             pcall(DeleteEntity, obj)
         end
     end
 
-    local function spawnRamp(vehicle, vehicleFront, vehicleBottom, heading)
+    local function isAttached(obj, vehicle)
+        if type(IsEntityAttachedToEntity) == "function" then
+            local ok, value = pcall(IsEntityAttachedToEntity, obj, vehicle)
+            if ok and value ~= nil then return value == true end
+        end
+        if type(IsEntityAttached) == "function" then
+            local ok, value = pcall(IsEntityAttached, obj)
+            if ok and value ~= nil then return value == true end
+        end
+        -- No getter: accept the successful native call. The collision proof
+        -- below still refuses a prop that cannot be made solid.
+        return true
+    end
+
+    local function spawnRamp(vehicle, vehicleFront, vehicleBottom)
         for i = 1, #RAMP_MODELS do
             local profile = RAMP_MODELS[i]
             local model = profile.name
             local hash = GetHashKey(model)
             if E.requestModel(hash, 3000) then
-                local high = profile.high
-                local low = profile.low
+                -- Use the live model box when the client exposes it; the GLB
+                -- values are the fallback for a build without
+                -- GetModelDimensions.
+                local half = profile.length * 0.5
                 local bottom = profile.bottom
                 local dimsOk, rampMin, rampMax = pcall(GetModelDimensions, hash)
                 if dimsOk and rampMin and rampMax then
-                    local axisMin = profile.axis == "x" and rampMin.x or rampMin.y
-                    local axisMax = profile.axis == "x" and rampMax.x or rampMax.y
-                    if type(axisMax) == "number" and axisMax > 0.5 then
-                        high = axisMax
-                    end
-                    if type(axisMin) == "number" and axisMin < -0.5 then
-                        low = axisMin
+                    if type(rampMin.y) == "number" and type(rampMax.y) == "number"
+                        and rampMax.y > 0.5 and rampMin.y < -0.5 then
+                        half = (rampMax.y - rampMin.y) * 0.5
                     end
                     if type(rampMin.z) == "number" then
                         bottom = rampMin.z
                     end
                 end
 
-                local rampHeading = (heading + profile.yaw) % 360.0
-                -- Unit vector of the rise axis in world space. With the yaw
-                -- above it points back toward the carrier, so local +axis is
-                -- the high edge and local -axis is the low lip.
-                local rad = math.rad(rampHeading)
-                local axisX, axisY
-                if profile.axis == "x" then
-                    axisX, axisY = math.cos(rad), -math.sin(rad)
-                else
-                    axisX, axisY = math.sin(rad), math.cos(rad)
-                end
-
-                -- Put the high edge at the bumper:
-                --   origin + high * axis = vehicleFront + gap.
-                local center = vehicleFront + high + RAMP_GAP
-                local flat = GetOffsetFromEntityInWorldCoords(vehicle, 0.0, center, 0.0)
-
-                -- Anchor Z to the carrier's origin, not the forward offset
-                -- point: the offset point includes the chassis pitch lever
-                -- arm. The origin is stable under pitch and roll.
-                local coordsOk, vehicleCoords = pcall(GetEntityCoords, vehicle)
-                local vehicleZ = coordsOk and vehicleCoords
-                    and type(vehicleCoords.z) == "number"
-                    and vehicleCoords.z or flat.z
-
-                -- Probe both ends and the origin at spawn. The long arena deck
-                -- spans 10.85 m; a single centre probe could leave the low lip
-                -- under a kerb, and the high edge is 1.54 m on the other side
-                -- of the origin, so it needs its own read on a slope. The
-                -- highest ground wins, so nothing is buried; the model's own
-                -- underside is then placed 1 cm above it.
-                local edgeX = flat.x + axisX * high
-                local edgeY = flat.y + axisY * high
-                local edgeGround = groundZAt(edgeX, edgeY, vehicleZ)
-                local centerGround = groundZAt(flat.x, flat.y, vehicleZ)
-                local lipX = flat.x + axisX * low
-                local lipY = flat.y + axisY * low
-                local lipGround = groundZAt(lipX, lipY, vehicleZ)
-                local ground = edgeGround
-                if centerGround and (not ground or centerGround > ground) then
-                    ground = centerGround
-                end
-                if lipGround and (not ground or lipGround > ground) then
-                    ground = lipGround
-                end
-
-                -- Model bottom is the lowest physical point of the prop. If
-                -- the ground native fails, the carrier's lowest point is the
-                -- next best contact plane (its tyres are on the road).
-                local baseZ = ground or (vehicleZ + (vehicleBottom or 0.0))
-                local spawnZ = baseZ + GROUND_CLEARANCE - bottom
-                local spawn = vector3(flat.x, flat.y, spawnZ)
+                -- Low lip at vehicleFront - RAMP_SINK, high edge forward:
+                --   ramp origin = low lip + half
+                local offsetY = vehicleFront - RAMP_SINK + half
+                -- Underside 15 cm above the carrier's lowest point.
+                local offsetZ = (vehicleBottom or 0.0) + RAMP_CLEARANCE - bottom
+                local spawn = GetOffsetFromEntityInWorldCoords(vehicle, 0.0,
+                    offsetY, offsetZ)
 
                 local obj, id = E.object(model, spawn, {
-                    heading = rampHeading,
-                    freeze = true,
+                    freeze = false,
                     collision = true,
                     invincible = true,
                     ttl = RAMP_TTL_MS,
+                    restore = detachRestore,
                 })
 
                 if obj and obj ~= 0 and DoesEntityExist(obj) then
                     pcall(SetEntityAsMissionEntity, obj, true, true)
-                    pcall(SetEntityRotation, obj, 0.0, 0.0, rampHeading, 2, true)
-                    pcall(SetEntityCoordsNoOffset, obj, spawn.x, spawn.y, spawn.z,
-                        false, false, false)
+                    pcall(SetEntityRotation, obj, 0.0, 0.0, 0.0, 2, true)
 
-                    local proof = enableCollision(obj)
-                    if proof == false then
-                        O.log("ramp: %s kept collision disabled, trying next", model)
+                    local attached = false
+                    if type(AttachEntityToEntity) == "function" then
+                        local ok = pcall(AttachEntityToEntity, obj, vehicle, 0,
+                            0.0, offsetY, offsetZ, 0.0, 0.0, 0.0,
+                            false, false, true, false, 1, true)
+                        attached = ok and isAttached(obj, vehicle)
+                    end
+
+                    if not attached then
+                        O.log("ramp: %s could not be attached, trying next", model)
                         deleteObject(obj, id)
                     else
-                        -- Only the (ramp, carrier) pair is ignored. Everything
-                        -- else in this client's physics world still collides.
-                        -- The carrier is protected from the high edge it just
-                        -- spawned against; a vehicle approaching the low lip is
-                        -- the one that rides the slope.
-                        pcall(SetEntityNoCollisionEntity, obj, vehicle, false)
-                        return obj, id, model, center, proof, spawnZ, spawn,
-                            rampHeading, high
+                        local proof = enableCollision(obj)
+                        if proof == false then
+                            O.log("ramp: %s kept collision disabled, trying next", model)
+                            deleteObject(obj, id)
+                        else
+                            -- The carrier must not collide with its own ramp.
+                            -- Everything else still does; this is the pair the
+                            -- attach constraint already protects.
+                            pcall(SetEntityNoCollisionEntity, obj, vehicle, false)
+                            return obj, id, model, offsetY, offsetZ, proof, half
+                        end
                     end
                 end
             end
         end
-        return nil, nil, nil, 0.0, nil, 0.0, nil, 0.0, 0.0
+        return nil, nil, nil, 0.0, 0.0, nil, 0.0
     end
 
-    -- Delete every handle the base loader, a previous override, or this build
-    -- left behind. The global list is the base loader's contract with Detach
-    -- Ramp; keep it authoritative even though this build owns its own state.
     local function removeRamp()
+        if state.obj ~= 0 and DoesEntityExist(state.obj) then
+            pcall(DetachEntity, state.obj, true, true)
+        end
         if state.id then
             E.destroy(state.id)
             state.id = nil
@@ -28537,7 +28572,7 @@ local function installRampFix()
         state.veh = 0
         state.active = false
         state.model = nil
-        state.spawn = nil
+        state.attach = nil
     end
 
     Menu.DetachBuggyRamp = function()
@@ -28569,12 +28604,11 @@ local function installRampFix()
             end
         end
 
-        local heading = GetEntityHeading(vehicle)
-        local obj, id, modelName, center, proof, spawnZ, spawn, rampHeading, high =
-            spawnRamp(vehicle, vehicleFront, vehicleBottom, heading)
+        local obj, id, modelName, offsetY, offsetZ, proof, half =
+            spawnRamp(vehicle, vehicleFront, vehicleBottom)
 
         if not obj then
-            O.log("ramp: no collidable ramp model could be created")
+            O.log("ramp: no attachable ramp model could be created")
             return false
         end
 
@@ -28587,24 +28621,45 @@ local function installRampFix()
         state.veh = vehicle
         state.active = true
         state.model = modelName
-        state.spawn = spawn
+        state.attach = { y = offsetY, z = offsetZ, half = half }
 
-        O.log("ramp: fixed %s center=%.1f highEdge=%.1f z=%.2f collision=%s ttl=%ds",
-            tostring(modelName), center, vehicleFront + RAMP_GAP,
-            spawnZ, proof == nil and "unknown" or tostring(proof),
+        O.log("ramp: attached %s front=%.2f lip=%.2f high=%.2f collision=%s ttl=%ds",
+            tostring(modelName), vehicleFront, vehicleFront - RAMP_SINK,
+            vehicleFront - RAMP_SINK + half * 2.0,
+            proof == nil and "unknown" or tostring(proof),
             math.floor(RAMP_TTL_MS / 1000))
         return true
     end
 
-    -- Read-only seam. The ramp is deliberately not scheduled: nothing moves,
-    -- rotates, queries the ground or rewrites collision after the spawn. The
-    -- function only lets the harness prove that a tick cannot move the prop.
+    -- Read-only seam. The ramp is attached at spawn; nothing moves it after
+    -- that. The function only lets the harness prove that a tick cannot move
+    -- the prop and that a lost prop or carrier is cleaned up.
     local function rampCheck()
         if not state.active then return false end
         local obj = state.obj
         if obj == 0 or not DoesEntityExist(obj) then
             removeRamp()
             return false
+        end
+        if state.veh == 0 or not DoesEntityExist(state.veh) then
+            removeRamp()
+            return false
+        end
+        -- Prefer the pair check: a prop still attached to something else is
+        -- not a valid ramp for this carrier. Fall back to the generic getter
+        -- on builds that only expose IsEntityAttached.
+        if type(IsEntityAttachedToEntity) == "function" then
+            local ok, value = pcall(IsEntityAttachedToEntity, obj, state.veh)
+            if ok and value == false then
+                removeRamp()
+                return false
+            end
+        elseif type(IsEntityAttached) == "function" then
+            local ok, value = pcall(IsEntityAttached, obj)
+            if ok and value == false then
+                removeRamp()
+                return false
+            end
         end
         return true
     end
