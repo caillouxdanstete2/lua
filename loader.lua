@@ -16001,7 +16001,7 @@ end)()
 -- >>> VANGUARD MODULE BEGIN
 -- ============================================================================
 -- VANGUARD  (integrated artifact - edit src/ and rebuild)
--- Generated: 2026-10-26 12:56:01
+-- Generated: 2026-10-26 13:51:36
 --
 -- This block lives in loader.lua and in dist/loader.built.lua at the same
 -- time. It is the only place the local Menu table is in scope. Rebuilding
@@ -16921,23 +16921,9 @@ local FAMILIES = {
     -- cameras through its own createCam export and the camera is destroyed on
     -- release. The token caps how often a camera can appear and disappear.
     freecam   = { strikes = 3, window = 10000, cost = 1 },
-    -- Ghostlink null-routes the report channel. Arming it is the only visible
-    -- act; no per-report token is spent because blocking a report is the point.
-    ghostlink = { strikes = 2, window = 10000, cost = 1 },
-    -- Car Prison takes vehicle ownership and holds a door state. V4 has no
-    -- detector for the write itself; the token caps re-arms.
-    prison    = { strikes = 3, window = 8000,  cost = 1 },
     -- Combat Unlock installs four scoped native hooks. The token caps how often
     -- the operator can re-install them, not the hook traffic itself.
     combat    = { strikes = 3, window = 8000,  cost = 1 },
-    -- Vehicle gags: engine state and horn state, both held by the vehicle
-    -- owner. No V4 detector reads either; the token caps re-arms.
-    engine    = { strikes = 3, window = 8000,  cost = 1 },
-    horn      = { strikes = 3, window = 8000,  cost = 1 },
-    -- Tow attaches the target vehicle to the operator vehicle. Catapult is a
-    -- one-shot release with momentum. Neither has a V4 detector.
-    tow       = { strikes = 3, window = 8000,  cost = 1 },
-    catapult  = { strikes = 2, window = 8000,  cost = 1 },
 }
 
 local state = {}
@@ -24598,207 +24584,6 @@ return VC
 end)(O,S,B,Menu)
 
 -- ---------------------------------------------------------------------------
--- PART: 19_carprison.lua
--- ---------------------------------------------------------------------------
-local CP = (function(O,S,B,Menu)
--- ============================================================================
--- VANGUARD / 19 CAR PRISON
--- ----------------------------------------------------------------------------
--- Online > Troll > "Car Prison".
---
--- What it does:
---   While armed, the selected player is locked inside whatever vehicle they
---   are in. The doors are shut and held on the "player inside" lock state, so
---   the exit animation is refused. If they change car, the old one is released
---   and the new one is locked. If they get out before the lock lands, the next
---   vehicle they enter is locked instead.
---
--- Why it needs vehicle ownership:
---   Door lock state is vehicle state. It replicates from the client that owns
---   the vehicle. Without ownership the write is local and the target keeps
---   stepping out. Vehicles are freely transferable, so ownership is requested
---   once per second at most, not every tick.
---
--- Why it is quiet against WaveShield V4:
---   * no entity is created            -> entityCreating never runs
---   * no ped is attached              -> entities.lua:166-188 never matches
---   * no ped task is issued           -> clearPedTasksEvent / givePedScriptedTaskEvent
---                                        never fire
---   * no state bag is written         -> exploits-fixed.lua:1-26 never fires
---   * no synced scene is started      -> startNetworkSyncedSceneEvent never fires
---   * no server event is sent
---   * the ownership request is not one of the premium events V4 watches; its
---     AntiRequestControl path is reached through SetExclusiveDriver and synced
---     scenes (premiumEvents.lua:20-31, startNetworkSyncedSceneEvent.lua:40-109)
---
--- The one rule the module enforces on itself: never lock the operator's own
--- vehicle. A prison that traps both of you is a bug, not a feature.
--- ============================================================================
-
-local P = {}
-
--- eCarLock (FiveM docs, SET_VEHICLE_DOORS_LOCKED):
---   1 = CARLOCK_UNLOCKED
---   2 = CARLOCK_LOCKED
---   3 = CARLOCK_LOCKOUT_PLAYER_ONLY
---   4 = CARLOCK_LOCKED_PLAYER_INSIDE, refuses the exit key for the occupant
---   0 = CARLOCK_NONE is not "unlocked"; it leaves no normal lock state.
-local LOCK_INSIDE = 4
-local LOCK_FREE   = 1
-
-local REQUEST_MS = 1000
-local POLL_MS    = 250
-
-P.active   = false
-P.veh      = 0
-P.locked   = false
-P.lastReq  = 0
-P.sessions = 0
-P.onChange = nil
-
-local function emit(fmt, ...)
-    O.log("prison: " .. tostring(fmt), ...)
-end
-
-local function notify(active)
-    if type(P.onChange) == "function" then
-        pcall(P.onChange, active)
-    end
-end
-
-local function targetPed()
-    local serverId = (Menu and Menu.SelectedPlayer) or nil
-    if type(serverId) ~= "number" then return 0 end
-
-    local player = GetPlayerFromServerId(serverId)
-    if type(player) ~= "number" or player < 0 then return 0 end
-
-    local ped = GetPlayerPed(player)
-    if type(ped) ~= "number" or ped == 0 then return 0 end
-    if not DoesEntityExist(ped) then return 0 end
-    return ped
-end
-
-local function myVehicle()
-    local ped = O.Ctx.ped
-    if type(ped) ~= "number" or ped == 0 then return 0 end
-    if not O.Ctx.inVehicle then return 0 end
-    local veh = GetVehiclePedIsIn(ped, false)
-    if type(veh) ~= "number" or veh == 0 then return 0 end
-    return veh
-end
-
--- Release a vehicle we previously locked. Ownership is not given back
--- explicitly: the game rebalances it once we stop writing.
-local function release()
-    if P.veh ~= 0 and DoesEntityExist(P.veh) then
-        pcall(SetVehicleDoorsLocked, P.veh, LOCK_FREE)
-    end
-    P.veh = 0
-    P.locked = false
-end
-
-local function lockVehicle(veh, now)
-    if veh == 0 then return false end
-    if veh == myVehicle() then
-        -- Never trap the operator. Documented behaviour, not a silent skip.
-        return false
-    end
-
-    if not NetworkHasControlOfEntity(veh) then
-        if now - P.lastReq >= REQUEST_MS then
-            P.lastReq = now
-            pcall(NetworkRequestControlOfEntity, veh)
-        end
-        -- No ownership means no replicated write. Fail closed: do not pretend
-        -- the target is locked when the state only exists on this client.
-        return false
-    end
-
-    pcall(SetVehicleDoorsLocked, veh, LOCK_INSIDE)
-    pcall(SetVehicleDoorsShut, veh, true)
-    P.veh = veh
-    P.locked = true
-    return true
-end
-
--- ---------------------------------------------------------------------------
--- TICK
--- ---------------------------------------------------------------------------
-local function tick(now)
-    if not P.active then
-        if P.veh ~= 0 then release() end
-        return
-    end
-
-    local ped = targetPed()
-    if ped == 0 then
-        if P.veh ~= 0 then release() end
-        return
-    end
-
-    local veh = GetVehiclePedIsIn(ped, false)
-    if type(veh) ~= "number" or veh == 0 then
-        -- Target is on foot. Release the previous car and wait: the next car
-        -- they enter gets locked on the following tick.
-        if P.veh ~= 0 then release() end
-        return
-    end
-
-    if P.veh ~= 0 and P.veh ~= veh then release() end
-    lockVehicle(veh, now)
-end
-
--- ---------------------------------------------------------------------------
--- PUBLIC
--- ---------------------------------------------------------------------------
-function P.arm()
-    if type(Menu) ~= "table" then return false end
-    if P.active then return true end
-
-    if not B.spend("prison") then
-        emit("budget refused")
-        return false
-    end
-
-    P.active = true
-    P.veh = 0
-    P.locked = false
-    P.lastReq = 0
-    P.sessions = P.sessions + 1
-
-    notify(true)
-    emit("armed - select a player in a vehicle")
-    return true
-end
-
-function P.stop(reason)
-    P.active = false
-    release()
-    notify(false)
-    if reason then emit("stopped: %s", tostring(reason)) end
-end
-
-function P.disable()
-    P.stop("panic")
-end
-
-function P.isActive()
-    return P.active
-end
-
-function P.status()
-    return ("active=%s veh=%s locked=%s sessions=%d"):format(
-        tostring(P.active), tostring(P.veh), tostring(P.locked), P.sessions)
-end
-
-O.every("prison", POLL_MS, tick, 0)
-
-return P
-
-end)(O,S,B,Menu)
-
--- ---------------------------------------------------------------------------
 -- PART: 20_combat.lua
 -- ---------------------------------------------------------------------------
 local CU = (function(O,S,B)
@@ -25040,582 +24825,6 @@ O.every("combat", POLL_MS, tick, 0)
 return CU
 
 end)(O,S,B)
-
--- ---------------------------------------------------------------------------
--- PART: 21_gags.lua
--- ---------------------------------------------------------------------------
-local G = (function(O,S,B,Menu)
--- ============================================================================
--- VANGUARD / 21 VEHICLE GAGS
--- ----------------------------------------------------------------------------
--- Online > Troll > "Engine Cut" and "Horn".
---
--- Engine Cut:
---   While armed, the selected player's engine is held off. The car coasts,
---   loses power and stalls; if the driver restarts it, the next tick cuts it
---   again. On release the engine is restored to the state it had before the
---   first cut (never force-started on a car that was already parked off).
---
--- Horn:
---   While armed, the selected player's car honks on its own every 2.5 s
---   (jittered). If the player is on foot, the last car they used is targeted,
---   but only while it is within 60 m. The native only sounds briefly when a
---   player is inside, which is exactly the gag: repeated short toots.
---
--- Why ownership:
---   Engine state and horn state replicate from the client that owns the
---   vehicle. Without ownership the write is local and the target hears
---   nothing. Ownership is requested once per second at most.
---
--- Why it is quiet against WaveShield V4:
---   * no entity is created              -> entityCreating never runs
---   * no ped is attached                -> entities.lua:166-188 never matches
---   * no ped task is issued             -> clearPedTasksEvent / givePedScriptedTaskEvent
---                                          never fire
---   * no state bag is written           -> exploits-fixed.lua:1-26 never fires
---   * no server event is sent
---   * V4 has no detector for engine, horn, door or light state; the only
---     vehicle-state branch is AntiMagneto, which skips player-owned cars
---     (entities.lua:130-140).
---
--- The module never touches the operator's own vehicle.
--- ============================================================================
-
-local G = {}
-
-local POLL_MS       = 250
-local REQUEST_MS    = 1000
-local HORN_MS       = 2500
-local HORN_DURATION = 800
-local HORN_RANGE    = 60.0
-
-local function makeState()
-    return {
-        active   = false,
-        veh      = 0,
-        wasOn    = false,
-        lastReq  = 0,
-        nextAt   = 0,
-        sessions = 0,
-        onChange = nil,
-    }
-end
-
-G.engine = makeState()
-G.horn   = makeState()
-
-local function emit(fmt, ...)
-    O.log("gags: " .. tostring(fmt), ...)
-end
-
-local function notify(state, active)
-    if type(state.onChange) == "function" then
-        pcall(state.onChange, active)
-    end
-end
-
--- ---------------------------------------------------------------------------
--- TARGET AND OWNERSHIP
--- ---------------------------------------------------------------------------
-local function targetPed()
-    local serverId = (Menu and Menu.SelectedPlayer) or nil
-    if type(serverId) ~= "number" then return 0 end
-
-    local player = GetPlayerFromServerId(serverId)
-    if type(player) ~= "number" or player < 0 then return 0 end
-
-    local ped = GetPlayerPed(player)
-    if type(ped) ~= "number" or ped == 0 then return 0 end
-    if not DoesEntityExist(ped) then return 0 end
-    return ped
-end
-
-local function myVehicle()
-    local ped = O.Ctx.ped
-    if type(ped) ~= "number" or ped == 0 then return 0 end
-    if not O.Ctx.inVehicle then return 0 end
-    local veh = GetVehiclePedIsIn(ped, false)
-    if type(veh) ~= "number" or veh == 0 then return 0 end
-    if not DoesEntityExist(veh) then return 0 end
-    return veh
-end
-
-local function currentVehicle(ped)
-    local veh = GetVehiclePedIsIn(ped, false)
-    if type(veh) ~= "number" or veh == 0 then return 0 end
-    if not DoesEntityExist(veh) then return 0 end
-    return veh
-end
-
-local function lastVehicle(ped)
-    local veh = GetVehiclePedIsIn(ped, true)
-    if type(veh) ~= "number" or veh == 0 then return 0 end
-    if not DoesEntityExist(veh) then return 0 end
-
-    local okV, vcoords = pcall(GetEntityCoords, veh)
-    local okP, pcoords = pcall(GetEntityCoords, ped)
-    if okV and okP and vcoords and pcoords then
-        if O.distance(vcoords, pcoords) > HORN_RANGE then return 0 end
-    end
-    return veh
-end
-
-local function ensureControl(veh, state, now)
-    if NetworkHasControlOfEntity(veh) then return true end
-
-    if now - state.lastReq >= REQUEST_MS then
-        state.lastReq = now
-        pcall(NetworkRequestControlOfEntity, veh)
-    end
-    return false
-end
-
--- ---------------------------------------------------------------------------
--- ENGINE CUT
--- ---------------------------------------------------------------------------
-local function restoreEngine(state)
-    if state.veh ~= 0 and DoesEntityExist(state.veh) and state.wasOn then
-        pcall(SetVehicleEngineOn, state.veh, true, true, false)
-    end
-    state.veh = 0
-    state.wasOn = false
-end
-
-local function engineTick(now)
-    local state = G.engine
-
-    if not state.active then
-        if state.veh ~= 0 then restoreEngine(state) end
-        return
-    end
-
-    local ped = targetPed()
-    if ped == 0 then
-        restoreEngine(state)
-        return
-    end
-
-    local veh = currentVehicle(ped)
-    if veh == 0 then
-        restoreEngine(state)
-        return
-    end
-    if veh == myVehicle() then return end
-
-    if state.veh ~= 0 and state.veh ~= veh then
-        restoreEngine(state)
-    end
-
-    if not ensureControl(veh, state, now) then return end
-
-    if state.veh ~= veh then
-        state.veh = veh
-        local ok, running = pcall(GetIsVehicleEngineRunning, veh)
-        state.wasOn = (ok and running == true)
-    end
-
-    -- instantly = true: no start/stop animation.
-    -- disableAutoStart = true: the game does not silently restart it.
-    pcall(SetVehicleEngineOn, veh, false, true, true)
-end
-
--- ---------------------------------------------------------------------------
--- HORN
--- ---------------------------------------------------------------------------
-local function hornTick(now)
-    local state = G.horn
-
-    if not state.active then
-        state.veh = 0
-        return
-    end
-
-    local ped = targetPed()
-    if ped == 0 then
-        state.veh = 0
-        return
-    end
-
-    local veh = currentVehicle(ped)
-    if veh == 0 then veh = lastVehicle(ped) end
-    if veh == 0 then
-        state.veh = 0
-        return
-    end
-    if veh == myVehicle() then return end
-
-    state.veh = veh
-
-    if not ensureControl(veh, state, now) then return end
-    if now < state.nextAt then return end
-
-    state.nextAt = now + O.jitter(HORN_MS, 0.4)
-    -- duration 800 ms, mode 0 (normal), forever false. If a player is inside,
-    -- the game shortens it by design; the next toot comes on the next window.
-    pcall(StartVehicleHorn, veh, HORN_DURATION, 0, false)
-end
-
--- ---------------------------------------------------------------------------
--- TICK
--- ---------------------------------------------------------------------------
-local function tick(now)
-    engineTick(now)
-    hornTick(now)
-end
-
--- ---------------------------------------------------------------------------
--- PUBLIC
--- ---------------------------------------------------------------------------
-function G.armEngine()
-    local state = G.engine
-    if state.active then return true end
-
-    if not B.spend("engine") then
-        emit("engine budget refused")
-        return false
-    end
-
-    state.active = true
-    state.veh = 0
-    state.wasOn = false
-    state.lastReq = 0
-    state.sessions = state.sessions + 1
-
-    notify(state, true)
-    emit("engine armed")
-    return true
-end
-
-function G.stopEngine(reason)
-    local state = G.engine
-    state.active = false
-    restoreEngine(state)
-    notify(state, false)
-    if reason then emit("engine stopped: %s", tostring(reason)) end
-end
-
-function G.armHorn()
-    local state = G.horn
-    if state.active then return true end
-
-    if not B.spend("horn") then
-        emit("horn budget refused")
-        return false
-    end
-
-    state.active = true
-    state.veh = 0
-    state.lastReq = 0
-    state.nextAt = 0
-    state.sessions = state.sessions + 1
-
-    notify(state, true)
-    emit("horn armed")
-    return true
-end
-
-function G.stopHorn(reason)
-    local state = G.horn
-    state.active = false
-    state.veh = 0
-    notify(state, false)
-    if reason then emit("horn stopped: %s", tostring(reason)) end
-end
-
-function G.disable()
-    G.stopEngine("panic")
-    G.stopHorn("panic")
-end
-
-function G.engineActive()
-    return G.engine.active
-end
-
-function G.hornActive()
-    return G.horn.active
-end
-
-function G.status()
-    return ("engine=%s/%s horn=%s/%s"):format(
-        tostring(G.engine.active), tostring(G.engine.veh),
-        tostring(G.horn.active), tostring(G.horn.veh))
-end
-
-O.every("gags", POLL_MS, tick, 0)
-
-return G
-
-end)(O,S,B,Menu)
-
--- ---------------------------------------------------------------------------
--- PART: 22_tow.lua
--- ---------------------------------------------------------------------------
-local T = (function(O,S,B,Menu)
--- ============================================================================
--- VANGUARD / 22 TOW
--- ----------------------------------------------------------------------------
--- Online > Troll > "Tow" and "Catapult".
---
--- Tow:
---   The selected player's vehicle is attached behind the operator's vehicle
---   and follows it. Combined with Car Prison, the target is locked inside a
---   car that is being dragged: "Prison roulante".
---
--- Catapult:
---   While towing, detaches the target vehicle and gives it the operator's
---   velocity plus an upward kick. The car flies; the tow toggle drops so the
---   next tick does not re-attach it.
---
--- Why vehicle -> vehicle:
---   WaveShield V4's only attach detector reads GetEntityAttachedTo(vehicle)
---   and reports when the attached entity is a *player ped*
---   (client/entities.lua:166-188). A vehicle attached to a vehicle never
---   matches. No ped is attached, no task is issued, no entity is created.
---
--- Ownership:
---   The attach replicates from the client that owns the towed vehicle.
---   Ownership is requested once per second at most.
---
--- The module never tows the operator's own vehicle.
--- ============================================================================
-
-local T = {}
-
-local POLL_MS    = 250
-local REQUEST_MS = 1000
-local ATTACH_MS  = 1000
-
--- Local offset behind the operator vehicle. GTA vehicles face +Y in local
--- space, so -Y is the rear. The small Z lift keeps the towed car off the road.
-local OFFSET_X = 0.0
-local OFFSET_Y = -5.0
-local OFFSET_Z = 0.5
-
-local LAUNCH_MULT = 1.5
-local LAUNCH_UP   = 6.0
-local LAUNCH_CAP  = 45.0
-
-T.active   = false
-T.veh      = 0
-T.myVeh    = 0
-T.attached = false
-T.lastReq  = 0
-T.lastAttach = 0
-T.sessions = 0
-T.onChange = nil
-
-local function emit(fmt, ...)
-    O.log("tow: " .. tostring(fmt), ...)
-end
-
-local function notify(active)
-    if type(T.onChange) == "function" then
-        pcall(T.onChange, active)
-    end
-end
-
--- ---------------------------------------------------------------------------
--- TARGET
--- ---------------------------------------------------------------------------
-local function targetPed()
-    local serverId = (Menu and Menu.SelectedPlayer) or nil
-    if type(serverId) ~= "number" then return 0 end
-
-    local player = GetPlayerFromServerId(serverId)
-    if type(player) ~= "number" or player < 0 then return 0 end
-
-    local ped = GetPlayerPed(player)
-    if type(ped) ~= "number" or ped == 0 then return 0 end
-    if not DoesEntityExist(ped) then return 0 end
-    return ped
-end
-
-local function myVehicle()
-    local ped = O.Ctx.ped
-    if type(ped) ~= "number" or ped == 0 then return 0 end
-    if not O.Ctx.inVehicle then return 0 end
-    local veh = GetVehiclePedIsIn(ped, false)
-    if type(veh) ~= "number" or veh == 0 then return 0 end
-    if not DoesEntityExist(veh) then return 0 end
-    return veh
-end
-
-local function targetVehicle(ped)
-    local veh = GetVehiclePedIsIn(ped, false)
-    if type(veh) ~= "number" or veh == 0 then return 0 end
-    if not DoesEntityExist(veh) then return 0 end
-    return veh
-end
-
-local function ensureControl(veh, now)
-    if NetworkHasControlOfEntity(veh) then return true end
-    if now - T.lastReq >= REQUEST_MS then
-        T.lastReq = now
-        pcall(NetworkRequestControlOfEntity, veh)
-    end
-    return false
-end
-
--- ---------------------------------------------------------------------------
--- ATTACH / DETACH
--- ---------------------------------------------------------------------------
-local function detach()
-    if T.veh ~= 0 and DoesEntityExist(T.veh) then
-        pcall(DetachEntity, T.veh, true, true)
-    end
-    T.attached = false
-    T.veh = 0
-    T.lastAttach = 0
-end
-
-local function attach(veh, myVeh)
-    pcall(AttachEntityToEntity, veh, myVeh, 0,
-        OFFSET_X, OFFSET_Y, OFFSET_Z,
-        0.0, 0.0, 0.0,
-        false, false, false, false, 2, true)
-    T.veh = veh
-    T.myVeh = myVeh
-    T.attached = true
-end
-
-local function isAttached(veh, myVeh)
-    if veh == 0 or myVeh == 0 then return false end
-    local ok, attached = pcall(IsEntityAttachedToEntity, veh, myVeh)
-    return ok and attached == true
-end
-
--- ---------------------------------------------------------------------------
--- TICK
--- ---------------------------------------------------------------------------
-local function tick(now)
-    if not T.active then
-        if T.attached or T.veh ~= 0 then detach() end
-        return
-    end
-
-    local ped = targetPed()
-    if ped == 0 then detach(); return end
-
-    local veh = targetVehicle(ped)
-    if veh == 0 then detach(); return end
-
-    local mine = myVehicle()
-    if mine == 0 then detach(); return end
-    if veh == mine then detach(); return end
-
-    if T.veh ~= 0 and T.veh ~= veh then detach() end
-
-    if not ensureControl(veh, now) then return end
-
-    if T.attached and isAttached(T.veh, mine) then
-        T.myVeh = mine
-        return
-    end
-
-    if now - T.lastAttach < ATTACH_MS then return end
-
-    T.lastAttach = now
-    attach(veh, mine)
-end
-
--- ---------------------------------------------------------------------------
--- PUBLIC
--- ---------------------------------------------------------------------------
-function T.arm()
-    if T.active then return true end
-
-    if not B.spend("tow") then
-        emit("budget refused")
-        return false
-    end
-
-    T.active = true
-    T.veh = 0
-    T.myVeh = 0
-    T.attached = false
-    T.lastReq = 0
-    T.lastAttach = 0
-    T.sessions = T.sessions + 1
-
-    notify(true)
-    emit("armed - select a player in a vehicle")
-    return true
-end
-
-function T.stop(reason)
-    T.active = false
-    detach()
-    notify(false)
-    if reason then emit("stopped: %s", tostring(reason)) end
-end
-
-function T.disable()
-    T.stop("panic")
-end
-
-function T.catapult()
-    if not T.active or not T.attached then
-        emit("catapult refused: not towing")
-        return false
-    end
-    if T.veh == 0 or not DoesEntityExist(T.veh) then
-        emit("catapult refused: no vehicle")
-        return false
-    end
-    if not isAttached(T.veh, T.myVeh) then
-        emit("catapult refused: attachment lost")
-        return false
-    end
-    if not B.spend("catapult") then
-        emit("catapult budget refused")
-        return false
-    end
-
-    local veh = T.veh
-    local mine = T.myVeh
-
-    local vx, vy, vz = 0.0, 0.0, 0.0
-    local okVel, vel = pcall(GetEntityVelocity, mine)
-    if okVel and vel then
-        vx, vy, vz = vel.x or 0.0, vel.y or 0.0, vel.z or 0.0
-    end
-
-    vx, vy = vx * LAUNCH_MULT, vy * LAUNCH_MULT
-
-    local speed = math.sqrt(vx * vx + vy * vy)
-    if speed > LAUNCH_CAP then
-        local scale = LAUNCH_CAP / speed
-        vx, vy = vx * scale, vy * scale
-    end
-
-    -- Detach first: the attachment would override the velocity.
-    pcall(DetachEntity, veh, true, true)
-    pcall(SetEntityVelocity, veh, vx, vy, vz + LAUNCH_UP)
-
-    T.active = false
-    T.attached = false
-    T.veh = 0
-    T.myVeh = 0
-
-    notify(false)
-    emit("catapulted")
-    return true
-end
-
-function T.isActive()
-    return T.active
-end
-
-function T.status()
-    return ("active=%s veh=%s attached=%s sessions=%d"):format(
-        tostring(T.active), tostring(T.veh), tostring(T.attached), T.sessions)
-end
-
-O.every("tow", POLL_MS, tick, 0)
-
-return T
-
-end)(O,S,B,Menu)
 
 -- ---------------------------------------------------------------------------
 -- PART: 23_uncuff.lua
@@ -26628,693 +25837,521 @@ return FA
 end)(O,S,B)
 
 -- ---------------------------------------------------------------------------
--- PART: 25_ghostlink.lua
+-- PART: 26_target_panel.lua
 -- ---------------------------------------------------------------------------
-local GL = (function(O,S,B)
+local TP = (function(O,Menu)
 -- ============================================================================
--- VANGUARD / 25 GHOSTLINK
+-- VANGUARD / 26 TARGET PANEL
 -- ----------------------------------------------------------------------------
--- Exploit > Bypass > "Ghostlink".
+-- Replaces the loader's right-hand player dossier with a card built from the
+-- same visual language as the menu: same outer border, same accent from the
+-- active theme, same rounded body, same label/value rhythm.
 --
--- This is the layer the per-detector bypasses cannot give you: instead of
--- making every detector return a clean value, it severs the two channels a
--- client-side anticheat uses to *report* a detection.
+-- The data is already collected by Menu.GetSelectedPlayerInfo (loader.lua).
+-- This file only draws. It never reads the ped, never writes an entity and
+-- never allocates a native handle, so it cannot move a target or trip an AC
+-- check. It is a pure function of the table the loader already built.
 --
--- WaveShield V4 has exactly two sinks for the same payload:
+-- Layout:
 --
---   1. The outbound server event. modules/include/client.lua:230-248 calls
---      WaveShield.TriggerServerEvent(BanEventToken, { detection, details,
---      action, duration }) where BanEventToken is
---      EncryptString(GlobalState.BanEventToken, Substitution).
---   2. The replicated local-player state bag with the same key.
---      SafeSetLocalPlayerState(BanEventToken, {...}, true) writes it, and
---      core/server/classes/player.lua:490-497 registers
---      AddStateBagChangeHandler(BanEventToken, nil, ...) so the server bans on
---      the bag write alone. Blocking only the event is not enough.
---
--- The server actually registers four handlers (player.lua:469-497): the raw
--- GlobalState token and the encrypted token, each as a net event and as a
--- state-bag key. The client can emit both wire forms: the plain encrypted
--- token when AntiTriggerServerEventAI is off, and
--- ConvertEvent(token) = EncryptString("_WS:" .. token) when it is on
--- (modules/include/client.lua:786-793, core/encryption.lua:75-77).
---
--- What Ghostlink does:
---
---   * Rebuilds WaveShield's deterministic substitution from
---     GlobalState.HHct1C6gobnW3DkIQUxiXk9Q and GetConvar, byte for byte as
---     core/encryption.lua:1-61 does. No call into the guard's VM, no hook.
---   * Renames every outbound report event to a benign name of the SAME byte
---     length. The Susano OnTriggerServerEvent documentation is explicit: a
---     rename happens in place and must keep the same byte length, so a fixed
---     "nullevent" would break as soon as the server token is not nine bytes.
---     V4 uses randomString(math.random(15, 30)), i.e. 16-31 bytes
---     (core/server/system/initializer.lua:20-35), so the length is computed
---     per token and the rename is built to match it exactly.
---   * Hooks SET_STATE_BAG_VALUE (0x8D50E33A), blocks the replicated write for
---     a matching bag+key, and replays it locally with replicated = false so
---     the guard's own 20-second self-check still sees the value
---     (modules/include/client.lua:239-243). Only the server replication is
---     removed.
---   * PROVES the state-bag hook works before it claims to be armed. A hook
---     that silently fails to install is the worst possible outcome: the
---     operator would believe the report channel is severed while the bag
---     channel still bans. The probe writes a random local-only key through the
---     same native and asks the callback whether it ran. If it did not, the
---     module tears down and refuses to arm.
---   * Re-probes every 45 s. A hook removed by another script is detected and
---     reported instead of being silently assumed.
---   * Never touches the heartbeat, the heartbeat event, the heartbeat bag, or
---     any name containing heart/beat/alive/ping/ack. The safe set is built
---     before the report set and is checked first, and the encrypted forms of
---     the safe tokens are added too. A silent heartbeat is a ban.
---   * Uses the documented return contract: OnTriggerServerEvent returning
---     false or nil means "no change", so the module never relies on a false
---     return to block anything. It always returns the pair (name, payload).
---
--- Why this is not a "kill the AC" bypass:
---   No resource is stopped, no thread is closed, no global is overwritten, no
---   file is patched and no guard function is replaced. The guard continues to
---   run, to heartbeat, and to write its local state. The only thing that
---   changes is whether a report packet or a replicated report bag leaves the
---   client. That is the smallest possible mutation that produces the largest
---   possible result.
---
--- Residual risk:
---   * A build where Susano cannot hook a CFX native by hash makes the bag half
---     impossible. The probe detects that and Ghostlink refuses to arm; it does
---     not pretend. This is the honest failure mode.
---   * An AC that requires a server ACK for every report, or that treats a
---     missing report as a detection, can flag the silence. V4 does not: its
---     post-report check is local (modules/include/client.lua:239-243) and the
---     server has no timeout for the BanEventToken channel.
---   * The server can still correlate a report the guard says it sent with the
---     event it actually received. That comparison is server-side and outside
---     this client model.
---   * A guard build that renames the GlobalState key, changes the substitution
---     alphabet, or stops exposing the convar defeats token discovery. The
---     module fails closed (refuses to arm) rather than blocking a guess.
---
--- Tier:
---   Tier A. Susano.OnTriggerServerEvent, Susano.HookNative and one native
---   replay. No injection, no foreign VM, no chunk on the guard's stack.
+--   CIBLE  [name]                                   #42
+--   ------------------------------------------------
+--   SANTE    150 / 200        [bar]
+--   ARMURE    50 / 100        [bar]
+--   ARME      Carbine Rifle
+--   DISTANCE  42 m
+--   DIRECTION NO 315
+--   POSITION  123.4, -456.7, 30.1
+--   VEHICULE
+--   MODELE    Sultan
+--   PLAQUE    ABC123
+--   VITESSE   87 km/h
+--   VIE VEHICULE               [bar]
+--   ETAT      [VISE] [SPRINT]
+--   ------------------------------------------------
+--   [EN VIE]                                  * LIVE
 -- ============================================================================
 
-local GL = {}
+local TP = {}
 
-local STATE_BAG_NATIVE = 0x8D50E33A   -- SET_STATE_BAG_VALUE (CFX)
-local MAX_PENDING      = 8
-local FLUSH_MS         = 80
-local REFRESH_MS       = 1500
-local REPROBE_MS       = 45000
-local PROBE_TIMEOUT_MS = 1200
-local NULL_PREFIX      = "__vgd:void:"
+local FALLBACK_ACCENT = { r = 104, g = 168, b = 203 }
 
-GL.state       = "idle"   -- idle | probing | active
-GL.wire        = {}       -- wire event name -> same-length benign name
-GL.bagKeys     = {}       -- exact state-bag keys that are report channels
-GL.safeWire    = {}       -- names that must never be renamed
-GL.rawReport   = {}       -- raw GlobalState report values
-GL.rawSafe     = {}       -- raw GlobalState liveness values
-GL.null        = {}       -- length -> benign name of exactly that length
-GL.playerBag   = nil      -- "player:<serverId>"
-GL.banToken    = nil      -- raw GlobalState.BanEventToken at discovery
-GL.probeKey    = nil      -- random local-only state key used to prove the hook
-GL.probeHits   = 0
-GL.probeAt     = 0
-GL.probePending = false
-GL.pending     = {}
-GL.hookedEvent = false
-GL.hookedBag   = false
-GL.lastRefresh = 0
-GL.lastReprobe = 0
-GL.degraded    = false
-GL.onChange    = nil
-GL.stats       = { events = 0, bags = 0, flushes = 0, probes = 0, lastAt = 0 }
-
-local function emit(fmt, ...)
-    O.log("ghostlink: " .. tostring(fmt), ...)
+local function clamp01(value)
+    value = tonumber(value) or 0.0
+    -- NaN compares false to everything; catch it before the bounds so a bad
+    -- native return cannot poison a bar width.
+    if value ~= value then return 0.0 end
+    if value < 0.0 then return 0.0 end
+    if value > 1.0 then return 1.0 end
+    return value
 end
 
-local function notify(active)
-    if type(GL.onChange) == "function" then
-        pcall(GL.onChange, active)
+-- Integer for a %d format without ever passing NaN/inf to string.format.
+local function whole(value)
+    value = tonumber(value)
+    if not value or value ~= value or value == math.huge or value == -math.huge then
+        return 0
+    end
+    return math.floor(value + 0.5)
+end
+
+local function accentRGB()
+    local color = Menu and Menu.Colors and Menu.Colors.SelectedBg or FALLBACK_ACCENT
+    return (color.r or FALLBACK_ACCENT.r) / 255.0,
+        (color.g or FALLBACK_ACCENT.g) / 255.0,
+        (color.b or FALLBACK_ACCENT.b) / 255.0
+end
+
+-- Rounded fill with the same three fallbacks the loader uses. A build without
+-- Susano.DrawRectFilled still gets a valid panel through Menu.DrawRoundedRect
+-- or Menu.DrawRect instead of throwing during OnRender.
+local function fillRect(x, y, width, height, r, g, b, a, radius)
+    if width <= 0 or height <= 0 then return end
+    a = a or 1.0
+    radius = radius or 0
+
+    if Susano and type(Susano.DrawRectFilled) == "function" then
+        Susano.DrawRectFilled(x, y, width, height, r, g, b, a, radius)
+    elseif radius > 0 and Menu and type(Menu.DrawRoundedRect) == "function" then
+        Menu.DrawRoundedRect(x, y, width, height,
+            math.floor(r * 255.0), math.floor(g * 255.0), math.floor(b * 255.0),
+            math.floor(a * 255.0), radius)
+    elseif Menu and type(Menu.DrawRect) == "function" then
+        Menu.DrawRect(x, y, width, height, r, g, b, a)
     end
 end
 
--- ---------------------------------------------------------------------------
--- TOKEN DISCOVERY
---
--- Only fields whose *name* says ban/report/detect/flag are considered.
--- Heartbeat, alive, ping and ack fields are copied into the safe set instead.
--- This is the difference between a bypass and a self-kick.
--- ---------------------------------------------------------------------------
-local function classify(field)
-    local name = string.lower(tostring(field or ""))
-    if name == "" then return nil end
-
-    if string.find(name, "heart", 1, true)
-        or string.find(name, "beat", 1, true)
-        or string.find(name, "alive", 1, true)
-        or string.find(name, "ping", 1, true)
-        or string.find(name, "ack", 1, true)
-        or string.find(name, "keep", 1, true) then
-        return "safe"
-    end
-
-    if string.find(name, "ban", 1, true)
-        or string.find(name, "report", 1, true)
-        or string.find(name, "detect", 1, true)
-        or string.find(name, "flag", 1, true) then
-        return "report"
-    end
-    return nil
+local function text(x, y, value, size, r, g, b, a)
+    if not Menu or type(Menu.DrawText) ~= "function" then return end
+    Menu.DrawText(x, y, tostring(value), size, r, g, b, a or 1.0)
 end
 
-local function discover()
-    GL.rawReport = {}
-    GL.rawSafe = {}
+-- Width of a string at the same size Menu.DrawText will use. Menu.DrawText
+-- multiplies the base size by Menu.Scale; GetTextWidth needs the final size.
+local function textWidth(value, size, scale)
+    value = tostring(value or "")
+    if value == "" then return 0.0 end
 
-    local gs = rawget(_G, "GlobalState")
-    if type(gs) ~= "table" then return 0 end
-
-    local okRaw, raw = pcall(function() return gs.BanEventToken end)
-    if okRaw and type(raw) == "string" and #raw >= 8 and #raw <= 96 then
-        GL.rawReport[raw] = true
-        GL.banToken = raw
-    else
-        GL.banToken = nil
+    if Susano and type(Susano.GetTextWidth) == "function" then
+        local ok, width = pcall(Susano.GetTextWidth, value, size * scale)
+        if ok and type(width) == "number" and width > 0 then return width end
     end
+    return #value * size * 0.52 * scale
+end
 
-    pcall(function()
-        for key, value in pairs(gs) do
-            if type(key) == "string" and type(value) == "string"
-                and #value >= 8 and #value <= 96 then
-                local kind = classify(key)
-                if kind == "safe" then
-                    GL.rawSafe[value] = true
-                elseif kind == "report" then
-                    GL.rawReport[value] = true
-                end
-            end
+-- Byte offsets of every UTF-8 character boundary, with a final sentinel at
+-- #value + 1. Player names are arbitrary UTF-8; cutting at a byte boundary
+-- would leave an invalid sequence and could make the renderer drop the line.
+local function utf8Offsets(value)
+    local offsets = { 1 }
+    local index = 1
+    while index <= #value do
+        local byte = value:byte(index) or 0
+        local length = 1
+        if byte >= 0xF0 then
+            length = 4
+        elseif byte >= 0xE0 then
+            length = 3
+        elseif byte >= 0xC0 then
+            length = 2
         end
-    end)
-
-    local count = 0
-    for _ in pairs(GL.rawReport) do count = count + 1 end
-    return count
+        index = index + length
+        if index > #value then index = #value + 1 end
+        offsets[#offsets + 1] = index
+    end
+    return offsets
 end
 
--- ---------------------------------------------------------------------------
--- WAVESHIELD SUBSTITUTION
---
--- Byte-for-byte the permutation in core/encryption.lua:1-61. The key is the
--- random convar name the server put in GlobalState; the value is the convar
--- payload (default "weaponDamageEvent"). This is a pure Lua copy, no call into
--- the guard's VM and no hook.
--- ---------------------------------------------------------------------------
-local function substitutionKey()
-    local gs = rawget(_G, "GlobalState")
-    if type(gs) ~= "table" then return nil end
+local function fitText(value, maxWidth, size, scale)
+    value = tostring(value or "")
+    if textWidth(value, size, scale) <= maxWidth then return value end
 
-    local direct = gs.HHct1C6gobnW3DkIQUxiXk9Q
-    if type(direct) == "string" and direct ~= "" then return direct end
+    local suffix = "..."
+    local suffixWidth = textWidth(suffix, size, scale)
+    if suffixWidth >= maxWidth then return "" end
 
-    -- A future build may randomise the field name. A field is a candidate only
-    -- when its value names an existing convar; ordinary state values do not.
-    for key, value in pairs(gs) do
-        if type(key) == "string" and type(value) == "string"
-            and #value >= 6 and #value <= 64 then
-            if not GL.rawReport[value] and not GL.rawSafe[value]
-                and not string.find(value, ":", 1, true)
-                and not string.find(value, " ", 1, true) then
-                local ok, probe = pcall(GetConvar, value, "__vgd_missing__")
-                if ok and probe ~= "__vgd_missing__" then return value end
-            end
+    local offsets = utf8Offsets(value)
+    local characters = #offsets - 1
+    local low, high = 0, characters
+    while low < high do
+        local middle = math.floor((low + high + 1) / 2)
+        local probe = value:sub(1, offsets[middle + 1] - 1) .. suffix
+        if textWidth(probe, size, scale) <= maxWidth then
+            low = middle
+        else
+            high = middle - 1
         end
     end
-    return nil
+    return value:sub(1, offsets[low + 1] - 1) .. suffix
 end
 
-local function generateSubstitution(key)
-    if type(key) ~= "string" or key == "" then return nil end
-
-    local blacklist = { ["^"] = true, [" "] = true, ["\\"] = true }
-    local alphabet = ""
-    for i = 32, 126 do
-        local char = string.char(i)
-        if not blacklist[char] then alphabet = alphabet .. char end
+local function screenSize()
+    local width, height = 1920, 1080
+    if Susano and type(Susano.GetScreenWidth) == "function" then
+        local ok, value = pcall(Susano.GetScreenWidth)
+        if ok and type(value) == "number" and value > 0 then width = value end
     end
-
-    local shuffled = {}
-    for i = 1, #alphabet do shuffled[i] = alphabet:sub(i, i) end
-
-    local hash = 0
-    for i = 1, #key do
-        hash = (hash * 31 + key:byte(i)) % 2 ^ 32
+    if Susano and type(Susano.GetScreenHeight) == "function" then
+        local ok, value = pcall(Susano.GetScreenHeight)
+        if ok and type(value) == "number" and value > 0 then height = value end
     end
-
-    for i = 1, #shuffled do
-        local j = math.floor((hash % (#shuffled - i + 1)) + i)
-        shuffled[i], shuffled[j] = shuffled[j], shuffled[i]
-        hash = hash + i
-    end
-
-    local sub = {}
-    for i = 1, #alphabet do
-        sub[alphabet:sub(i, i)] = shuffled[i]
-    end
-    return sub
+    return width, height
 end
 
-local function encrypt(text, sub)
-    if type(text) ~= "string" or type(sub) ~= "table" then return nil end
-    local out = {}
-    for i = 1, #text do
-        local char = text:sub(i, i)
-        out[i] = sub[char] or char
-    end
-    return table.concat(out)
+local function compass(heading)
+    local directions = { "N", "NE", "E", "SE", "S", "SO", "O", "NO" }
+    local normalized = (tonumber(heading) or 0.0) % 360.0
+    local index = math.floor((normalized + 22.5) / 45.0) % 8 + 1
+    return directions[index] or "N"
 end
 
--- ---------------------------------------------------------------------------
--- LENGTH-PRESERVING RENAME
---
--- Susano's documentation is explicit that an outbound event rename happens in
--- place and must keep the same byte length, so the target name is built from
--- the token length. The "__vgd:void:" prefix cannot collide with a real event
--- on the server, and the padding keeps the byte count exact.
--- ---------------------------------------------------------------------------
-local function nullFor(len)
-    local cached = GL.null[len]
-    if cached then return cached end
-
-    local name
-    if len <= #NULL_PREFIX then
-        name = string.sub(NULL_PREFIX, 1, len)
-    else
-        name = NULL_PREFIX .. string.rep("_", len - #NULL_PREFIX)
-    end
-
-    GL.null[len] = name
-    return name
+local function healthColor(percent)
+    if percent < 0.25 then return 0.90, 0.28, 0.30 end
+    if percent < 0.55 then return 0.95, 0.70, 0.22 end
+    return 0.30, 0.82, 0.46
 end
 
--- ---------------------------------------------------------------------------
--- DERIVATION
---
--- For every raw report token there are two wire event names (plain and the
--- "_WS:" form) and one state-bag key (always the plain encrypted token).
--- For every raw safe token only the safe set is built. The safe set wins on
--- any overlap, by construction and again by a final delete.
--- ---------------------------------------------------------------------------
-local function derive()
-    local field = substitutionKey()
-    if type(field) ~= "string" then return false, "substitution key unavailable" end
-
-    local ok, value = pcall(GetConvar, field, "weaponDamageEvent")
-    if not ok or type(value) ~= "string" or value == "" then
-        return false, "substitution convar unreadable"
-    end
-
-    local sub = generateSubstitution(value)
-    if not sub then return false, "substitution generation failed" end
-
-    GL.wire = {}
-    GL.bagKeys = {}
-    GL.safeWire = {}
-
-    local n = 0
-    for raw in pairs(GL.rawReport) do
-        local enc = encrypt(raw, sub)
-        if type(enc) == "string" and enc ~= "" then
-            GL.bagKeys[enc] = true
-            GL.wire[enc] = nullFor(#enc)
-            n = n + 1
-
-            local wire = encrypt("_WS:" .. enc, sub)
-            if type(wire) == "string" and wire ~= "" then
-                GL.wire[wire] = nullFor(#wire)
-                n = n + 1
-            end
+-- Wrap pills on measured width so a translated state never runs off the card.
+-- One layout pass feeds both the reserved height and the draw call; that keeps
+-- the card from clipping or leaving a gap when a language changes a label.
+local function layoutPills(states, maxWidth, scale)
+    local rows = { {} }
+    local used = 0.0
+    for i = 1, #states do
+        local state = states[i]
+        local width = textWidth(state.label, 10, scale) + 14 * scale
+        local gap = (#rows[#rows] > 0 and 6 * scale or 0)
+        if #rows[#rows] > 0 and used + gap + width > maxWidth then
+            rows[#rows + 1] = {}
+            used = 0.0
+            gap = 0.0
         end
+        local row = rows[#rows]
+        row[#row + 1] = { state = state, width = width }
+        used = used + gap + width
     end
-
-    for raw in pairs(GL.rawSafe) do
-        GL.safeWire[raw] = true
-        local enc = encrypt(raw, sub)
-        if type(enc) == "string" and enc ~= "" then
-            GL.safeWire[enc] = true
-            local wire = encrypt("_WS:" .. enc, sub)
-            if type(wire) == "string" and wire ~= "" then
-                GL.safeWire[wire] = true
-            end
-        end
-    end
-
-    -- The safe set always wins.
-    for name in pairs(GL.safeWire) do GL.wire[name] = nil end
-
-    return n > 0, nil, n
+    return rows
 end
 
--- ---------------------------------------------------------------------------
--- OUTBOUND EVENT FILTER
---
--- OnTriggerServerEvent is an event hook, not a native hook: pure Lua work only.
--- One table lookup on the common path; the payload is passed through untouched
--- and only the channel name changes. The replacement has the same byte length
--- as the original, so the rename stays in place.
--- ---------------------------------------------------------------------------
-local function onSend(name, payload)
-    if GL.state ~= "active" then return name, payload end
-
-    local replacement = GL.wire[name]
-    if replacement == nil then return name, payload end
-    if GL.safeWire[name] then return name, payload end
-
-    GL.stats.events = GL.stats.events + 1
-    return replacement, payload
-end
-
--- ---------------------------------------------------------------------------
--- STATE BAG FILTER
---
--- Runs inside a native hook. No native call, no O.now, no O.log. The probe key
--- check is first so a probe is counted even with replicated = false; the
--- player-bag comparison is second so every other resource's state traffic
--- returns on one string compare.
--- ---------------------------------------------------------------------------
-local function onBag(bag, key, data, length, replicated)
-    if GL.probeKey ~= nil and key == GL.probeKey then
-        GL.probeHits = GL.probeHits + 1
-        GL.stats.probes = GL.stats.probes + 1
-        return false
-    end
-
-    if GL.state ~= "active" then return true end
-    if replicated ~= true then return true end
-    if bag ~= GL.playerBag then return true end
-    if type(key) ~= "string" or not GL.bagKeys[key] then return true end
-    if type(data) ~= "string" or type(length) ~= "number" then return true end
-
-    if #GL.pending >= MAX_PENDING then
-        table.remove(GL.pending, 1)
-    end
-
-    GL.pending[#GL.pending + 1] = {
-        bag = bag,
-        key = key,
-        data = data,
-        length = length,
-    }
-    GL.stats.bags = GL.stats.bags + 1
-    return false
-end
-
--- ---------------------------------------------------------------------------
--- LOCAL REPLAY
---
--- The guard wrote the detection into its own local state and then checked it
--- 20 s later. We reproduce the local half with replicated = false so the check
--- passes, while the server never sees the value. This is the whole point.
--- ---------------------------------------------------------------------------
-local function flush()
-    if #GL.pending == 0 then return end
-    local queue = GL.pending
-    GL.pending = {}
-
-    for i = 1, #queue do
-        local item = queue[i]
-        pcall(SetStateBagValue, item.bag, item.key, item.data, item.length, false)
-        GL.stats.flushes = GL.stats.flushes + 1
-    end
-end
-
--- ---------------------------------------------------------------------------
--- INSTALL / REMOVE
--- ---------------------------------------------------------------------------
-local function installBag()
-    if not O.has("HookNative", "UnhookNative") then return false, "HookNative unavailable" end
-
-    if O.has("HasNativeHookInitializationFailed") then
-        local ok, failed = pcall(Susano.HasNativeHookInitializationFailed)
-        if ok and failed == true then return false, "native hook bridge failed to initialize" end
-    end
-
-    pcall(Susano.UnhookNative, STATE_BAG_NATIVE)
-    local ok, err = pcall(Susano.HookNative, STATE_BAG_NATIVE, onBag)
-    if not ok then return false, tostring(err) end
-
-    GL.hookedBag = true
-    return true
-end
-
-local function installEvent()
-    if not O.has("OnTriggerServerEvent") then return false, "OnTriggerServerEvent unavailable" end
-    local ok, err = pcall(Susano.OnTriggerServerEvent, onSend)
-    if not ok then return false, tostring(err) end
-    GL.hookedEvent = true
-    return true
-end
-
-local function teardown()
-    if GL.hookedEvent then
-        pcall(Susano.ClearOnTriggerServerEvent)
-        GL.hookedEvent = false
-    end
-    if GL.hookedBag then
-        pcall(Susano.UnhookNative, STATE_BAG_NATIVE)
-        GL.hookedBag = false
-    end
-end
-
--- ---------------------------------------------------------------------------
--- PROBE
---
--- A local-only write through the same native the guard uses. The hook callback
--- is the only thing that can observe it. If the counter does not move, the
--- hook is not in the path and the bag channel cannot be severed.
--- ---------------------------------------------------------------------------
-local function probe(now)
-    if not GL.hookedBag or GL.playerBag == nil then return false end
-
-    GL.probeHits = 0
-    GL.probeAt = now or O.now()
-    GL.probePending = true
-
-    pcall(SetStateBagValue, GL.playerBag, GL.probeKey, "1", 1, false)
-    return GL.probeHits > 0
-end
-
--- ---------------------------------------------------------------------------
--- PUBLIC -- state machine
---
---   idle -> (bag hook + probe) -> probing -> active
---                                      \--> idle (refund)
---
--- The event hook is installed only after the bag hook has been proven, so the
--- module is never "half armed".
--- ---------------------------------------------------------------------------
-local function activate()
-    if GL.state == "active" then return true end
-
-    local ok, err = installEvent()
-    if not ok then
-        teardown()
-        GL.state = "idle"
-        GL.probePending = false
-        B.refund("ghostlink")
-        notify(false)
-        emit("refused: %s", tostring(err))
-        return false
-    end
-
-    GL.state = "active"
-    GL.probePending = false
-    GL.degraded = false
-    GL.lastRefresh = O.now()
-    GL.lastReprobe = O.now()
-    GL.stats = { events = 0, bags = 0, flushes = 0, probes = GL.stats.probes, lastAt = O.now() }
-
-    local wire, bags = 0, 0
-    for _ in pairs(GL.wire) do wire = wire + 1 end
-    for _ in pairs(GL.bagKeys) do bags = bags + 1 end
-
-    notify(true)
-    emit("armed wire=%d bags=%d probe=%s", wire, bags, tostring(GL.probeHits > 0))
-    return true
-end
-
-local function failProbe(reason)
-    teardown()
-    GL.state = "idle"
-    GL.probePending = false
-    GL.playerBag = nil
-    B.refund("ghostlink")
-    notify(false)
-    emit("refused: %s", tostring(reason))
-end
-
-function GL.arm()
-    if GL.state == "active" or GL.state == "probing" then return true end
-    if type(O.Ctx) ~= "table" then return false end
-    if type(SetStateBagValue) ~= "function" then
-        emit("SetStateBagValue unavailable")
-        return false
-    end
-    if not O.has("OnTriggerServerEvent", "ClearOnTriggerServerEvent") then
-        emit("event hook unavailable")
-        return false
-    end
-
-    if not B.spend("ghostlink") then
-        emit("budget refused")
-        return false
-    end
-
-    local count = discover()
-    if count == 0 then
-        emit("no report token in GlobalState")
-        B.refund("ghostlink")
-        return false
-    end
-
-    local ok, err, n = derive()
-    if not ok then
-        emit("%s", tostring(err))
-        B.refund("ghostlink")
-        return false
-    end
-
-    GL.playerBag = ("player:%d"):format(GetPlayerServerId(PlayerId()))
-    GL.probeKey = ("__vgd:probe:%d"):format(O.int(100000, 999999))
-    GL.probeHits = 0
-    GL.degraded = false
-
-    local bagOk, bagErr = installBag()
-    if not bagOk then
-        emit("%s", tostring(bagErr))
-        B.refund("ghostlink")
-        return false
-    end
-
-    GL.state = "probing"
-    GL.stats = { events = 0, bags = 0, flushes = 0, probes = 0, lastAt = O.now() }
-
-    -- Synchronous fast path: if the bridge dispatches immediately the module is
-    -- armed before the click handler returns. If it defers, the scheduler
-    -- finishes the transition within PROBE_TIMEOUT_MS.
-    if probe(O.now()) then
-        return activate()
-    end
-
-    emit("probing state-bag hook (%d report token(s))", n)
-    return true
-end
-
-function GL.stop(reason)
-    if GL.state == "idle" and not GL.hookedBag and not GL.hookedEvent then return end
-
-    local wasProbing = GL.state == "probing"
-
-    -- Flush before the hook goes away: a detection that landed in the last
-    -- 80 ms still needs its local half, or the guard's 20 s check freezes the
-    -- game with ForceSocialClubUpdate().
-    flush()
-    teardown()
-
-    GL.state = "idle"
-    GL.probePending = false
-    GL.degraded = false
-    GL.playerBag = nil
-    GL.probeKey = nil
-    GL.pending = {}
-
-    -- A probe that never reached "active" produced no protection at all.
-    if wasProbing then B.refund("ghostlink") end
-
-    notify(false)
-    if reason then emit("stopped: %s", tostring(reason)) end
-end
-
-function GL.disable()
-    GL.stop("panic")
-end
-
-function GL.isActive()
-    return GL.state == "active"
-end
-
-function GL.status()
-    local wire, bags = 0, 0
-    for _ in pairs(GL.wire) do wire = wire + 1 end
-    for _ in pairs(GL.bagKeys) do bags = bags + 1 end
-    return ("state=%s wire=%d bags=%d event=%s bag=%s probe=%s degraded=%s blocked=%d/%d pending=%d"):format(
-        GL.state, wire, bags, tostring(GL.hookedEvent), tostring(GL.hookedBag),
-        tostring(GL.probeHits > 0), tostring(GL.degraded),
-        GL.stats.events, GL.stats.bags, #GL.pending)
-end
-
--- ---------------------------------------------------------------------------
--- SCHEDULER
---
--- One task: finish the probe transition, flush queued local replays, refresh
--- the token map when the server rotates it, and re-prove the bag hook. Nothing
--- here runs a native when the module is idle.
--- ---------------------------------------------------------------------------
-O.every("ghostlink", FLUSH_MS, function(now)
-    if GL.state == "probing" then
-        if GL.probeHits > 0 then
-            activate()
-        elseif now - GL.probeAt >= PROBE_TIMEOUT_MS then
-            failProbe("state-bag hook not intercepted")
-        end
+function Menu.DrawPlayerInfoPanel()
+    if type(Menu) ~= "table" or type(Menu.GetSelectedPlayerInfo) ~= "function" then
         return
     end
 
-    if GL.state ~= "active" then return end
+    local info = Menu.GetSelectedPlayerInfo()
+    if type(info) ~= "table" then return end
 
-    flush()
+    local scale = Menu.Scale or 1.0
+    local sp = nil
+    if type(Menu.GetScaledPosition) == "function" then
+        sp = Menu.GetScaledPosition()
+    end
+    if type(sp) ~= "table" or type(sp.x) ~= "number" or type(sp.y) ~= "number" then
+        return
+    end
 
-    if GL.probePending then
-        if GL.probeHits > 0 then
-            GL.probePending = false
-            GL.degraded = false
-        elseif now - GL.probeAt >= PROBE_TIMEOUT_MS then
-            GL.probePending = false
-            GL.degraded = true
-            emit("bag channel lost: probe was not intercepted")
+    local screenWidth, screenHeight = screenSize()
+    local accentR, accentG, accentB = accentRGB()
+
+    local panelWidth = 334 * scale
+    local gap = 12 * scale
+    local panelX = sp.x + (sp.width or 360) + gap
+    if panelX + panelWidth > screenWidth - 8 then
+        local left = sp.x - gap - panelWidth
+        if left >= 8 then
+            panelX = left
+        else
+            panelX = math.max(8, screenWidth - panelWidth - 8)
         end
     end
 
-    if now - GL.lastRefresh >= O.jitter(REFRESH_MS, 0.3) then
-        GL.lastRefresh = now
-        local gs = rawget(_G, "GlobalState")
-        local ok, raw = pcall(function() return type(gs) == "table" and gs.BanEventToken or nil end)
-        if ok and type(raw) == "string" and raw ~= GL.banToken then
-            local count = discover()
-            if count > 0 then
-                local derived = derive()
-                if derived then emit("token map refreshed") end
+    local pad = 15 * scale
+    local innerWidth = panelWidth - pad * 2
+    local cx = panelX + pad
+
+    -- Type scale follows the menu's own rhythm: 19 px item text, 14 px
+    -- separators, 10-11 px secondary values. Menu.DrawText multiplies all of
+    -- these by Menu.Scale, so the card grows with the menu instead of staying
+    -- fixed while the menu gets bigger.
+    local FONT_KICKER = 9
+    local FONT_NAME = 19
+    local FONT_ID = 10
+    local FONT_SECTION = 10
+    local FONT_LABEL = 10
+    local FONT_VALUE = 12
+    local FONT_BAR = 10
+    local FONT_PILL = 10
+    local FONT_FOOTER = 9
+
+    local headerHeight = 62 * scale
+    local sectionHeight = 22 * scale
+    local rowHeight = 26 * scale
+    local barHeight = 30 * scale
+    local footerHeight = 32 * scale
+    local pillRowHeight = 24 * scale
+
+    local healthMax = tonumber(info.maxHealth) or 0
+    local health = tonumber(info.health) or 0
+    local healthPercent = healthMax > 0 and clamp01(health / healthMax) or 0.0
+
+    local armor = tonumber(info.armor) or 0
+    local armorPercent = clamp01(armor / 100.0)
+
+    local vehicleHealthMax = tonumber(info.vehMaxHealth) or 0
+    local vehicleHealth = tonumber(info.vehHealth) or 0
+    local vehiclePercent = vehicleHealthMax > 0
+        and clamp01(vehicleHealth / vehicleHealthMax) or 0.0
+
+    local alive = info.isAlive ~= false and health > 0
+    local statusR, statusG, statusB = 0.30, 0.82, 0.46
+    local statusLabel = "EN VIE"
+    if not alive then
+        statusR, statusG, statusB = 0.90, 0.28, 0.30
+        statusLabel = "MORT"
+    elseif info.isGodmode then
+        statusR, statusG, statusB = 0.95, 0.70, 0.22
+        statusLabel = "GODMODE"
+    end
+
+    local states = {}
+    local function addState(label, r, g, b)
+        states[#states + 1] = { label = label, r = r, g = g, b = b }
+    end
+    if info.isAiming then addState("VISE", accentR, accentG, accentB) end
+    if info.isInCover then addState("COUVERT", 0.35, 0.62, 0.95) end
+    if info.isSprinting then addState("SPRINT", 0.35, 0.82, 0.48) end
+    if info.isSwimming then addState("NAGE", 0.30, 0.65, 0.95) end
+    if info.isFalling then addState("CHUTE", 0.95, 0.70, 0.22) end
+    if info.isRagdoll then addState("RAGDOLL", 0.90, 0.35, 0.35) end
+    if info.isInvisible then addState("INVISIBLE", 0.72, 0.45, 0.95) end
+
+    local function section(label)
+        return function(y)
+            fillRect(cx, y + 8 * scale, 3 * scale, 9 * scale,
+                accentR, accentG, accentB, 0.95, 1.5 * scale)
+            local labelWidth = textWidth(label, FONT_SECTION, scale)
+            text(cx + 10 * scale, y + 3 * scale, label, FONT_SECTION,
+                0.62, 0.62, 0.66, 1.0)
+            local lineX = cx + 10 * scale + labelWidth + 9 * scale
+            local lineWidth = cx + innerWidth - lineX
+            if lineWidth > 0 then
+                fillRect(lineX, y + 8 * scale, lineWidth, 1,
+                    0.20, 0.20, 0.24, 0.55, 0)
             end
         end
     end
 
-    if not GL.probePending and now - GL.lastReprobe >= O.jitter(REPROBE_MS, 0.25) then
-        GL.lastReprobe = now
-        probe(now)
+    local function row(label, value, r, g, b, size)
+        return function(y)
+            text(cx, y + 7 * scale, label, FONT_LABEL, 0.46, 0.46, 0.51, 1.0)
+            local valueSize = size or FONT_VALUE
+            local shown = fitText(value, innerWidth * 0.64, valueSize, scale)
+            local width = textWidth(shown, valueSize, scale)
+            text(cx + innerWidth - width, y + 4 * scale, shown, valueSize,
+                r or 0.93, g or 0.93, b or 0.95, 1.0)
+        end
     end
-end, 0)
 
-return GL
+    local function bar(label, percent, valueText, r, g, b)
+        return function(y)
+            text(cx, y + 1 * scale, label, FONT_BAR, 0.46, 0.46, 0.51, 1.0)
+            local valueWidth = textWidth(valueText, FONT_BAR, scale)
+            text(cx + innerWidth - valueWidth, y, valueText, FONT_BAR,
+                r, g, b, 0.95)
 
-end)(O,S,B)
+            local barY = y + 15 * scale
+            fillRect(cx, barY, innerWidth, 7 * scale, 0.14, 0.14, 0.17, 0.95,
+                3.5 * scale)
+            local filled = innerWidth * percent
+            if filled > 0 then
+                fillRect(cx, barY, filled, 7 * scale, r, g, b, 0.92, 3.5 * scale)
+                -- One-pixel top highlight: it reads as a lit bar rather than a
+                -- flat rectangle, and costs one draw call.
+                fillRect(cx + 2 * scale, barY + 1 * scale,
+                    math.max(0, filled - 4 * scale), 1, 1, 1, 1, 0.22, 0.5 * scale)
+            end
+        end
+    end
+
+    local blocks = {}
+
+    local function add(height, draw)
+        blocks[#blocks + 1] = { height = height, draw = draw }
+    end
+
+    -- Header -----------------------------------------------------------------
+    add(headerHeight, function(y)
+        text(cx, y + 1 * scale, "CIBLE", FONT_KICKER,
+            accentR * 0.88, accentG * 0.88, accentB * 0.88, 0.90)
+
+        local idText = "#" .. tostring(info.serverId or "?")
+        local idWidth = textWidth(idText, FONT_ID, scale) + 16 * scale
+        local idX = panelX + panelWidth - pad - idWidth
+        fillRect(idX, y + 9 * scale, idWidth, 20 * scale,
+            accentR, accentG, accentB, 0.11, 5 * scale)
+        fillRect(idX, y + 28 * scale, idWidth, 1,
+            accentR, accentG, accentB, 0.40, 0)
+        text(idX + 8 * scale, y + 13 * scale, idText, FONT_ID,
+            accentR, accentG, accentB, 0.98)
+
+        local nameX = cx + 14 * scale
+        local nameMax = math.max(0, idX - nameX - 8 * scale)
+        local name = fitText(info.name or "Inconnu", nameMax, FONT_NAME, scale)
+        -- A sub-pixel shadow is enough to make the 19 px name read as bold
+        -- without loading a second font.
+        text(nameX + 0.8 * scale, y + 16 * scale + 0.8 * scale,
+            name, FONT_NAME, 0, 0, 0, 0.60)
+        text(nameX, y + 16 * scale, name, FONT_NAME, 0.97, 0.97, 0.99, 1.0)
+        fillRect(cx, y + 27 * scale, 7 * scale, 7 * scale,
+            statusR, statusG, statusB, 1.0, 3.5 * scale)
+
+        fillRect(cx, y + 56 * scale, innerWidth, 1,
+            0.22, 0.22, 0.26, 0.55, 0)
+    end)
+
+    -- Vitals -----------------------------------------------------------------
+    add(sectionHeight, section("SANTE"))
+    add(barHeight, bar("VIE", healthPercent,
+        ("%d / %d"):format(whole(health), whole(healthMax)),
+        healthColor(healthPercent)))
+    add(barHeight, bar("ARMURE", armorPercent,
+        ("%d / 100"):format(whole(armor)),
+        0.32, 0.62, 0.95))
+
+    -- Player -----------------------------------------------------------------
+    add(sectionHeight, section("JOUEUR"))
+    add(rowHeight, row("ARME", info.weapon or "Inconnu"))
+    add(rowHeight, row("DISTANCE",
+        ("%d m"):format(whole(info.distance)),
+        accentR, accentG, accentB, FONT_VALUE + 1))
+    add(rowHeight, row("DIRECTION",
+        ("%s  %d"):format(compass(info.heading),
+            whole((tonumber(info.heading) or 0) % 360)),
+        accentR, accentG, accentB))
+    local coords = info.coords
+    if type(coords) == "table" then
+        add(rowHeight, row("POSITION",
+            ("%.1f, %.1f, %.1f"):format(coords.x or 0, coords.y or 0, coords.z or 0),
+            0.64, 0.64, 0.70, FONT_VALUE - 1))
+    end
+
+    -- Vehicle ----------------------------------------------------------------
+    if info.inVehicle then
+        add(sectionHeight, section("VEHICULE"))
+        add(rowHeight, row("MODELE", info.vehicle or "Inconnu", 0.93, 0.93, 0.95))
+        local plate = tostring(info.vehPlate or "")
+        plate = plate:gsub("%s+$", "")
+        add(rowHeight, row("PLAQUE", plate ~= "" and plate or "-",
+            0.72, 0.72, 0.78, FONT_VALUE - 1))
+        add(rowHeight, row("VITESSE",
+            ("%d km/h"):format(whole(info.speed)),
+            0.93, 0.93, 0.95))
+        add(barHeight, bar("VIE VEHICULE", vehiclePercent,
+            ("%d / %d"):format(whole(vehicleHealth), whole(vehicleHealthMax)),
+            healthColor(vehiclePercent)))
+    end
+
+    -- States -----------------------------------------------------------------
+    if #states > 0 then
+        add(sectionHeight, section("ETAT"))
+        local pillRows = layoutPills(states, innerWidth, scale)
+        add(#pillRows * pillRowHeight, function(y)
+            local rowY = y
+            for r = 1, #pillRows do
+                local x = cx
+                for i = 1, #pillRows[r] do
+                    local entry = pillRows[r][i]
+                    local state = entry.state
+                    fillRect(x, rowY, entry.width, 20 * scale,
+                        state.r, state.g, state.b, 0.12, 10 * scale)
+                    fillRect(x + 1 * scale, rowY + 5 * scale, 2 * scale, 10 * scale,
+                        state.r, state.g, state.b, 0.88, 1 * scale)
+                    text(x + 8 * scale, rowY + 5 * scale, state.label, FONT_PILL,
+                        state.r, state.g, state.b, 1.0)
+                    x = x + entry.width + 6 * scale
+                end
+                rowY = rowY + pillRowHeight
+            end
+        end)
+    end
+
+    -- Footer -----------------------------------------------------------------
+    local footer = function(y)
+        fillRect(cx, y + 2 * scale, innerWidth, 1, 0.20, 0.20, 0.24, 0.50, 0)
+
+        local labelWidth = textWidth(statusLabel, FONT_FOOTER, scale) + 20 * scale
+        fillRect(cx, y + 8 * scale, labelWidth, 20 * scale,
+            statusR, statusG, statusB, 0.13, 10 * scale)
+        fillRect(cx + 1 * scale, y + 8 * scale, 2 * scale, 20 * scale,
+            statusR, statusG, statusB, 0.90, 1 * scale)
+        text(cx + 10 * scale, y + 12 * scale, statusLabel, FONT_FOOTER,
+            statusR, statusG, statusB, 1.0)
+
+        local live = "DIRECT"
+        local liveWidth = textWidth(live, FONT_FOOTER, scale)
+        local timer = 0
+        if type(GetGameTimer) == "function" then timer = GetGameTimer() or 0 end
+        local pulse = 0.55 + 0.35 * math.abs(math.sin(timer / 650.0))
+        fillRect(cx + innerWidth - liveWidth - 12 * scale, y + 15 * scale,
+            5 * scale, 5 * scale, 0.32, 0.82, 0.48, pulse, 2.5 * scale)
+        text(cx + innerWidth - liveWidth, y + 12 * scale, live, FONT_FOOTER,
+            0.42, 0.60, 0.46, 0.90)
+    end
+    add(footerHeight, footer)
+
+    local contentHeight = 0
+    for i = 1, #blocks do contentHeight = contentHeight + blocks[i].height end
+
+    local chromeHeight = pad * 2
+    local panelHeight = math.max(chromeHeight + contentHeight, 348 * scale)
+
+    -- If the card is taller than its content (minimum height), put the spare
+    -- space before the footer. The footer then sits on the bottom edge instead
+    -- of floating under the last row.
+    local spare = panelHeight - (chromeHeight + contentHeight)
+    if spare > 0 then
+        local footerBlock = table.remove(blocks)
+        blocks[#blocks + 1] = { height = spare, draw = function() end }
+        blocks[#blocks + 1] = footerBlock
+    end
+
+    local panelY = math.max(8, sp.y)
+    if panelY + panelHeight > screenHeight - 8 then
+        panelY = math.max(8, screenHeight - panelHeight - 8)
+    end
+
+    -- Background. These are the menu's own values: 0.216 / 0.059 border and
+    -- body (library.lua DrawBackground), with the theme accent doing the only
+    -- colour work. The card therefore changes with the theme instead of
+    -- looking like a second design.
+    fillRect(panelX, panelY, panelWidth, panelHeight, 0.216, 0.216, 0.216, 0.98,
+        8 * scale)
+    fillRect(panelX + 1, panelY + 1, panelWidth - 2, panelHeight - 2,
+        0.059, 0.059, 0.059, 0.985, 7 * scale)
+    -- A very light accent wash on the header, then the hard accent line. It
+    -- mirrors the menu header without competing with the text.
+    fillRect(panelX + 1, panelY + 1, panelWidth - 2, 64 * scale,
+        accentR, accentG, accentB, 0.050, 7 * scale)
+    fillRect(panelX + pad, panelY + 1, panelWidth - pad * 2, 2 * scale,
+        accentR, accentG, accentB, 0.90, 1 * scale)
+    fillRect(panelX + 1, panelY + 10 * scale, 2 * scale, panelHeight - 20 * scale,
+        accentR, accentG, accentB, 0.35, 1 * scale)
+
+    local y = panelY + pad
+    for i = 1, #blocks do
+        blocks[i].draw(y)
+        y = y + blocks[i].height
+    end
+end
+
+return TP
+
+end)(O,Menu)
 
 -- ---------------------------------------------------------------------------
 -- PART: 07_menu.lua
 -- ---------------------------------------------------------------------------
-local U = (function(O,S,E,D,F,V,M,SN,C,A,ST,SB,VS,K,N,L,VC,CP,CU,G,T,UC,FA,GL,Menu)
+local U = (function(O,S,E,D,F,V,M,SN,C,A,ST,SB,VS,K,N,L,VC,CU,UC,FA,TP,Menu)
 -- ============================================================================
 -- VANGUARD / 07 MENU
 -- ----------------------------------------------------------------------------
@@ -27323,9 +26360,9 @@ local U = (function(O,S,E,D,F,V,M,SN,C,A,ST,SB,VS,K,N,L,VC,CP,CU,G,T,UC,FA,GL,Me
 --
 --   Exploit > Bypass    separate profiles: WaveShield, FiveGuard, Electron AC,
 --                       Reason AC, Seed, Dynasty, Raven; each target is isolated
---   Exploit > Exploits  Menu Staff [SEED], no false Dynasty badge
+--   Exploit > Crasher   Menu Staff [SEED] plus one direct action per crash
+--                       method; no top-level Crasher category
 --   Protection          anti-freeze, anti-attach and anti-spectate, armed at load
---   Crasher             one direct action per method, no select + Crash step
 --   Vehicle > Spoofed   real local vehicles over the one you already stole
 --
 -- Removed on purpose:
@@ -27352,11 +26389,7 @@ function UI.panic()
     N.disable()
     L.disable()
     VC.disable()
-    CP.disable()
     CU.disable()
-    G.disable()
-    T.disable()
-    GL.disable()
     UC.disable()
     FA.disable()
 
@@ -27514,6 +26547,66 @@ local function addCategory(category)
 end
 
 -- ---------------------------------------------------------------------------
+-- DELETE = HIDE
+--
+-- The library toggles the menu with the key the operator configured in
+-- Settings (Menu.SelectedKey); there is no hard-coded M. The operator also
+-- wants a one-way "put it away" key that cannot accidentally reopen the menu:
+-- physical Delete / Suppr (VK_DELETE = 0x2E). It is read on its own edge, so
+-- holding the key does not fight the library toggle, and it is suppressed while
+-- the Settings key-capture window is open (otherwise the capture would be
+-- impossible). Menu.OpenedCategory is deliberately preserved: reopening with
+-- the configured key returns to the same tab, exactly like the library's own
+-- close path.
+--
+-- This function only flips Menu.Visible. It deliberately does not call
+-- Susano.ResetFrame: the watcher runs on the scheduler thread, while the
+-- library owns the render thread and already calls ResetFrame on the next
+-- frame when the menu is hidden. Calling a frame API from this thread would be
+-- a cross-thread draw call for no benefit.
+-- ---------------------------------------------------------------------------
+local function hideMenu()
+    if type(Menu) ~= "table" or Menu.Visible ~= true then return false end
+    Menu.Visible = false
+    return true
+end
+
+local deleteHeld = false
+
+local function watchDelete()
+    if type(Susano) ~= "table" or type(Susano.GetAsyncKeyState) ~= "function" then
+        return
+    end
+
+    local ok, down, pressed = pcall(Susano.GetAsyncKeyState, 0x2E)
+    if not ok then return end
+    down = down == true or down == 1
+    pressed = pressed == true or pressed == 1
+
+    -- Track the physical edge even while the menu is closed. If Delete is
+    -- already held when the menu opens, the first tick must not immediately
+    -- close what the operator just opened.
+    local edge = pressed or (down and not deleteHeld)
+    deleteHeld = down
+
+    if not edge then return end
+    if Menu.SelectingKey or Menu.SelectingBind or Menu.InputOpen then return end
+
+    -- If the operator rebinds the menu toggle to Delete, that key belongs to
+    -- the library. A second close-only binding on the same key would make the
+    -- menu impossible to open.
+    if Menu.SelectedKey == 0x2E then return end
+
+    hideMenu()
+end
+
+-- Internal test seams. They are not menu rows and are not exposed in any
+-- category; keeping them on Menu lets the offline harness drive the same
+-- function the scheduler uses, without copying the body into the test.
+Menu.__vgd_hide = hideMenu
+Menu.__vgd_watchDelete = watchDelete
+
+-- ---------------------------------------------------------------------------
 -- EXPLOIT > BYPASS
 --
 -- Each entry is isolated: WaveShield, FiveGuard and Electron AC apply their own
@@ -27525,30 +26618,12 @@ local function installBypassProfiles()
     local tab = findTab("Exploit", "Bypass")
     if not tab then return false end
 
-    local ghostRow
-    ghostRow = {
-        name = "Ghostlink",
-        type = "toggle",
-        value = GL.isActive(),
-        onClick = function(value)
-            local active
-            if value then
-                active = GL.arm()
-            else
-                GL.stop("operator")
-                active = false
-            end
-            ghostRow.value = active
-            return active
-        end,
-    }
-
-    GL.onChange = function(active)
-        ghostRow.value = active
-    end
-
     -- Replace the whole tab. This also removes old combined entries left
     -- behind by a previous loader instance without requiring a GTA restart.
+    -- Ghostlink is deliberately absent: it was a WaveShield-only report-channel
+    -- null-router whose token discovery/hook probe fails closed on builds that
+    -- do not expose the tokens, which left a dead toggle in the menu. The row
+    -- was removed instead of pretending the channel is severed.
     tab.items = {
         {
             name = "WaveShield",
@@ -27585,8 +26660,6 @@ local function installBypassProfiles()
             type = "action",
             onClick = function() V.setRaven(not V.ravenActive) end,
         },
-        { name = "", isSeparator = true, separatorText = "Report channel" },
-        ghostRow,
     }
 
     return true
@@ -27609,21 +26682,133 @@ local function seedClick()
     return ST.inject()
 end
 
+-- ---------------------------------------------------------------------------
+-- EXPLOIT > CRASHER (tab collapse)
+--
+-- Older builds shipped a top-level "Crasher" category, and some base builds
+-- shipped a teleport tab in Exploit. Both are folded into one Crasher tab:
+-- the operator gets the crash methods where the teleport row used to be, and
+-- the category list loses one entry. The merge keeps any real server action
+-- that was already in the tab (notably Menu Staff) and drops only teleport
+-- artifacts. Running it twice is safe; it always converges to one tab.
+-- ---------------------------------------------------------------------------
+local function collapseExploitCrasherTab()
+    local category = findCategory("Exploit")
+    if not category then return nil end
+
+    category.tabs = category.tabs or {}
+
+    -- Menu.CurrentTab is shared by every category. Only touch it when Exploit
+    -- is the category the operator actually has open; otherwise a reload while
+    -- Player > Target is open would clamp the Player tab index to 1.
+    local openCategory = nil
+    if type(Menu.OpenedCategory) == "number" and Menu.Categories then
+        openCategory = Menu.Categories[Menu.OpenedCategory]
+    end
+    local isOpen = openCategory == category
+
+    -- Remember the open tab by object, not by index. Merging can remove tabs
+    -- and moving Crasher to the front shifts every index; an index-based
+    -- restore would land on a different tab after a reload.
+    local selected = nil
+    if isOpen and type(Menu.CurrentTab) == "number" then
+        selected = category.tabs[Menu.CurrentTab]
+    end
+
+    local target = nil
+    for _, candidate in ipairs(category.tabs) do
+        if candidate.name == "Crasher" then target = candidate break end
+    end
+    if not target then
+        for _, candidate in ipairs(category.tabs) do
+            if candidate.name == "Exploits" or candidate.name == "Teleport" then
+                target = candidate
+                break
+            end
+        end
+    end
+    if not target then
+        target = { name = "Crasher", items = {} }
+    end
+
+    target.name = "Crasher"
+    target.items = target.items or {}
+
+    local merged = {}
+    local kept = {}
+    for _, candidate in ipairs(category.tabs) do
+        if candidate == target then
+            kept[#kept + 1] = candidate
+        elseif candidate.name == "Exploits" or candidate.name == "Teleport"
+            or candidate.name == "Crasher" then
+            merged[#merged + 1] = candidate
+            for _, item in ipairs(candidate.items or {}) do
+                local duplicate = false
+                for _, existing in ipairs(target.items) do
+                    if existing.name == item.name then duplicate = true break end
+                end
+                if not duplicate then target.items[#target.items + 1] = item end
+            end
+        else
+            kept[#kept + 1] = candidate
+        end
+    end
+
+    -- Put the collapsed tab first; it replaces the old teleport surface.
+    for i = #kept, 1, -1 do
+        if kept[i] == target then table.remove(kept, i) end
+    end
+    table.insert(kept, 1, target)
+    category.tabs = kept
+
+    -- Remove every teleport artifact from the merged tab. The selector and its
+    -- separator are both useless: the rows never worked on a WaveShield build.
+    for i = #target.items, 1, -1 do
+        local item = target.items[i]
+        if item.name == "Teleport To"
+            or (item.isSeparator and (item.separatorText == "Teleport"
+                or item.separatorText == "Teleportation")) then
+            table.remove(target.items, i)
+        end
+    end
+
+    -- Restore the selected tab. If it was one of the merged tabs, its items now
+    -- live in Crasher, so Crasher is the closest correct selection.
+    if isOpen then
+        if selected then
+            local rebound = nil
+            for i = 1, #category.tabs do
+                if category.tabs[i] == selected then
+                    rebound = i
+                    break
+                end
+            end
+            if not rebound then
+                for _, candidate in ipairs(merged) do
+                    if candidate == selected then rebound = 1 break end
+                end
+            end
+            if rebound then Menu.CurrentTab = rebound end
+        end
+        if type(Menu.CurrentTab) ~= "number" or Menu.CurrentTab < 1
+            or Menu.CurrentTab > #category.tabs then
+            Menu.CurrentTab = 1
+        end
+    end
+
+    return target
+end
+
 local function installSeed()
-    local tab = findTab("Exploit", "Exploits")
+    local tab = collapseExploitCrasherTab()
     if not tab then return false end
 
-    -- The old teleport selector is removed entirely. This also removes the
-    -- Pillbox/Hospital entries the base loader attached to it.
-    removeItem("Exploit", "Exploits", "Teleport To")
-
-    local seed = findItem("Exploit", "Exploits", "Menu Staff")
+    local seed = findItem("Exploit", "Crasher", "Menu Staff")
     if not seed then
-        seed = findItem("Exploit", "Exploits", "Menu Staff [SEED]")
+        seed = findItem("Exploit", "Crasher", "Menu Staff [SEED]")
     end
     if not seed then
         seed = { name = "Menu Staff", type = "action" }
-        tab.items = tab.items or {}
         tab.items[#tab.items + 1] = seed
     end
 
@@ -27829,10 +27014,12 @@ end
 -- directly under the toggle, before the target explanation separator, so the
 -- two controls that belong together are adjacent.
 --
--- Player already has Self / Wardrobe / Movement / Voice. Target is a fifth tab
--- in the same category, so the feature sits where the operator asked for it
--- without creating a second top-level surface. The old Online copy is removed
--- on every load so a stale onClick cannot survive a reload.
+-- Player already has Self / Wardrobe / Movement / Voice. Target is a tab in
+-- the same category, so the feature sits where the operator asked for it
+-- without creating a second top-level surface. After every install the tab
+-- order is normalised to Self | Target | Movement | Voice | Wardrobe, with
+-- Wardrobe at the far right. The old Online copy is removed on every load so
+-- a stale onClick cannot survive a reload.
 -- ---------------------------------------------------------------------------
 local function installLockPlayer()
     local category = findCategory("Player")
@@ -27961,65 +27148,6 @@ local function installUncuff()
 end
 
 -- ---------------------------------------------------------------------------
--- ONLINE > TROLL > CAR PRISON
---
--- Locks the selected player inside their vehicle. Vehicle ownership is taken
--- once per second at most; the door state is held on CARLOCK_LOCKED_PLAYER_INSIDE.
--- Placed directly under Ragdoll, in the Attacks block.
--- ---------------------------------------------------------------------------
-local function installCarPrison()
-    local tab = findTab("Online", "Troll")
-    if not tab then return false end
-
-    removeItem("Online", "Troll", "Car Prison")
-
-    local row
-    row = {
-        name = "Car Prison",
-        type = "toggle",
-        value = CP.isActive(),
-        onClick = function(value)
-            local active
-            if value then
-                active = CP.arm()
-            else
-                CP.stop("operator")
-                active = false
-            end
-            row.value = active
-            return active
-        end,
-    }
-
-    CP.onChange = function(active)
-        row.value = active
-    end
-
-    tab.items = tab.items or {}
-
-    -- Directly after Ragdoll when present, otherwise first in Attacks.
-    local at = nil
-    for i = 1, #tab.items do
-        if tab.items[i].name == "Ragdoll" then
-            at = i + 1
-            break
-        end
-    end
-    if not at then
-        for i = 1, #tab.items do
-            local item = tab.items[i]
-            if item.isSeparator and item.separatorText == "Attacks" then
-                at = i + 1
-                break
-            end
-        end
-    end
-
-    table.insert(tab.items, at or 1, row)
-    return true
-end
-
--- ---------------------------------------------------------------------------
 -- COMBAT > GENERAL > COMBAT UNLOCK
 --
 -- Some servers protect new accounts by calling the firing-block native every
@@ -28058,126 +27186,6 @@ local function installCombatUnlock()
 
     tab.items = tab.items or {}
     table.insert(tab.items, 1, row)
-    return true
-end
-
--- ---------------------------------------------------------------------------
--- ONLINE > TROLL > VEHICLE GAGS
---
--- Engine Cut holds the target's engine off; Horn toots their car every few
--- seconds. Both use the same target/ownership rule as Car Prison. They sit in
--- their own "Gags" group before "Bugs" so the Attacks block stays intact.
--- ---------------------------------------------------------------------------
-local function installGags()
-    local tab = findTab("Online", "Troll")
-    if not tab then return false end
-
-    removeItem("Online", "Troll", "Engine Cut")
-    removeItem("Online", "Troll", "Horn")
-    removeItem("Online", "Troll", "Tow")
-    removeItem("Online", "Troll", "Catapult")
-
-    tab.items = tab.items or {}
-    for i = #tab.items, 1, -1 do
-        local item = tab.items[i]
-        if item.isSeparator and item.separatorText == "Gags" then
-            table.remove(tab.items, i)
-        end
-    end
-
-    local engineRow
-    engineRow = {
-        name = "Engine Cut",
-        type = "toggle",
-        value = G.engineActive(),
-        onClick = function(value)
-            local active
-            if value then
-                active = G.armEngine()
-            else
-                G.stopEngine("operator")
-                active = false
-            end
-            engineRow.value = active
-            return active
-        end,
-    }
-    G.engine.onChange = function(active)
-        engineRow.value = active
-    end
-
-    local hornRow
-    hornRow = {
-        name = "Horn",
-        type = "toggle",
-        value = G.hornActive(),
-        onClick = function(value)
-            local active
-            if value then
-                active = G.armHorn()
-            else
-                G.stopHorn("operator")
-                active = false
-            end
-            hornRow.value = active
-            return active
-        end,
-    }
-    G.horn.onChange = function(active)
-        hornRow.value = active
-    end
-
-    local towRow
-    towRow = {
-        name = "Tow",
-        type = "toggle",
-        value = T.isActive(),
-        onClick = function(value)
-            local active
-            if value then
-                active = T.arm()
-            else
-                T.stop("operator")
-                active = false
-            end
-            towRow.value = active
-            return active
-        end,
-    }
-    T.onChange = function(active)
-        towRow.value = active
-    end
-
-    local catapultRow = {
-        name = "Catapult",
-        type = "action",
-        onClick = function()
-            T.catapult()
-        end,
-    }
-
-    local at = nil
-    for i = 1, #tab.items do
-        local item = tab.items[i]
-        if item.isSeparator and item.separatorText == "Bugs" then
-            at = i
-            break
-        end
-    end
-    if not at then at = #tab.items + 1 end
-
-    -- Insert in reverse so the final order is: Gags, Engine Cut, Horn, Tow,
-    -- Catapult.
-    table.insert(tab.items, at, catapultRow)
-    table.insert(tab.items, at, towRow)
-    table.insert(tab.items, at, hornRow)
-    table.insert(tab.items, at, engineRow)
-    table.insert(tab.items, at, {
-        name = "",
-        isSeparator = true,
-        separatorText = "Gags",
-    })
-
     return true
 end
 
@@ -28254,19 +27262,85 @@ local function installProtection()
 end
 
 -- ---------------------------------------------------------------------------
--- CRASHER
+-- EXPLOIT > CRASHER
+--
 -- Each method is its own action: click the method and it starts. There is no
--- separate selector, no Crash button, no target/intensity/stop row.
+-- separate selector, no Crash button, no target/intensity/stop row. The tab
+-- lives inside Exploit instead of a top-level category: fewer top-level rows,
+-- and the crash methods sit next to the other exploit actions. Any stale
+-- top-level Crasher category from an older loader is removed on every load.
 -- ---------------------------------------------------------------------------
+local CRASH_ROWS = {
+    "Method", "Crash", "Intensity", "Target: nearest", "Launch crash",
+    "Stop + clean", "Probe channels", "Objects (orbit)",
+}
+
+-- The current labels are part of the sweep as well. Without them, every
+-- re-injection (or a second build in the same session) appended a second copy
+-- of each method under the prepended block.
+local function isCrashRowName(name)
+    for j = 1, #CRASH_ROWS do
+        if name == CRASH_ROWS[j] then return true end
+    end
+    for j = 1, #C.METHODS do
+        if name == C.METHODS[j].label then return true end
+    end
+    return false
+end
+
 local function installCrasher()
+    removeCategory("Crasher")
+
+    local tab = collapseExploitCrasherTab()
+    if not tab then return false end
+
+    -- If the operator already has this tab open, remember the selected row by
+    -- object. The crash block is prepended below, which shifts every index.
+    local category = findCategory("Exploit")
+    local tabOpen = false
+    if category and type(Menu.OpenedCategory) == "number" and Menu.Categories
+        and Menu.Categories[Menu.OpenedCategory] == category then
+        tabOpen = category.tabs ~= nil and category.tabs[Menu.CurrentTab] == tab
+    end
+    local selectedItem = nil
+    if tabOpen and type(Menu.CurrentItem) == "number" then
+        selectedItem = tab.items[Menu.CurrentItem]
+    end
+
+    -- Remove every historical and current crash row, including the base
+    -- "Crash Method" duplicate that used to sit in Online > Troll. Sweeping
+    -- the current labels makes the installer idempotent: a second injection
+    -- in the same session cannot append a duplicate method block.
+    removeItem("Online", "Troll", "Crash Method")
+    for i = #tab.items, 1, -1 do
+        local item = tab.items[i]
+        if item.separatorText == "Crasher" then
+            table.remove(tab.items, i)
+        elseif isCrashRowName(item.name) then
+            table.remove(tab.items, i)
+        end
+    end
+
     -- Fixed power per method; it is not exposed as a menu setting. Ped
     -- variation and flood use Heavy; PTFX uses Standard.
+    --
+    -- Prepend the crash block instead of appending it. The base Exploits tab
+    -- also carries the server rows (Staff Mode, Disable Weapon Damage, Menu
+    -- Staff, Revive); with ItemsPerPage = 8, appending would push PTFX storm
+    -- onto a second page. The tab is called Crasher, so its methods come first
+    -- and the server rows stay available underneath.
     local power = { 3, 3, 2 }
-    local items = {}
+    local crashItems = {
+        {
+            name = "",
+            isSeparator = true,
+            separatorText = "Crasher",
+        },
+    }
 
     for i = 1, #C.METHODS do
         local index = i
-        items[#items + 1] = {
+        crashItems[#crashItems + 1] = {
             name = C.METHODS[i].label,
             type = "action",
             onClick = function()
@@ -28277,18 +27351,57 @@ local function installCrasher()
         }
     end
 
-    addCategory({
-        name = "Crasher",
-        hasTabs = true,
-        tabs = {
-            {
-                name = "Crasher",
-                items = items,
-            },
-        },
-    })
+    for i = #crashItems, 1, -1 do
+        table.insert(tab.items, 1, crashItems[i])
+    end
+
+    -- A reload with Crasher open must not jump to the newly prepended block.
+    -- Restore the exact row object that was selected before the insert; if it
+    -- no longer exists (an old Teleport row, for example), clamp the index so
+    -- the menu cannot point past the rebuilt list.
+    if tabOpen then
+        local restored = false
+        local selectedName = selectedItem and selectedItem.name
+        if selectedItem then
+            for i = 1, #tab.items do
+                if tab.items[i] == selectedItem then
+                    Menu.CurrentItem = i
+                    restored = true
+                    break
+                end
+            end
+        end
+        -- A crash row is removed and re-created by this installer; match its
+        -- stable label so a re-injection does not move the cursor to the
+        -- separator above it.
+        if not restored and selectedName ~= nil then
+            for i = 1, #tab.items do
+                if tab.items[i].name == selectedName then
+                    Menu.CurrentItem = i
+                    restored = true
+                    break
+                end
+            end
+        end
+        if not restored then Menu.CurrentItem = 1 end
+    end
+
+    -- Keep Crasher as the first tab in Exploit, so it replaces the old
+    -- teleport surface where the operator expects it.
+    category = findCategory("Exploit")
+    if category and category.tabs then
+        for i = #category.tabs, 1, -1 do
+            if category.tabs[i] == tab then table.remove(category.tabs, i) end
+        end
+        table.insert(category.tabs, 1, tab)
+    end
     return true
 end
+
+-- Internal test seam: the smoke harness opens Exploit > Crasher, selects a
+-- row, calls this installer again, and verifies the selection survives the
+-- prepend. It is not a menu row.
+Menu.__vgd_installCrasher = installCrasher
 
 -- ---------------------------------------------------------------------------
 -- VEHICLE > SPOOFED
@@ -28621,9 +27734,81 @@ local function installRampFix()
 end
 
 -- ---------------------------------------------------------------------------
+-- PLAYER TAB ORDER
+--
+-- The base menu has Self and Wardrobe; this module appends Target, Movement
+-- and Voice. Append order is not display order. The operator asked for:
+--
+--   Self | Target | Movement | Voice | Wardrobe
+--
+-- Wardrobe is the far-right tab, Target is second, and Movement/Voice keep
+-- their usual places. Unknown tabs are left after the known ones in their
+-- original order, so a future base tab is not silently deleted.
+-- ---------------------------------------------------------------------------
+local PLAYER_TAB_ORDER = {
+    Self = 1,
+    Target = 2,
+    Movement = 3,
+    Voice = 4,
+    Wardrobe = 5,
+}
+
+local function reorderPlayerTabs()
+    local category = findCategory("Player")
+    if not category or not category.tabs then return false end
+
+    -- Preserve the open tab by object. Menu.CurrentTab is an index; after the
+    -- move, index 2 is Target instead of whatever used to be there. A reload
+    -- with Player open must not silently switch the operator to another tab.
+    -- When another category is open, leave its CurrentTab untouched.
+    local openCategory = nil
+    if type(Menu.OpenedCategory) == "number" and Menu.Categories then
+        openCategory = Menu.Categories[Menu.OpenedCategory]
+    end
+    local isOpen = openCategory == category
+
+    local selected = nil
+    if isOpen and type(Menu.CurrentTab) == "number" then
+        selected = category.tabs[Menu.CurrentTab]
+    end
+
+    local ranked = {}
+    for i, tab in ipairs(category.tabs) do
+        ranked[i] = {
+            tab = tab,
+            rank = PLAYER_TAB_ORDER[tab.name] or 99,
+            order = i,
+        }
+    end
+    table.sort(ranked, function(a, b)
+        if a.rank ~= b.rank then return a.rank < b.rank end
+        return a.order < b.order
+    end)
+    for i = 1, #ranked do category.tabs[i] = ranked[i].tab end
+
+    if isOpen then
+        if selected then
+            for i = 1, #category.tabs do
+                if category.tabs[i] == selected then
+                    Menu.CurrentTab = i
+                    return true
+                end
+            end
+        end
+
+        -- A reload can leave CurrentTab past the end of the rebuilt list.
+        if type(Menu.CurrentTab) ~= "number" or Menu.CurrentTab < 1
+            or Menu.CurrentTab > #category.tabs then
+            Menu.CurrentTab = 1
+        end
+    end
+    return true
+end
+
+-- ---------------------------------------------------------------------------
 -- REMOVE OLD ENTRY POINTS
 -- ---------------------------------------------------------------------------
-local MENU_REV = "2026-10-22-rework-2"
+local MENU_REV = "2026-10-26-cleanup"
 
 -- A previous execution of the old loader can leave its category in the shared
 -- Menu table. Match both the literal name and the old nine-tab fingerprint so
@@ -28679,9 +27864,59 @@ local function purgeLegacyCategories()
     return removed
 end
 
+-- ---------------------------------------------------------------------------
+-- RETIRED TROLL ROWS
+--
+-- Car Prison, Engine Cut, Horn, Tow and Catapult all needed network ownership
+-- of the target's vehicle. WaveShield V4 closes every REQUEST_CONTROL_EVENT
+-- (`sv_filterRequestControl=4`, core/server/system/configUpdater.lua:37), so
+-- `NetworkRequestControlOfEntity` never succeeds against a remote vehicle and
+-- the writes stayed local. The toggles looked armed and did nothing. They are
+-- removed from the build; this sweep also removes copies left by an older
+-- loader instance, so a re-injection cannot resurrect a dead row.
+--
+-- Only the named rows and the old "Gags" separator are touched. The rest of
+-- Online > Troll (Ragdoll, Shoot Player, Bugs, ...) is not ours.
+-- ---------------------------------------------------------------------------
+local RETIRED_TROLL_ROWS = {
+    "Car Prison",
+    "Engine Cut",
+    "Horn",
+    "Tow",
+    "Catapult",
+}
+
+local function cleanupRetiredTrollRows()
+    local tab = findTab("Online", "Troll")
+    if not tab or not tab.items then return 0 end
+
+    local removed = 0
+    for i = #tab.items, 1, -1 do
+        local item = tab.items[i]
+        local drop = false
+        for j = 1, #RETIRED_TROLL_ROWS do
+            if item.name == RETIRED_TROLL_ROWS[j] then drop = true break end
+        end
+        if not drop and item.isSeparator then
+            local label = tostring(item.separatorText or "")
+            if label == "Gags" or label == "Vehicle gags" then drop = true end
+        end
+        if drop then
+            table.remove(tab.items, i)
+            removed = removed + 1
+        end
+    end
+    return removed
+end
+
+-- Internal seam: the smoke harness injects stale rows, calls this exact
+-- function, and verifies the sweep. It is not a menu row.
+Menu.__vgd_cleanupRetiredTroll = cleanupRetiredTrollRows
+
 local function removeLegacyEntries()
     -- The old base "Crash Method" is superseded by the Crasher category.
     removeItem("Online", "Troll", "Crash Method")
+    cleanupRetiredTrollRows()
 
     -- There must never be two menu surfaces for the same features.
     removeCategory("Vanguard")
@@ -28703,13 +27938,12 @@ local function build()
     installVoice()
     installLockPlayer()
     installUncuff()
-    installCarPrison()
     installCombatUnlock()
-    installGags()
     installProtection()
     installCrasher()
     installVehicleSpoof()
     installRampFix()
+    reorderPlayerTabs()
 
     -- Re-check after the new categories are installed. This catches a stale
     -- category that was appended while the old menu table was still alive.
@@ -28733,6 +27967,13 @@ end
 -- ---------------------------------------------------------------------------
 function UI.boot()
     O.thread()
+
+    -- Delete is a one-way close. 40 ms is faster than a frame at 30 FPS and
+    -- cheap enough for a single GetAsyncKeyState call. Register it before
+    -- A.boot() so a protection arm error cannot leave the menu without its
+    -- close key.
+    O.every("menuHide", 40, watchDelete, 0)
+
     A.boot()
 
     -- Scan before installing the Bypass rows so only real resources appear.
@@ -28781,7 +28022,7 @@ UI.boot()
 
 return UI
 
-end)(O,S,E,D,F,V,M,SN,C,A,ST,SB,VS,K,N,L,VC,CP,CU,G,T,UC,FA,GL,Menu)
+end)(O,S,E,D,F,V,M,SN,C,A,ST,SB,VS,K,N,L,VC,CU,UC,FA,TP,Menu)
 
 
 end)()
