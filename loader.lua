@@ -2619,13 +2619,6 @@ local function UpdatePlayerList()
                         table.insert(tab.items, playerToggle)
                     end
 
-                    -- Modules append their Player List rows after the base
-                    -- rebuild. Without this hook, a row added once is wiped by
-                    -- the next UpdatePlayerList pass.
-                    if type(Menu.OnPlayerListBuild) == "function" then
-                        Menu.OnPlayerListBuild(tab)
-                    end
-                    
                     return
                 end
             end
@@ -16549,7 +16542,7 @@ end)()
 -- >>> VANGUARD MODULE BEGIN
 -- ============================================================================
 -- VANGUARD  (integrated artifact - edit src/ and rebuild)
--- Generated: 2026-10-27 20:06:50
+-- Generated: 2026-10-27 20:23:21
 --
 -- This block lives in loader.lua and in dist/loader.built.lua at the same
 -- time. It is the only place the local Menu table is in scope. Rebuilding
@@ -19267,7 +19260,7 @@ end)(O)
 -- ---------------------------------------------------------------------------
 -- PART: 10_crash.lua
 -- ---------------------------------------------------------------------------
-local C = (function(O,E)
+local C = (function(O,E,S)
 -- ============================================================================
 -- VANGUARD / 10 CRASH
 -- ----------------------------------------------------------------------------
@@ -19397,10 +19390,29 @@ local MODELS = {
 local WAVE_SIZE = 15
 local WAVE_MS = 220
 local SPAWN_RADIUS = 5.0
-local REMOTE_MIN = 30.0
+local REMOTE_MIN = 10.0
 local REMOTE_MAX = 400.0
 local ABORT_FACTOR = 0.66
 local SETTLE_MS = 500
+
+-- WaveShield's server-side entityCreating cancels unwhitelisted peds after a
+-- 30 s grace window. The guard's own CreatePed wrapper asks for that whitelist;
+-- this module runs in the Susano VM, outside that wrapper, so it sends the same
+-- protected request itself before creating the swarm. The event is encrypted
+-- with the replicated substitution table and signed with GetNetworkTime():seq,
+-- exactly like the object path in the menu.
+local WL_EVENT = "__Wave" .. "Shield:Create" .. "Entity"
+local WL_ACK = "_ws:cb"
+local WL_TIMEOUT = 300
+local WL_RETRY_TIMEOUT = 450
+local wl = {
+    ready = false,
+    byModel = {},
+    lastSigAt = 0,
+    seq = math.random(1000, 9999),
+    cryptoValue = nil,
+    cryptoSub = nil,
+}
 
 C.METHODS = METHODS
 C.method = 1
@@ -19444,6 +19456,7 @@ local function targetFromSelection()
 
     local okPlayer, player = pcall(GetPlayerFromServerId, serverId)
     if not okPlayer or type(player) ~= "number" or player < 0 then return nil end
+    if player == PlayerId() then return nil end
 
     local okPed, ped = pcall(GetPlayerPed, player)
     if not okPed or type(ped) ~= "number" or ped == 0 then return nil end
@@ -19568,6 +19581,235 @@ local function ring(center, radius)
     return center.x + math.cos(angle) * r,
            center.y + math.sin(angle) * r,
            center.z
+end
+
+-- ---------------------------------------------------------------------------
+-- WAVESHIELD PED WHITELIST
+-- ---------------------------------------------------------------------------
+local function findGuard()
+    if type(S) == "table" then
+        if type(S.acs) == "table" and #S.acs == 0 and type(S.scan) == "function" then
+            pcall(S.scan)
+        end
+        for _, ac in ipairs((type(S.acs) == "table" and S.acs) or {}) do
+            if ac.vendor == "waveshield" and type(ac.resource) == "string"
+                and ac.resource ~= "" then
+                return ac.resource
+            end
+        end
+    end
+
+    if type(GetNumResources) == "function" and type(GetResourceByFindIndex) == "function" then
+        local total = GetNumResources()
+        for i = 0, total - 1 do
+            local resource = GetResourceByFindIndex(i)
+            if type(resource) == "string" and resource ~= "" then
+                if string.find(string.lower(resource), "waveshield", 1, true) then
+                    return resource
+                end
+                local ok, value = pcall(GetResourceMetadata, resource, "ac", 0)
+                if ok and type(value) == "string"
+                    and string.find(string.lower(value), "waveshield", 1, true) then
+                    return resource
+                end
+            end
+        end
+    end
+    return nil
+end
+
+local function waveshieldConfig()
+    local gs = rawget(_G, "GlobalState")
+    if type(gs) ~= "table" then return nil end
+    local key = gs.CFct1C6gobnW4qkaQUx3Xk9Q
+    if type(key) ~= "string" or key == "" then return nil end
+    local cfg = gs[key]
+    if type(cfg) ~= "table" or type(cfg.Entities) ~= "table" then return nil end
+    return cfg.Entities
+end
+
+local function generateSubstitution(key)
+    if type(key) ~= "string" or key == "" then return nil end
+
+    local blacklist = { ["^"] = true, [" "] = true, ["\\"] = true }
+    local alphabet = ""
+    for i = 32, 126 do
+        local char = string.char(i)
+        if not blacklist[char] then alphabet = alphabet .. char end
+    end
+
+    local shuffled = {}
+    for i = 1, #alphabet do shuffled[i] = alphabet:sub(i, i) end
+
+    local hash = 0
+    for i = 1, #key do
+        hash = (hash * 31 + key:byte(i)) % 2 ^ 32
+    end
+
+    for i = 1, #shuffled do
+        local j = math.floor((hash % (#shuffled - i + 1)) + i)
+        shuffled[i], shuffled[j] = shuffled[j], shuffled[i]
+        hash = hash + i
+    end
+
+    local sub = {}
+    for i = 1, #alphabet do
+        sub[alphabet:sub(i, i)] = shuffled[i]
+    end
+    return sub
+end
+
+local function encrypt(text, sub)
+    if type(text) ~= "string" or type(sub) ~= "table" then return nil end
+    local out = {}
+    for i = 1, #text do
+        out[i] = sub[text:sub(i, i)] or text:sub(i, i)
+    end
+    return table.concat(out)
+end
+
+local function safeWait(ms)
+    if type(Citizen) == "table" and type(Citizen.Wait) == "function" then
+        pcall(Citizen.Wait, ms)
+    end
+end
+
+local function substitutionFromGuard()
+    local gs = rawget(_G, "GlobalState")
+    if type(gs) ~= "table" then return nil, "no-state" end
+    local key = gs.HHct1C6gobnW3DkIQUxiXk9Q
+    if type(key) ~= "string" or key == "" then return nil, "no-key" end
+    local value = type(GetConvar) == "function" and GetConvar(key, "weaponDamageEvent") or nil
+    if type(value) ~= "string" or value == "" then return nil, "no-convar" end
+    if wl.cryptoValue == value and wl.cryptoSub then return wl.cryptoSub end
+    local sub = generateSubstitution(value)
+    if not sub then return nil, "no-sub" end
+    wl.cryptoValue, wl.cryptoSub = value, sub
+    return sub
+end
+
+local function ensureSubstitution()
+    local sub, why = substitutionFromGuard()
+    if sub then return sub end
+    for _ = 1, 4 do
+        safeWait(30)
+        sub, why = substitutionFromGuard()
+        if sub then return sub end
+    end
+    return nil, why
+end
+
+local function ensureAck()
+    if wl.ready then return true end
+    if type(RegisterNetEvent) ~= "function" or type(AddEventHandler) ~= "function" then
+        return false
+    end
+    local ok = pcall(function()
+        RegisterNetEvent(WL_ACK)
+        AddEventHandler(WL_ACK, function(model)
+            if type(model) == "number" then
+                wl.byModel[model] = (wl.byModel[model] or 0) + 1
+            end
+        end)
+    end)
+    if ok then wl.ready = true end
+    return ok
+end
+
+local function ackCount(hash)
+    return wl.byModel[hash] or 0
+end
+
+local function waitAck(hash, before, timeout)
+    local deadline = now() + (timeout or WL_TIMEOUT)
+    while now() < deadline do
+        if ackCount(hash) > (before or 0) then return true end
+        safeWait(10)
+    end
+    return false
+end
+
+local function sendWhitelist(hash, resource, sub)
+    if type(TriggerServerEvent) ~= "function" then return false end
+    local current = math.floor(GetNetworkTime and GetNetworkTime() or now())
+    if current <= wl.lastSigAt then current = wl.lastSigAt + 1 end
+    wl.lastSigAt = current
+    wl.seq = wl.seq + 1
+    if wl.seq > 65535 then wl.seq = 1000 end
+
+    local eventName = encrypt("_WS:" .. WL_EVENT, sub)
+    local signature = encrypt(string.format("%d:%d", current, wl.seq), sub)
+    if not eventName or not signature then return false end
+    pcall(TriggerServerEvent, eventName, signature, hash, "CreatePed", resource)
+    return true
+end
+
+local function authorizeModels(hashes, wanted)
+    local resource = findGuard()
+    if not resource then return hashes end
+
+    local ent = waveshieldConfig()
+    if not ent then
+        -- The key can arrive before the config table. A blind whitelist request
+        -- is harmless when peds AI is off and is the only path that works when
+        -- it is on; if the crypto is not ready, leave the direct path intact.
+        local sub = ensureSubstitution()
+        if not sub or not ensureAck() then return hashes end
+        for _, hash in ipairs(hashes) do
+            local before = ackCount(hash)
+            if sendWhitelist(hash, resource, sub) then
+                waitAck(hash, before, WL_TIMEOUT)
+            end
+        end
+        return hashes
+    end
+
+    if ent.EnablePedsLimiter then
+        local limit = tonumber(ent.PedsLimitIn5Seconds)
+        if not limit or limit < wanted then
+            return nil, "limiter"
+        end
+    end
+
+    local allowed = {}
+    local needEvent = false
+    for _, hash in ipairs(hashes) do
+        local white = type(ent.WhiteListedPeds) == "table"
+            and ent.WhiteListedPeds[hash] == true
+        local black = type(ent.BlackListedPeds) == "table"
+            and ent.BlackListedPeds[hash] == true
+        if (ent.EnablePedsWhiteList and not white)
+            or (ent.EnablePedsBlackList and black and not white) then
+            -- The static policy would cancel this model. Do not waste a
+            -- network create on it.
+        else
+            allowed[#allowed + 1] = hash
+            if ent.EnablePedsAI and not white then needEvent = true end
+        end
+    end
+    if #allowed == 0 then return nil, "policy" end
+    if not needEvent then return allowed end
+
+    if not ensureAck() then return nil, "ack-handler" end
+    local sub, why = ensureSubstitution()
+    if not sub then return nil, tostring(why or "crypto") end
+
+    for _, hash in ipairs(allowed) do
+        local white = type(ent.WhiteListedPeds) == "table"
+            and ent.WhiteListedPeds[hash] == true
+        if not white then
+            local before = ackCount(hash)
+            if not sendWhitelist(hash, resource, sub) then return nil, "send" end
+            if not waitAck(hash, before, WL_TIMEOUT) then
+                before = ackCount(hash)
+                if not sendWhitelist(hash, resource, sub) then return nil, "send" end
+                if not waitAck(hash, before, WL_RETRY_TIMEOUT) then
+                    return nil, "no-ack"
+                end
+            end
+        end
+    end
+    return allowed
 end
 
 local function spawnPed(hash, x, y, z, heading)
@@ -19700,6 +19942,14 @@ local function runBody()
     end
 
     local want = preset().count
+    local authorized, why = authorizeModels(hashes, want)
+    if not authorized then
+        C.running = false
+        O.log("crash: ped policy unavailable (%s)", tostring(why))
+        return
+    end
+    hashes = authorized
+
     local offset = 0
     while C.running and #C.swarm < want do
         local center = coordsOf(C.targetPed)
@@ -19768,20 +20018,10 @@ function C.launch()
 
     C.refresh()
 
-    local selected = targetFromSelection()
-    if selected then
-        if selected.dist < REMOTE_MIN then
-            O.log("crash: refused; selected player is %.0f m away (min %.0f)",
-                selected.dist, REMOTE_MIN)
-            return false
-        end
-        if selected.dist > REMOTE_MAX then
-            O.log("crash: refused; selected player is %.0f m away (max %.0f)",
-                selected.dist, REMOTE_MAX)
-            return false
-        end
-    end
-
+    -- C.target() already prefers the selected player only when it is inside the
+    -- window; otherwise it falls back to the nearest valid player. Refusing here
+    -- on a close/far selection made the action do nothing even when another
+    -- player was in range.
     local target = C.target()
     if not target then
         O.log("crash: no player in the %.0f-%.0f m window", REMOTE_MIN, REMOTE_MAX)
@@ -19814,7 +20054,7 @@ end
 
 return C
 
-end)(O,E)
+end)(O,E,S)
 
 -- ---------------------------------------------------------------------------
 -- PART: 11_evasion.lua
@@ -23811,7 +24051,7 @@ local L = (function(O,S,B,Menu)
 -- ============================================================================
 -- VANGUARD / 17 LOCK PLAYER
 -- ----------------------------------------------------------------------------
--- Online > Player List > "Lock Player (Ctrl)".
+-- Player > Target > "Lock Player (Ctrl)".
 --
 -- What it does:
 --   The row is a permanent arm. Once it is on it stays on until the operator
@@ -23819,16 +24059,15 @@ local L = (function(O,S,B,Menu)
 --   target respawns, and it survives leaving and re-entering a vehicle.
 --
 --   While Left Ctrl is held, the operator's current vehicle is driven into the
---   target at 200 m/s, the value validated on WaveShield, over and over. The
---   shipped menu does not create a Lock Speed row: one fixed value is the
---   only speed authority. A legacy row left by an older build is still read
---   and clamped, so a live session can be slowed without releasing Left Ctrl;
---   that is a compatibility path, not a shipped control. The aim point follows
---   the target whether they are on foot or in a vehicle: the aim entity is the
---   target ped, or the target vehicle when they are seated in one. Release
---   Left Ctrl and the car is handed back to normal physics; the row stays
---   armed and the next Left Ctrl starts the loop again against the nearest
---   valid player.
+--   target at the Lock Speed value (50..200, default 200), over and over.
+--   "Lock Speed" is the slider directly under the row. It is read every tick,
+--   so a live session can be slowed without releasing Left Ctrl: that is what
+--   makes the row usable on a server whose vehicle validator rolls back the
+--   WaveShield-validated 200 (Seed). The aim point follows the target whether
+--   they are on foot or in a vehicle: the aim entity is the target ped, or the
+--   target vehicle when they are seated in one. Release Left Ctrl and the car is handed
+--   back to normal physics; the row stays armed and the next Left Ctrl starts the
+--   loop again against the nearest valid player.
 --
 --   Target order: the player selected in Online > Player List first, then the
 --   nearest living player. A dead player is never locked: the selection falls
@@ -23839,7 +24078,7 @@ local L = (function(O,S,B,Menu)
 --   player is used, which is what makes the row work without a selection.
 --
 --   The Vehicle > Performance rows "Gravitate Vehicle" and "Gravitate Speed"
---   are mirrored to ON / the current speed for the duration of a ram
+--   are mirrored to ON / current Lock Speed for the duration of a ram
 --   session, then restored. The base toggle's onClick is never called: its
 --   injected loop steers from the gameplay camera, and two drivers writing the
 --   same entity every frame would fight. This module implements the same
@@ -23876,18 +24115,17 @@ local L = (function(O,S,B,Menu)
 -- gravity value the base Gravitate Vehicle feature writes; it is restored to
 -- 9.8 on release.
 --
--- Why the shipped speed is 200, with a legacy row
--- ------------------------------------------------
--- 200 works on WaveShield and is the shipped value. Seed's vehicle validator
--- can roll a car moving that fast back to the server position, which turns the
--- ram into a stutter, but the menu no longer exposes a slider for it: one
--- value, one authority, no stale UI. An older build that still carries a
--- `Lock Speed` row is honoured and clamped 50..200, because a reload can leave
--- that row alive. The value is mirrored into Gravitate Speed while a session
--- is live and the operator's previous value is restored on release. A missing
--- row falls back to the last value used in this game session, then to 200.
--- The last value is kept in a process-local global, so re-injecting the loader
--- does not forget the speed chosen for the current server.
+-- Why the speed is a row, not a constant
+-- --------------------------------------
+-- 200 works on WaveShield and remains the default. Seed's vehicle validator
+-- rolls a car moving that fast back to the server position, which turns the
+-- ram into a stutter: the operator asked to adapt per anticheat. The speed is
+-- therefore a slider (50..200, step 10) read every tick. The value is mirrored
+-- into Gravitate Speed while a session is live and the operator's previous
+-- value is restored on release. The row is the only speed authority; a
+-- missing row falls back to the last value used in this game session, then to
+-- 200. The last value is kept in a process-local global, so re-injecting the
+-- loader does not forget the speed that was chosen for the current server.
 --
 -- Why the aim follows the height axis
 -- -----------------------------------
@@ -23917,21 +24155,20 @@ local L = (function(O,S,B,Menu)
 --     Its teleport check requires two in-vehicle samples below 3 m/s
 --     (teleport.lua:3-25). Its noclip check requires a frozen or
 --     collision-disabled ped (noclip.lua:39-53). The operator's ped is seated
---     at every speed, so all three preconditions stay false; the speed
+--     at every slider value, so all three preconditions stay false; the speed
 --     magnitude only changes what a server-side handling validator sees.
 --   * No entity is created, no server event is sent, no state bag is written.
 --     The budget family "lock" caps arm/disarm, not target re-acquisition.
 --
 -- Residual risk:
 --   * Speed. The server sees a vehicle moving faster than its handling data.
---     WaveShield accepts 200; Seed can roll it back. The shipped menu no
---     longer exposes a slider, so 200 is the remaining risk. The vehicle is
---     never teleported, so there is no position jump to validate; only the
---     velocity/handling mismatch.
+--     WaveShield accepts 200; Seed rolls it back. The Lock Speed slider is the
+--     answer: lower it per server. The vehicle is never teleported, so there
+--     is no position jump to validate; only the velocity/handling mismatch.
 --   * At 200 m/s thin geometry can be tunnelled. The driver holds a short
 --     pass at impact range (PASS_MS) so the collision solver gets a window,
---     but the travel leg is deliberately fast. A legacy lower speed would
---     reduce the tunnelling window.
+--     but the travel leg is deliberately fast. Lowering Lock Speed also
+--     reduces the tunnelling window.
 --   * A dead target is replaced by the nearest living player. If no living
 --     player is in range, the session ends and the row stays armed. The car is
 --     never left flying at a corpse.
@@ -23960,7 +24197,7 @@ local VEH_AIM         = 0.35
 local VEH_AIM_BELOW   = 0.05
 local GRAVITATE_ROW   = "Gravitate Vehicle"
 local GRAVITATE_SPEED = "Gravitate Speed"
-local SPEED_ROW       = "Lock Speed" -- legacy row only; shipped UI creates none
+local SPEED_ROW       = "Lock Speed"
 -- VK_LCONTROL only. No VK_LSHIFT/VK_RSHIFT/VK_SHIFT, no VK_RCONTROL, no
 -- VK_CONTROL. The raw API distinguishes the physical left key, which a control
 -- binding cannot do.
@@ -24163,10 +24400,9 @@ end
 -- point at a dead table. The previous values are restored on release, so a
 -- manual Gravitate session survives a Lock Player session untouched.
 --
--- The optional category/tab filters exist for the legacy Lock Speed row: a
--- generic name lookup could pick a same-named slider from another category.
--- The shipped menu no longer creates Player > Target or Lock Speed; this
--- scoped lookup only serves a row left alive by an older build.
+-- The optional category/tab filters exist for Lock Speed: a generic name
+-- lookup could pick a same-named slider from another category. Lock Speed is
+-- scoped to Player > Target, the only place this module puts it.
 -- ---------------------------------------------------------------------------
 local function findItem(name, categoryName, tabName)
     if type(Menu) ~= "table" then return nil end
@@ -24204,12 +24440,12 @@ local function findItem(name, categoryName, tabName)
     return nil
 end
 
--- The shipped speed is 200. A legacy Lock Speed row from an older build is
--- still honoured and clamped 50..200; when it is absent, the last value used
--- in this game session is used, then the default. Clamping also means a
--- corrupted global or stale row cannot write a velocity outside the module's
--- own band. The lookup is not a UI contract: the current installer creates no
--- such row.
+-- The slider is the single speed authority. It is read every tick so the
+-- operator can lower it while the car is already moving; that is the Seed
+-- case (200 rolls the vehicle back, 80 does not). A missing row falls back to
+-- the last value used in this game session, then to the default. The value is
+-- clamped to the slider's own range so a corrupted config cannot write a
+-- velocity the row cannot display.
 local function lockSpeed()
     local item = findItem(SPEED_ROW, "Player", "Target")
     local value = type(item) == "table" and item.value or nil
@@ -24427,9 +24663,9 @@ local function tick(now)
         return
     end
 
-    -- The speed is live. Reading it before any target work means a session
-    -- that is already moving picks up a legacy row change on the next tick,
-    -- and status reports the value the driver will actually use.
+    -- The slider is live. Reading it before any target work means a session
+    -- that is already moving picks up a change on the next tick, and status
+    -- reports the value the driver will actually use.
     N.lastSpeed = lockSpeed()
 
     local ped = PlayerPedId()
@@ -24489,7 +24725,7 @@ local function tick(now)
         N.targetMode = targetMode
     end
 
-    -- Keep the UI mirror in step with a speed that changed mid-session.
+    -- Keep the UI mirror in step with a slider that changed mid-session.
     -- gravitateOn() saved the operator's own Gravitate Speed first, so this
     -- write is still restored on release.
     local gravSpeed = findItem(GRAVITATE_SPEED)
@@ -24647,10 +24883,10 @@ function N.isActive()
     return N.active
 end
 
--- Compatibility accessor for callers that still want the value the driver
--- will use. The shipped menu does not build a slider from it; a legacy row is
--- read if present, then the last value used in this game session, then
--- DEFAULT_SPEED.
+-- The menu builds its slider from this value. When the row does not exist yet
+-- (first install, or a reload before build) lockSpeed() falls back to the last
+-- speed used in this game session, then to DEFAULT_SPEED, so the slider always
+-- starts on the value the driver will actually use.
 function N.speedValue()
     return lockSpeed()
 end
@@ -27316,7 +27552,7 @@ local function collapseExploitTab()
 
     -- Menu.CurrentTab is shared by every category. Only touch it when Exploit
     -- is the category the operator actually has open; otherwise a reload while
-    -- Player > Movement is open would clamp the Player tab index to 1.
+    -- Player > Target is open would clamp the Player tab index to 1.
     local openCategory = nil
     if type(Menu.OpenedCategory) == "number" and Menu.Categories then
         openCategory = Menu.Categories[Menu.OpenedCategory]
@@ -27615,116 +27851,104 @@ local function installVoice()
 end
 
 -- ---------------------------------------------------------------------------
--- ONLINE > PLAYER LIST > LOCK PLAYER
+-- PLAYER > TARGET > LOCK PLAYER
 --
--- The row belongs in Online > Player List, next to the player selection it
--- uses. The loader rebuilds that tab every frame, so the row is appended by
--- Menu.OnPlayerListBuild after each rebuild instead of surviving by accident.
--- The permanent arm is unchanged: target respawns, vehicle changes and key
--- releases keep the row on. Holding Left Ctrl is the live ram consent and
--- loops the lock until it is released. Shift is not read at all: not
--- VK_LSHIFT, not VK_RSHIFT, not VK_SHIFT. Right Ctrl is not read either.
+-- The row belongs in Player, not Online > Troll. The target is still chosen
+-- in Online > Player List; this row only arms the action. Once armed it is
+-- permanent: target respawns, vehicle changes and Ctrl releases all keep the
+-- row on. Holding Left Ctrl is the live ram consent and loops the lock until
+-- it is released. Shift is not read at all: not VK_LSHIFT, not VK_RSHIFT, not
+-- VK_SHIFT. Right Ctrl is not read either.
 --
--- The old Player > Target tab and the even older Online > Troll copies are
--- swept on every load. A stale onClick must not survive a reload. The empty
--- Target tab is removed as well, so the Player order stays Self | Movement |
--- Voice | Wardrobe.
+-- "Lock Speed" is the tunable that matters on servers with a vehicle
+-- validator: 200 is validated on WaveShield, Seed rolls a car moving that fast
+-- back to the server position. The slider is live (read every tick), so the
+-- operator can lower it while the car is already ramming. It is placed
+-- directly under the toggle, before the target explanation separator, so the
+-- two controls that belong together are adjacent.
 --
--- The shipped menu has no Lock Speed slider. The module owns a 200 m/s
--- default, which is the value validated on WaveShield; a slider only moved a
--- number the server validator could roll back. Older builds that still carry a
--- Lock Speed row are honoured by the module, but this installer never creates
--- one: one speed authority, no stale UI value after a reload.
+-- Player already has Self / Wardrobe / Movement / Voice. Target is a tab in
+-- the same category, so the feature sits where the operator asked for it
+-- without creating a second top-level surface. After every install the tab
+-- order is normalised to Self | Target | Movement | Voice | Wardrobe, with
+-- Wardrobe at the far right. The old Online copy is removed on every load so
+-- a stale onClick cannot survive a reload.
 -- ---------------------------------------------------------------------------
 local function installLockPlayer()
+    local category = findCategory("Player")
+    if not category then return false end
+
+    -- Preserve the speed the operator already chose. The module keeps the
+    -- last used value in _G as well, so the slider is not reset to 200 by a
+    -- reload in the same game session.
+    local previousSpeed = findItem("Player", "Target", "Lock Speed")
+    local startSpeed = previousSpeed and tonumber(previousSpeed.value) or nil
+    if not startSpeed then startSpeed = L.speedValue() end
+
     -- Remove every historical spelling on every load, including the Shift row
-    -- a previous build installed. The row is rebuilt below.
+    -- a previous build installed. A stale onClick must not survive a reload.
     removeItem("Online", "Troll", "Lock Player (Ctrl)")
     removeItem("Online", "Troll", "Lock Player (Shift)")
     removeItem("Online", "Troll", "Lock Player")
-    removeItem("Online", "Troll", "Lock Speed")
     removeItem("Player", "Target", "Lock Player (Ctrl)")
     removeItem("Player", "Target", "Lock Player (Shift)")
     removeItem("Player", "Target", "Lock Player")
     removeItem("Player", "Target", "Lock Speed")
 
-    -- Drop the now-empty tab a previous build created. Unknown tabs are left
-    -- alone; only this module's historical Target surface is removed.
-    local player = findCategory("Player")
-    if player and player.tabs then
-        for i = #player.tabs, 1, -1 do
-            if player.tabs[i].name == "Target" then
-                table.remove(player.tabs, i)
-            end
+    category.tabs = category.tabs or {}
+
+    local tab = nil
+    for i = 1, #category.tabs do
+        if category.tabs[i].name == "Target" then
+            tab = category.tabs[i]
+            break
         end
     end
-
-    local lockRow = nil
-
-    local function buildRows(tab)
-        if type(tab) ~= "table" then return end
-        tab.items = tab.items or {}
-
-        -- The loader rebuilds this list on every frame. Sweep the rows this
-        -- hook owns by marker, and keep the sweep name-based as well so a
-        -- pre-marker copy from an older build cannot duplicate the toggle.
-        for i = #tab.items, 1, -1 do
-            local item = tab.items[i]
-            if item.__vgdLockPlayer
-                or item.name == "Lock Player"
-                or item.name == "Lock Player (Ctrl)"
-                or (item.isSeparator
-                    and item.separatorText == "Lock player (hold Left Ctrl in a vehicle)") then
-                table.remove(tab.items, i)
-            end
-        end
-
-        lockRow = {
-            name = "Lock Player",
-            type = "toggle",
-            value = L.isActive(),
-            __vgdLockPlayer = true,
-            onClick = function(value)
-                local active
-                if value then
-                    active = L.arm()
-                else
-                    L.stop("operator")
-                    active = false
-                end
-                lockRow.value = active
-                return active
-            end,
-        }
-
-        -- The row tracks the permanent arm only. A ram session that ends
-        -- because Left Ctrl was released, the operator left the vehicle, or
-        -- the target died keeps the row on. Panic/disarm goes through onChange.
-        L.onChange = function(active)
-            if lockRow then lockRow.value = active end
-        end
-
-        -- Put the hold hint and the toggle on the first page, after the
-        -- spectate/teleport controls and before the selected-player rows.
-        local at = 1
-        for i, item in ipairs(tab.items) do
-            if item.name == "Teleport" or item.name == "Spectate Player" then
-                at = i + 1
-            end
-        end
-        table.insert(tab.items, at, {
-            name = "",
-            isSeparator = true,
-            separatorText = "Lock player (hold Left Ctrl in a vehicle)",
-            __vgdLockPlayer = true,
-        })
-        table.insert(tab.items, at + 1, lockRow)
+    if not tab then
+        tab = { name = "Target", items = {} }
+        category.tabs[#category.tabs + 1] = tab
     end
 
-    Menu.OnPlayerListBuild = buildRows
+    local row
+    row = {
+        name = "Lock Player (Ctrl)",
+        type = "toggle",
+        value = L.isActive(),
+        onClick = function(value)
+            local active
+            if value then
+                active = L.arm()
+            else
+                L.stop("operator")
+                active = false
+            end
+            row.value = active
+            return active
+        end,
+    }
 
-    local tab = findTab("Online", "Player List")
-    if tab then buildRows(tab) end
+    -- The row tracks the permanent arm only. A ram session that ends because
+    -- Left Ctrl was released, the operator left the vehicle, or the target died
+    -- keeps the row on. Panic/disarm goes through onChange.
+    L.onChange = function(active)
+        row.value = active
+    end
+
+    local speedRow = {
+        name = "Lock Speed",
+        type = "slider",
+        value = math.floor(startSpeed + 0.5),
+        min = 50,
+        max = 200,
+        step = 10,
+    }
+
+    tab.items = {
+        { name = "", isSeparator = true, separatorText = "Hold Left Ctrl to ram" },
+        row,
+        speedRow,
+        { name = "", isSeparator = true, separatorText = "Selected player first, then nearest living" },
+    }
     return true
 end
 
@@ -28329,6 +28553,7 @@ local function installRampFix()
         veh = 0,
         active = false,
         model = nil,
+        plan = nil,
         attach = nil,
         stage = "none",
         expiresAt = 0,
@@ -28811,6 +29036,7 @@ local function installRampFix()
         state.veh = 0
         state.active = false
         state.model = nil
+        state.plan = nil
         state.attach = nil
         state.stage = "none"
         state.expiresAt = 0
@@ -28839,6 +29065,7 @@ local function installRampFix()
         state.veh = vehicle
         state.active = true
         state.model = plan.name
+        state.plan = plan
         state.attach = {
             y = plan.offsetY,
             z = plan.offsetZ,
@@ -29020,7 +29247,28 @@ local function installRampFix()
         end
 
         if state.obj == 0 or not DoesEntityExist(state.obj) then
+            -- A server-side entity filter can accept the whitelist event and
+            -- still delete the object after replication. Keep the feature
+            -- usable by replacing a vanished network prop with the same local
+            -- geometry. A local prop that disappears is not respawned: that
+            -- would fight the streamer and create an endless handle loop.
+            local wasNetwork = state.stage == "network"
+            local plan = state.plan
+            local vehicle = state.veh
+            local heading = 0.0
+            if vehicle ~= 0 and DoesEntityExist(vehicle)
+                and type(GetEntityHeading) == "function" then
+                local ok, value = pcall(GetEntityHeading, vehicle)
+                if ok and type(value) == "number" then heading = value end
+            end
             removeRamp()
+            if wasNetwork and plan and vehicle ~= 0
+                and DoesEntityExist(vehicle) then
+                O.log("ramp: network prop vanished; local replacement")
+                if not spawnLocalPlan(plan, vehicle, heading) then
+                    O.log("ramp: local replacement failed")
+                end
+            end
             return false
         end
         if state.veh == 0 or not DoesEntityExist(state.veh) then
@@ -29070,7 +29318,7 @@ local function installRampFix()
     rampFixState = state
 
     if type(O.every) == "function" then
-        O.every("rampWatch", 1000, rampCheck, O.int(0, 1000))
+        O.every("rampWatch", 500, rampCheck, O.int(0, 500))
     end
 
     return true
@@ -29079,21 +29327,21 @@ end
 -- ---------------------------------------------------------------------------
 -- PLAYER TAB ORDER
 --
--- The base menu has Self and Wardrobe; this module appends Movement and
--- Voice. Append order is not display order. The operator asked for:
+-- The base menu has Self and Wardrobe; this module appends Target, Movement
+-- and Voice. Append order is not display order. The operator asked for:
 --
---   Self | Movement | Voice | Wardrobe
+--   Self | Target | Movement | Voice | Wardrobe
 --
--- Wardrobe is the far-right tab and Movement/Voice keep their usual places.
--- Lock Player no longer has a Player > Target tab; it lives in Online >
--- Player List. Unknown tabs are left after the known ones in their original
--- order, so a future base tab is not silently deleted.
+-- Wardrobe is the far-right tab, Target is second, and Movement/Voice keep
+-- their usual places. Unknown tabs are left after the known ones in their
+-- original order, so a future base tab is not silently deleted.
 -- ---------------------------------------------------------------------------
 local PLAYER_TAB_ORDER = {
     Self = 1,
-    Movement = 2,
-    Voice = 3,
-    Wardrobe = 4,
+    Target = 2,
+    Movement = 3,
+    Voice = 4,
+    Wardrobe = 5,
 }
 
 local function reorderPlayerTabs()
@@ -29101,7 +29349,7 @@ local function reorderPlayerTabs()
     if not category or not category.tabs then return false end
 
     -- Preserve the open tab by object. Menu.CurrentTab is an index; after the
-    -- move, index 2 is Movement instead of whatever used to be there. A reload
+    -- move, index 2 is Target instead of whatever used to be there. A reload
     -- with Player open must not silently switch the operator to another tab.
     -- When another category is open, leave its CurrentTab untouched.
     local openCategory = nil
