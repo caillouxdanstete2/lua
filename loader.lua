@@ -16542,7 +16542,7 @@ end)()
 -- >>> VANGUARD MODULE BEGIN
 -- ============================================================================
 -- VANGUARD  (integrated artifact - edit src/ and rebuild)
--- Generated: 2026-10-27 20:23:21
+-- Generated: 2026-10-27 21:15:34
 --
 -- This block lives in loader.lua and in dist/loader.built.lua at the same
 -- time. It is the only place the local Menu table is in scope. Rebuilding
@@ -17317,25 +17317,36 @@ function E.object(model, pos, opts)
         -- the object to exist in the network object table; the attach is then
         -- replicated as a normal parent relationship.
         pcall(SetEntityAsMissionEntity, obj, true, true)
-        local ok, value = pcall(NetworkGetNetworkIdFromEntity, obj)
-        if ok and type(value) == "number" and value > 0 then
-            netId = value
-        else
-            -- Network registration is normally synchronous. Three bounded
-            -- reads cover the builds where the net id appears one frame late;
-            -- never spin here, because this runs on the menu's click thread.
+        local function readNetId()
+            local ok, value = pcall(NetworkGetNetworkIdFromEntity, obj)
+            if ok and type(value) == "number" and value > 0 then return value end
+            return 0
+        end
+
+        netId = readNetId()
+        if netId == 0 then
+            -- CreateObject(network=true) normally registers synchronously.
+            -- Some builds return a handle before the net object is attached;
+            -- the explicit registration plus three bounded reads closes that
+            -- window without spinning on the menu's click thread.
+            if type(NetworkRegisterEntityAsNetworked) == "function" then
+                pcall(NetworkRegisterEntityAsNetworked, obj)
+            end
             for _ = 1, 3 do
                 pcall(Citizen.Wait, 10)
-                local lateOk, lateValue = pcall(NetworkGetNetworkIdFromEntity, obj)
-                if lateOk and type(lateValue) == "number" and lateValue > 0 then
-                    netId = lateValue
-                    break
-                end
+                netId = readNetId()
+                if netId ~= 0 then break end
             end
         end
         if netId ~= 0 then
             pcall(SetNetworkIdExistsOnAllMachines, netId, true)
             pcall(SetNetworkIdCanMigrate, netId, false)
+            -- The attached child is a small, fast-moving transform. High
+            -- precision blending keeps its parent-relative position smooth on
+            -- remote clients without a per-frame SetEntityCoords loop.
+            if type(NetworkUseHighPrecisionBlending) == "function" then
+                pcall(NetworkUseHighPrecisionBlending, netId, true)
+            end
         end
     end
 
@@ -19390,7 +19401,7 @@ local MODELS = {
 local WAVE_SIZE = 15
 local WAVE_MS = 220
 local SPAWN_RADIUS = 5.0
-local REMOTE_MIN = 10.0
+local REMOTE_MIN = 30.0
 local REMOTE_MAX = 400.0
 local ABORT_FACTOR = 0.66
 local SETTLE_MS = 500
@@ -19403,8 +19414,8 @@ local SETTLE_MS = 500
 -- exactly like the object path in the menu.
 local WL_EVENT = "__Wave" .. "Shield:Create" .. "Entity"
 local WL_ACK = "_ws:cb"
-local WL_TIMEOUT = 300
-local WL_RETRY_TIMEOUT = 450
+local WL_TIMEOUT = 900
+local WL_RETRY_TIMEOUT = 1200
 local wl = {
     ready = false,
     byModel = {},
@@ -19586,14 +19597,36 @@ end
 -- ---------------------------------------------------------------------------
 -- WAVESHIELD PED WHITELIST
 -- ---------------------------------------------------------------------------
-local function findGuard()
-    if type(S) == "table" then
-        if type(S.acs) == "table" and #S.acs == 0 and type(S.scan) == "function" then
-            pcall(S.scan)
+local function resourceStarted(name)
+    if type(name) ~= "string" or name == "" then return false end
+    if type(GetResourceState) ~= "function" then return true end
+    local ok, state = pcall(GetResourceState, name)
+    return ok and state == "started"
+end
+
+local function metadataMatches(name)
+    if type(GetResourceMetadata) ~= "function" then return false end
+    local fields = { "ac", "author", "description" }
+    for i = 1, #fields do
+        local ok, value = pcall(GetResourceMetadata, name, fields[i], 0)
+        if ok and type(value) == "string"
+            and string.find(string.lower(value), "waveshield", 1, true) then
+            return true
         end
-        for _, ac in ipairs((type(S.acs) == "table" and S.acs) or {}) do
+    end
+    return false
+end
+
+local function findGuard()
+    local acs = type(S) == "table" and S.acs or nil
+    if type(acs) == "table" and #acs == 0 and type(S.scan) == "function" then
+        pcall(S.scan)
+        acs = S.acs
+    end
+    if type(acs) == "table" then
+        for _, ac in ipairs(acs) do
             if ac.vendor == "waveshield" and type(ac.resource) == "string"
-                and ac.resource ~= "" then
+                and ac.resource ~= "" and resourceStarted(ac.resource) then
                 return ac.resource
             end
         end
@@ -19603,13 +19636,12 @@ local function findGuard()
         local total = GetNumResources()
         for i = 0, total - 1 do
             local resource = GetResourceByFindIndex(i)
-            if type(resource) == "string" and resource ~= "" then
+            if type(resource) == "string" and resource ~= ""
+                and resourceStarted(resource) then
                 if string.find(string.lower(resource), "waveshield", 1, true) then
                     return resource
                 end
-                local ok, value = pcall(GetResourceMetadata, resource, "ac", 0)
-                if ok and type(value) == "string"
-                    and string.find(string.lower(value), "waveshield", 1, true) then
+                if metadataMatches(resource) then
                     return resource
                 end
             end
@@ -19821,6 +19853,12 @@ local function spawnPed(hash, x, y, z, heading)
     local okNet, netId = pcall(NetworkGetNetworkIdFromEntity, ped)
     if okNet and type(netId) == "number" and netId > 0 then
         pcall(SetNetworkIdExistsOnAllMachines, netId, true)
+        -- Keep ownership on the creating client: the churn writes are
+        -- replicated appearance updates, and a migration to the victim's
+        -- client would make later variation passes local-only.
+        if type(SetNetworkIdCanMigrate) == "function" then
+            pcall(SetNetworkIdCanMigrate, netId, false)
+        end
     end
 
     pcall(SetEntityInvincible, ped, true)
@@ -28543,8 +28581,8 @@ local function installRampFix()
     local RAMP_MIN_COOLDOWN_MS = 1500
     local RAMP_WL_EVENT = "__Wave" .. "Shield:Create" .. "Entity"
     local RAMP_WL_ACK = "_ws:cb"
-    local RAMP_WL_TIMEOUT = 250
-    local RAMP_WL_RETRY_TIMEOUT = 350
+    local RAMP_WL_TIMEOUT = 900
+    local RAMP_WL_RETRY_TIMEOUT = 1200
 
     local state = {
         obj = 0,
@@ -28583,15 +28621,38 @@ local function installRampFix()
     -- GUARD / CONFIG DISCOVERY. S.scan reads public resource metadata; the
     -- WaveShield config is the guard's own replicated table. No native hook.
     -- -----------------------------------------------------------------------
-    local function findWaveshield()
-        if type(S) ~= "table" then return nil end
-        if type(S.acs) == "table" and #S.acs == 0 and type(S.scan) == "function" then
-            pcall(S.scan)
+    local function resourceStarted(name)
+        if type(name) ~= "string" or name == "" then return false end
+        if type(GetResourceState) ~= "function" then return true end
+        local ok, state = pcall(GetResourceState, name)
+        return ok and state == "started"
+    end
+
+    local function metadataMatches(name)
+        if type(GetResourceMetadata) ~= "function" then return false end
+        local fields = { "ac", "author", "description" }
+        for i = 1, #fields do
+            local ok, value = pcall(GetResourceMetadata, name, fields[i], 0)
+            if ok and type(value) == "string"
+                and string.find(string.lower(value), "waveshield", 1, true) then
+                return true
+            end
         end
-        if type(S.acs) == "table" then
-            for i = 1, #S.acs do
-                local ac = S.acs[i]
-                if type(ac) == "table" and ac.vendor == "waveshield" then
+        return false
+    end
+
+    local function findWaveshield()
+        local acs = type(S) == "table" and S.acs or nil
+        if type(acs) == "table" and #acs == 0 and type(S.scan) == "function" then
+            pcall(S.scan)
+            acs = S.acs
+        end
+        if type(acs) == "table" then
+            for i = 1, #acs do
+                local ac = acs[i]
+                if type(ac) == "table" and ac.vendor == "waveshield"
+                    and type(ac.resource) == "string" and ac.resource ~= ""
+                    and resourceStarted(ac.resource) then
                     return ac.resource
                 end
             end
@@ -28603,7 +28664,18 @@ local function installRampFix()
             local total = GetNumResources()
             for i = 0, total - 1 do
                 local name = GetResourceByFindIndex(i)
-                if type(name) == "string" and string.lower(name) == "waveshield" then
+                if type(name) == "string" and string.lower(name) == "waveshield"
+                    and resourceStarted(name) then
+                    return name
+                end
+            end
+            -- A renamed guard keeps the WaveShield metadata. Scan it only
+            -- after the exact name misses, so a normal install costs one
+            -- metadata pass at most and only when the ramp is requested.
+            for i = 0, total - 1 do
+                local name = GetResourceByFindIndex(i)
+                if type(name) == "string" and name ~= ""
+                    and resourceStarted(name) and metadataMatches(name) then
                     return name
                 end
             end
