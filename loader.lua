@@ -2754,6 +2754,7 @@ function Menu.GetSelectedPlayerInfo()
     local vehicle = GetVehiclePedIsIn(playerPed, false)
     local vehicleName = "On Foot"
     local speed = 0
+    local speedExact = 0.0
     local vehPlate = ""
     local vehHealth = 0
     local vehMaxHealth = 0
@@ -2761,17 +2762,31 @@ function Menu.GetSelectedPlayerInfo()
     if vehicle ~= 0 then
         inVehicle = true
         vehicleName = GetDisplayNameFromVehicleModel(GetEntityModel(vehicle)) or "Unknown"
-        speed = math.floor(GetEntitySpeed(vehicle) * 3.6)
+        speedExact = GetEntitySpeed(vehicle) * 3.6
+        speed = math.floor(speedExact)
         vehPlate = GetVehicleNumberPlateText(vehicle) or ""
         vehHealth = GetEntityHealth(vehicle)
         vehMaxHealth = GetEntityMaxHealth(vehicle)
+    else
+        -- On foot the panel still reports a live speed (the reference card
+        -- shows a moving target at 2.0 km/h). The floor field stays 0 for the
+        -- existing vehicle-only consumers.
+        speedExact = GetEntitySpeed(playerPed) * 3.6
     end
 
     -- Coords / Distance / Heading
     local myCoords = GetEntityCoords(PlayerPedId())
     local targetCoords = GetEntityCoords(playerPed)
-    local distance = math.floor(#(myCoords - targetCoords))
+    local distanceExact = #(myCoords - targetCoords)
+    local distance = math.floor(distanceExact)
     local heading = math.floor(GetEntityHeading(playerPed))
+
+    -- Interior check. GET_INTERIOR_FROM_ENTITY returns the interior handle the
+    -- entity occupies, or 0 when it is outside.
+    local inBuilding = false
+    if type(GetInteriorFromEntity) == "function" then
+        inBuilding = GetInteriorFromEntity(playerPed) ~= 0
+    end
 
     -- Health / Armor
     local health = GetEntityHealth(playerPed)
@@ -2801,11 +2816,14 @@ function Menu.GetSelectedPlayerInfo()
         weapon = weaponName,
         vehicle = vehicleName,
         speed = speed,
+        speedExact = speedExact,
         distance = distance,
+        distanceExact = distanceExact,
         heading = heading,
         coords = targetCoords,
         isAlive = isAlive,
         inVehicle = inVehicle,
+        inBuilding = inBuilding,
         vehPlate = vehPlate,
         vehHealth = vehHealth,
         vehMaxHealth = vehMaxHealth,
@@ -16565,7 +16583,7 @@ end)()
 -- >>> VANGUARD MODULE BEGIN
 -- ============================================================================
 -- VANGUARD  (integrated artifact - edit src/ and rebuild)
--- Generated: 2026-10-28 12:43:32
+-- Generated: 2026-10-28 13:34:49
 --
 -- This block lives in loader.lua and in dist/loader.built.lua at the same
 -- time. It is the only place the local Menu table is in scope. Rebuilding
@@ -21131,16 +21149,21 @@ end)(O,Menu)
 --   Net array   The client's own NetLibrary sends the engine's msgArrayUpdate
 --               reliable command with a short element body. The server's C++
 --               array handler stores and relays it; no resource event, no
---               entity, no state bag, no native hook.
+--               entity, no state bag, no native hook. Current server builds
+--               rate-limit the handler (75/s sustained, 125 burst), so the
+--               loop sends one command per game frame, never a burst.
 --
 --   Net damage  Susano.SendNetworkDamage with a zero-damage run-over record
 --               from the local on-foot ped. parentGlobalId is zero; the
 --               receiving clients process the damage event through the same
 --               engine path as the public b3258 report.
 --
--- Every native/export used here is resolved at call time. If the process does
--- not expose the expected export or an active NetLibrary instance, the row
--- logs a failure and does not touch the wire.
+-- The NetLibrary instance is located by walking the .data section of
+-- gta-net-five.dll for a pointer whose head is the exported NetLibrary vtable.
+-- Every candidate is bounds-checked with Memory.Valid, the vtable slots for
+-- SendReliableCommand and GetConnectionState are verified, and the connection
+-- state is read directly at +0x48 (GetConnectionState is a one-instruction
+-- getter). Any mismatch aborts before a single packet is built.
 -- ---------------------------------------------------------------------------
 local NET = (function(O)
     local NET = {}
@@ -21148,10 +21171,34 @@ local NET = (function(O)
     NET.sendFn = nil
     NET.stateFn = nil
     NET.vtable = nil
+    NET.instance = nil
     NET.typeBuf = nil
     NET.dataBuf = nil
     NET.busy = false
     NET.lastDamage = 0
+
+    local valid = Susano.Memory.Valid
+
+    local function is_valid(addr)
+        if type(addr) ~= "number" then return false end
+        if type(valid) ~= "function" then return true end
+        local ok, res = pcall(valid, addr)
+        return ok and res == true
+    end
+
+    local function read_u32(addr)
+        if not is_valid(addr) or not is_valid(addr + 3) then return nil end
+        local ok, v = pcall(Susano.Memory.ReadU32, addr)
+        if ok and type(v) == "number" then return v end
+        return nil
+    end
+
+    local function read_u64(addr)
+        if not is_valid(addr) or not is_valid(addr + 7) then return nil end
+        local ok, v = pcall(Susano.Memory.ReadU64, addr)
+        if ok and type(v) == "number" then return v end
+        return nil
+    end
 
     local function bytes_of(s)
         local t = {}
@@ -21172,11 +21219,23 @@ local NET = (function(O)
         return table.concat(out)
     end
 
-    local function active_state(obj)
-        if not obj or obj == 0 then return nil end
-        local ok, state = pcall(Susano.Memory.Call, NET.stateFn, "i:p", obj)
-        if not ok or type(state) ~= "number" then return nil end
-        return state
+    -- The two virtual slots we depend on. If the resolved vtable does not
+    -- point at the exported functions, the export walk returned something
+    -- else and the lane refuses to run.
+    local function vtable_ok(vt)
+        if type(vt) ~= "number" or type(NET.sendFn) ~= "number"
+            or type(NET.stateFn) ~= "number" then
+            return false
+        end
+        local sendSlot = read_u64(vt + 0x58)
+        local stateSlot = read_u64(vt + 0x88)
+        return sendSlot == NET.sendFn and stateSlot == NET.stateFn
+    end
+
+    -- GetConnectionState is `mov eax, [rcx+0x48]; ret`. Reading the field
+    -- directly removes the only indirect call made on a scanned pointer.
+    local function state_ok(obj)
+        return read_u32(obj + 0x48) == 8
     end
 
     local function scan_range(addr, size)
@@ -21191,12 +21250,12 @@ local NET = (function(O)
                     local hi = b[i + 4] + b[i + 5] * 256
                         + b[i + 6] * 65536 + b[i + 7] * 16777216
                     if hi ~= 0 and hi < 0x8000 then
-                        local v = Susano.Memory.ReadU64(addr + off + i - 1)
-                        if v and v > 0x10000 and v < 0x7FFFFFFFFFFF then
-                            local head = Susano.Memory.ReadU64(v)
-                            if head and head == NET.vtable then
-                                local state = active_state(v)
-                                if state and state == 8 then return v end
+                        local v = read_u64(addr + off + i - 1)
+                        if v and v > 0x10000 and v < 0x7FFFFFFFFFFF
+                            and v % 8 == 0 then
+                            local head = read_u64(v)
+                            if head and head == NET.vtable and state_ok(v) then
+                                return v
                             end
                         end
                     end
@@ -21212,18 +21271,18 @@ local NET = (function(O)
         local base = Susano.Memory.Module("gta-net-five.dll")
         if not base then return nil end
 
-        local e = Susano.Memory.ReadU32(base + 0x3C)
+        local e = read_u32(base + 0x3C)
         if not e or e == 0 or e > 0x1000 then return nil end
-        local nsec = Susano.Memory.ReadU16(base + e + 6)
-        local opt = Susano.Memory.ReadU16(base + e + 20)
+        local nsec = read_u32(base + e + 6)
+        local opt = read_u32(base + e + 20)
         if not nsec or not opt then return nil end
 
         local sec = base + e + 24 + opt
         for i = 0, nsec - 1 do
             local o = sec + i * 40
             if read_name(o) == ".data" then
-                local vs = Susano.Memory.ReadU32(o + 8)
-                local va = Susano.Memory.ReadU32(o + 12)
+                local vs = read_u32(o + 8)
+                local va = read_u32(o + 12)
                 if vs and va and vs > 0 and vs < 0x4000000 then
                     local found = scan_range(base + va, vs)
                     if found then return found end
@@ -21231,7 +21290,7 @@ local NET = (function(O)
             end
         end
 
-        local image_size = Susano.Memory.ReadU32(base + e + 24 + 56)
+        local image_size = read_u32(base + e + 24 + 56)
         if image_size and image_size > 0 and image_size < 0x4000000 then
             return scan_range(base, image_size)
         end
@@ -21277,6 +21336,11 @@ local NET = (function(O)
         NET.stateFn = stateFn
         NET.vtable = vtable
 
+        if not vtable_ok(vtable) then
+            O.log("net: vtable slot mismatch")
+            return false
+        end
+
         local okType, typeBuf = pcall(Susano.Memory.Alloc, 32, "rw")
         local okData, dataBuf = pcall(Susano.Memory.Alloc, 640, "rw")
         if not (okType and okData) or type(typeBuf) ~= "number"
@@ -21290,6 +21354,16 @@ local NET = (function(O)
         Susano.Memory.WriteBytes(NET.typeBuf, bytes_of("msgArrayUpdate"))
         NET.ready = true
         return true
+    end
+
+    local function resolve_instance()
+        local cached = NET.instance
+        if cached and read_u64(cached) == NET.vtable and state_ok(cached) then
+            return cached
+        end
+        local found = NET.find_instance()
+        NET.instance = found
+        return found
     end
 
     function NET.send(netlib, array_index, elem, size, data)
@@ -21326,7 +21400,7 @@ local NET = (function(O)
         if NET.busy then return end
         if not NET.init() then return end
 
-        local netlib = NET.find_instance()
+        local netlib = resolve_instance()
         if not netlib then
             O.log("net array: no active instance")
             return
@@ -21337,13 +21411,10 @@ local NET = (function(O)
             local ok, err = pcall(function()
                 local zeros = {}
                 for i = 1, 128 do zeros[i] = 0 end
-                local lows = { 0 }
                 local highs = {}
                 for i = 1, 128 do highs[i] = 255 end
                 local profiles = {
-                    { size = 1, data = lows },
                     { size = 16, data = zeros },
-                    { size = 128, data = zeros },
                     { size = 128, data = highs },
                 }
 
@@ -21351,7 +21422,9 @@ local NET = (function(O)
                     for p = 1, #profiles do
                         NET.send(netlib, kind, elem, profiles[p].size,
                             profiles[p].data)
-                        Citizen.Wait(5)
+                        -- One command per game frame: keeps the outgoing
+                        -- reliable queue and the server rate limiter happy.
+                        Citizen.Wait(0)
                     end
                 end
             end)
@@ -21364,9 +21437,31 @@ local NET = (function(O)
         end)
     end
 
+    local function nearest_ped()
+        local me = PlayerPedId()
+        local mec = GetEntityCoords(me)
+        local best, bestd = nil, nil
+        for _, player in ipairs(GetActivePlayers()) do
+            if player ~= PlayerId() then
+                local ped = GetPlayerPed(player)
+                if ped and ped ~= 0 and ped ~= me and DoesEntityExist(ped)
+                    and not IsPedDeadOrDying(ped, true) then
+                    local c = GetEntityCoords(ped)
+                    local dx, dy, dz = c.x - mec.x, c.y - mec.y, c.z - mec.z
+                    local d = math.sqrt(dx * dx + dy * dy + dz * dz)
+                    if d <= 300.0 and (not best or d < bestd) then
+                        best, bestd = ped, d
+                    end
+                end
+            end
+        end
+        return best
+    end
+
     function NET.damage()
         local target = C.target("ped")
-        if not target then
+        local ped = target and target.ped or nearest_ped()
+        if not ped or ped == 0 or not DoesEntityExist(ped) then
             O.log("net damage: no target")
             return
         end
@@ -21385,10 +21480,10 @@ local NET = (function(O)
             return
         end
 
-        local coords = GetEntityCoords(target.ped)
+        local coords = GetEntityCoords(ped)
         local weapon = GetHashKey("weapon_run_over_by_car")
         local ok, err = pcall(Susano.SendNetworkDamage,
-            source, target.ped, coords.x, coords.y, coords.z,
+            source, ped, coords.x, coords.y, coords.z,
             0.0, weapon, 522, 0, 0, 0, 0)
         if not ok then
             O.log("net damage: %s", tostring(err))
@@ -28329,71 +28424,83 @@ local TP = (function(O,Menu)
 -- ============================================================================
 -- VANGUARD / 26 TARGET PANEL
 -- ----------------------------------------------------------------------------
--- Replaces the loader's right-hand player dossier with a compact card built
--- from the same visual language as the menu. It is deliberately smaller than
--- the menu: a quick read while aiming, not a second window. The previous pass
--- made it so compact that the 10-14 px type was unreadable in game; this pass
--- keeps the same footprint but moves the type up one full step and raises the
--- label/value contrast. The card is still about half the area of the old
--- 440 x 540 dossier.
+-- Right-hand target card, rebuilt to the compact reference layout:
 --
--- The data is already collected by Menu.GetSelectedPlayerInfo (loader.lua).
--- This file only draws. It never reads the ped, never writes an entity and
--- never allocates a native handle, so it cannot move a target or trip an AC
--- check. It is a pure function of the table the loader already built.
+--   ------------------------------
+--             Target Name
+--   Server ID                 155
+--   Distance                86.8m
+--   Health                     90 |
+--   Armor                       0 |
+--   Weapon              Carbine Rifle
+--   Vehicles             On Foot
+--   Building                  Yes
+--   Alive                   Alive
+--   Speed                2.0 km/h
+--   Friend                     No
+--   ------------------------------
 --
--- Layout:
+-- No kicker, no id pill, no sections, no separator lines, no footer and no
+-- status pill. One flat near-black card, one centred name, ten label/value
+-- rows. Health and armour use a four-pixel vertical gauge on the right edge;
+-- every other value is right-aligned to the card's own margin.
 --
---   CIBLE  [name]                                   #42
---   ------------------------------------------------
---   SANTE
---   VIE 200 / 200 [bar]    ARMURE 50 / 100 [bar]
---   JOUEUR
---   ARME      Carbine Rifle
---   DISTANCE  42 m
---   POSITION  123.4, -456.7, 30.1
---   VEHICULE
---   MODELE    Sultan
---   PLAQUE    ABC123
---   VITESSE   87 km/h
---   VIE VEHICULE [bar]
---   ------------------------------------------------
---   [EN VIE]
+-- The card is a pure drawing pass. It reads nothing from the world and writes
+-- nothing back: every value comes from the table Menu.GetSelectedPlayerInfo
+-- already builds once per frame. No native handle is allocated here, so the
+-- card cannot alter an entity, send a net event or trip a server-side check.
 --
--- The old ETAT block, the compass row and the pulsing DIRECT marker were
--- removed by the operator. Only the status pill remains.
+-- Placement is unchanged: the card sits to the right of the menu at the menu's
+-- own top edge, flips to the left when it would leave the screen, clears a
+-- right-side scrollbar, and clamps at the bottom edge.
 --
--- Palette: the same grey chrome as the menu, a near-black body, bright cool
--- labels and warm-white values. Only the vitals keep a functional colour.
+-- Palette is deliberately flat: near-black body, one light grey for labels,
+-- pure white for values, warm sand for the weapon, mint for health and azure
+-- for armour. Nothing else uses colour.
 -- ============================================================================
 
 local TP = {}
 
--- Chrome palette. The border and body are the same greys the menu itself
--- uses (library.lua draws a 0.216 border around a 0.059 body), so the right
--- card belongs to the menu instead of introducing a second accent system.
--- Only the health/armour bars and the status pip keep a functional colour.
-local CHROME_R, CHROME_G, CHROME_B = 0.216, 0.216, 0.216
-local RAIL_R, RAIL_G, RAIL_B = 0.430, 0.430, 0.430
-local BODY_R, BODY_G, BODY_B = 0.059, 0.059, 0.059
-local TRACK_R, TRACK_G, TRACK_B = 0.160, 0.160, 0.160
-local LABEL_R, LABEL_G, LABEL_B = 0.800, 0.810, 0.830
-local SECTION_R, SECTION_G, SECTION_B = 0.760, 0.770, 0.790
-local MUTED_R, MUTED_G, MUTED_B = 0.840, 0.850, 0.870
+local BODY_R, BODY_G, BODY_B = 0.035, 0.039, 0.047
+local LABEL_R, LABEL_G, LABEL_B = 0.730, 0.745, 0.770
 local VALUE_R, VALUE_G, VALUE_B = 1.000, 1.000, 1.000
-local BADGE_R, BADGE_G, BADGE_B = 0.150, 0.150, 0.150
+local HEAD_R, HEAD_G, HEAD_B = 0.970, 0.975, 0.985
+local WEAPON_R, WEAPON_G, WEAPON_B = 0.850, 0.665, 0.435
+local TRACK_R, TRACK_G, TRACK_B = 0.155, 0.165, 0.180
+local HEALTH_R, HEALTH_G, HEALTH_B = 0.240, 0.860, 0.400
+local ARMOR_R, ARMOR_G, ARMOR_B = 0.360, 0.630, 0.960
+
+-- The reference card is roughly two-thirds of the menu width. These bounds
+-- keep that ratio at every scale without letting the card collapse below a
+-- readable value column or grow into a second menu.
+local WIDTH_RATIO = 0.68
+local WIDTH_MIN = 238
+local WIDTH_MAX = 292
+
+-- Logical sizes, multiplied by Menu.Scale on the way to the overlay. Row height
+-- 19 and width ~245 reproduce the reference's ~1:1 card proportion.
+local PAD_X = 13
+local PAD_Y = 11
+local HEADER_HEIGHT = 30
+local ROW_HEIGHT = 19
+local FONT_HEADER = 13.5
+local FONT_ROW = 12.5
+local BAR_WIDTH = 4
+local BAR_HEIGHT = 12
+local BAR_GAP = 7
+local RADIUS = 3
 
 local function clamp01(value)
     value = tonumber(value) or 0.0
     -- NaN compares false to everything; catch it before the bounds so a bad
-    -- native return cannot poison a bar width.
+    -- value cannot poison a gauge height.
     if value ~= value then return 0.0 end
     if value < 0.0 then return 0.0 end
     if value > 1.0 then return 1.0 end
     return value
 end
 
--- Integer for a %d format without ever passing NaN/inf to string.format.
+-- Integer for a %d style readout without ever passing NaN/inf to format.
 local function whole(value)
     value = tonumber(value)
     if not value or value ~= value or value == math.huge or value == -math.huge then
@@ -28402,9 +28509,18 @@ local function whole(value)
     return math.floor(value + 0.5)
 end
 
--- Rounded fill with the same three fallbacks the loader uses. A build without
--- Susano.DrawRectFilled still gets a valid panel through Menu.DrawRoundedRect
--- or Menu.DrawRect instead of throwing during OnRender.
+local function finite(value, fallback)
+    value = tonumber(value)
+    if not value or value ~= value or value == math.huge or value == -math.huge then
+        return fallback or 0.0
+    end
+    return value
+end
+
+-- Susano.DrawRectFilled is the documented primitive:
+--   DrawRectFilled(x, y, w, h, r, g, b[, a][, rounding])
+-- The two fallbacks keep the card drawable on a build that only exposes the
+-- old Menu helpers. None of them throw during OnRender.
 local function fillRect(x, y, width, height, r, g, b, a, radius)
     if width <= 0 or height <= 0 then return end
     a = a or 1.0
@@ -28421,23 +28537,15 @@ local function fillRect(x, y, width, height, r, g, b, a, radius)
     end
 end
 
+-- Menu.DrawText applies Menu.Scale itself, so callers pass logical sizes and
+-- logical coordinates. The overlay primitive is Susano.DrawText.
 local function text(x, y, value, size, r, g, b, a)
     if not Menu or type(Menu.DrawText) ~= "function" then return end
     Menu.DrawText(x, y, tostring(value), size, r, g, b, a or 1.0)
 end
 
--- A one-pixel dark shadow makes the larger values read as semibold without
--- loading a second font. The shadow goes first so the real glyph is on top.
-local function textStrong(x, y, value, size, r, g, b, a)
-    -- A one-pixel shadow gives the default ImGui face a semibold weight. It is
-    -- drawn first so the real glyph is always on top; labels use it too now,
-    -- because the screenshot showed the old labels vanishing into the body.
-    text(x + 1.0, y + 1.0, value, size, 0.0, 0.0, 0.0, (a or 1.0) * 0.78)
-    text(x, y, value, size, r, g, b, a or 1.0)
-end
-
--- Width of a string at the same size Menu.DrawText will use. Menu.DrawText
--- multiplies the base size by Menu.Scale; GetTextWidth needs the final size.
+-- Susano.GetTextWidth(text, size_px) wants the final pixel size, while the
+-- menu multiplies the logical size by Menu.Scale. Multiply before measuring.
 local function textWidth(value, size, scale)
     value = tostring(value or "")
     if value == "" then return 0.0 end
@@ -28451,7 +28559,7 @@ end
 
 -- Byte offsets of every UTF-8 character boundary, with a final sentinel at
 -- #value + 1. Player names are arbitrary UTF-8; cutting at a byte boundary
--- would leave an invalid sequence and could make the renderer drop the line.
+-- would leave an invalid sequence and could drop the whole line.
 local function utf8Offsets(value)
     local offsets = { 1 }
     local index = 1
@@ -28508,16 +28616,25 @@ local function screenSize()
     return width, height
 end
 
-local function healthColor(percent)
-    if percent < 0.22 then return 1.00, 0.42, 0.45 end
-    if percent < 0.50 then return 1.00, 0.72, 0.30 end
-    return 0.36, 0.95, 0.64
+-- Menu.DrawText places the top of the glyph box at y. The menu centres its
+-- 19 px rows with a -8 offset, which is 0.421 of the row size; reuse that for
+-- every row so labels, values and gauges share one optical centre.
+local function centeredTextY(centerY, size, scale)
+    return centerY - size * 0.421 * scale
 end
 
-local function vehicleColor(percent)
-    if percent < 0.22 then return 1.00, 0.42, 0.45 end
-    if percent < 0.50 then return 1.00, 0.72, 0.30 end
-    return 0.36, 0.90, 0.98
+-- The menu has no friend list today. Accept a plain set (friends[id] = true)
+-- or an array of server ids if one is added later; otherwise the honest
+-- answer is No.
+local function isFriend(serverId)
+    if serverId == nil or not Menu then return false end
+    local friends = Menu.Friends
+    if type(friends) ~= "table" then return false end
+    if friends[serverId] then return true end
+    for i = 1, #friends do
+        if friends[i] == serverId then return true end
+    end
+    return false
 end
 
 function Menu.DrawPlayerInfoPanel()
@@ -28539,16 +28656,11 @@ function Menu.DrawPlayerInfoPanel()
 
     local screenWidth, screenHeight = screenSize()
 
-    -- Compact card: slightly wider than the last pass, but still clearly
-    -- narrower than the menu. At the default 110 % scale this is 350 px wide;
-    -- the old dossier was 440 px. The width buys a readable value column
-    -- without turning the card into a second menu.
     local menuWidth = tonumber(sp.width) or (360 * scale)
-    local panelWidth = math.max(318 * scale,
-        math.min(menuWidth * 0.88, 372 * scale))
+    local panelWidth = math.max(WIDTH_MIN * scale,
+        math.min(menuWidth * WIDTH_RATIO, WIDTH_MAX * scale))
 
-    -- Leave room for the scrollbar when it is drawn outside the menu. The
-    -- panel sits beside the menu, so a right-side bar must not run under it.
+    -- Keep clear of the scrollbar if it is drawn outside the menu on the right.
     local scrollbarRight = tonumber(Menu.ScrollbarPosition) == 2
     local edgeGap = (scrollbarRight and 26 or 14) * scale
     local panelX = sp.x + menuWidth + edgeGap
@@ -28562,283 +28674,138 @@ function Menu.DrawPlayerInfoPanel()
         end
     end
 
-    local pad = 16 * scale
-    local innerWidth = panelWidth - pad * 2
-    local cx = panelX + pad
+    local padX = PAD_X * scale
+    local padY = PAD_Y * scale
+    local headerHeight = HEADER_HEIGHT * scale
+    local rowHeight = ROW_HEIGHT * scale
+    local barWidth = BAR_WIDTH * scale
+    local barHeight = BAR_HEIGHT * scale
+    local barGap = BAR_GAP * scale
 
-    -- Two steps above the old 10.5 / 17 / 18 pass. At the default 110 %
-    -- scale the on-screen sizes are: name 28.6 px, value 20.4 px, label
-    -- 15.95 px, section 14.85 px, bar 14.85 px. The card is still compact;
-    -- the type is now the menu's own size or larger.
-    local FONT_KICKER = 13
-    local FONT_NAME = 28
-    local FONT_ID = 14
-    local FONT_SECTION = 14.5
-    local FONT_LABEL = 15.5
-    local FONT_VALUE = 20
-    local FONT_VALUE_SMALL = 16.5
-    local FONT_BAR = 14.5
-    local FONT_FOOTER = 15
+    local innerWidth = panelWidth - padX * 2
+    local cx = panelX + padX
+    local innerRight = panelX + panelWidth - padX
 
-    -- Menu.DrawText places the top of a glyph box at y; the menu itself centres
-    -- a 19 px row with a -8 offset. 0.421 reproduces that optical centre for
-    -- every size, so labels, values and status share one alignment rule.
-    local function centeredTextY(centerY, size)
-        return centerY - size * 0.421 * scale
-    end
-
-    local headerHeight = 56 * scale
-    local sectionHeight = 24 * scale
-    local rowHeight = 31 * scale
-    local vitalsHeight = 40 * scale
-    local vehicleBarHeight = 33 * scale
-    local footerHeight = 40 * scale
-
-    local healthMax = tonumber(info.maxHealth) or 0
-    local health = tonumber(info.health) or 0
-    local healthPercent = healthMax > 0 and clamp01(health / healthMax) or 0.0
-    local healthR, healthG, healthB = healthColor(healthPercent)
-
-    local armor = tonumber(info.armor) or 0
-    local armorPercent = clamp01(armor / 100.0)
-
-    local vehicleHealthMax = tonumber(info.vehMaxHealth) or 0
-    local vehicleHealth = tonumber(info.vehHealth) or 0
-    local vehiclePercent = vehicleHealthMax > 0
-        and clamp01(vehicleHealth / vehicleHealthMax) or 0.0
-    local vehicleR, vehicleG, vehicleB = vehicleColor(vehiclePercent)
-
-    local alive = info.isAlive ~= false and health > 0
-    local statusR, statusG, statusB = 0.36, 0.95, 0.64
-    local statusLabel = "EN VIE"
-    if not alive then
-        statusR, statusG, statusB = 1.00, 0.42, 0.45
-        statusLabel = "MORT"
-    elseif info.isGodmode then
-        statusR, statusG, statusB = 1.00, 0.78, 0.30
-        statusLabel = "GODMODE"
-    end
-
-    local function section(label)
-        return function(y)
-            fillRect(cx, y + 7 * scale, 3 * scale, 13 * scale,
-                RAIL_R, RAIL_G, RAIL_B, 0.95, 1.5 * scale)
-            textStrong(cx + 10 * scale,
-                centeredTextY(y + sectionHeight * 0.5, FONT_SECTION),
-                label, FONT_SECTION, SECTION_R, SECTION_G, SECTION_B, 1.0)
-            local labelWidth = textWidth(label, FONT_SECTION, scale)
-            local lineX = cx + 10 * scale + labelWidth + 10 * scale
-            local lineWidth = cx + innerWidth - lineX
-            if lineWidth > 0 then
-                fillRect(lineX, y + sectionHeight * 0.5, lineWidth, 1,
-                    CHROME_R, CHROME_G, CHROME_B, 0.35, 0)
-            end
-        end
-    end
-
-    -- Left-aligned value column. The old card pushed every value to the far
-    -- right edge, which made a short word like "Unarmed" sit a whole card away
-    -- from its label. A fixed 34 % column cuts the eye travel and leaves room
-    -- for the 21-character coordinate string at the smaller value size.
-    local function row(label, value, r, g, b, size)
-        return function(y)
-            local center = y + rowHeight * 0.5
-            textStrong(cx, centeredTextY(center, FONT_LABEL),
-                label, FONT_LABEL, LABEL_R, LABEL_G, LABEL_B, 1.0)
-            local valueSize = size or FONT_VALUE
-            local valueX = cx + innerWidth * 0.34
-            local shown = fitText(value, cx + innerWidth - valueX,
-                valueSize, scale)
-            textStrong(valueX, centeredTextY(center, valueSize),
-                shown, valueSize, r or VALUE_R, g or VALUE_G, b or VALUE_B, 1.0)
-        end
-    end
-
-    local function vital(x, y, width, label, percent, valueText, r, g, b)
-        local labelCenter = y + 10 * scale
-        textStrong(x, centeredTextY(labelCenter, FONT_BAR),
-            label, FONT_BAR, LABEL_R, LABEL_G, LABEL_B, 1.0)
-        local valueWidth = textWidth(valueText, FONT_BAR, scale)
-        textStrong(x + width - valueWidth, centeredTextY(labelCenter, FONT_BAR),
-            valueText, FONT_BAR, r, g, b, 1.0)
-
-        local barY = y + 24 * scale
-        local barH = 7 * scale
-        fillRect(x, barY, width, barH, TRACK_R, TRACK_G, TRACK_B, 0.95,
-            barH * 0.5)
-        local filled = width * percent
-        if filled > 0 then
-            fillRect(x, barY, filled, barH, r, g, b, 0.96, barH * 0.5)
-            fillRect(x + 1 * scale, barY + 1 * scale,
-                math.max(0, filled - 2 * scale), 1, 1, 1, 1, 0.22,
-                0.5 * scale)
-        end
-    end
-
-    local function barRow(label, percent, valueText, r, g, b)
-        return function(y)
-            local labelCenter = y + 10 * scale
-            textStrong(cx, centeredTextY(labelCenter, FONT_BAR),
-                label, FONT_BAR, LABEL_R, LABEL_G, LABEL_B, 1.0)
-            local valueWidth = textWidth(valueText, FONT_BAR, scale)
-            textStrong(cx + innerWidth - valueWidth,
-                centeredTextY(labelCenter, FONT_BAR),
-                valueText, FONT_BAR, r, g, b, 1.0)
-
-            local barY = y + 24 * scale
-            local barH = 7 * scale
-            fillRect(cx, barY, innerWidth, barH, TRACK_R, TRACK_G, TRACK_B,
-                0.95, barH * 0.5)
-            local filled = innerWidth * percent
-            if filled > 0 then
-                fillRect(cx, barY, filled, barH, r, g, b, 0.96, barH * 0.5)
-                fillRect(cx + 1 * scale, barY + 1 * scale,
-                    math.max(0, filled - 2 * scale), 1, 1, 1, 1, 0.22,
-                    0.5 * scale)
-            end
-        end
-    end
-
-    local blocks = {}
-    local function add(height, draw)
-        blocks[#blocks + 1] = { height = height, draw = draw }
-    end
-
-    -- Header -----------------------------------------------------------------
-    add(headerHeight, function(y)
-        textStrong(cx, y + 1 * scale, "CIBLE", FONT_KICKER,
-            SECTION_R, SECTION_G, SECTION_B, 0.95)
-
-        local idText = "#" .. tostring(info.serverId or "?")
-        local idWidth = textWidth(idText, FONT_ID, scale) + 20 * scale
-        local idHeight = 28 * scale
-        local idX = cx + innerWidth - idWidth
-        local idY = y + 9 * scale
-        fillRect(idX, idY, idWidth, idHeight,
-            BADGE_R, BADGE_G, BADGE_B, 0.95, 6 * scale)
-        fillRect(idX, idY, 2.5 * scale, idHeight,
-            RAIL_R, RAIL_G, RAIL_B, 0.95, 1.5 * scale)
-        textStrong(idX + 9 * scale,
-            centeredTextY(idY + idHeight * 0.5, FONT_ID),
-            idText, FONT_ID, VALUE_R, VALUE_G, VALUE_B, 1.0)
-
-        local nameX = cx
-        local nameMax = math.max(0, idX - nameX - 10 * scale)
-        local name = fitText(info.name or "Inconnu", nameMax, FONT_NAME, scale)
-        local nameY = y + 17 * scale
-        textStrong(nameX, nameY, name, FONT_NAME,
-            VALUE_R, VALUE_G, VALUE_B, 1.0)
-
-        fillRect(cx, y + 54 * scale, innerWidth, 1,
-            CHROME_R, CHROME_G, CHROME_B, 0.45, 0)
-    end)
-
-    -- Vitals -----------------------------------------------------------------
-    add(sectionHeight, section("SANTE"))
-    add(vitalsHeight, function(y)
-        local colGap = 12 * scale
-        local colWidth = (innerWidth - colGap) * 0.5
-        vital(cx, y, colWidth, "VIE", healthPercent,
-            ("%d / %d"):format(whole(health), whole(healthMax)),
-            healthR, healthG, healthB)
-        vital(cx + colWidth + colGap, y, colWidth, "ARMURE", armorPercent,
-            ("%d / 100"):format(whole(armor)),
-            0.42, 0.72, 1.00)
-    end)
-
-    -- Player -----------------------------------------------------------------
-    add(sectionHeight, section("JOUEUR"))
-    add(rowHeight, row("ARME", info.weapon or "Inconnu"))
-    add(rowHeight, row("DISTANCE",
-        ("%d m"):format(whole(info.distance)),
-        VALUE_R, VALUE_G, VALUE_B))
-    local coords = info.coords
-    -- FiveM returns a vector3 userdata, not a table. The previous test used a
-    -- table and the live card silently dropped the row; accept any object that
-    -- exposes numeric x/y/z.
-    if coords and type(coords.x) == "number" and type(coords.y) == "number"
-        and type(coords.z) == "number" then
-        add(rowHeight, row("POSITION",
-            ("%.1f, %.1f, %.1f"):format(coords.x, coords.y, coords.z),
-            MUTED_R, MUTED_G, MUTED_B, FONT_VALUE_SMALL))
-    end
-
-    -- Vehicle ----------------------------------------------------------------
-    if info.inVehicle then
-        add(sectionHeight, section("VEHICULE"))
-        add(rowHeight, row("MODELE", info.vehicle or "Inconnu"))
-        local plate = tostring(info.vehPlate or "")
-        plate = plate:gsub("%s+$", "")
-        add(rowHeight, row("PLAQUE", plate ~= "" and plate or "-",
-            MUTED_R, MUTED_G, MUTED_B, FONT_VALUE_SMALL))
-        add(rowHeight, row("VITESSE",
-            ("%d km/h"):format(whole(info.speed)),
-            VALUE_R, VALUE_G, VALUE_B))
-        add(vehicleBarHeight, barRow("VIE VEHICULE", vehiclePercent,
-            ("%d / %d"):format(whole(vehicleHealth), whole(vehicleHealthMax)),
-            vehicleR, vehicleG, vehicleB))
-    end
-
-    -- Footer -----------------------------------------------------------------
-    local footer = function(y)
-        fillRect(cx, y + 1 * scale, innerWidth, 1,
-            CHROME_R, CHROME_G, CHROME_B, 0.35, 0)
-        local pillHeight = 32 * scale
-        local pillY = y + 5 * scale
-        local labelWidth = textWidth(statusLabel, FONT_FOOTER, scale)
-            + 30 * scale
-        fillRect(cx, pillY, labelWidth, pillHeight,
-            BADGE_R, BADGE_G, BADGE_B, 0.95, pillHeight * 0.5)
-        fillRect(cx + 2 * scale, pillY + 4 * scale, 3 * scale,
-            pillHeight - 8 * scale, statusR, statusG, statusB, 0.95,
-            1.5 * scale)
-        textStrong(cx + 13 * scale,
-            centeredTextY(pillY + pillHeight * 0.5, FONT_FOOTER),
-            statusLabel, FONT_FOOTER, VALUE_R, VALUE_G, VALUE_B, 1.0)
-    end
-    add(footerHeight, footer)
-
-    local contentHeight = 0
-    for i = 1, #blocks do contentHeight = contentHeight + blocks[i].height end
-
-    local chromeHeight = pad * 2
-    -- No large minimum height. The previous 300 logical px floor left a visible
-    -- empty band under DISTANCE when the target was on foot. The card now ends
-    -- with its content; only a tiny floor keeps the shadow/rounding sane.
-    local panelHeight = math.max(chromeHeight + contentHeight, 276 * scale)
-
-    -- If the card is taller than its content, put the spare space before the
-    -- footer. The footer then sits on the bottom edge instead of floating under
-    -- the last row.
-    local spare = panelHeight - (chromeHeight + contentHeight)
-    if spare > 0 then
-        local footerBlock = table.remove(blocks)
-        blocks[#blocks + 1] = { height = spare, draw = function() end }
-        blocks[#blocks + 1] = footerBlock
-    end
+    -- The card height is fixed by the ten rows, not by the target's state:
+    -- sitting in a vehicle changes only the Vehicles and Speed values.
+    local rows = 10
+    local panelHeight = padY + headerHeight + rows * rowHeight + padY
 
     local panelY = math.max(8, sp.y)
     if panelY + panelHeight > screenHeight - 8 then
         panelY = math.max(8, screenHeight - panelHeight - 8)
     end
 
-    -- Background. The border is the menu's own grey (0.216), the body is the
-    -- menu's near-black (0.059), and the only colour left is in the vitals.
-    fillRect(panelX, panelY, panelWidth, panelHeight,
-        CHROME_R, CHROME_G, CHROME_B, 0.98, 8 * scale)
-    fillRect(panelX + 1, panelY + 1, panelWidth - 2, panelHeight - 2,
-        BODY_R, BODY_G, BODY_B, 0.992, 7 * scale)
-    -- One low-alpha grey band gives the header a little depth without a
-    -- second accent colour.
-    fillRect(panelX + 1, panelY + 1, panelWidth - 2, 48 * scale,
-        CHROME_R, CHROME_G, CHROME_B, 0.10, 7 * scale)
-    fillRect(panelX + 1, panelY + 1, panelWidth - 2, 1,
-        1.0, 1.0, 1.0, 0.05, 0)
+    -- Background. DrawShadowRect (documented) gives the soft offset edge of
+    -- the reference card; the plain fill is the fallback. Alpha stays below 1
+    -- so the card reads as an overlay rather than a hole in the game.
+    local radius = RADIUS * scale
+    local shadowDrawn = false
+    if Susano and type(Susano.DrawShadowRect) == "function" then
+        shadowDrawn = pcall(Susano.DrawShadowRect,
+            panelX, panelY, panelWidth, panelHeight,
+            BODY_R, BODY_G, BODY_B, 0.955,
+            3 * scale, 0.38, radius)
+    end
+    if not shadowDrawn then
+        fillRect(panelX, panelY, panelWidth, panelHeight,
+            BODY_R, BODY_G, BODY_B, 0.955, radius)
+    end
 
-    local y = panelY + pad
-    for i = 1, #blocks do
-        blocks[i].draw(y)
-        y = y + blocks[i].height
+    -- Header: the player name alone, centred, one line, no kicker and no
+    -- badge. Truncation happens before centring so an ellipsised name still
+    -- sits on the card's axis.
+    local name = tostring(info.name or "Unknown")
+    local headerCenterY = panelY + padY + headerHeight * 0.5
+    local shownName = fitText(name, innerWidth, FONT_HEADER, scale)
+    local nameWidth = textWidth(shownName, FONT_HEADER, scale)
+    text(panelX + (panelWidth - nameWidth) * 0.5,
+        centeredTextY(headerCenterY, FONT_HEADER, scale),
+        shownName, FONT_HEADER,
+        HEAD_R, HEAD_G, HEAD_B, 1.0)
+
+    -- Values. distanceExact/speedExact are collected by the loader; the floor
+    -- fields stay as fallbacks so an older info table still renders.
+    local health = finite(info.health, 0)
+    local healthMax = finite(info.maxHealth, 0)
+    local healthPercent = healthMax > 0 and clamp01(health / healthMax) or 0.0
+    local armor = finite(info.armor, 0)
+    local armorPercent = clamp01(armor / 100.0)
+    local distance = finite(info.distanceExact, finite(info.distance, 0))
+    local speed = finite(info.speedExact, finite(info.speed, 0))
+    local alive = info.isAlive ~= false and health > 0
+    local building = info.inBuilding == true
+    local friend = isFriend(info.serverId)
+
+    local model = tostring(info.vehicle or "On Foot")
+
+    local entries = {
+        {
+            label = "Server ID",
+            value = info.serverId ~= nil and tostring(whole(info.serverId)) or "?",
+        },
+        { label = "Distance", value = ("%.1fm"):format(distance) },
+        {
+            label = "Health",
+            value = tostring(whole(health)),
+            gauge = { percent = healthPercent, r = HEALTH_R, g = HEALTH_G, b = HEALTH_B },
+        },
+        {
+            label = "Armor",
+            value = tostring(whole(armor)),
+            gauge = { percent = armorPercent, r = ARMOR_R, g = ARMOR_G, b = ARMOR_B },
+        },
+        {
+            label = "Weapon",
+            value = tostring(info.weapon or "Unarmed"),
+            r = WEAPON_R, g = WEAPON_G, b = WEAPON_B,
+        },
+        { label = "Vehicles", value = model },
+        { label = "Building", value = building and "Yes" or "No" },
+        { label = "Alive", value = alive and "Alive" or "Dead" },
+        { label = "Speed", value = ("%.1f km/h"):format(speed) },
+        { label = "Friend", value = friend and "Yes" or "No" },
+    }
+
+    local rowsTop = panelY + padY + headerHeight
+    for index = 1, #entries do
+        local entry = entries[index]
+        local centerY = rowsTop + (index - 0.5) * rowHeight
+        local textY = centeredTextY(centerY, FONT_ROW, scale)
+
+        text(cx, textY, entry.label, FONT_ROW,
+            LABEL_R, LABEL_G, LABEL_B, 1.0)
+
+        local valueRight = innerRight
+        local gauge = entry.gauge
+        if gauge then
+            valueRight = innerRight - barWidth - barGap
+        end
+
+        local labelWidth = textWidth(entry.label, FONT_ROW, scale)
+        local maxValueWidth = valueRight - (cx + labelWidth + 10 * scale)
+        if maxValueWidth < 0 then maxValueWidth = 0 end
+        local shownValue = fitText(entry.value, maxValueWidth, FONT_ROW, scale)
+        local valueWidth = textWidth(shownValue, FONT_ROW, scale)
+
+        text(valueRight - valueWidth, textY, shownValue, FONT_ROW,
+            entry.r or VALUE_R, entry.g or VALUE_G, entry.b or VALUE_B, 1.0)
+
+        if gauge then
+            -- Vertical micro-gauge: a four-pixel track on the right edge,
+            -- filled from the bottom. Health 90 % reads as a nearly full
+            -- green tick; armour 0 leaves only the dark track.
+            local barX = innerRight - barWidth
+            local barY = centerY - barHeight * 0.5
+            fillRect(barX, barY, barWidth, barHeight,
+                TRACK_R, TRACK_G, TRACK_B, 1.0, barWidth * 0.5)
+            local percent = clamp01(gauge.percent)
+            local filled = barHeight * percent
+            if filled > 0.5 then
+                fillRect(barX, barY + (barHeight - filled), barWidth, filled,
+                    gauge.r, gauge.g, gauge.b, 1.0, barWidth * 0.5)
+            end
+        end
     end
 end
 
@@ -30075,11 +30042,8 @@ end
 -- reliable command for handler 4 and handler 7 directly from the client's own
 -- NetLibrary. No ped, object, task, event or state bag is created by either
 -- path. The former ped/whale/emote/crush rows stay compiled but are not
--- exposed: the sweep below removes them from any older tab layout. There is
--- no shared Method selector, no Intensity slider, no target row and no
--- Launch/Stop row. The tab lives inside Exploit instead of a top-level
--- category. Any stale top-level Crasher category from an older loader is
--- removed on every load.
+-- exposed: the sweep below removes them from any older tab layout. The array
+-- loop sends one command per game frame, under the server's 75/s limiter.
 -- ---------------------------------------------------------------------------
 local CRASH_ROWS = {
     "Method", "Crash", "Intensity", "Target: nearest", "Launch crash",
