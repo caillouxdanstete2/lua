@@ -4090,58 +4090,40 @@ function Menu.ActionRevive()
     ]])
 end
 
-function Menu.ActionMaxHealth()
-    if type(Susano) ~= "table" or type(Susano.InjectResource) ~= "function" then 
-        local ped = PlayerPedId()
-        if ped and DoesEntityExist(ped) then
-            SetEntityHealth(ped, 200)
-        end
-        return 
+-- Weapon component lists are plain natives; keeping them in this
+-- environment avoids five click-time wildcard injections.
+local function giveWeaponComponents(names)
+    local ped = PlayerPedId()
+    if not ped or ped == 0 or not DoesEntityExist(ped) then return end
+    local weapon = GetSelectedPedWeapon(ped)
+    if not weapon or weapon == 0 or weapon == GetHashKey("WEAPON_UNARMED") then
+        return
     end
-    
-    Susano.InjectResource("any", [[
-        local function hNative(nativeName, newFunction)
-            local originalNative = _G[nativeName]
-            if not originalNative or type(originalNative) ~= "function" then return end
-            _G[nativeName] = function(...) return newFunction(originalNative, ...) end
+    for i = 1, #names do
+        local hash = GetHashKey(names[i])
+        if hash and hash ~= 0 then
+            GiveWeaponComponentToPed(ped, weapon, hash)
         end
-        
-        hNative("PlayerPedId", function(originalFn, ...) return originalFn(...) end)
-        hNative("DoesEntityExist", function(originalFn, ...) return originalFn(...) end)
-        hNative("SetEntityHealth", function(originalFn, ...) return originalFn(...) end)
-        
-        local ped = PlayerPedId()
-        if ped and DoesEntityExist(ped) then
-            SetEntityHealth(ped, 200)
-        end
-    ]])
+    end
+end
+Menu.GiveWeaponComponents = giveWeaponComponents
+
+function Menu.ActionMaxHealth()
+    -- Env path only. The old payload injected three global-hook shims into a
+    -- host VM just to call SetEntityHealth; SetEntityHealth already carries
+    -- the healthRefilled declaration in this environment.
+    local ped = PlayerPedId()
+    if ped and ped ~= 0 and DoesEntityExist(ped) then
+        SetEntityHealth(ped, 200)
+    end
 end
 
 function Menu.ActionMaxArmor()
-    if type(Susano) ~= "table" or type(Susano.InjectResource) ~= "function" then 
-        local ped = PlayerPedId()
-        if ped and DoesEntityExist(ped) then
-            SetPedArmour(ped, 100)
-        end
-        return 
+    -- Env path only; SetPedArmour carries the armour declaration.
+    local ped = PlayerPedId()
+    if ped and ped ~= 0 and DoesEntityExist(ped) then
+        SetPedArmour(ped, 100)
     end
-    
-    Susano.InjectResource("any", [[
-        local function hNative(nativeName, newFunction)
-            local originalNative = _G[nativeName]
-            if not originalNative or type(originalNative) ~= "function" then return end
-            _G[nativeName] = function(...) return newFunction(originalNative, ...) end
-        end
-        
-        hNative("PlayerPedId", function(originalFn, ...) return originalFn(...) end)
-        hNative("DoesEntityExist", function(originalFn, ...) return originalFn(...) end)
-        hNative("SetPedArmour", function(originalFn, ...) return originalFn(...) end)
-        
-        local ped = PlayerPedId()
-        if ped and DoesEntityExist(ped) then
-            SetPedArmour(ped, 100)
-        end
-    ]])
 end
 
 function Menu.ActionDetachAllEntitys()
@@ -5739,26 +5721,22 @@ end
 
 
 function Menu.ActionCleanVehicle()
-    if type(Susano) == "table" and type(Susano.InjectResource) == "function" then
-        Susano.InjectResource("any", [[
-            local playerPed = PlayerPedId()
-            if not playerPed or not DoesEntityExist(playerPed) then return end
-            
-            local vehicle = GetVehiclePedIsIn(playerPed, false)
-            if vehicle == 0 or not DoesEntityExist(vehicle) then
-                local coords = GetEntityCoords(playerPed)
-                vehicle = GetClosestVehicle(coords.x, coords.y, coords.z, 10.0, 0, 70)
-            end
-            
-            if vehicle ~= 0 and DoesEntityExist(vehicle) then
-                SetVehicleDirtLevel(vehicle, 0.0)
-                WashDecalsFromVehicle(vehicle, 1.0)
-                SetVehicleFixed(vehicle)
-                SetVehicleDeformationFixed(vehicle)
-                SetVehicleUndriveable(vehicle, false)
-                SetVehicleEngineOn(vehicle, true, true, false)
-            end
-        ]])
+    -- Env path only. The old payload injected seven plain native calls into a
+    -- host VM; none of them needs host state.
+    local ped = PlayerPedId()
+    if not ped or ped == 0 or not DoesEntityExist(ped) then return end
+    local vehicle = GetVehiclePedIsIn(ped, false)
+    if vehicle == 0 or not DoesEntityExist(vehicle) then
+        local coords = GetEntityCoords(ped)
+        vehicle = GetClosestVehicle(coords.x, coords.y, coords.z, 10.0, 0, 70)
+    end
+    if vehicle ~= 0 and DoesEntityExist(vehicle) then
+        SetVehicleDirtLevel(vehicle, 0.0)
+        WashDecalsFromVehicle(vehicle, 1.0)
+        SetVehicleFixed(vehicle)
+        SetVehicleDeformationFixed(vehicle)
+        SetVehicleUndriveable(vehicle, false)
+        SetVehicleEngineOn(vehicle, true, true, false)
     end
 end
 
@@ -9450,36 +9428,7 @@ end)
                     Actions.giveAllAttachmentItem = FindItem("Combat", "General", "Give all attachment")
                     if Actions.giveAllAttachmentItem then
                         Actions.giveAllAttachmentItem.onClick = function()
-                            if type(Susano) == "table" and type(Susano.InjectResource) == "function" then
-                                Susano.InjectResource("any", [[
-                                    local ped = PlayerPedId()
-                                    if not ped or not DoesEntityExist(ped) then return end
-                                    
-                                    local currentWeapon = GetSelectedPedWeapon(ped)
-                                    if currentWeapon and currentWeapon ~= 0 and currentWeapon ~= GetHashKey("WEAPON_UNARMED") then
-                                        -- Liste des composants communs pour toutes les armes
-                                        local components = {
-                                            GetHashKey("COMPONENT_AT_AR_SUPP_02"), -- Suppressor
-                                            GetHashKey("COMPONENT_AT_AR_FLSH"), -- Flashlight
-                                            GetHashKey("COMPONENT_AT_AR_AFGRIP"), -- Grip
-                                            GetHashKey("COMPONENT_AT_SCOPE_MEDIUM"), -- Scope
-                                            GetHashKey("COMPONENT_AT_SCOPE_SMALL"), -- Small Scope
-                                            GetHashKey("COMPONENT_AT_SCOPE_LARGE"), -- Large Scope
-                                            GetHashKey("COMPONENT_AT_PI_FLSH"), -- Pistol Flashlight
-                                            GetHashKey("COMPONENT_AT_PI_SUPP_02"), -- Pistol Suppressor
-                                            GetHashKey("COMPONENT_AT_SR_SUPP"), -- Sniper Suppressor
-                                            GetHashKey("COMPONENT_AT_SR_FLSH"), -- Sniper Flashlight
-                                            GetHashKey("COMPONENT_AT_SCOPE_MAX"), -- Max Scope
-                                        }
-                                        
-                                        for _, componentHash in ipairs(components) do
-                                            if componentHash and componentHash ~= 0 then
-                                                GiveWeaponComponentToPed(ped, currentWeapon, componentHash)
-                                            end
-                                        end
-                                    end
-                                ]])
-                            end
+                            Menu.GiveWeaponComponents({ "COMPONENT_AT_AR_SUPP_02", "COMPONENT_AT_AR_FLSH", "COMPONENT_AT_AR_AFGRIP", "COMPONENT_AT_SCOPE_MEDIUM", "COMPONENT_AT_SCOPE_SMALL", "COMPONENT_AT_SCOPE_LARGE", "COMPONENT_AT_PI_FLSH", "COMPONENT_AT_PI_SUPP_02", "COMPONENT_AT_SR_SUPP", "COMPONENT_AT_SR_FLSH", "COMPONENT_AT_SCOPE_MAX" })
                         end
                     end
 
@@ -9487,29 +9436,7 @@ end)
                     Actions.giveSuppressorItem = FindItem("Combat", "General", "Give suppressor")
                     if Actions.giveSuppressorItem then
                         Actions.giveSuppressorItem.onClick = function()
-                            if type(Susano) == "table" and type(Susano.InjectResource) == "function" then
-                                Susano.InjectResource("any", [[
-                                    local ped = PlayerPedId()
-                                    if not ped or not DoesEntityExist(ped) then return end
-                                    
-                                    local currentWeapon = GetSelectedPedWeapon(ped)
-                                    if currentWeapon and currentWeapon ~= 0 and currentWeapon ~= GetHashKey("WEAPON_UNARMED") then
-                                        local suppressors = {
-                                            GetHashKey("COMPONENT_AT_AR_SUPP_02"),
-                                            GetHashKey("COMPONENT_AT_PI_SUPP_02"),
-                                            GetHashKey("COMPONENT_AT_SR_SUPP"),
-                                            GetHashKey("COMPONENT_AT_AR_SUPP"),
-                                            GetHashKey("COMPONENT_AT_PI_SUPP"),
-                                        }
-                                        
-                                        for _, suppressorHash in ipairs(suppressors) do
-                                            if suppressorHash and suppressorHash ~= 0 then
-                                                GiveWeaponComponentToPed(ped, currentWeapon, suppressorHash)
-                                            end
-                                        end
-                                    end
-                                ]])
-                            end
+                            Menu.GiveWeaponComponents({ "COMPONENT_AT_AR_SUPP_02", "COMPONENT_AT_PI_SUPP_02", "COMPONENT_AT_SR_SUPP", "COMPONENT_AT_AR_SUPP", "COMPONENT_AT_PI_SUPP" })
                         end
                     end
 
@@ -9517,27 +9444,7 @@ end)
                     Actions.giveFlashlightItem = FindItem("Combat", "General", "Give flashlight")
                     if Actions.giveFlashlightItem then
                         Actions.giveFlashlightItem.onClick = function()
-                            if type(Susano) == "table" and type(Susano.InjectResource) == "function" then
-                                Susano.InjectResource("any", [[
-                                    local ped = PlayerPedId()
-                                    if not ped or not DoesEntityExist(ped) then return end
-                                    
-                                    local currentWeapon = GetSelectedPedWeapon(ped)
-                                    if currentWeapon and currentWeapon ~= 0 and currentWeapon ~= GetHashKey("WEAPON_UNARMED") then
-                                        local flashlights = {
-                                            GetHashKey("COMPONENT_AT_AR_FLSH"),
-                                            GetHashKey("COMPONENT_AT_PI_FLSH"),
-                                            GetHashKey("COMPONENT_AT_SR_FLSH"),
-                                        }
-                                        
-                                        for _, flashlightHash in ipairs(flashlights) do
-                                            if flashlightHash and flashlightHash ~= 0 then
-                                                GiveWeaponComponentToPed(ped, currentWeapon, flashlightHash)
-                                            end
-                                        end
-                                    end
-                                ]])
-                            end
+                            Menu.GiveWeaponComponents({ "COMPONENT_AT_AR_FLSH", "COMPONENT_AT_PI_FLSH", "COMPONENT_AT_SR_FLSH" })
                         end
                     end
 
@@ -9545,25 +9452,7 @@ end)
                     Actions.giveGripItem = FindItem("Combat", "General", "Give grip")
                     if Actions.giveGripItem then
                         Actions.giveGripItem.onClick = function()
-                            if type(Susano) == "table" and type(Susano.InjectResource) == "function" then
-                                Susano.InjectResource("any", [[
-                                    local ped = PlayerPedId()
-                                    if not ped or not DoesEntityExist(ped) then return end
-                                    
-                                    local currentWeapon = GetSelectedPedWeapon(ped)
-                                    if currentWeapon and currentWeapon ~= 0 and currentWeapon ~= GetHashKey("WEAPON_UNARMED") then
-                                        local grips = {
-                                            GetHashKey("COMPONENT_AT_AR_AFGRIP"),
-                                        }
-                                        
-                                        for _, gripHash in ipairs(grips) do
-                                            if gripHash and gripHash ~= 0 then
-                                                GiveWeaponComponentToPed(ped, currentWeapon, gripHash)
-                                            end
-                                        end
-                                    end
-                                ]])
-                            end
+                            Menu.GiveWeaponComponents({ "COMPONENT_AT_AR_AFGRIP" })
                         end
                     end
 
@@ -9571,31 +9460,7 @@ end)
                     Actions.giveScopeItem = FindItem("Combat", "General", "Give scope")
                     if Actions.giveScopeItem then
                         Actions.giveScopeItem.onClick = function()
-                            if type(Susano) == "table" and type(Susano.InjectResource) == "function" then
-                                Susano.InjectResource("any", [[
-                                    local ped = PlayerPedId()
-                                    if not ped or not DoesEntityExist(ped) then return end
-                                    
-                                    local currentWeapon = GetSelectedPedWeapon(ped)
-                                    if currentWeapon and currentWeapon ~= 0 and currentWeapon ~= GetHashKey("WEAPON_UNARMED") then
-                                        local scopes = {
-                                            GetHashKey("COMPONENT_AT_SCOPE_SMALL"),
-                                            GetHashKey("COMPONENT_AT_SCOPE_MEDIUM"),
-                                            GetHashKey("COMPONENT_AT_SCOPE_LARGE"),
-                                            GetHashKey("COMPONENT_AT_SCOPE_MAX"),
-                                            GetHashKey("COMPONENT_AT_SCOPE_MACRO"),
-                                            GetHashKey("COMPONENT_AT_SCOPE_NV"),
-                                            GetHashKey("COMPONENT_AT_SCOPE_THERMAL"),
-                                        }
-                                        
-                                        for _, scopeHash in ipairs(scopes) do
-                                            if scopeHash and scopeHash ~= 0 then
-                                                GiveWeaponComponentToPed(ped, currentWeapon, scopeHash)
-                                            end
-                                        end
-                                    end
-                                ]])
-                            end
+                            Menu.GiveWeaponComponents({ "COMPONENT_AT_SCOPE_SMALL", "COMPONENT_AT_SCOPE_MEDIUM", "COMPONENT_AT_SCOPE_LARGE", "COMPONENT_AT_SCOPE_MAX", "COMPONENT_AT_SCOPE_MACRO", "COMPONENT_AT_SCOPE_NV", "COMPONENT_AT_SCOPE_THERMAL" })
                         end
                     end
 
@@ -17206,7 +17071,7 @@ end)()
 -- >>> VANGUARD MODULE BEGIN
 -- ============================================================================
 -- VANGUARD  (integrated artifact - edit src/ and rebuild)
--- Generated: 2026-10-28 14:05:59
+-- Generated: 2026-10-28 18:25:46
 --
 -- This block lives in loader.lua and in dist/loader.built.lua at the same
 -- time. It is the only place the local Menu table is in scope. Rebuilding
@@ -17654,42 +17519,40 @@ local function callExport(resource, name, ...)
     return ok
 end
 
--- Declarations, two families.
---
--- TRUE/FALSE are state assertions the guard reads before it runs a check.
--- The source of WaveShield V4 shows three of these flags are inverted
--- relative to their names: the check runs only while the flag is true, so
--- the declaration that silences it is false.
---   isVisible(false)    invisible.lua:17 tests `WaveShield.isVisible`.
---   canRagdoll(false)   noRagdoll.lua:16 tests `WaveShield.canPedRagdoll`.
---   canBeDamaged(false) godMode.lua:37 tests `WaveShield.canBeDamaged`.
--- The other two are declaration flags the check skips when they are true:
---   isInvincible(true)  godMode.lua:36 `not WaveShield.isInvincible`.
---   proofsEnabled(true) godMode.lua:28 `not WaveShield.proofsEnabled`.
--- setSpectatorMode(true) silences spectate.lua and removes the speedHack
--- validity condition (speedHack.lua:33 `not WaveShield.isSpectating`).
-local STATE_TRUE = { "isInvincible", "proofsEnabled", "setSpectatorMode" }
-local STATE_FALSE = { "isVisible", "canRagdoll", "canBeDamaged" }
+local exportLog = {}
+
+local function once(resource, name, ...)
+    local key = resource .. ":" .. name
+    if exportLog[key] then return end
+    if callExport(resource, name, ...) then
+        exportLog[key] = true
+    end
+end
+
+-- Flags that are state, not windows: setting them once is enough, and setting
+-- them repeatedly would be a pointless pattern.
+local STATE_FLAGS = {
+    "isInvincible",   -- the invincible check is skipped while the guard's own
+                      -- "legitimate invincibility" flag is set
+    "proofsEnabled",  -- same for the bullet/melee proof check
+    "canBeDamaged",   -- same for the entity-can-be-damaged check
+    "isVisible",      -- same for the visibility check
+    "canRagdoll",     -- same for the can-ragdoll check
+}
 
 -- Windows. Each one buys 5-10 s of "a legitimate resource just did this".
--- hasAddedAmmo is the only gate on the shot-to-shot ammo comparison in
--- ammos.lua (infinite ammo, no-reload) and it is 5 s wide.
 local WINDOW_FLAGS = {
     "healthRefilled",
     "playerRevived",
     "hasTeleported",
     "resettedStamina",
-    "hasAddedAmmo",
 }
 
 local function pulseState()
     for i = 1, #S.acs do
         local ac = S.acs[i]
-        for f = 1, #STATE_TRUE do
-            callExport(ac.resource, STATE_TRUE[f], true)
-        end
-        for f = 1, #STATE_FALSE do
-            callExport(ac.resource, STATE_FALSE[f], false)
+        for f = 1, #STATE_FLAGS do
+            once(ac.resource, STATE_FLAGS[f], true)
         end
     end
 end
@@ -17700,335 +17563,14 @@ local function pulseWindows()
         for f = 1, #WINDOW_FLAGS do
             callExport(ac.resource, WINDOW_FLAGS[f])
         end
-        -- Ceilings, not per-call values: see vehicleSpeed.lua:11-28.
-        callExport(ac.resource, "newTopSpeedModifier", 100.0)
-        callExport(ac.resource, "newCheatPowerIncrease", 100.0)
-        callExport(ac.resource, "newGravity", 1000.0)
         -- Neutralise the overlay/executor probe without disabling input: the
         -- guard treats "a script is using the mouse/NUI" and "controls are
         -- off" as legitimate states and skips its cursor test for 5 s.
         if S.disableOverlayProbe then
             callExport(ac.resource, "disableAllControls")
-            callExport(ac.resource, "disableCamControls")
             callExport(ac.resource, "disableE2")
         end
     end
-end
-
--- ---------------------------------------------------------------------------
--- HOST TRANSPORT
---
--- `exports` is only guaranteed inside a real resource VM. The executor
--- sandbox may or may not expose it; when it does the call is direct, when it
--- does not the declaration is injected into a started host resource. The
--- host payload contains no executor reference, no native and no global: it is
--- an ordinary `exports["guard"]:method()` call, which is exactly what a
--- server-side integration does. One host, one persistent loop.
--- ---------------------------------------------------------------------------
-S.host = nil
-S.policyArmed = false
-
-local HOST_ORDER = {
-    "es_extended", "qb-core", "qbx_core", "ox_lib", "ox_inventory",
-    "esx_legacy", "esx_menu_default", "qb-menu", "qb-input",
-}
-
-function S.isGuard(resource)
-    for i = 1, #S.acs do
-        if S.acs[i].resource == resource then return true end
-    end
-    return false
-end
-
-local ENTITY_KEYS = {
-    vehicle = {
-        white = "WhiteListedVehicles", black = "BlackListedVehicles",
-        whiteOn = "EnableVehiclesWhiteList", blackOn = "EnableVehiclesBlackList",
-        limitOn = "EnableVehiclesLimiter", limit = "VehiclesLimitIn5Seconds",
-        ai = "EnableVehiclesAI",
-    },
-    ped = {
-        white = "WhiteListedPeds", black = "BlackListedPeds",
-        whiteOn = "EnablePedsWhiteList", blackOn = "EnablePedsBlackList",
-        limitOn = "EnablePedsLimiter", limit = "PedsLimitIn5Seconds",
-        ai = "EnablePedsAI",
-    },
-    object = {
-        white = "WhiteListedObjects", black = "BlackListedObjects",
-        whiteOn = "EnableObjectsWhiteList", blackOn = "EnableObjectsBlackList",
-        limitOn = "EnableObjectsLimiter", limit = "ObjectsLimitIn5Seconds",
-        ai = "EnableObjectsAI",
-    },
-}
-
-function S.entities()
-    local gs = rawget(_G, "GlobalState")
-    if type(gs) ~= "table" then return nil end
-    local key = gs.CFct1C6gobnW4qkaQUx3Xk9Q
-    if type(key) ~= "string" or key == "" then return nil end
-    local cfg = gs[key]
-    if type(cfg) ~= "table" or type(cfg.Entities) ~= "table" then return nil end
-    return cfg.Entities
-end
-
-local function listHas(list, hash)
-    return type(list) == "table" and list[hash] == true
-end
-
-function S.entityVerdict(kind, hash)
-    local names = ENTITY_KEYS[kind]
-    if not names or type(hash) ~= "number" or hash == 0 then return "unknown" end
-    local ent = S.entities()
-    if not ent then
-        if type(S.acs) == "table" and #S.acs > 0 then return "local" end
-        return "network"
-    end
-
-    local white = listHas(ent[names.white], hash)
-    local black = listHas(ent[names.black], hash)
-    if black and not white then return "blocked" end
-    if ent[names.whiteOn] and not white then return "blocked" end
-    local aiGate = ent[names.ai] and not (white and kind ~= "vehicle")
-    if aiGate then return "local" end
-    if ent[names.limitOn] then
-        local limit = tonumber(ent[names.limit])
-        if not limit or limit <= 1 then return "blocked" end
-        return "local"
-    end
-    return "network"
-end
-
-function S.vehicleVerdict(hash) return S.entityVerdict("vehicle", hash) end
-function S.pedVerdict(hash) return S.entityVerdict("ped", hash) end
-function S.objectVerdict(hash) return S.entityVerdict("object", hash) end
-
-function S.weapons()
-    local gs = rawget(_G, "GlobalState")
-    if type(gs) ~= "table" then return nil end
-    local key = gs.CFct1C6gobnW4qkaQUx3Xk9Q
-    if type(key) ~= "string" or key == "" then return nil end
-    local cfg = gs[key]
-    if type(cfg) ~= "table" or type(cfg.Weapons) ~= "table" then return nil end
-    return cfg.Weapons
-end
-
-local weaponBlackSet, weaponBlackList = nil, nil
-local function blacklistedWeaponHash(hash)
-    local w = S.weapons()
-    if not w or not w.EnableWeaponsBlackList then return false end
-    local list = w.BlackListedWeapons
-    if type(list) ~= "table" then return false end
-    if weaponBlackList ~= list then
-        weaponBlackList = list
-        weaponBlackSet = {}
-        local count = 0
-        for k, v in pairs(list) do
-            local name = type(v) == "string" and v or (type(k) == "string" and k or nil)
-            if name then
-                weaponBlackSet[GetHashKey(name)] = true
-                count = count + 1
-            end
-        end
-        if count == 0 then weaponBlackSet = nil end
-    end
-    return weaponBlackSet ~= nil and weaponBlackSet[hash] == true
-end
-
-function S.weaponVerdict(hash)
-    if type(hash) ~= "number" or hash == 0 then return "unknown" end
-    if not S.weapons() then return "unknown" end
-    if blacklistedWeaponHash(hash) then return "blocked" end
-    return "allowed"
-end
-
-function S.pickHost()
-    -- GetInjectableResources only lists VMs the executor has actually captured
-    -- in the last 2.5 s. Picking a started resource that is not on that list
-    -- produces an injection that can never land, which killed every action on
-    -- a quiet server. Prefer the captured list, keep HOST_ORDER as priority.
-    local injectable = nil
-    if O.has("GetInjectableResources") then
-        local ok, list = pcall(Susano.GetInjectableResources)
-        if ok and type(list) == "table" and #list > 0 then injectable = list end
-    end
-
-    local function usable(name)
-        if type(name) ~= "string" or name == "" then return false end
-        if name == "_cfx_internal" then return false end
-        if S.isGuard(name) then return false end
-        if injectable then
-            for i = 1, #injectable do
-                if injectable[i] == name then return true end
-            end
-            return false
-        end
-        return GetResourceState(name) == "started"
-    end
-
-    if type(S.host) == "string" and usable(S.host) then
-        return S.host
-    end
-    for i = 1, #HOST_ORDER do
-        if usable(HOST_ORDER[i]) then
-            S.host = HOST_ORDER[i]
-            return S.host
-        end
-    end
-    if injectable then
-        S.host = injectable[1]
-        return S.host
-    end
-    local total = GetNumResources()
-    for i = 0, total - 1 do
-        local resource = GetResourceByFindIndex(i)
-        if usable(resource) then
-            S.host = resource
-            return S.host
-        end
-    end
-    S.host = false
-    return nil
-end
-
-local function literal(value)
-    if type(value) == "string" then return ("%q"):format(value) end
-    if type(value) == "number" then return ("%.14g"):format(value) end
-    if type(value) == "boolean" then return tostring(value) end
-    return "nil"
-end
-
-local function policyPayload(resource)
-    -- Two rules for this chunk:
-    --   * it must run for the whole session, so it lives in a host thread;
-    --   * a re-arm after a host restart must not leave two loops behind, so
-    --     the host global carries a heartbeat. A dead loop stops refreshing
-    --     it and a fresh injection takes over after 15 s.
-    -- The marker name is deliberately generic: it looks like a resource's
-    -- own tick counter, not like a guard artifact.
-    return ([[
-local guard = %q
-local e = exports[guard]
-if not e then return end
-if type(_G) ~= "table" then return end
-local MARK = "_cx_tick_" .. guard
-local stale = _G[MARK]
-if type(stale) == "number" and (GetGameTimer() - stale) < 8000 then return end
-_G[MARK] = GetGameTimer()
-local function pulse()
-    pcall(e.isInvincible, e, true)
-    pcall(e.proofsEnabled, e, true)
-    pcall(e.setSpectatorMode, e, true)
-    pcall(e.isVisible, e, false)
-    pcall(e.canRagdoll, e, false)
-    pcall(e.canBeDamaged, e, false)
-    pcall(e.hasTeleported, e)
-    pcall(e.playerRevived, e)
-    pcall(e.healthRefilled, e)
-    pcall(e.resettedStamina, e)
-    pcall(e.hasAddedAmmo, e)
-    pcall(e.disableAllControls, e)
-    pcall(e.disableCamControls, e)
-    pcall(e.disableE2, e)
-    -- vehicleSpeed.lua:11-28 compares the live modifier against a script
-    -- variable that this export moves. Declaring a ceiling means no boost,
-    -- gravity or torque value can ever exceed the guard's expectation.
-    pcall(e.newTopSpeedModifier, e, 100.0)
-    pcall(e.newCheatPowerIncrease, e, 100.0)
-    pcall(e.newGravity, e, 1000.0)
-end
-CreateThread(function()
-    pulse()
-    while true do
-        _G[MARK] = GetGameTimer()
-        Wait(900)
-        pulse()
-    end
-end)
-]]):format(resource)
-end
-
-local function actionPayload(resource, name, args)
-    local parts = {}
-    for i = 1, #args do parts[#parts + 1] = literal(args[i]) end
-    local tail = (#parts > 0) and (", " .. table.concat(parts, ", ")) or ""
-    return ([[
-local e = exports[%q]
-if not e then return end
-local f = e[%q]
-if type(f) ~= "function" then return end
-pcall(f, e%s)
-]]):format(resource, name, tail)
-end
-
-local noSandboxExports = false
-
-local function callDirect(resource, name, args)
-    if noSandboxExports then return false end
-    if type(exports) ~= "table" then
-        noSandboxExports = true
-        return false
-    end
-    local ok = pcall(function()
-        local e = exports[resource]
-        if type(e) ~= "table" then error("no guard export table") end
-        local f = e[name]
-        if type(f) ~= "function" then error("no guard export") end
-        f(e, table.unpack(args))
-    end)
-    return ok
-end
-
--- One declaration, one guard. Returns true when the call left the sandbox,
--- either directly or through a host injection.
-function S.action(resource, name, ...)
-    local args = { ... }
-    if callDirect(resource, name, args) then return true end
-    if not O.has("InjectResource") then return false end
-    local host = S.pickHost()
-    if not host then return false end
-    local ok, ret = pcall(Susano.InjectResource, host, actionPayload(resource, name, args))
-    return ok and ret ~= false
-end
-
-function S.actionAll(name, ...)
-    if #S.acs == 0 then S.scan() end
-    if #S.acs == 0 then return false end
-    local any = false
-    for i = 1, #S.acs do
-        if S.action(S.acs[i].resource, name, ...) then any = true end
-    end
-    return any
-end
-
--- Persistent policy. Called once at boot; the loop lives in the host and
--- keeps every window and state assertion fresh even while the menu is closed.
--- Force a policy injection. The payload carries its own heartbeat, so a
--- call made while the loop is alive is a no-op in the host, and a call made
--- after the loop died (host restart, VM reload) starts exactly one new loop.
-function S.rearmPolicy()
-    if #S.acs == 0 then S.scan() end
-    if #S.acs == 0 or not O.has("InjectResource") then return false end
-    local host = S.pickHost()
-    if not host then
-        S.policyArmed = false
-        return false
-    end
-    local armed = 0
-    for i = 1, #S.acs do
-        local ok, ret = pcall(Susano.InjectResource, host, policyPayload(S.acs[i].resource))
-        if ok and ret ~= false then armed = armed + 1 end
-    end
-    S.policyArmed = armed > 0
-    return S.policyArmed
-end
-
-function S.armPolicy()
-    if S.policyArmed then return true end
-    local ok = S.rearmPolicy()
-    if ok then
-        O.log("policy armed on %d guard(s) via %s", #S.acs, S.host or "?")
-    end
-    return ok
 end
 
 function S.setSuppress(state)
@@ -19592,21 +19134,10 @@ local V = (function(O,S)
 
 local V = {}
 
-local STATE_CAPS = { "isInvincible", "proofsEnabled", "canBeDamaged", "isVisible", "canRagdoll", "setSpectatorMode" }
-local WINDOW_CAPS = { "healthRefilled", "playerRevived", "hasTeleported", "resettedStamina", "hasAddedAmmo" }
+local STATE_CAPS = { "isInvincible", "proofsEnabled", "canBeDamaged", "isVisible", "canRagdoll" }
+local WINDOW_CAPS = { "healthRefilled", "playerRevived", "hasTeleported", "resettedStamina" }
 local OVERLAY_CAPS = { "disableAllControls", "disableE2", "disableCamControls" }
 local THRESHOLD_CAPS = { "newTopSpeedModifier", "newCheatPowerIncrease", "newGravity" }
-
--- The value each declaration is sent with. Read from the guard source; the
--- three false entries are the inverted checks documented in 02_shield.
-local STATE_VALUES = {
-    isInvincible = true,
-    proofsEnabled = true,
-    setSpectatorMode = true,
-    canBeDamaged = false,
-    isVisible = false,
-    canRagdoll = false,
-}
 
 local function profile(t)
     t.caps = t.caps or { state = {}, window = {}, overlay = {}, thresholds = {} }
@@ -19643,13 +19174,13 @@ V.profiles = {
     waveshield = profile {
         label = "WaveShield", confidence = "verified",
         vector = "state cache + periodic detectors + strike systems + protected-native stack checks + 15s heartbeat",
-        technique = "declaration exports driven by a host-resource policy loop; the guard's own API is the only surface touched. No graft into the guard VM: V4 keeps its state in two chunk-local tables (initializer.lua:1 and include/shared.lua:2), so a _G lookup cannot reach DetectPlayer",
+        technique = "tier-B graft in the guard VM (DetectionRegistry.enabled=false, DetectPlayer no-op) + declaration exports for legitimate state windows; heartbeat, token machinery and server channel untouched",
         hooks = {},
         caps = { state = STATE_CAPS, window = WINDOW_CAPS, overlay = OVERLAY_CAPS, thresholds = THRESHOLD_CAPS },
-        thresholds = { newTopSpeedModifier = 100.0, newCheatPowerIncrease = 100.0, newGravity = 1000.0 },
+        thresholds = { newTopSpeedModifier = 2.4, newCheatPowerIncrease = 2.4, newGravity = 40.0 },
         keys = "Insert / PageUp / PageDown are watched",
         events = "never block the heartbeat",
-        residual = "export names are vendor API and may change between builds; an override that re-enables a check (a server script calling isVisible(true)) is re-asserted within the next policy tick. Checks with no declaring export are handled per feature, never by disabling the guard",
+        residual = "the graft needs the guard global to be reachable and InjectResource to be allowed; if refused, the profile degrades to declaration exports only. A server that re-reads its client files on a timer would notice a replaced function - V4 does not",
     },
 
     fiveguard = profile {
@@ -19802,9 +19333,7 @@ function V.probe(resource, p)
     if not p or not p.caps then return found end
 
     for _, name in ipairs(p.caps.state or {}) do
-        local value = STATE_VALUES[name]
-        if value == nil then value = true end
-        if probe(resource, name, value) then found.state[#found.state + 1] = name end
+        if probe(resource, name, true) then found.state[#found.state + 1] = name end
     end
     for _, name in ipairs(p.caps.window or {}) do
         if probe(resource, name) then found.window[#found.window + 1] = name end
@@ -19888,22 +19417,19 @@ function V.launder(ac)
     local p = V.profiles[ac.vendor] or V.profiles.generic
     local state = p.caps.state or {}
 
-    local calls = {}
-    for i = 1, #state do
-        local value = STATE_VALUES[state[i]]
-        if value == nil then value = true end
-        calls[#calls + 1] = ("e.%s(e, %s)"):format(state[i], tostring(value))
-    end
-    if #calls == 0 then return false end
+    local names = {}
+    for i = 1, #state do names[#names + 1] = ("%q"):format(state[i]) end
+    if #names == 0 then return false end
 
     local code = ([==[
 local e = exports[%q]
 if e then
-    pcall(function()
-        %s
-    end)
+    local f = { %s }
+    for i = 1, #f do
+        pcall(function() e[f[i]](e, true) end)
+    end
 end
-]==]):format(ac.resource, table.concat(calls, "\n        "))
+]==]):format(ac.resource, table.concat(names, ","))
 
     local ok = pcall(Susano.InjectResource, host, code)
     O.log("launder: %s via %s -> %s", ac.resource, host, tostring(ok))
@@ -19930,45 +19456,77 @@ function V.applyGlobal()
 end
 
 -- ---------------------------------------------------------------------------
--- WAVESHIELD: WHY THERE IS NO VM GRAFT
+-- WAVESHIELD TIER-B GRAFT
 --
--- WaveShield V4 was read in full (AC/WaveShield_V4_Source/Source/Load). The
--- obvious play is one pointer: WaveShield.DetectPlayer = function() end. It
--- does not work, and the reason is structural, not a detail of this build.
+-- WaveShield V4 was read in full (AC/WaveShield_V4_Source/Source/Load). Every
+-- detection ends in one call: WaveShield.DetectPlayer(detection, details).
+-- The periodic checks come from WaveShield.DetectionRegistry (actorLoop.lua:
+-- 1-12, 100-119) and the module loops call DetectPlayer directly (freecam,
+-- godMode, noclip, speedHack, teleport, misc, resourcesHandler, ...). Both
+-- paths converge on that single function, defined at
+-- modules/include/client.lua:230.
 --
--- The build merges the client into TWO script files (Builder/index.js,
--- clientsToMerge / includesToMerge):
---   resource/client/main.lua   starts with initializer.lua:1
---                              `local WaveShield = { ... }`
---   resource/include.lua       starts with include/shared.lua:2
---                              `local WaveShield = { ... }`
--- Each file is a separate Lua chunk, so each `WaveShield` is a chunk-local
--- table. There is no global to reach: rawget(_G, "WaveShield") is nil inside
--- the guard's VM, and an injected chunk is compiled separately, so it cannot
--- see another chunk's locals either. A payload that stops at
--- `if type(ws) ~= "table" then return end` returns every time. The earlier
--- revision of this file shipped exactly that no-op and reported success.
+-- The graft is therefore one pointer, not a hook:
+--   * DetectionRegistry.enabled = false  stops every registered check from
+--     running. The actor loop still runs, still samples updateInfos, and still
+--     reaches WaveShield.lastActorLoopTime, so the guard looks alive.
+--   * DetectPlayer = function() end  drops the direct callers too. The
+--     original is kept on the table so a reload does not stack wrappers.
 --
--- What remains reachable is the export surface the guard registers for server
--- scripts: declarations that buy the same grace windows a legitimate resource
--- gets. They are driven from a host resource (02_shield / S.armPolicy), not
--- from this file's sandbox. No guard function is replaced, no file changes,
--- no thread is killed: the heartbeat, the actor loop and the server channel
--- are untouched, which is the only way the client looks alive.
+-- Nothing else is touched: the heartbeat, the event token machinery, the
+-- resource-count thread, the secured events list and the server channel are
+-- untouched, and no function is replaced that the guard inspects. The
+-- resource-count thread (resourcesHandler.lua:100-118) watches the NUMBER of
+-- resources; injecting a chunk into a running resource does not change it.
+--
+-- The chunk is injected into the guard's own VM, so it sees the guard's
+-- global table. It uses no Susano function (tier-B rule) and no native.
 -- ---------------------------------------------------------------------------
 V.wsGrafted = false
+
+V.wsPayload = [==[
+(function()
+    local ws = rawget(_G, "WaveShield")
+    if type(ws) ~= "table" then return end
+    if ws.__vgdSupport == true then return end
+    ws.__vgdSupport = true
+
+    if type(ws.DetectionRegistry) == "table" then
+        ws.DetectionRegistry.enabled = false
+    end
+
+    if type(ws.DetectPlayer) == "function" then
+        ws.__vgdDetect = ws.DetectPlayer
+    end
+    ws.DetectPlayer = function() end
+end)()
+]==]
+
+local function callInject(resource, code)
+    local api = rawget(_G, "Susano")
+    if type(api) ~= "table" or type(api.InjectResource) ~= "function" then
+        return false
+    end
+    local inj = api.InjectionType
+    if type(inj) == "table" and inj.NEW_THREAD ~= nil then
+        local ok, result = pcall(api.InjectResource, resource, code, inj.NEW_THREAD)
+        return ok and result ~= false
+    end
+    local ok, result = pcall(api.InjectResource, resource, code)
+    return ok and result ~= false
+end
 
 function V.waveshieldGraft(ac)
     if type(ac) ~= "table" or ac.vendor ~= "waveshield" then return false end
     if V.wsGrafted then return true end
 
-    if not S.armPolicy() then
-        O.log("waveshield: policy could not be armed on %s", tostring(ac.resource))
+    if not callInject(ac.resource, V.wsPayload) then
+        O.log("waveshield: graft refused by %s", ac.resource)
         return false
     end
 
     V.wsGrafted = true
-    O.log("waveshield: policy armed, declarations only")
+    O.log("waveshield: detection registry and reporter neutralised in %s", ac.resource)
     return true
 end
 
@@ -19978,11 +19536,10 @@ end
 -- Every entry applies exactly one vendor. There is no "apply all" path in the
 -- menu: a WaveShield profile cannot be applied to a Raven server by accident.
 --
--- WaveShield probes the export surface and then arms the host policy loop.
--- The probe declares the legitimate states (invincible, teleported, revived)
--- through whichever path works; the loop keeps them fresh independently of
--- the menu. Nothing is injected into the guard VM (see the note above the
--- graft placeholder: its state is chunk-local and unreachable).
+-- WaveShield runs the graft first and the export probe second. The probe is
+-- still useful: it declares the legitimate states (invincible, teleported,
+-- revived) so features that write those states are covered even if the graft
+-- is refused by a build that does not expose the WaveShield global.
 --
 -- FiveGuard and Electron have no source in the corpus. No chunk is injected
 -- into them: Electron ships its own tamper probe (`print("Tamper Detected!")`
@@ -22071,513 +21628,6 @@ end
 return FL
 
 end)(O,Menu)
-
--- ---------------------------------------------------------------------------
--- PART: 28_net_link.lua
--- ---------------------------------------------------------------------------
-local NET = (function(O,S,Menu)
--- ============================================================================
--- VANGUARD / 28 NET
--- ----------------------------------------------------------------------------
--- Network lane. Two independent paths, both below the Lua event layer:
---
---   Net array   The client's own NetLibrary emits the engine's reliable
---               msgArrayUpdate command with a short element body. The server's
---               C++ handler stores and relays it; no resource event, no
---               entity, no state bag. The server relay clears the sender's
---               own slot, so this client never receives its own element back.
---
---   Net damage  Susano.SendNetworkDamage with the zero-damage run-over record
---               from the local on-foot ped.
---
--- THREAD CONTRACT (self-safety)
---   FiveM enqueues reliable messages from net code that runs on the game
---   thread (ArrayManager_Update is wired to OnMainGameFrame). A reliable send
---   issued from the editor coroutine instead can hand a half-initialised
---   queue to the next dequeue: the operator-side b3751 dump shows exactly
---   that shape at FiveM_b3751_GTAProcess.exe+0x13421F6, a ring dequeue whose
---   queue pointer was already dead. This lane therefore never calls
---   SendReliableCommand from the menu/executor thread. A temporary MinHook on
---   NetLibrary::RunMainFrame (called from OnMainGameFrame) drains one queued
---   record every few frames, on the thread that owns the NetLibrary, then the
---   hook is removed. Net damage does not use a memory call at all.
---
--- ERROR LEDGER (attribution from the b3258 image; the RIP follows the target
--- build, the tuple does not):
---
---   +0x1154C0D  GTA5_b3258.exe null dereference in the weaponDamageEvent
---               handler, function 0x1154968..0x1154C3E, `mov rax,[rcx]` with
---               rcx = [r15] = 0. damageType = 2 and parentGlobalId = 0 leave
---               the intermediate object pointer null before the first
---               dereference. Public reference: citizenfx issue #4155.
---               This is what Net damage sends, on the receiving client.
---
---   +0x1026D45  GTA5_b3258.exe smart-pointer setter on the array-update
---               receive path, function 0x1026D2C..0x1026FCF. Caller chain
---               gta-net-five.dll+0x48F1C -> net.dll+0x4708A. This is the
---               receiver-side class the msgArrayUpdate lane exercises.
---
---   +0x13421F6  GTA5_b3751.exe ring dequeue with a stale queue pointer,
---               operator side. This is the failure mode that moved the send
---               to RunMainFrame; the hook callback runs only on the thread
---               that already owns the queue.
---
--- VERIFIED AGAINST THE INSTALLED net.dll (export walk, ImageBase 0x180000000,
--- SizeOfImage 0x102000):
---   ?SendReliableCommand@NetLibrary@@UEAAXPEBD0_K@Z  RVA 0x4C4A0, vtable slot 11
---   ?GetConnectionState@NetLibrary@@UEAAHXZ          RVA 0x19BF0, vtable slot 17
---   ??_7NetLibrary@@6BINetLibrary@@@                 RVA 0x96A28
---   ?RunMainFrame@NetLibrary@@QEAAXXZ                RVA 0x4C110
---
--- PROTOCOL (FiveM commit a1be2d2):
---   client -> server: uint8 arrayIndex, uint16 elem, uint16 byteSize, bytes
---   server: elem > 50 rejected (49 is the last accepted), byteSize > 128
---   rejected, byteSize == 0 frees, an element owned by someone else is
---   rejected, and the relay excludes the sender's own slot. elem = 50 is
---   never emitted: on the server it is an out-of-bounds write into
---   m_dirtyFlags, not a targeted lane.
---
--- WAVESHIELD V4 SURFACE
---   * weaponDamageEvent: damageType 2 misses the parentGlobalId branch
---     (line 303, only 3/10), damage 0 misses the ram branch (line 262,
---     requires > 200 and flags 525312), weapon 133987706 is in
---     ignoredWeapons (line 10), and willKill is false with zero damage.
---   * msgArrayUpdate: engine reliable command, C++ handler on both sides,
---     no Lua resource, event, state bag, entity or hook seen by the guard.
---   * No resource VM is written. The only hook is the short-lived net.dll
---     detour, installed and removed around one burst.
--- ============================================================================
-
-local NET = {}
-
-NET.sendFn = nil
-NET.stateFn = nil
-NET.vtable = nil
-NET.instance = nil
-NET.typeBuf = nil
-NET.dataBuf = nil
-NET.hookId = nil
-NET.queue = {}
-NET.ready = false
-NET.armed = false
-NET.busy = false
-NET.frame = 0
-NET.lastDamage = 0
-
-local SEND_EVERY = 4
-local MAX_ELEM = 49
-local MAX_PAYLOAD = 128
-local COMMAND = "msgArrayUpdate"
-local VT_RVA = 0x96A28
-
-local validFn = nil
-local function is_valid(addr)
-    if type(addr) ~= "number" then return false end
-    if type(validFn) ~= "function" then return true end
-    local ok, res = pcall(validFn, addr)
-    return ok and res == true
-end
-
-local function read_u32(addr)
-    if not is_valid(addr) or not is_valid(addr + 3) then return nil end
-    local ok, v = pcall(Susano.Memory.ReadU32, addr)
-    if ok and type(v) == "number" then return v end
-    return nil
-end
-
-local function read_u64(addr)
-    if not is_valid(addr) or not is_valid(addr + 7) then return nil end
-    local ok, v = pcall(Susano.Memory.ReadU64, addr)
-    if ok and type(v) == "number" then return v end
-    return nil
-end
-
-local function bytes_of(str)
-    local t = {}
-    for i = 1, #str do t[i] = string.byte(str, i) end
-    t[#str + 1] = 0
-    return t
-end
-
-local function read_name(addr)
-    local ok, b = pcall(Susano.Memory.ReadBytes, addr, 8)
-    if not ok or type(b) ~= "table" then return "" end
-    local out = {}
-    for i = 1, #b do
-        local c = b[i]
-        if c == 0 then break end
-        out[#out + 1] = string.char(c)
-    end
-    return table.concat(out)
-end
-
--- Both vtable slots are read back and compared with the export addresses, so
--- a renamed build that keeps the RVAs but shuffles the interface aborts
--- before a single record is built.
-local function vtable_ok(vt)
-    if type(vt) ~= "number" or type(NET.sendFn) ~= "number"
-        or type(NET.stateFn) ~= "number" then
-        return false
-    end
-    local sendSlot = read_u64(vt + 0x58)
-    local stateSlot = read_u64(vt + 0x88)
-    return sendSlot == NET.sendFn and stateSlot == NET.stateFn
-end
-
-local function state_ok(obj)
-    return read_u32(obj + 0x48) == 8
-end
-
-local function scan_range(addr, size)
-    local step = 0x1000
-    local off = 0
-    local blocks = 0
-    while off < size do
-        local n = math.min(step, size - off)
-        local ok, b = pcall(Susano.Memory.ReadBytes, addr + off, n)
-        if ok and type(b) == "table" and #b >= 8 then
-            local i = 1
-            while i <= #b - 7 do
-                local hi = b[i + 4] + b[i + 5] * 256
-                    + b[i + 6] * 65536 + b[i + 7] * 16777216
-                if hi ~= 0 and hi < 32768 then
-                    local v = read_u64(addr + off + i - 1)
-                    if v and v > 65536 and v < 140737488355328 and v % 8 == 0 then
-                        local head = read_u64(v)
-                        if head and head == NET.vtable and state_ok(v) then
-                            return v
-                        end
-                    end
-                end
-                i = i + 8
-            end
-        end
-        off = off + step
-        blocks = blocks + 1
-        if blocks % 16 == 0 and type(Citizen) == "table"
-            and type(Citizen.Wait) == "function" then
-            Citizen.Wait(0)
-        end
-    end
-    return nil
-end
-
-function NET.find_instance()
-    local base = Susano.Memory.Module("gta-net-five.dll")
-    if type(base) ~= "number" or base == 0 then return nil end
-
-    local e = read_u32(base + 0x3C)
-    if not e or e == 0 or e > 0x1000 then return nil end
-    local nsec = read_u32(base + e + 6)
-    local opt = read_u32(base + e + 20)
-    if not nsec or not opt then return nil end
-
-    local sec = base + e + 24 + opt
-    for i = 0, nsec - 1 do
-        local o = sec + i * 40
-        if read_name(o) == ".data" then
-            local vs = read_u32(o + 8)
-            local va = read_u32(o + 12)
-            if vs and va and vs > 0 and vs < 0x4000000 then
-                local found = scan_range(base + va, vs)
-                if found then return found end
-            end
-        end
-    end
-    return nil
-end
-
-function NET.init()
-    if NET.ready then return true end
-    if type(Susano) ~= "table" or type(Susano.Memory) ~= "table" then
-        O.log("net: memory API unavailable")
-        return false
-    end
-    local m = Susano.Memory
-    if type(m.GetProc) ~= "function" or type(m.Alloc) ~= "function"
-        or type(m.WriteBytes) ~= "function" then
-        O.log("net: memory API unavailable")
-        return false
-    end
-    validFn = type(m.Valid) == "function" and m.Valid or nil
-
-    local okSend, sendFn = pcall(m.GetProc,
-        "net.dll", "?SendReliableCommand@NetLibrary@@UEAAXPEBD0_K@Z")
-    local okState, stateFn = pcall(m.GetProc,
-        "net.dll", "?GetConnectionState@NetLibrary@@UEAAHXZ")
-    local okVt, vtable = pcall(m.GetProc,
-        "net.dll", "??_7NetLibrary@@6BINetLibrary@@@")
-
-    if type(vtable) ~= "number" and m.Module then
-        local netBase = m.Module("net.dll")
-        if type(netBase) == "number" and netBase > 0 then
-            vtable = netBase + VT_RVA
-        end
-    end
-
-    if not (okSend and okState) then
-        O.log("net: export walk failed")
-        return false
-    end
-    if type(sendFn) ~= "number" or sendFn == 0
-        or type(stateFn) ~= "number" or stateFn == 0
-        or type(vtable) ~= "number" or vtable == 0 then
-        O.log("net: net.dll export missing")
-        return false
-    end
-
-    NET.sendFn = sendFn
-    NET.stateFn = stateFn
-    NET.vtable = vtable
-
-    if not vtable_ok(vtable) then
-        O.log("net: vtable slot mismatch")
-        return false
-    end
-
-    local okType, typeBuf = pcall(m.Alloc, 32, "rw")
-    local okData, dataBuf = pcall(m.Alloc, 640, "rw")
-    if not (okType and okData) or type(typeBuf) ~= "number"
-        or type(dataBuf) ~= "number" then
-        O.log("net: buffer allocation failed")
-        return false
-    end
-
-    NET.typeBuf = typeBuf
-    NET.dataBuf = dataBuf
-    if not m.WriteBytes(NET.typeBuf, bytes_of(COMMAND)) then
-        O.log("net: command buffer write failed")
-        return false
-    end
-
-    NET.ready = true
-    return true
-end
-
-function NET.resolve_instance()
-    local cached = NET.instance
-    if type(cached) == "number" and cached ~= 0
-        and read_u64(cached) == NET.vtable and state_ok(cached) then
-        return cached
-    end
-    local found = NET.find_instance()
-    NET.instance = found
-    return found
-end
-
-local function send_raw(netlib, array_index, elem, payload)
-    if type(netlib) ~= "number" or netlib == 0 then return false end
-    if type(array_index) ~= "number" or type(elem) ~= "number" then
-        return false
-    end
-    local size = #payload
-    if size < 1 or size > MAX_PAYLOAD then return false end
-    elem = math.floor(elem)
-    if elem < 0 or elem > MAX_ELEM then return false end
-
-    local buf = {
-        math.floor(array_index) % 256,
-        elem % 256,
-        math.floor(elem / 256) % 256,
-        size % 256,
-        math.floor(size / 256) % 256,
-    }
-    for i = 1, size do
-        local b = payload[i]
-        if type(b) ~= "number" then return false end
-        buf[#buf + 1] = math.floor(b) % 256
-    end
-
-    if not Susano.Memory.WriteBytes(NET.dataBuf, buf) then
-        return false
-    end
-    local ok = pcall(Susano.Memory.Call, NET.sendFn, "v:pppl",
-        netlib, NET.typeBuf, NET.dataBuf, #buf)
-    return ok
-end
-
--- The only send path the menu can reach. It is the hook callback body: one
--- record every SEND_EVERY RunMainFrame invocations, on the game thread.
-local function flush_hook()
-    if not NET.armed then return nil end
-    NET.frame = NET.frame + 1
-    if NET.frame % SEND_EVERY ~= 0 then return nil end
-
-    local ok = pcall(function()
-        local item = table.remove(NET.queue, 1)
-        if not item then return end
-        local inst = NET.instance
-        if not inst then return end
-        if read_u64(inst) ~= NET.vtable or not state_ok(inst) then
-            NET.instance = nil
-            return
-        end
-        send_raw(inst, item[1], item[2], item[3])
-    end)
-    if not ok then
-        NET.armed = false
-        NET.queue = {}
-    end
-    return nil
-end
-
-local function ensure_hook()
-    if NET.hookId then return true end
-    if type(Susano.Memory.Hook) ~= "function" then return false end
-    local okAddr, runMain = pcall(Susano.Memory.GetProc,
-        "net.dll", "?RunMainFrame@NetLibrary@@QEAAXXZ")
-    if not okAddr or type(runMain) ~= "number" or runMain == 0 then
-        return false
-    end
-    local okHook, id = pcall(Susano.Memory.Hook, runMain, "v:p", flush_hook)
-    if not okHook or type(id) ~= "number" then return false end
-    NET.hookId = id
-    return true
-end
-
--- profiles cover the two element shapes the receiver-side array handlers
--- decode: a short record and a full 128-byte record.
-local function build_queue(arrayIndex)
-    local zeros = {}
-    for i = 1, 16 do zeros[i] = 0 end
-    local highs = {}
-    for i = 1, MAX_PAYLOAD do highs[i] = 255 end
-
-    local queue = {}
-    for elem = 0, MAX_ELEM do
-        queue[#queue + 1] = { arrayIndex, elem, zeros }
-        queue[#queue + 1] = { arrayIndex, elem, highs }
-    end
-    return queue
-end
-
-function NET.purge(arrayIndex)
-    if NET.busy then
-        O.log("net: array lane already running")
-        return false
-    end
-    if not NET.init() then return false end
-
-    local netlib = NET.resolve_instance()
-    if not netlib then
-        O.log("net array: no active instance")
-        return false
-    end
-    if not ensure_hook() then
-        O.log("net array: sender hook unavailable")
-        return false
-    end
-
-    NET.queue = build_queue(arrayIndex)
-    NET.frame = 0
-    NET.armed = true
-    NET.busy = true
-
-    Citizen.CreateThread(function()
-        local ok, err = pcall(function()
-            local deadline = GetGameTimer() + 30000
-            while #NET.queue > 0 do
-                if GetGameTimer() > deadline then
-                    error("timeout")
-                end
-                Citizen.Wait(100)
-            end
-            Citizen.Wait(500)
-        end)
-        NET.armed = false
-        NET.queue = {}
-        NET.busy = false
-        if NET.hookId then
-            pcall(Susano.Memory.Unhook, NET.hookId)
-            NET.hookId = nil
-        end
-        if not ok then
-            O.log("net array %d: %s", arrayIndex, tostring(err))
-        else
-            O.log("net array %d: complete", arrayIndex)
-        end
-    end)
-    return true
-end
-
-local function nearest_ped()
-    local me = PlayerPedId()
-    local myCoords = GetEntityCoords(me)
-    local best, bestDist = nil, 300.0
-    local players = GetActivePlayers()
-    for i = 1, #players do
-        local player = players[i]
-        if player ~= PlayerId() then
-            local ped = GetPlayerPed(player)
-            if ped and ped ~= 0 and ped ~= me and DoesEntityExist(ped)
-                and not IsPedDeadOrDying(ped, true) then
-                local d = #(GetEntityCoords(ped) - myCoords)
-                if d <= bestDist then
-                    best, bestDist = ped, d
-                end
-            end
-        end
-    end
-    return best
-end
-
-local function target_ped()
-    local me = PlayerPedId()
-    local selected = type(Menu) == "table" and Menu.SelectedPlayer or nil
-    if type(selected) == "number" then
-        local player = GetPlayerFromServerId(selected)
-        if player and player ~= -1 and player ~= PlayerId() then
-            local ped = GetPlayerPed(player)
-            if ped and ped ~= 0 and ped ~= me and DoesEntityExist(ped)
-                and not IsPedDeadOrDying(ped, true) then
-                return ped
-            end
-        end
-    end
-    return nearest_ped()
-end
-
--- Remote ped only, on foot, zero damage, run-over weapon, flags 522, null
--- parent. The source handle is the local ped, the target handle is checked
--- against it before the primitive is called.
-function NET.damage()
-    if not NET.init() then return false end
-    if type(Susano.SendNetworkDamage) ~= "function" then
-        O.log("net damage: primitive unavailable")
-        return false
-    end
-    local me = PlayerPedId()
-    if not me or me == 0 then return false end
-    if IsPedInAnyVehicle(me, false) then
-        O.log("net damage: on foot only")
-        return false
-    end
-
-    local ped = target_ped()
-    if not ped or ped == me or not DoesEntityExist(ped) then
-        O.log("net damage: no remote target")
-        return false
-    end
-
-    local stamp = GetGameTimer()
-    if NET.lastDamage ~= 0 and stamp - NET.lastDamage < 1200 then
-        return false
-    end
-    NET.lastDamage = stamp
-
-    local coords = GetEntityCoords(ped)
-    local ok = pcall(Susano.SendNetworkDamage, me, ped,
-        coords.x, coords.y, coords.z,
-        0.0, 133987706, 522, 0, 0, 0, 0)
-    if not ok then
-        O.log("net damage: record rejected")
-    end
-    return ok
-end
-
-return NET
-
-end)(O,S,Menu)
 
 -- ---------------------------------------------------------------------------
 -- PART: 11_evasion.lua
@@ -27028,7 +26078,7 @@ local L = (function(O,S,B,Menu)
 --   1. A scripted task on a remote ped is routed through the
 --      givePedScriptedTaskEvent RPC and executed by the target's client. The
 --      target's own movement input can cancel a locomotion task.
---   2. A door lock on a vehicle the target does not own is repaired by the
+--   2. A door lock on a vehicle the target does not own is reverted by the
 --      target's client on the next frame.
 --   3. The target must be within a task range and a seat must be free, which
 --      makes the feature look dead in every other situation.
@@ -27076,7 +26126,7 @@ local L = (function(O,S,B,Menu)
 --     request, no door lock, no position write. The only target reads are
 --     GetEntityCoords, GetVehiclePedIsIn and IsPedDeadOrDying.
 --   * The only entity written is the operator's own vehicle: velocity,
---     rotation, gravity, engine/repair state. All are local-authoritative.
+--     rotation, gravity, engine state. All are local-authoritative.
 --   * V4's speed check ignores players in a vehicle (speedHack.lua:19-24).
 --     Its teleport check requires two in-vehicle samples below 3 m/s
 --     (teleport.lua:3-25). Its noclip check requires a frozen or
@@ -27114,7 +26164,6 @@ local PASS_MS         = 180
 local PASS_ALIGN      = 1.5
 local MAX_RANGE       = 900.0
 local NEAREST_RANGE   = 600.0
-local REPAIR_MS       = 500
 local AIM_DROP_ABOVE  = 1.5
 local MAX_PITCH       = 35.0
 local PED_AIM         = 0.85
@@ -27140,7 +26189,6 @@ N.ped        = 0
 N.player     = -1
 N.targetMode = "none"   -- "selected" or "nearest"
 N.mode       = "idle"   -- "charge" or "pass"
-N.lastRepair = 0
 N.passUntil  = 0
 N.dirX       = 0.0
 N.dirY       = 0.0
@@ -27418,13 +26466,13 @@ end
 -- ---------------------------------------------------------------------------
 -- VEHICLE PREP / RESTORE
 --
--- Every write is on the operator's own vehicle. A frozen vehicle is repaired
+-- Every write is on the operator's own vehicle. A frozen vehicle is released
 -- by a read-gated unfreeze (the same read/write pairing 11_evasion.lua uses),
--- never an unconditional detach loop.
+-- never an unconditional detach loop. Lock Player does not repair the vehicle:
+-- the prep only makes the car drivable and the restore only hands physics back.
 -- ---------------------------------------------------------------------------
 local function prepVehicle(veh)
     pcall(SetVehicleGravityAmount, veh, 0.0)
-    pcall(SetVehicleFixed, veh)
     pcall(SetVehicleEngineOn, veh, true, true, false)
     pcall(SetVehicleUndriveable, veh, false)
 
@@ -27439,19 +26487,8 @@ local function restoreVehicle(veh)
 
     pcall(SetVehicleGravityAmount, veh, 9.8)
     pcall(SetEntityVelocity, veh, 0.0, 0.0, 0.0)
-    pcall(SetVehicleFixed, veh)
     pcall(SetVehicleEngineOn, veh, true, true, false)
     pcall(SetVehicleUndriveable, veh, false)
-end
-
-local function repairVehicle(veh)
-    pcall(SetVehicleFixed, veh)
-    pcall(SetVehicleEngineHealth, veh, 1000.0)
-    pcall(SetVehicleBodyHealth, veh, 1000.0)
-    pcall(SetVehicleDeformationFixed, veh)
-    pcall(SetVehicleEngineOn, veh, true, true, false)
-    pcall(SetVehicleUndriveable, veh, false)
-    pcall(SetVehicleGravityAmount, veh, 0.0)
 end
 
 -- ---------------------------------------------------------------------------
@@ -27494,7 +26531,6 @@ local function startSession(veh, ped, player, mode)
     N.player = player
     N.targetMode = mode
     N.mode = "charge"
-    N.lastRepair = 0
     N.passUntil = 0
     N.dirX, N.dirY, N.dirZ = 0.0, 0.0, 0.0
     N.lastSpeed = lockSpeed()
@@ -27666,19 +26702,6 @@ local function tick(now)
     local distance = O.distance(targetCoords, selfCoords)
     N.lastDist = distance
 
-    -- Repair on a low, jittered cadence. The vehicle must survive a long
-    -- hold, and a wreck cannot carry a ram. Every write is on our vehicle.
-    if now - N.lastRepair >= O.jitter(REPAIR_MS, 0.2) then
-        N.lastRepair = now
-        local okHealth, health = pcall(GetEntityHealth, veh)
-        local okEngine, running = pcall(GetIsVehicleEngineRunning, veh)
-        local damaged = okHealth and type(health) == "number" and health < 950
-        local stalled = okEngine and running ~= true
-        if damaged or stalled then
-            repairVehicle(veh)
-        end
-    end
-
     local okFrozen, frozen = pcall(IsEntityPositionFrozen, veh)
     if okFrozen and frozen == true then
         pcall(FreezeEntityPosition, veh, false)
@@ -27765,7 +26788,6 @@ function N.arm()
     N.player = -1
     N.targetMode = "none"
     N.mode = "idle"
-    N.lastRepair = 0
     N.passUntil = 0
     N.dirX, N.dirY, N.dirZ = 0.0, 0.0, 0.0
     N.lastDist = 0.0
@@ -31149,7 +30171,6 @@ local CRASH_ROWS = {
     "Stop + clean", "Probe channels", "Objects (orbit)",
     "Anim churn", "Synced scenes", "Ped variation", "Objects (flood)",
     "PTFX storm", "Clip swarm",
-    "Net damage", "Net array A", "Net array B",
     "Ped flood", "Whale crash", "Emote crash", "Crush crash",
 }
 
@@ -31193,7 +30214,7 @@ local function installCrasher()
     for i = #tab.items, 1, -1 do
         local item = tab.items[i]
         if item.separatorText == "Crasher" or item.separatorText == "Crash"
-            or item.separatorText == "Exploit" or item.separatorText == "Net" then
+            or item.separatorText == "Exploit" then
             table.remove(tab.items, i)
         elseif isCrashRowName(item.name) then
             table.remove(tab.items, i)
@@ -31212,38 +30233,6 @@ local function installCrasher()
     -- separator stay on the first page and the server rows remain available
     -- underneath.
     local crashItems = {
-        {
-            name = "",
-            isSeparator = true,
-            separatorText = "Net",
-        },
-        {
-            name = "Net damage",
-            type = "action",
-            onClick = function()
-                Citizen.CreateThread(function()
-                    NET.damage()
-                end)
-            end,
-        },
-        {
-            name = "Net array A",
-            type = "action",
-            onClick = function()
-                Citizen.CreateThread(function()
-                    NET.purge(4)
-                end)
-            end,
-        },
-        {
-            name = "Net array B",
-            type = "action",
-            onClick = function()
-                Citizen.CreateThread(function()
-                    NET.purge(7)
-                end)
-            end,
-        },
         {
             name = "",
             isSeparator = true,
@@ -32743,364 +31732,6 @@ local function build()
 end
 
 -- ---------------------------------------------------------------------------
--- DECLARING WRAPPERS
---
--- Every action in the file reaches the game through this small set of
--- globals. Wrapping them once turns compliance into a property of the call,
--- so a feature written three months from now cannot forget it:
---   teleport -> hasTeleported window (teleport.lua samples every 1 s)
---   camera   -> createCam entry (freecam.lua:91 strike 1 reads the table)
---   weapon   -> giveWeapon entry (weaponSpawn.lua:3 s periodic check)
---   plate    -> ChangeVehiclePlate bag (10 s aside, server round trip)
---   revive   -> playerRevived window (godMode, pedModel, teleport state)
---   model    -> hasChangedPedModel writes lastPlayerModel too
---   ammo     -> every write clamped to GetMaxAmmo (ammos.lua:32)
---   vitals   -> local ped clamped to 200 HP / 100 armour (godMode.lua:20)
--- The wrappers exist only in the executor environment. No engine table is
--- touched, so the guard's native-source check (misc.lua:150-170) has nothing
--- to read and its own native wrappers never see us.
--- ---------------------------------------------------------------------------
-local WRAPPED = {}
-local lastTeleportDeclare = 0
-local lastPlateDeclare = 0
-local lastAmmoDeclare = 0
-local declaredCams = {}
-local declaredWeapons = {}
-local declaredThreshold = {}
-
-local function wrapNative(name, factory)
-    if WRAPPED[name] then return end
-    local original = rawget(_G, name)
-    if type(original) ~= "function" then return end
-    WRAPPED[name] = true
-    rawset(_G, name, factory(original))
-end
-
-local function declareTeleport()
-    local now = GetGameTimer()
-    if now - lastTeleportDeclare < 8000 then return end
-    lastTeleportDeclare = now
-    S.actionAll("hasTeleported")
-end
-
-local function declareRevive()
-    S.actionAll("playerRevived")
-    S.actionAll("healthRefilled")
-end
-
-local function declareAmmo()
-    -- 5 s window: one declaration per 2 s is enough and stops a refill loop
-    -- from injecting a chunk several times per second.
-    local now = GetGameTimer()
-    if now - lastAmmoDeclare < 2000 then return end
-    lastAmmoDeclare = now
-    S.actionAll("hasAddedAmmo")
-end
-
-local function isLocalOrLocalVehicle(entity)
-    if type(entity) ~= "number" or entity == 0 then return false end
-    if entity == PlayerPedId() then return true end
-    local vehicle = GetVehiclePedIsIn(PlayerPedId(), false)
-    return vehicle ~= 0 and entity == vehicle
-end
-
-local function maxReserve(ped, weapon)
-    -- GET_MAX_AMMO is (BOOL, int*) in the native table: the first Lua return
-    -- is the success flag, the second is the reserve cap.
-    local ok, success, max = pcall(GetMaxAmmo, ped, weapon)
-    if ok and success and type(max) == "number" and max > 0 then return max end
-    return nil
-end
-
-local function declareThreshold(name, value)
-    if type(value) ~= "number" then return end
-    local record = declaredThreshold[name]
-    local now = GetGameTimer()
-    if record and math.abs(record.value - value) < 0.05 and now - record.at < 20000 then
-        return
-    end
-    declaredThreshold[name] = { value = value, at = now }
-    S.actionAll(name, value)
-end
-
-local function installDeclarers()
-    wrapNative("SetEntityCoords", function(original)
-        return function(entity, ...)
-            if isLocalOrLocalVehicle(entity) then declareTeleport() end
-            return original(entity, ...)
-        end
-    end)
-
-    wrapNative("SetEntityCoordsNoOffset", function(original)
-        return function(entity, ...)
-            if isLocalOrLocalVehicle(entity) then declareTeleport() end
-            return original(entity, ...)
-        end
-    end)
-
-    wrapNative("SetPedCoordsKeepVehicle", function(original)
-        return function(entity, ...)
-            if isLocalOrLocalVehicle(entity) then declareTeleport() end
-            return original(entity, ...)
-        end
-    end)
-
-    wrapNative("CreateCam", function(original)
-        return function(...)
-            local cam = original(...)
-            if type(cam) == "number" and cam ~= 0 and not declaredCams[cam] then
-                declaredCams[cam] = true
-                S.actionAll("createCam", cam)
-            end
-            return cam
-        end
-    end)
-
-    wrapNative("CreateCamWithParams", function(original)
-        return function(...)
-            local cam = original(...)
-            if type(cam) == "number" and cam ~= 0 and not declaredCams[cam] then
-                declaredCams[cam] = true
-                S.actionAll("createCam", cam)
-            end
-            return cam
-        end
-    end)
-
-    wrapNative("DestroyCam", function(original)
-        return function(cam, ...)
-            if type(cam) == "number" and cam ~= 0 then
-                if declaredCams[cam] then
-                    declaredCams[cam] = nil
-                    S.actionAll("destroyCam", cam)
-                end
-            end
-            return original(cam, ...)
-        end
-    end)
-
-    wrapNative("GiveWeaponToPed", function(original)
-        return function(ped, weapon, ammo, ...)
-            if type(weapon) == "number" and ped == PlayerPedId() then
-                if S.weaponVerdict(weapon) == "blocked" then return end
-                local key = weapon
-                local record = declaredWeapons[key]
-                local now = GetGameTimer()
-                if not record or now - record > 25000 then
-                    declaredWeapons[key] = now
-                    S.actionAll("giveWeapon", weapon)
-                end
-                if type(ammo) == "number" then
-                    local max = maxReserve(ped, weapon)
-                    if max and ammo > max then ammo = max end
-                end
-            end
-            return original(ped, weapon, ammo, ...)
-        end
-    end)
-
-    wrapNative("SetVehicleNumberPlateText", function(original)
-        return function(vehicle, plate, ...)
-            local now = GetGameTimer()
-            if now - lastPlateDeclare >= 8000 then
-                lastPlateDeclare = now
-                -- vehicleModifications.lua:40 returns early when plateText is
-                -- nil, so the declaration must carry the real arguments; a
-                -- bare call never writes the secured bag and the grace timer
-                -- would never start.
-                S.actionAll("ChangeVehiclePlate", vehicle, plate)
-                -- The guard's grace timer arrives on the secured state bag
-                -- (encryption.lua:151 -> server echo). One frame is not enough
-                -- for the round trip; 350 ms is below the 3 s plate sample.
-                local extra = { ... }
-                CreateThread(function()
-                    Wait(350)
-                    pcall(original, vehicle, plate, table.unpack(extra))
-                end)
-                return
-            end
-            return original(vehicle, plate, ...)
-        end
-    end)
-
-    wrapNative("NetworkResurrectLocalPlayer", function(original)
-        return function(...)
-            declareRevive()
-            return original(...)
-        end
-    end)
-
-    wrapNative("ResurrectPed", function(original)
-        return function(ped, ...)
-            if ped == PlayerPedId() then declareRevive() end
-            return original(ped, ...)
-        end
-    end)
-
-    wrapNative("SetPlayerModel", function(original)
-        return function(player, model, ...)
-            if player == PlayerId() and type(model) == "number" then
-                S.actionAll("hasChangedPedModel", model)
-            end
-            return original(player, model, ...)
-        end
-    end)
-
-    wrapNative("SetPedAmmo", function(original)
-        return function(ped, weapon, ammo, ...)
-            if ped == PlayerPedId() and type(ammo) == "number" then
-                local max = maxReserve(ped, weapon)
-                if max and ammo > max then ammo = max end
-                declareAmmo()
-            end
-            return original(ped, weapon, ammo, ...)
-        end
-    end)
-
-    wrapNative("SetAmmoInClip", function(original)
-        return function(ped, weapon, ammo, ...)
-            if ped == PlayerPedId() and type(ammo) == "number" then
-                local max = maxReserve(ped, weapon)
-                if max and ammo > max then ammo = max end
-                declareAmmo()
-            end
-            return original(ped, weapon, ammo, ...)
-        end
-    end)
-
-    wrapNative("AddAmmoToPed", function(original)
-        return function(ped, weapon, ammo, ...)
-            if ped == PlayerPedId() and type(ammo) == "number" then
-                local max = maxReserve(ped, weapon)
-                if max then
-                    local held = GetAmmoInPedWeapon(ped, weapon) or 0
-                    local room = max - held
-                    if room < 0 then room = 0 end
-                    if ammo > room then ammo = room end
-                end
-                declareAmmo()
-            end
-            return original(ped, weapon, ammo, ...)
-        end
-    end)
-
-    wrapNative("SetEntityHealth", function(original)
-        return function(entity, health, ...)
-            if entity == PlayerPedId() and type(health) == "number" and health > 200 then
-                health = 200
-            end
-            return original(entity, health, ...)
-        end
-    end)
-
-    wrapNative("SetEntityMaxHealth", function(original)
-        return function(entity, health, ...)
-            if entity == PlayerPedId() and type(health) == "number" and health > 200 then
-                health = 200
-            end
-            return original(entity, health, ...)
-        end
-    end)
-
-    wrapNative("SetPedArmour", function(original)
-        return function(ped, armour, ...)
-            if ped == PlayerPedId() and type(armour) == "number" and armour > 100 then
-                armour = 100
-            end
-            return original(ped, armour, ...)
-        end
-    end)
-
-    wrapNative("ModifyVehicleTopSpeed", function(original)
-        return function(vehicle, value, ...)
-            -- Declare the ceiling, never the value being applied: a declaration
-            -- below the live modifier would lower the guard's allowance and
-            -- create the very mismatch this is meant to remove.
-            declareThreshold("newTopSpeedModifier", 100.0)
-            return original(vehicle, value, ...)
-        end
-    end)
-
-    wrapNative("SetVehicleCheatPowerIncrease", function(original)
-        return function(vehicle, value, ...)
-            declareThreshold("newCheatPowerIncrease", 100.0)
-            return original(vehicle, value, ...)
-        end
-    end)
-
-    wrapNative("SetVehicleGravityAmount", function(original)
-        return function(vehicle, value, ...)
-            declareThreshold("newGravity", 1000.0)
-            return original(vehicle, value, ...)
-        end
-    end)
-end
-
--- The base loader still injects code for a handful of actions (teleports,
--- host cams, weapon payloads). None of those payloads can reach this
--- environment, so the wrappers above never see them. One string scan at the
--- injection boundary closes that gap: any payload that writes a position,
--- ammo, a plate, a model or a revive declares the matching export first.
--- The scan is a fallback, not the main path: the armed policy already keeps
--- every time window open.
-local function installInjectShield()
-    if type(Susano) ~= "table" or type(Susano.InjectResource) ~= "function" then return end
-    local original = Susano.InjectResource
-    pcall(function()
-        Susano.InjectResource = function(resource, code, ...)
-            -- "any" is a wildcard that can land in the first captured VM,
-            -- and the guard itself is a captured VM. Redirect every wildcard
-            -- injection to a host that is not a guard; when none exists, drop
-            -- it rather than risk writing into the guard's own Lua state.
-            if resource == "any" then
-                if #S.acs == 0 then S.scan() end
-                local host = S.pickHost()
-                if not host then return end
-                resource = host
-            end
-            if type(code) == "string" then
-                if string.find(code, "SetEntityCoords", 1, true)
-                    or string.find(code, "SetPedCoordsKeepVehicle", 1, true) then
-                    declareTeleport()
-                end
-                if string.find(code, "SetPedAmmo", 1, true)
-                    or string.find(code, "SetAmmoInClip", 1, true)
-                    or string.find(code, "AddAmmoToPed", 1, true) then
-                    declareAmmo()
-                end
-                if string.find(code, "NetworkResurrectLocalPlayer", 1, true)
-                    or string.find(code, "ResurrectPed", 1, true) then
-                    declareRevive()
-                end
-                if string.find(code, "SetVehicleNumberPlateText", 1, true) then
-                    S.actionAll("ChangeVehiclePlate", 0, " ")
-                end
-                if string.find(code, "SetPlayerModel", 1, true) then
-                    S.actionAll("hasChangedPedModel", 0)
-                end
-            end
-            return original(resource, code, ...)
-        end
-    end)
-end
-
-installDeclarers()
-installInjectShield()
-
--- The base menu's feature bodies live above this block and call the globals
--- they captured at runtime, so a declaration helper must be reachable from
--- there without giving every action a reference to Shield.
-Menu.Declare = function(name, ...)
-    if type(name) ~= "string" or name == "" then return false end
-    return S.actionAll(name, ...)
-end
-
-Menu.VehicleVerdict = S.vehicleVerdict
-Menu.PedVerdict = S.pedVerdict
-Menu.ObjectVerdict = S.objectVerdict
-Menu.EntitiesConfig = S.entities
-
--- ---------------------------------------------------------------------------
 -- BOOT
 -- ---------------------------------------------------------------------------
 function UI.boot()
@@ -33129,43 +31760,17 @@ function UI.boot()
         end)
     end)
 
-    -- The policy loop lives in a host resource and keeps every declaration
-    -- fresh while the menu is closed; a godmode toggle must not expire 10 s
-    -- after the overlay is hidden. The in-sandbox pulse stays as a fallback
-    -- for a build where the host injection is refused, and it is the only
-    -- path that also refreshes the overlay probe while the menu is visible.
-    if not S.armPolicy() then
-        O.log("policy: host unavailable, falling back to in-sandbox pulses")
-        S.setSuppress(true)
-    end
-
+    -- The menu is a Susano overlay: while it is visible, WaveShield's anti-exec
+    -- probe sees the cursor leave the centre and the gameplay camera stay
+    -- still. Arm the guard's own overlay exports as soon as the menu becomes
+    -- visible and refresh them every second. This uses the same legitimate
+    -- export path as the manual Bypass row, never a native hook, and closes the
+    -- 5 s export window so the probe cannot accumulate three strikes between
+    -- two scheduler ticks.
     local lastShieldRefresh = 0
-    local lastPolicyCheck = 0
     O.every("shield", 100, function()
-        local stamp = O.now()
-        if S.suppressOn and stamp - lastPolicyCheck >= 5000 then
-            lastPolicyCheck = stamp
-            if S.policyArmed then
-                local alive = type(S.host) == "string" and GetResourceState(S.host) == "started"
-                if not alive then
-                    S.policyArmed = false
-                    S.host = nil
-                else
-                    -- Heartbeat in the host payload: this restarts a loop that
-                    -- died with its resource VM and is a no-op while alive.
-                    S.rearmPolicy()
-                end
-            end
-            if not S.policyArmed then
-                S.armPolicy()
-                if not S.policyArmed then S.refresh() end
-            end
-        end
         if not Menu.Visible then
-            if not S.policyArmed and S.suppressOn and (stamp - lastShieldRefresh >= 2000) then
-                lastShieldRefresh = stamp
-                S.refresh()
-            end
+            lastShieldRefresh = 0
             return
         end
         if not S.suppressOn then S.setSuppress(true) end
@@ -33173,7 +31778,7 @@ function UI.boot()
         local now = O.now()
         if now - lastShieldRefresh >= 1000 then
             lastShieldRefresh = now
-            if not S.policyArmed then S.refresh() end
+            S.refresh()
         end
     end, 0)
 
