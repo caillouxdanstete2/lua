@@ -3093,103 +3093,160 @@ local function ToggleTinyPlayer(enable)
 end
 
 -- Big Weapon.
--- CFX SET_ENTITY_MATRIX (joaat 0xFB0639B) rewrites the local entity transform.
--- The matrix basis vectors are the visual scale of the weapon object, so
--- normalising them and rebuilding them at 2.5x enlarges only the prop held by
--- our own ped. Entity transforms are client-side state: OneSync never carries
--- this matrix, so no other player and no server resource sees the change.
--- The loop reads the handle again every frame, which repairs the matrix after
--- weapon swaps, reloads, aim transitions and respawns.
+-- The held weapon is a game-owned prop that the attachment system re-poses
+-- every frame, so writing its matrix is overwritten before it is drawn. The
+-- visual size of that prop lives in two float fields on the weapon object
+-- itself (0x7C and 0x8C). We resolve the weapon object from the script handle
+-- through the engine's own GUID resolver and poke those floats while the
+-- toggle is on, restoring 1.0 when it goes off. Memory only, on our own ped:
+-- no entity is created, no state native is called, nothing replicates.
 local BIG_WEAPON_SCALE = 2.5
+local BIG_WEAPON_OFFSET_A = 0x7C
+local BIG_WEAPON_OFFSET_B = 0x8C
+local BIG_WEAPON_IDLE_DELAY = 250
+
 local bigWeaponWanted = false
-local bigWeaponLoopRunning = false
+local bigWeaponStarted = false
+local bigWeaponLastHandle = 0
+local bigWeaponLastPtr = 0
+local bigWeaponResolver = nil
 
-local function ReadEntityMatrix(entity)
-    local m1, m2, m3, m4, m5, m6, m7, m8, m9, m10, m11, m12 = GetEntityMatrix(entity)
-    if type(m1) == "number" then
-        return vector3(m1, m2, m3), vector3(m4, m5, m6), vector3(m7, m8, m9), vector3(m10, m11, m12)
+local function BigWeaponMemory()
+    local susano = rawget(_G, "Susano")
+    local memory = susano and susano.Memory
+    if type(memory) ~= "table" then
+        return nil
     end
-    if m1 and m2 and m3 and m4 then
-        return m1, m2, m3, m4
+    if type(memory.Scan) ~= "function" or type(memory.Call) ~= "function"
+        or type(memory.Add) ~= "function" or type(memory.Valid) ~= "function"
+        or type(memory.ReadF32) ~= "function" or type(memory.WriteF32) ~= "function" then
+        return nil
     end
-    return nil
+    return memory
 end
 
-local function ScaleBasisVector(v, target)
-    local length = math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z)
-    if length < 0.0001 then
-        return v, false
+-- fwScriptGuid::GetBaseFromGuid. FiveM locates the same stub from the call
+-- site that validates the entity it returns, so the pattern survives builds.
+local function BigWeaponResolveGUID()
+    if bigWeaponResolver ~= nil then
+        return bigWeaponResolver
     end
-    local factor = target / length
-    return vector3(v.x * factor, v.y * factor, v.z * factor), true
+
+    local memory = BigWeaponMemory()
+    if not memory then
+        return nil
+    end
+
+    local ok, address = pcall(memory.Scan,
+        "E8 ?? ?? ?? ?? 48 8B F8 48 85 C0 0F 84 ?? ?? ?? ?? 44 38 60", nil, 1)
+    if not ok or type(address) ~= "number" or address == 0 then
+        ok, address = pcall(memory.Scan, "83 F9 FF 74 31 4C 8B 0D")
+    end
+    if not ok or type(address) ~= "number" or address == 0 then
+        address = nil
+    end
+
+    bigWeaponResolver = address or false
+    return bigWeaponResolver
 end
 
-local function WriteEntityMatrix(entity, forward, right, up, position)
-    if type(SetEntityMatrix) == "function" then
-        SetEntityMatrix(entity,
-            forward.x, forward.y, forward.z,
-            right.x, right.y, right.z,
-            up.x, up.y, up.z,
-            position.x, position.y, position.z)
-        return true
+local function BigWeaponPtrFromHandle(handle)
+    local memory = BigWeaponMemory()
+    local resolver = BigWeaponResolveGUID()
+    if not memory or type(resolver) ~= "number" or not handle or handle <= 0 then
+        return nil
     end
-    if type(Citizen) == "table" and type(Citizen.InvokeNative) == "function" then
-        Citizen.InvokeNative(0x0FB0639B, entity,
-            forward.x, forward.y, forward.z,
-            right.x, right.y, right.z,
-            up.x, up.y, up.z,
-            position.x, position.y, position.z)
-        return true
+
+    local ok, ptr = pcall(memory.Call, resolver, "p:i", handle)
+    if not ok or type(ptr) ~= "number" or ptr == 0 or not memory.Valid(ptr) then
+        return nil
     end
-    return false
+
+    -- The scale field rests at 1.0. Anything else means the resolver handed us
+    -- a different structure, so refuse to write rather than corrupt it.
+    local current = memory.ReadF32(memory.Add(ptr, BIG_WEAPON_OFFSET_A))
+    if type(current) ~= "number" or current ~= current
+        or current <= 0.001 or current > 1000.0 then
+        return nil
+    end
+
+    return ptr
 end
 
-local function ScaleHeldWeapon(scale)
-    if type(GetCurrentPedWeaponEntityIndex) ~= "function" or type(GetEntityMatrix) ~= "function" then
-        return
-    end
-
+local function BigWeaponCurrentHandle()
     local ped = PlayerPedId()
-    if ped == 0 or not DoesEntityExist(ped) then
-        return
+    if not ped or ped <= 0 or not DoesEntityExist(ped) then
+        return 0
     end
 
-    local weaponObject = GetCurrentPedWeaponEntityIndex(ped)
-    if not weaponObject or weaponObject == 0 or not DoesEntityExist(weaponObject) then
-        return
+    local handle = GetCurrentPedWeaponEntityIndex(ped)
+    if not handle or handle <= 0 then
+        return 0
     end
 
-    local forward, right, up, position = ReadEntityMatrix(weaponObject)
-    if not forward then
-        return
-    end
-
-    local newForward, forwardOk = ScaleBasisVector(forward, scale)
-    local newRight, rightOk = ScaleBasisVector(right, scale)
-    local newUp, upOk = ScaleBasisVector(up, scale)
-    if not (forwardOk and rightOk and upOk) then
-        return
-    end
-
-    WriteEntityMatrix(weaponObject, newForward, newRight, newUp, position)
+    return handle
 end
 
-local function RunBigWeaponLoop()
-    bigWeaponLoopRunning = true
+local function BigWeaponApply()
+    local memory = BigWeaponMemory()
+    local handle = BigWeaponCurrentHandle()
+    local ptr = BigWeaponPtrFromHandle(handle)
+    if not memory or not ptr then
+        return
+    end
+
+    memory.WriteF32(memory.Add(ptr, BIG_WEAPON_OFFSET_A), BIG_WEAPON_SCALE)
+    memory.WriteF32(memory.Add(ptr, BIG_WEAPON_OFFSET_B), BIG_WEAPON_SCALE)
+    bigWeaponLastHandle = handle
+    bigWeaponLastPtr = ptr
+end
+
+local function BigWeaponRestore()
+    local handle = bigWeaponLastHandle
+    local ptr = bigWeaponLastPtr
+    bigWeaponLastHandle = 0
+    bigWeaponLastPtr = 0
+    if handle == 0 or ptr == 0 then
+        return
+    end
+
+    local memory = BigWeaponMemory()
+    if not memory then
+        return
+    end
+    -- The GUID generation check inside the resolver rejects handles whose prop
+    -- was already destroyed, so a recycled slot can never receive the reset.
+    if BigWeaponPtrFromHandle(handle) ~= ptr or not memory.Valid(ptr) then
+        return
+    end
+
+    memory.WriteF32(memory.Add(ptr, BIG_WEAPON_OFFSET_A), 1.0)
+    memory.WriteF32(memory.Add(ptr, BIG_WEAPON_OFFSET_B), 1.0)
+end
+
+local function BigWeaponStart()
+    if bigWeaponStarted then
+        return
+    end
+    bigWeaponStarted = true
+
     CreateThread(function()
-        while bigWeaponWanted do
-            ScaleHeldWeapon(BIG_WEAPON_SCALE)
-            Wait(0)
+        while true do
+            if bigWeaponWanted then
+                BigWeaponApply()
+                Wait(0)
+            else
+                BigWeaponRestore()
+                Wait(BIG_WEAPON_IDLE_DELAY)
+            end
         end
-        ScaleHeldWeapon(1.0)
-        bigWeaponLoopRunning = false
     end)
 end
 
 local function ToggleBigWeapon(enable)
     bigWeaponWanted = enable and true or false
-    if bigWeaponWanted and not bigWeaponLoopRunning then
-        RunBigWeaponLoop()
+    if bigWeaponWanted then
+        BigWeaponStart()
     end
 end
 
