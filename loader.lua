@@ -883,6 +883,7 @@ Menu.Categories = {
             { name = "Ban Player [BETA]", type = "toggle", value = false, risk = true},
             { name = "Shoot Player", type = "action", risk = true},
             { name = "Ragdoll", type = "action"},
+            { name = "Launch", type = "action" },
             { name = "Attach Player", type = "toggle", value = false, onClick = function(val)
                 local target = Menu.SelectedPlayer
                 if not target then
@@ -949,9 +950,6 @@ Menu.Categories = {
             { name = "Kick Vehicle", type = "selector", options = {"V1", "V2"}, selected = 1 },
             { name = "Remove Tires", type = "action" },
             { name = "Give", type = "selector", options = {"Vehicle", "Ramp", "Wall", "Wall 2"}, selected = 1 }
-        }},
-        { name = "Everyone", items = {
-            { name = "Launch All", type = "action" }
         }}
     }},
     { name = "Visual", iconUrl = "https://i.imgur.com/iHvywcn.png", icon = "Ã°Å¸â€˜Â", hasTabs = true, tabs = {
@@ -16583,7 +16581,7 @@ end)()
 -- >>> VANGUARD MODULE BEGIN
 -- ============================================================================
 -- VANGUARD  (integrated artifact - edit src/ and rebuild)
--- Generated: 2026-10-28 13:42:57
+-- Generated: 2026-10-28 14:05:59
 --
 -- This block lives in loader.lua and in dist/loader.built.lua at the same
 -- time. It is the only place the local Menu table is in scope. Rebuilding
