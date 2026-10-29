@@ -22534,11 +22534,42 @@ local NET = (function(O, C)
     -- Arbitrary read, so a global table can be measured before and after a
     -- payload instead of guessed at. `rva` is relative to the GTA5.exe image
     -- base, the coordinate system every address in this file is written in.
+    -- Susano does not expose GTA5.exe through Memory.Module on this build, so
+    -- the base is derived the same way the registry code already does it:
+    -- gta-net-five.dll holds the image delta, base = delta + 0x140000000. That
+    -- path is proven (netreg resolves 85 handlers with it). Memory.Module and
+    -- GetModuleBase stay as fallbacks for builds that do expose the name.
+    local cachedBase = nil
     local function gta_base()
+        if cachedBase then return cachedBase end
         local m = mem()
-        if not m or type(m.Module) ~= "function" then return nil end
-        local ok, base = pcall(m.Module, "GTA5.exe")
-        if ok and type(base) == "number" and base > 0x10000 then return base end
+        if not m then return nil end
+        if type(m.Module) == "function" then
+            local ok, g = pcall(m.Module, "gta-net-five.dll")
+            if ok and type(g) == "number" and g > 0x10000 then
+                local delta = read_u64(g + REG_GTA_DELTA) or 0
+                if delta > 0x10000 and delta < 0x20000000 then
+                    cachedBase = delta + 0x140000000
+                    return cachedBase
+                end
+            end
+        end
+        for _, name in ipairs({ "GTA5.exe", "GTA5" }) do
+            if type(m.Module) == "function" then
+                local ok, base = pcall(m.Module, name)
+                if ok and type(base) == "number" and base > 0x10000 then
+                    cachedBase = base
+                    return cachedBase
+                end
+            end
+            if type(m.GetModuleBase) == "function" then
+                local ok, base = pcall(m.GetModuleBase, name)
+                if ok and type(base) == "number" and base > 0x10000 then
+                    cachedBase = base
+                    return cachedBase
+                end
+            end
+        end
         return nil
     end
 
@@ -22658,7 +22689,8 @@ local NET = (function(O, C)
             { 0x10A6000, 0x10A8000  }, -- 0x10A6388 world-state factory
             { 0x10AD000, 0x10B0000  }, -- 0x10ADFD0, 0x10AEAF C explosion helpers
             { 0x10B7000, 0x10B9000  }, -- 0x10B7AD8 descriptor -> object
-            { 0x1179000, 0x117A000  }, -- world-state sub-deserializers
+            { 0x1178000, 0x117B000  }, -- world-state sub-deserializers (0x1179000
+                                       -- opens mid-function, so start earlier)
 
             -- Phase 1, already collected but kept last so a fresh profile gets
             -- a self-contained dump: every per-event vtable slot +0x28 (Write)
@@ -24640,7 +24672,7 @@ function A.boot()
 
     if A._booted then return end
     A._booted = true
-    O.log("loader build 2026-10-29-r13 (reader helpers + apply callees)")
+    O.log("loader build 2026-10-29-r14 (image base + world-state table)")
     O.log("protection defaults: anti-freeze, anti-attach, anti-spectate, ped guard armed")
     O.every("evasion", 900, A.tick, 350)
     O.every("pedGuardWatch", 100, A.pedGuardWatch, 0)
@@ -32060,6 +32092,13 @@ local function installCrasher()
             type = "action",
             onClick = function()
                 NET.rdumpRva("netex", 0x2A30250, 0x100)
+            end,
+        },
+        {
+            name = "Net ws",
+            type = "action",
+            onClick = function()
+                NET.rdumpRva("netws", 0x2A2BC60, 9 * 8)
             end,
         },
     }
