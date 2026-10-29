@@ -22385,8 +22385,7 @@ local NET = (function(O, C)
         NET.sniffStop = false
         local span = tonumber(seconds) or 60
         local ok = run_window(sniff_event_cb, span, "sniff")
-        if type(Menu) == "table" then Menu.Visible = false end
-        O.log("net sniff: move freely, %d s window", span)
+        O.log("net sniff: close the menu yourself, %d s window", span)
         Citizen.CreateThread(function()
             local deadline = GetGameTimer() + span * 1000 + 3000
             local logged = 0
