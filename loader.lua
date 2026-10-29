@@ -21922,20 +21922,53 @@ local NET = (function(O, C)
         return table.concat(out)
     end
 
+    local function bytes_of_u64(v)
+        local b = {}
+        for i = 1, 8 do
+            b[i] = string.char(v % 256)
+            v = math.floor(v / 256)
+        end
+        return table.concat(b)
+    end
+
+    -- Chunked scan. The previous version stepped by 0x1000 and only tested
+    -- page-aligned addresses, so a NetLibrary object sitting at an arbitrary
+    -- offset inside .data was never found ("no NetLibrary instance").
+    -- ReadBytes in 8 KiB blocks + plain string.find is fast enough to walk
+    -- the whole image and checks every byte offset.
     local function scan(base, va, size, want_vt)
         if type(size) ~= "number" or size <= 0 or size > 0x2000000 then return nil end
+        local m = mem()
+        if not m or type(m.ReadBytes) ~= "function" then return nil end
+        local pat = bytes_of_u64(want_vt)
         local start = base + va
-        local last = start + size - 0x50
-        local addr = start
-        while addr <= last do
-            if is_valid(addr) then
-                local head = raw_u64(addr)
-                if head == want_vt then
-                    local state = read_u32(addr + 0x48)
-                    if state == CONNECTED then return addr end
+        local chunk = 0x2000
+        local off = 0
+        local carry = ""
+        while off < size do
+            local n = math.min(chunk, size - off)
+            local ok, buf = pcall(m.ReadBytes, start + off, n)
+            if ok and type(buf) == "table" and #buf > 0 then
+                local parts = {}
+                for i = 1, #buf do parts[i] = string.char(buf[i] % 256) end
+                local data = carry .. table.concat(parts)
+                local origin = start + off - #carry
+                local pos = 1
+                while true do
+                    local f = data:find(pat, pos, true)
+                    if not f then break end
+                    local addr = origin + (f - 1)
+                    if addr >= start and raw_u64(addr) == want_vt
+                       and read_u32(addr + 0x48) == CONNECTED then
+                        return addr
+                    end
+                    pos = f + 1
                 end
+                carry = data:sub(-7)
+                off = off + n
+            else
+                off = off + n
             end
-            addr = addr + 0x1000
         end
         return nil
     end
@@ -22009,6 +22042,13 @@ local NET = (function(O, C)
         end
         if not found then
             found = scan(base, 0x1000, image, NET.vtable)
+        end
+        if not NET.diag then
+            NET.diag = true
+            O.log("net diag: base=%s vt=%s data=%s/%s image=%s found=%s",
+                  string.format("0x%X", base), string.format("0x%X", NET.vtable or 0),
+                  string.format("0x%X", data_va or 0), string.format("0x%X", data_size or 0),
+                  string.format("0x%X", image), tostring(found))
         end
         return found
     end
