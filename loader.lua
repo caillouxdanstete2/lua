@@ -22024,13 +22024,12 @@ local NET = (function(O, C)
     end
 
     local function token_ok()
-        local now = GetGameTimer()
-        if now - NET.windowStart >= WINDOW_MS then
-            NET.windowStart = now
-            NET.windowCount = 0
-        end
-        if NET.windowCount >= MAX_TOKEN then return false end
-        NET.windowCount = NET.windowCount + 1
+        -- This runs inside the RunMainFrame hook. Calling a game native from a
+        -- hook callback deadlocks the thread running the hook, so the rate
+        -- limit is counted in frames and reset per NET call instead of using
+        -- GetGameTimer().
+        NET.windowCount = (NET.windowCount or 0) + 1
+        if NET.windowCount > MAX_TOKEN then return false end
         return true
     end
 
@@ -22360,6 +22359,7 @@ local NET = (function(O, C)
     end
 
     local function sniff_event_cb(get)
+        -- No native, no logging, no file IO: hooks run on the game's thread.
         if NET.sniffStop then return nil end
         if NET.captured and #NET.captured >= (NET.capLimit or 20) then
             NET.sniffStop = true
@@ -22369,42 +22369,40 @@ local NET = (function(O, C)
         local len = get(4)
         if type(ptr) ~= "number" or type(len) ~= "number" then return nil end
         if len < 12 or len > 1200 then return nil end
-        local now = GetGameTimer()
-        if NET.sniffAt and now - NET.sniffAt < 60 then return nil end
         local magic = read_u32(ptr)
         if magic ~= 0x2B513E19 then return nil end
-        NET.sniffAt = now
         local n = math.min(len, 1024)
         local ok, bytes = pcall(Susano.Memory.ReadBytes, ptr, n)
         if not ok or type(bytes) ~= "table" or #bytes == 0 then return nil end
-        local out = {}
-        for i = 1, #bytes do out[i] = string.format("%02x", bytes[i] % 256) end
-        local hex = table.concat(out)
-        -- decode the ClientNetGameEventV2 header for the log
-        local count = bytes[5] or 0
-        local p = 6 + count * 2
-        local nameHash, eventId, isReply = 0, 0, 0
-        if p + 6 <= #bytes then
-            nameHash = (bytes[p] or 0) + (bytes[p+1] or 0) * 256
-                     + (bytes[p+2] or 0) * 65536 + (bytes[p+3] or 0) * 16777216
-            eventId = (bytes[p+4] or 0) + (bytes[p+5] or 0) * 256
-            isReply = bytes[p+6] or 0
-        end
-        NET.captured[#NET.captured + 1] = hex
-        save_captured()
-        O.log("net event #%d len=%d targets=%d name=0x%08X id=%d reply=%d %s",
-              #NET.captured, n, count, nameHash, eventId, isReply, hex)
-        if #NET.captured >= (NET.capLimit or 20) then NET.sniffStop = true end
+        local hex = {}
+        for i = 1, #bytes do hex[i] = ("%02x"):format(bytes[i] % 256) end
+        NET.captured[#NET.captured + 1] = table.concat(hex)
         return nil
     end
 
     function NET.sniffEvents(seconds)
         NET.captured = {}
-        NET.sniffAt = 0
         NET.sniffStop = false
-        local ok = run_window(sniff_event_cb, seconds or 60, "sniff")
+        local span = tonumber(seconds) or 60
+        local ok = run_window(sniff_event_cb, span, "sniff")
         if type(Menu) == "table" then Menu.Visible = false end
-        O.log("net sniff: move freely, will stop after %d captures", NET.capLimit or 20)
+        O.log("net sniff: move freely, %d s window", span)
+        Citizen.CreateThread(function()
+            local deadline = GetGameTimer() + span * 1000 + 3000
+            local logged = 0
+            while GetGameTimer() < deadline do
+                Citizen.Wait(150)
+                local list = NET.captured or {}
+                if #list > logged then
+                    for i = logged + 1, #list do O.log("net event #%d %s", i, list[i]) end
+                    logged = #list
+                    save_captured()
+                end
+                if NET.sniffStop then break end
+            end
+            save_captured()
+            O.log("net sniff: %d captured, saved to netsniff.ssn", #(NET.captured or {}))
+        end)
         return ok
     end
 
