@@ -23738,6 +23738,36 @@ local NET = (function(O, C)
         { id = 79, fill = 0xFF, ent = "ped" },
     }
 
+    -- net.dll!SendReliablePacket is 59 instructions and this is all that
+    -- matters from them:
+    --
+    --   0x18004C5F2  call 180086c40        ; acquire [this+0x30]
+    --   0x18004C607  mov  rdi,[rbx+0x20]   ; transport object
+    --   0x18004C622  test rdi,rdi
+    --   0x18004C625  je   0x18004c63a     ; null -> do nothing at all
+    --   0x18004C627  mov  rax,[rdi]
+    --   0x18004C636  call qword ptr [rax+0x30]  ; the real send
+    --
+    -- So a send can be "accepted" by the caller, return 1, and still move no
+    -- byte, because the transport pointer is null. Nothing above this line
+    -- could see that. Reading the three pointers is the check that separates
+    -- "queued" from "discarded".
+    function NET.transport()
+        local inst = NET.resolve_instance()
+        if not inst then return nil end
+        local tr = read_u64(inst + 0x20)
+        local rc = read_u64(inst + 0x28)
+        local vt = (tr and tr > 0x10000) and read_u64(tr) or 0
+        local fn = (vt and vt > 0x10000) and read_u64(vt + 0x30) or 0
+        return tr, rc, vt, fn
+    end
+
+    function NET.transportLog(tag)
+        local tr, rc, vt, fn = NET.transport()
+        O.log("net probe: %s transport=0x%X ref=0x%X vt=0x%X send=0x%X",
+              tag or "-", tr or 0, rc or 0, vt or 0, fn or 0)
+    end
+
     function NET.sweep()
         if NET.sweeping then
             NET.sweeping = false
@@ -23750,6 +23780,7 @@ local NET = (function(O, C)
             return false
         end
         NET.sweeping = true
+        NET.transportLog("sweep")
         Citizen.CreateThread(function()
             local n = 0
             while NET.sweeping and n < #CANDIDATES do
@@ -25435,7 +25466,7 @@ function A.boot()
 
     if A._booted then return end
     A._booted = true
-    O.log("loader build 2026-10-29-r24 (native return value)")
+    O.log("loader build 2026-10-29-r25 (transport probe)")
     O.log("protection defaults: anti-freeze, anti-attach, anti-spectate, ped guard armed")
     O.every("evasion", 900, A.tick, 350)
     O.every("pedGuardWatch", 100, A.pedGuardWatch, 0)
