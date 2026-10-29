@@ -22173,10 +22173,13 @@ local NET = (function(O, C)
     end
 
     local function install_hook(addr, sig, callback)
-        -- Disabled. A MinHook detour on a hot net.dll function with a Lua
-        -- callback crashed the game and froze the overlay. Nothing in this
-        -- module installs hooks anymore.
-        return false
+        local m = mem()
+        if not m or type(addr) ~= "number" or addr == 0 then return false end
+        if NET.hookId ~= nil then return false end
+        local okh, id = pcall(m.Hook, addr, sig, callback)
+        if not okh or type(id) ~= "number" then return false end
+        NET.hookId = id
+        return true
     end
 
     local function ensure_hook()
@@ -22295,16 +22298,27 @@ local NET = (function(O, C)
 
     function NET.emitEvent(netIds, eventHash, eventId, dataBytes)
         if type(netIds) ~= "table" or #netIds == 0 then return false end
+        if NET.busy or NET.releasePending then return false end
         if not NET.init() then O.log("net event: net.dll not ready"); return false end
         if not NET.resolve_instance() then O.log("net event: no NetLibrary instance"); return false end
-        local inst = NET.instance
-        if type(inst) ~= "number" or inst == 0 then return false end
-        local packet = { raw = true, hash = 0x2B513E19,
-                         bytes = pack_event(netIds, eventHash, eventId, dataBytes or {}) }
+        if not ensure_hook() then O.log("net event: RunMainFrame hook failed"); return false end
+        NET.queue = { { raw = true, hash = 0x2B513E19,
+                        bytes = pack_event(netIds, eventHash, eventId, dataBytes or {}) } }
+        NET.sent = 0
+        NET.frame = 0
+        NET.aborted = nil
+        NET.windowStart = 0
+        NET.windowCount = 0
+        NET.busy = true
+        NET.armed = true
         Citizen.CreateThread(function()
-            Citizen.Wait(0)
-            local ok, res = pcall(send, inst, packet)
-            O.log("net event: send ok=%s res=%s", tostring(ok), tostring(res))
+            local deadline = GetGameTimer() + 5000
+            while NET.armed and GetGameTimer() < deadline do Citizen.Wait(50) end
+            if NET.armed then abort("timeout") end
+            Citizen.Wait(80)
+            if NET.releasePending then unhook_now() end
+            NET.busy = false
+            O.log("net event: %s sent %d", tostring(NET.aborted or "ok"), NET.sent)
         end)
         return true
     end
