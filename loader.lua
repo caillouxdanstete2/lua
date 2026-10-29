@@ -22393,14 +22393,23 @@ local NET = (function(O, C)
         if #data > 0 then
             pcall(m.WriteBytes, base + 0x80, data)
         end
-        local okc = pcall(m.Call, gb + GST_SEND_RVA, "v:ppi", inst, base, 1)
-        return okc
+        -- sub_1800897C0 returns al = 1 when it actually handed a buffer to
+        -- net.dll and 0 on every refusal path (throttled to one send per tick,
+        -- buffer too small, not connected). Reading that byte is the first real
+        -- signal we get: everything up to now reported the pcall succeeding,
+        -- which only ever meant "the call did not throw".
+        local okc, ret = pcall(m.Call, gb + GST_SEND_RVA, "i:ppi", inst, base, 1)
+        if not okc then
+            pcall(m.Call, gb + GST_SEND_RVA, "v:ppi", inst, base, 1)
+            return false, "call"
+        end
+        return (type(ret) == "number" and ret ~= 0), ret
     end
 
     function NET.emitEvent(netIds, eventHash, eventId, dataBytes, tail16)
         if NET.nativeMode then
-            local ok = NET.nativeSend(netIds, eventHash, eventId, dataBytes)
-            O.log("net event: native ok=%s", tostring(ok))
+            local ok, ret = NET.nativeSend(netIds, eventHash, eventId, dataBytes)
+            O.log("net event: native ok=%s ret=%s", tostring(ok), tostring(ret))
             return ok
         end
         if type(netIds) ~= "table" or #netIds == 0 then return false end
@@ -25426,7 +25435,7 @@ function A.boot()
 
     if A._booted then return end
     A._booted = true
-    O.log("loader build 2026-10-29-r23 (crasher tab trimmed)")
+    O.log("loader build 2026-10-29-r24 (native return value)")
     O.log("protection defaults: anti-freeze, anti-attach, anti-spectate, ped guard armed")
     O.every("evasion", 900, A.tick, 350)
     O.every("pedGuardWatch", 100, A.pedGuardWatch, 0)
