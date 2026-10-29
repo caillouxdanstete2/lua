@@ -22456,6 +22456,55 @@ local NET = (function(O, C)
         end
         O.log("net dis: %d handlers x %d bytes in %d files (netdis_*.ssn)",
               written, size, part)
+
+        -- Second phase: every target called by a handler. The call targets were
+        -- extracted offline with capstone from the 85 handler bodies; this list
+        -- is their union, so one click dumps the whole per-event layer.
+        local ranges = {
+            { 0x1172400, 0x1177E00 },  -- per-event constructors / readers
+            { 0x171AEC0, 0x171B160 },
+            { 0x171B8F0, 0x171BA10 },
+            { 0x171C100, 0x171C420 },
+            { 0x1726740, 0x1726880 },
+            { 0x1726E80, 0x1727140 },
+            { 0x172B6C0, 0x172BB40 },
+            { 0x067DB60, 0x067DCE0 },
+            { 0x136DA00, 0x136DB80 },
+        }
+        local CHUNK = 512
+        local PER = 7
+        local rpart = 0
+        local rlines = {}
+        local rbytes = 0
+        local function flushRange()
+            if #rlines == 0 then return end
+            rpart = rpart + 1
+            pcall(function()
+                return Susano.WriteFile(string.format("netrng_%d.ssn", rpart),
+                                        table.concat(rlines, "\n"))
+            end)
+            rlines = {}
+        end
+        for ri = 1, #ranges do
+            local from, to = ranges[ri][1], ranges[ri][2]
+            local at = from
+            while at < to do
+                local want = math.min(CHUNK, to - at)
+                local okr, bytes = pcall(m.ReadBytes, t.gbase + at, want)
+                local hex = {}
+                if okr and type(bytes) == "table" then
+                    for k = 1, #bytes do
+                        hex[#hex + 1] = string.format("%02X", (bytes[k] or 0) % 256)
+                    end
+                end
+                rlines[#rlines + 1] = string.format("%X %s", at, table.concat(hex))
+                rbytes = rbytes + want
+                at = at + want
+                if #rlines >= PER then flushRange() end
+            end
+        end
+        flushRange()
+        O.log("net rng: %d bytes in %d files (netrng_*.ssn)", rbytes, rpart)
         return true
     end
 
@@ -24396,7 +24445,7 @@ function A.boot()
 
     if A._booted then return end
     A._booted = true
-    O.log("loader build 2026-10-29-r7 (net reg + net dis)")
+    O.log("loader build 2026-10-29-r8 (net dis + net rng)")
     O.log("protection defaults: anti-freeze, anti-attach, anti-spectate, ped guard armed")
     O.every("evasion", 900, A.tick, 350)
     O.every("pedGuardWatch", 100, A.pedGuardWatch, 0)
