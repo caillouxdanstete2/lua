@@ -22311,7 +22311,98 @@ local NET = (function(O, C)
         return b
     end
 
+    -- Send through gta-net-five's own serializer: sub_1800897C0(this, event, reliable).
+    --
+    -- Re-packing the envelope by hand is what r18 and r19 got wrong, and r20 is
+    -- only as good as the reading of the writer. This path removes the doubt
+    -- entirely: the game builds the buffer, picks the channel, and calls into
+    -- net.dll itself. The only thing supplied here is the event object, whose
+    -- layout is read straight out of the writer:
+    --
+    --   +0x00 u32  event name hash
+    --   +0x08 ptr  u16 target array
+    --   +0x10 u64  target count (writer takes the low byte)
+    --   +0x18 u16  event id
+    --   +0x1a u8   isReply
+    --   +0x1c u16  unknown
+    --   +0x20 ptr  payload
+    --   +0x28 u64  payload length (writer refuses above 0x401)
+    local GST_SEND_RVA = 0x897C0
+
+    function NET.gtafive()
+        local m = mem()
+        if not m then return nil end
+        local ok, g = pcall(m.Module, "gta-net-five.dll")
+        if ok and type(g) == "number" and g > 0 then return g end
+        return nil
+    end
+
+    function NET.nativeSend(netIds, eventHash, eventId, dataBytes)
+        local m = mem()
+        if not m then return false end
+        if type(netIds) ~= "table" or #netIds == 0 then return false end
+        local gb = NET.gtafive()
+        if not gb then O.log("net native: gta-net-five not loaded"); return false end
+        if not NET.init() then return false end
+        local inst = NET.resolve_instance()
+        if not inst then O.log("net native: no NetLibrary instance"); return false end
+        if not NET.natBuf then
+            local okb, b = pcall(m.Alloc, 0x400)
+            if not okb or type(b) ~= "number" or b == 0 then return false end
+            NET.natBuf = b
+        end
+        local base = NET.natBuf
+        local count = #netIds
+        local data = dataBytes or {}
+        if #data > 0x401 then return false end
+
+        local targets = {}
+        for i = 1, count do
+            local v = netIds[i] % 65536
+            targets[#targets + 1] = v % 256
+            targets[#targets + 1] = math.floor(v / 256) % 256
+        end
+
+        local sb = {}
+        for i = 1, 0x40 do sb[i] = 0 end
+        local function u8(off, v) sb[off + 1] = v % 256 end
+        local function u16(off, v)
+            u8(off, v % 256); u8(off + 1, math.floor(v / 256) % 256)
+        end
+        local function u64(off, v)
+            for i = 0, 7 do
+                sb[off + i + 1] = v % 256
+                v = math.floor(v / 256)
+            end
+        end
+        u16(0x00, (eventHash or 0) % 65536)
+        u16(0x02, math.floor((eventHash or 0) / 65536) % 65536)
+        u64(0x08, base + 0x40)
+        u64(0x10, count)
+        u16(0x18, eventId or 0)
+        u8(0x1A, 0)
+        u16(0x1C, 0)
+        u64(0x20, base + 0x80)
+        u64(0x28, #data)
+
+        local okw = pcall(m.WriteBytes, base, sb)
+        if not okw then return false end
+        if #targets > 0 then
+            pcall(m.WriteBytes, base + 0x40, targets)
+        end
+        if #data > 0 then
+            pcall(m.WriteBytes, base + 0x80, data)
+        end
+        local okc = pcall(m.Call, gb + GST_SEND_RVA, "v:ppi", inst, base, 1)
+        return okc
+    end
+
     function NET.emitEvent(netIds, eventHash, eventId, dataBytes, tail16)
+        if NET.nativeMode then
+            local ok = NET.nativeSend(netIds, eventHash, eventId, dataBytes)
+            O.log("net event: native ok=%s", tostring(ok))
+            return ok
+        end
         if type(netIds) ~= "table" or #netIds == 0 then return false end
         if NET.busy or NET.releasePending then return false end
         if not NET.init() then O.log("net event: net.dll not ready"); return false end
@@ -25335,7 +25426,7 @@ function A.boot()
 
     if A._booted then return end
     A._booted = true
-    O.log("loader build 2026-10-29-r21 (crash candidates + sweep)")
+    O.log("loader build 2026-10-29-r22 (native serializer + self test)")
     O.log("protection defaults: anti-freeze, anti-attach, anti-spectate, ped guard armed")
     O.every("evasion", 900, A.tick, 350)
     O.every("pedGuardWatch", 100, A.pedGuardWatch, 0)
@@ -32847,6 +32938,39 @@ local function installCrasher()
                 local tail = ({ 0, sid, 0xFFFF })[NET.tailVar]
                 O.log("net tail: v%d tail16=%d veh %d", NET.tailVar, tail, nid)
                 NET.evSend(66, 0xFF, nid, tail)
+            end,
+        },
+        {
+            name = "Net mode",
+            type = "action",
+            onClick = function()
+                NET.nativeMode = not NET.nativeMode
+                O.log("net mode: %s", NET.nativeMode and "native serializer" or "packed envelope")
+            end,
+        },
+        {
+            name = "Net self",
+            type = "action",
+            onClick = function()
+                local okS, sid = pcall(GetPlayerServerId, PlayerId())
+                if not okS or type(sid) ~= "number" then
+                    O.log("net self: no local server id")
+                    return
+                end
+                -- Une liste qui ne contient que notre propre id : si le relais
+                -- renvoie l'evenement a son emetteur, l'effet est visible sans
+                -- second client, ce qui separe "le paquet n'arrive pas" de
+                -- "le paquet arrive mais la cible ne reagit pas".
+                for _, eid in ipairs({ 79, 34, 43 }) do
+                    local spec = NET.evBlob(eid, 0xFF)
+                    if spec then
+                        local data = NET.bits(spec)
+                        O.log("net self: id %d (%s) %d bytes -> [%d]",
+                              eid, NET.NAMES[eid] or "?", #data, sid)
+                        NET.emitEvent({ sid }, NET.EV[eid], eid, data)
+                        Citizen.Wait(400)
+                    end
+                end
             end,
         },
         {
