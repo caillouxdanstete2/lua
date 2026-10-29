@@ -23614,7 +23614,7 @@ local NET = (function(O, C)
         return spec
     end
 
-    function NET.evSend(id, fill, first, tail16)
+    function NET.evSend(id, fill, first, tail16, field)
         id = tonumber(id) or 0
         local ids = crashIds(200.0)
         if #ids == 0 then
@@ -23630,7 +23630,10 @@ local NET = (function(O, C)
             O.log("net ev: no width table for id %d", id)
             return false
         end
-        if first then spec[1].val = tonumber(first) or 0 end
+        if first then
+            local slot = math.floor(tonumber(field) or 1)
+            if spec[slot] then spec[slot].val = tonumber(first) or 0 end
+        end
         local data = NET.bits(spec)
         if type(data) ~= "table" then return false end
         local list = {}
@@ -23735,7 +23738,10 @@ local NET = (function(O, C)
         { id = 19, fill = 0xFF, ent = "ped" },
         { id = 78, fill = 0xFF },
         { id = 43, fill = 0xFF, ent = "ped" },
-        { id = 79, fill = 0xFF, ent = "ped" },
+        -- PED_PLAY_PAIN starts with a 3-bit field, so the ped id goes in the
+        -- second one. Writing it into the first would mask it to three bits and
+        -- address an entity that cannot exist.
+        { id = 79, fill = 0xFF, ent = "ped", field = 2 },
     }
 
     -- net.dll!SendReliablePacket is 59 instructions and this is all that
@@ -23782,6 +23788,19 @@ local NET = (function(O, C)
         NET.sweeping = true
         NET.transportLog("sweep")
         Citizen.CreateThread(function()
+            -- Phase 1 : world state. C'est la seule famille dont le tag de type
+            -- est lu en clair dans les 4 premiers bits, donc la seule ou l'on
+            -- choisisse reellement le deserialiseur appele. Le type 1 est
+            -- CNetworkPtFXWorldStateData : il porte des hashes d'asset, ce qui
+            -- est le chemin vers une resolution DLC et vers la classe nommee
+            -- dans le crash victime. Ces envois n'avaient jamais ete livres :
+            -- jusqu'a r20 l'enveloppe etait fausse.
+            for t = 0, 8 do
+                if not NET.sweeping then break end
+                O.log("net sweep: ws type %d", t)
+                NET.wsSend(t, 0xFF, 48)
+                Citizen.Wait(800)
+            end
             local n = 0
             while NET.sweeping and n < #CANDIDATES do
                 n = n + 1
@@ -23799,7 +23818,7 @@ local NET = (function(O, C)
                 if not c.ent or first then
                     O.log("net sweep: %d/%d id %d (%s)",
                           n, #CANDIDATES, c.id, NET.NAMES[c.id] or "?")
-                    NET.evSend(c.id, c.fill, first)
+                    NET.evSend(c.id, c.fill, first, 0, c.field)
                 end
                 Citizen.Wait(700)
             end
@@ -25466,7 +25485,7 @@ function A.boot()
 
     if A._booted then return end
     A._booted = true
-    O.log("loader build 2026-10-29-r25 (transport probe)")
+    O.log("loader build 2026-10-29-r26 (world-state phase first)")
     O.log("protection defaults: anti-freeze, anti-attach, anti-spectate, ped guard armed")
     O.every("evasion", 900, A.tick, 350)
     O.every("pedGuardWatch", 100, A.pedGuardWatch, 0)
