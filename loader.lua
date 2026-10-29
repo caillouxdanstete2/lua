@@ -22167,7 +22167,28 @@ local NET = (function(O, C)
     function NET.scenarioEmote()
         local me = PlayerPedId()
         if type(me) ~= "number" or me == 0 then return false end
-        pcall(TaskStartScenarioInPlace, me, "WORLD_HUMAN_SUNBATHE_BACK", 0, true)
+        -- move_crawl ships four clips: onback_bwd, onback_fwd, onfront_bwd,
+        -- onfront_fwd. onfront_fwd is the face-down forward crawl from the
+        -- screenshot. The clipset with the same name makes it persist while
+        -- walking; blendIn is pushed high so it snaps into the pose instead
+        -- of laying down gradually.
+        RequestAnimDict("move_crawl")
+        local t = GetGameTimer() + 2500
+        while not HasAnimDictLoaded("move_crawl") and GetGameTimer() < t do
+            Citizen.Wait(10)
+        end
+        if HasAnimDictLoaded("move_crawl") then
+            pcall(TaskPlayAnim, me, "move_crawl", "onfront_fwd",
+                  8.0, -8.0, -1, 1, 0.0, false, false, false)
+        end
+        RequestAnimSet("move_crawl")
+        local u = GetGameTimer() + 2500
+        while not HasAnimSetLoaded("move_crawl") and GetGameTimer() < u do
+            Citizen.Wait(10)
+        end
+        if HasAnimSetLoaded("move_crawl") then
+            pcall(SetPedMovementClipset, me, "move_crawl", 1.0)
+        end
         return true
     end
 
