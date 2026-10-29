@@ -22482,6 +22482,96 @@ local NET = (function(O, C)
         return NET.emitEvent(ids, tonumber(hash) or 0xC00B8EB5, eventId, data or {})
     end
 
+    -- Event payload packer.
+    --
+    -- The receiver hands the data bytes straight to datBitBuffer and every
+    -- field reader pulls the next N bits out of that buffer most significant
+    -- bit first, so the payload is produced the same way. A field is either
+    --     { bits = 8,  val = 3 }            -- scalar, needs |val| < 2^53
+    --     { bits = 64, val = {b1 .. b8} }   -- full width, little-endian bytes
+    -- and the final byte is zero padded, which matches the reader's 8*len bit
+    -- budget. `lsbFirst` flips the intra-field order for the readers that are
+    -- little-endian; default is the datBitBuffer order.
+    function NET.bits(spec, lsbFirst)
+        if type(spec) ~= "table" then return nil end
+        local out, acc, nacc = {}, 0, 0
+        local function bit_of(field, i)
+            local v = field.val
+            if type(v) == "table" then
+                local byte = math.floor(i / 8) + 1
+                local value = tonumber(v[byte]) or 0
+                return math.floor(value / (2 ^ (i % 8))) % 2
+            end
+            return math.floor((tonumber(v) or 0) / (2 ^ i)) % 2
+        end
+        for fi = 1, #spec do
+            local field = spec[fi]
+            local n = math.floor(tonumber(field.bits) or 0)
+            if n > 0 and n <= 64 then
+                for k = 0, n - 1 do
+                    local idx = lsbFirst and k or (n - 1 - k)
+                    acc = acc * 2 + bit_of(field, idx)
+                    nacc = nacc + 1
+                    if nacc == 8 then
+                        out[#out + 1] = acc % 256
+                        acc, nacc = 0, 0
+                    end
+                end
+            end
+        end
+        if nacc > 0 then
+            out[#out + 1] = (acc * (2 ^ (8 - nacc))) % 256
+        end
+        return out
+    end
+
+    function NET.fire(eventId, hash, ids, spec, lsbFirst)
+        local data = NET.bits(spec, lsbFirst)
+        if not data then return false end
+        return NET.oob(eventId, hash, ids, data)
+    end
+
+    -- Arbitrary read, so a global table can be measured before and after a
+    -- payload instead of guessed at. `rva` is relative to the GTA5.exe image
+    -- base, the coordinate system every address in this file is written in.
+    local function gta_base()
+        local m = mem()
+        if not m or type(m.Module) ~= "function" then return nil end
+        local ok, base = pcall(m.Module, "GTA5.exe")
+        if ok and type(base) == "number" and base > 0x10000 then return base end
+        return nil
+    end
+
+    function NET.rdump(name, addr, len)
+        local m = mem()
+        if not m or type(m.ReadBytes) ~= "function" then return false end
+        addr = math.floor(tonumber(addr) or 0)
+        len = math.floor(tonumber(len) or 0)
+        if addr < 0x10000 or len < 1 or len > 65536 then return false end
+        local ok, bytes = pcall(m.ReadBytes, addr, len)
+        if not ok or type(bytes) ~= "table" then return false end
+        local lines = { string.format("%X %d", addr, #bytes) }
+        local chunk = {}
+        for i = 1, #bytes do
+            chunk[#chunk + 1] = string.format("%02X", (bytes[i] or 0) % 256)
+            if #chunk == 32 then
+                lines[#lines + 1] = table.concat(chunk)
+                chunk = {}
+            end
+        end
+        if #chunk > 0 then lines[#lines + 1] = table.concat(chunk) end
+        local file = string.format("%s.ssn", tostring(name or "rnd"))
+        pcall(function() return Susano.WriteFile(file, table.concat(lines, "\n")) end)
+        O.log("net read: %d bytes @ %X -> %s", #bytes, addr, file)
+        return true
+    end
+
+    function NET.rdumpRva(name, rva, len)
+        local base = gta_base()
+        if not base then O.log("net read: GTA5.exe base unavailable"); return false end
+        return NET.rdump(name, base + math.floor(tonumber(rva) or 0), len)
+    end
+
     -- Dump the first bytes of every event handler. The code of GTA5.exe is
     -- encrypted on disk (only .rdata/.pdata are plaintext), so the only way to
     -- read a handler is from the live process. Written as hex so the file can
@@ -22543,12 +22633,37 @@ local NET = (function(O, C)
         -- extracted offline with capstone from the 85 handler bodies; this list
         -- is their union, so one click dumps the whole per-event layer.
         local ranges = {
-            -- The serializer/deserializer bodies. Every per-event vtable slot
-            -- +0x28 (Write) and +0x30 (Read) in 0x118xxxx is a 5-byte
-            -- `jmp rel32` into this block; the real code lives here.
-            --   75 distinct Read bodies  -> 0x1169E10 .. 0x11713A4
-            --   72 distinct Write bodies -> same block
-            -- Margins keep the shared bit/string readers that sit next to them.
+            -- Phase 2: the shared bit/stream readers. Every Read body calls
+            -- one of these and every one of them lives outside the serializer
+            -- block, so this is the only remaining unknown in the deserialize
+            -- path: whether an exhausted stream leaves the destination
+            -- untouched (garbage in the event object) or zeroes it.
+            --   r8  = bit count for the generic readers, r9 = index width for
+            --   the enum/float table readers, 1-bit for 0x1372620.
+            { 0x03000,   0x04000    }, -- 0x3098
+            { 0x0679000, 0x067A000  }, -- 0x679554  scalar, 64-bit variant
+            { 0x06A9000, 0x06AB000  }, -- 0x6AAC40  enum table, 0x6AAE90 float table
+            { 0x0A5F000, 0x0A60000  }, -- 0xA5FD50, 0xA5FBF0
+            { 0x10E6000, 0x10E8000  }, -- 0x10E6E68, 0x10E6ECC
+            { 0x110B000, 0x110C000  }, -- 0x110B6C4 32-bit field, 18 call sites
+            { 0x1372000, 0x1373000  }, -- 0x1372620 1-bit, 0x1372550, 0x1372B78
+            { 0x142C000, 0x142D000  }, -- 0x142C378 generic reader, 71 call sites
+            { 0x1679000, 0x167A000  }, -- 0x16791B8 generic reader, 62 call sites
+            { 0x1188000, 0x1189000  }, -- 0x1188D7C, 0x1188E18, 0x118A040 nested
+
+            -- Phase 2b: the apply-layer callees that receive a raw wire value
+            -- as an argument, so the only way to know whether that value is a
+            -- pointer, an index or an opaque id is to read the callee.
+            { 0x1099000, 0x109B000  }, -- 0x1099960 id 83 arg1, 0x1099770
+            { 0x10A6000, 0x10A8000  }, -- 0x10A6388 world-state factory
+            { 0x10AD000, 0x10B0000  }, -- 0x10ADFD0, 0x10AEAF C explosion helpers
+            { 0x10B7000, 0x10B9000  }, -- 0x10B7AD8 descriptor -> object
+            { 0x1179000, 0x117A000  }, -- world-state sub-deserializers
+
+            -- Phase 1, already collected but kept last so a fresh profile gets
+            -- a self-contained dump: every per-event vtable slot +0x28 (Write)
+            -- and +0x30 (Read) in 0x118xxxx is a 5-byte `jmp rel32` into this
+            -- block; 75 distinct Read bodies, 72 Write bodies.
             { 0x1160000, 0x1178000 },
         }
         local CHUNK = 512
@@ -24525,7 +24640,7 @@ function A.boot()
 
     if A._booted then return end
     A._booted = true
-    O.log("loader build 2026-10-29-r12 (serializer bodies)")
+    O.log("loader build 2026-10-29-r13 (reader helpers + apply callees)")
     O.log("protection defaults: anti-freeze, anti-attach, anti-spectate, ped guard armed")
     O.every("evasion", 900, A.tick, 350)
     O.every("pedGuardWatch", 100, A.pedGuardWatch, 0)
@@ -31922,6 +32037,29 @@ local function installCrasher()
             type = "action",
             onClick = function()
                 NET.tblCensus()
+            end,
+        },
+        {
+            name = "Net pack",
+            type = "action",
+            onClick = function()
+                local bytes = NET.bits({
+                    { bits = 64, val = { 0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11 } },
+                    { bits = 32, val = 0x9ABCDEF0 },
+                    { bits = 32, val = 0 },
+                })
+                local hex = {}
+                for i = 1, #(bytes or {}) do
+                    hex[#hex + 1] = string.format("%02X", bytes[i])
+                end
+                O.log("net pack: %s", table.concat(hex))
+            end,
+        },
+        {
+            name = "Net ex",
+            type = "action",
+            onClick = function()
+                NET.rdumpRva("netex", 0x2A30250, 0x100)
             end,
         },
     }
