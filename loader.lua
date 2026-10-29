@@ -22351,33 +22351,72 @@ local NET = (function(O, C)
     -- pop areas, etc. Capturing one gives the real ScEvent bitstream instead
     -- of a guess, and it can be replayed verbatim afterwards.
     NET.captured = {}
+    NET.capLimit = 20
+
+    local function save_captured()
+        if type(Susano) ~= "table" or type(Susano.WriteFile) ~= "function" then return end
+        local list = NET.captured or {}
+        pcall(Susano.WriteFile, "netsniff.ssn", table.concat(list, "\n"))
+    end
+
     local function sniff_event_cb(get)
+        if NET.sniffStop then return nil end
+        if NET.captured and #NET.captured >= (NET.capLimit or 20) then
+            NET.sniffStop = true
+            return nil
+        end
         local ptr = get(3)
         local len = get(4)
         if type(ptr) ~= "number" or type(len) ~= "number" then return nil end
         if len < 12 or len > 1200 then return nil end
+        local now = GetGameTimer()
+        if NET.sniffAt and now - NET.sniffAt < 60 then return nil end
         local magic = read_u32(ptr)
         if magic ~= 0x2B513E19 then return nil end
+        NET.sniffAt = now
         local n = math.min(len, 1024)
         local ok, bytes = pcall(Susano.Memory.ReadBytes, ptr, n)
         if not ok or type(bytes) ~= "table" or #bytes == 0 then return nil end
         local out = {}
         for i = 1, #bytes do out[i] = string.format("%02x", bytes[i] % 256) end
         local hex = table.concat(out)
-        NET.captured[#NET.captured + 1] = hex
-        if #NET.captured <= 40 then
-            O.log("net event #%d len=%d %s", #NET.captured, n, hex)
+        -- decode the ClientNetGameEventV2 header for the log
+        local count = bytes[5] or 0
+        local p = 6 + count * 2
+        local nameHash, eventId, isReply = 0, 0, 0
+        if p + 6 <= #bytes then
+            nameHash = (bytes[p] or 0) + (bytes[p+1] or 0) * 256
+                     + (bytes[p+2] or 0) * 65536 + (bytes[p+3] or 0) * 16777216
+            eventId = (bytes[p+4] or 0) + (bytes[p+5] or 0) * 256
+            isReply = bytes[p+6] or 0
         end
+        NET.captured[#NET.captured + 1] = hex
+        save_captured()
+        O.log("net event #%d len=%d targets=%d name=0x%08X id=%d reply=%d %s",
+              #NET.captured, n, count, nameHash, eventId, isReply, hex)
+        if #NET.captured >= (NET.capLimit or 20) then NET.sniffStop = true end
         return nil
     end
 
     function NET.sniffEvents(seconds)
         NET.captured = {}
-        return run_window(sniff_event_cb, seconds or 60, "sniff")
+        NET.sniffAt = 0
+        NET.sniffStop = false
+        local ok = run_window(sniff_event_cb, seconds or 60, "sniff")
+        if type(Menu) == "table" then Menu.Visible = false end
+        O.log("net sniff: move freely, will stop after %d captures", NET.capLimit or 20)
+        return ok
     end
 
     function NET.dumpEvents()
         local list = NET.captured or {}
+        if #list == 0 and type(Susano) == "table" and type(Susano.ReadFile) == "function" then
+            local ok, raw = pcall(Susano.ReadFile, "netsniff.ssn")
+            if ok and type(raw) == "string" and #raw > 0 then
+                for line in raw:gmatch("[^\r\n]+") do list[#list + 1] = line end
+                NET.captured = list
+            end
+        end
         local lines = { ("net event dump: %d captured"):format(#list) }
         for i = 1, #list do
             lines[#lines + 1] = ("ev %d: %s"):format(i, list[i])
@@ -22405,7 +22444,10 @@ local NET = (function(O, C)
         local span = tonumber(seconds) or 12
         Citizen.CreateThread(function()
             local deadline = GetGameTimer() + span * 1000
-            while GetGameTimer() < deadline and not NET.releasePending do Citizen.Wait(100) end
+            while GetGameTimer() < deadline and not NET.releasePending
+                  and not (label == "sniff" and NET.sniffStop) do
+                Citizen.Wait(100)
+            end
             Citizen.Wait(60)
             if NET.hookId ~= nil then unhook_now() end
             NET.busy = false
