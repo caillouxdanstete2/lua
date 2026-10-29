@@ -22543,19 +22543,13 @@ local NET = (function(O, C)
         -- extracted offline with capstone from the 85 handler bodies; this list
         -- is their union, so one click dumps the whole per-event layer.
         local ranges = {
-            -- The whole per-event block, contiguous in build 3751:
-            --   0x1178xxx  Write             (vtable +0x00)
-            --   0x117Axxx  IsValid           (vtable +0x38)
-            --   0x1180xxx  handlers 73/77/86
-            --   0x11822xx  GetTypeId         (vtable +0x08)
-            --   0x1182Dxx  Read              (vtable +0x30)
-            --   0x1184xxx  per-event helper  (vtable +0x10)
-            --   0x1187xxx  Write variant     (vtable +0x28 / +0x50)
-            { 0x1177C00, 0x118A000 },
-            { 0x0A4F400, 0x0A4F800 },  -- shared Handle (vtable +0x58)
-            { 0x1719B00, 0x171BA20 },  -- object-id ctors + shared base ctor
-            { 0x1724C00, 0x1725100 },  -- handlers for events 0,1,2
-            { 0x171C100, 0x171C420 },  -- shared dispatch free-list
+            -- The serializer/deserializer bodies. Every per-event vtable slot
+            -- +0x28 (Write) and +0x30 (Read) in 0x118xxxx is a 5-byte
+            -- `jmp rel32` into this block; the real code lives here.
+            --   75 distinct Read bodies  -> 0x1169E10 .. 0x11713A4
+            --   72 distinct Write bodies -> same block
+            -- Margins keep the shared bit/string readers that sit next to them.
+            { 0x1160000, 0x1178000 },
         }
         local CHUNK = 512
         local PER = 20
@@ -22566,7 +22560,7 @@ local NET = (function(O, C)
             if #rlines == 0 then return end
             rpart = rpart + 1
             pcall(function()
-                return Susano.WriteFile(string.format("netev_%d.ssn", rpart),
+                return Susano.WriteFile(string.format("netrx_%d.ssn", rpart),
                                         table.concat(rlines, "\n"))
             end)
             rlines = {}
@@ -22590,7 +22584,7 @@ local NET = (function(O, C)
             end
         end
         flushRange()
-        O.log("net rng: %d bytes in %d files (netev_*.ssn)", rbytes, rpart)
+        O.log("net rng: %d bytes in %d files (netrx_*.ssn)", rbytes, rpart)
         return true
     end
 
@@ -24531,7 +24525,7 @@ function A.boot()
 
     if A._booted then return end
     A._booted = true
-    O.log("loader build 2026-10-29-r11 (full event code dump)")
+    O.log("loader build 2026-10-29-r12 (serializer bodies)")
     O.log("protection defaults: anti-freeze, anti-attach, anti-spectate, ped guard armed")
     O.every("evasion", 900, A.tick, 350)
     O.every("pedGuardWatch", 100, A.pedGuardWatch, 0)
