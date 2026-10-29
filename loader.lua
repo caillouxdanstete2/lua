@@ -22006,6 +22006,17 @@ local NET = (function(O, C)
         return true
     end
 
+    -- NetLibrary::Create() caches the live instance in a process global.
+    --   qword_1800E7A38  ->  net.dll + 0xE7A38   (.data)
+    -- Verified in IDA 9.5 / Hex-Rays on net.dll (build 3751):
+    --   * Create() stores the new NetLibrary there under the MSVC
+    --     thread-safe-init guard (dword_1800E7A40).
+    --   * sub_18003A7F0 reads that same global and writes this+0x3C/+0x44,
+    --     i.e. it is used as a NetLibrary*.
+    --   * NetLibrary::GetConnectionState returns [this+0x48].
+    -- Reading the global beats every heuristic scan: no false positives.
+    NET.SINGLETON_RVA = 0xE7A38
+
     function NET.find_instance()
         local function fail(why, v)
             if not NET.diagFail then
@@ -22018,53 +22029,37 @@ local NET = (function(O, C)
         end
         local base = NET.base
         if type(base) ~= "number" or base == 0 then return fail("base", base) end
-        local mz = read_u16(base)
-        if mz ~= 0x5A4D then return fail("mz", mz) end
-        local e = read_u32(base + 0x3C)
-        if type(e) ~= "number" or e == 0 or not is_valid(base + e) then
-            return fail("e_lfanew", e)
-        end
-        local pesig = read_u32(base + e)
-        if pesig ~= 0x00004550 then return fail("pe_sig", pesig) end
 
-        local nsec = read_u16(base + e + 6)
-        local opth = read_u16(base + e + 20)
-        if type(nsec) ~= "number" or nsec < 1 or nsec > 96 then return fail("nsec", nsec) end
-        if type(opth) ~= "number" or opth < 0x60 or opth > 0x400 then return fail("opth", opth) end
-
-        local image = read_u32(base + e + 24 + 56)
-        if type(image) ~= "number" or image < 0x1000 or image > 0x8000000 then
-            return fail("image", image)
+        local inst = read_u64(base + NET.SINGLETON_RVA)
+        if type(inst) ~= "number" or inst < 0x10000 then
+            return fail("singleton", inst)
         end
 
-        local sec = base + e + 24 + opth
-        local data_va, data_size = nil, 0
-        for i = 0, nsec - 1 do
-            local entry = sec + i * 40
-            local name = section_name(entry)
-            local size = read_u32(entry + 8)
-            local va = read_u32(entry + 12)
-            if type(size) == "number" and type(va) == "number" and va >= 0x1000 then
-                if name == ".data" and size > data_size then
-                    data_va, data_size = va, size
-                end
-            end
+        local vt = NET.vtable
+        local got_vt = read_u64(inst)
+        if type(vt) == "number" and vt ~= 0 and got_vt ~= vt then
+            return fail("vt_mismatch", string.format("0x%X!=0x%X", got_vt or 0, vt))
         end
 
-        local found = nil
-        if data_va and data_size > 0 then
-            found = scan(base, data_va, data_size, NET.vtable)
+        local impl = read_u64(inst + 0x20)
+        local refs = read_u64(inst + 0x28)
+        if type(impl) ~= "number" or impl < 0x10000 then
+            return fail("impl", impl)
         end
-        if not found then
-            found = scan(base, 0x1000, image, NET.vtable)
+        if type(refs) ~= "number" or refs < 0x10000 then
+            return fail("refs", refs)
         end
+
+        local state = read_u32(inst + 0x48)
         if not NET.diag then
             NET.diag = true
-            O.log("net diag: base=0x%X vt=0x%X data=0x%X/%X image=0x%X found=%s",
-                  base, NET.vtable or 0, data_va or 0, data_size or 0,
-                  image, tostring(found))
+            O.log("net diag: base=0x%X inst=0x%X vt=0x%X impl=0x%X refs=0x%X state=%s",
+                  base, inst, got_vt or 0, impl, refs, tostring(state))
         end
-        return found
+        if state ~= CONNECTED then
+            O.log("net diag: not connected (state=%s)", tostring(state))
+        end
+        return inst
     end
 
     function NET.resolve_instance()
@@ -22300,27 +22295,20 @@ local NET = (function(O, C)
         if type(netIds) ~= "table" or #netIds == 0 then return false end
         if NET.busy or NET.releasePending then return false end
         if not NET.init() then O.log("net event: net.dll not ready"); return false end
-        if not NET.resolve_instance() then O.log("net event: no NetLibrary instance"); return false end
-        if not ensure_hook() then O.log("net event: RunMainFrame hook failed"); return false end
+        local inst = NET.resolve_instance()
+        if not inst then O.log("net event: no NetLibrary instance"); return false end
+        NET.busy = true
         NET.queue = { { raw = true, hash = 0x2B513E19,
                         bytes = pack_event(netIds, eventHash, eventId, dataBytes or {}) } }
-        NET.sent = 0
-        NET.frame = 0
-        NET.aborted = nil
-        NET.windowStart = 0
-        NET.windowCount = 0
-        NET.busy = true
-        NET.armed = true
-        Citizen.CreateThread(function()
-            local deadline = GetGameTimer() + 5000
-            while NET.armed and GetGameTimer() < deadline do Citizen.Wait(50) end
-            if NET.armed then abort("timeout") end
-            Citizen.Wait(80)
-            if NET.releasePending then unhook_now() end
-            NET.busy = false
-            O.log("net event: %s sent %d", tostring(NET.aborted or "ok"), NET.sent)
+        local item = NET.queue[1]
+        NET.queue = {}
+        local ok = false
+        local pok, err = pcall(function()
+            ok = send(inst, item)
         end)
-        return true
+        NET.busy = false
+        O.log("net event: send ok=%s res=%s err=%s", tostring(pok), tostring(ok), tostring(pok and "nil" or err))
+        return ok
     end
 
     -- The visible half: the operator plays the scenario. The server event that
