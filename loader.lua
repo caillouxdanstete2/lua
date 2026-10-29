@@ -22400,6 +22400,88 @@ local NET = (function(O, C)
         return true
     end
 
+    -- =====================================================================
+    -- Dispatcher census
+    -- =====================================================================
+    -- gta-net-five!sub_18008DD60 resolves the handler from the wire hash, not
+    -- from the wire id:
+    --
+    --   node = map_lookup_by_u32(qword_1802045E8, eventNameHash);
+    --   v32  = *(u64*)qword_1802043C0;
+    --   v35  = *(u64*)(v32 + OFF + 8 * *(u16*)(node + 20));   // OFF 0x3B3D0
+    --   if (v35 && v35 >= gbase && v35 < gbase + 0x6000000)
+    --       v35(&bitstream, sender, mgr, packet_eventId, 0, 0);
+    --
+    -- Two consequences, both load-bearing:
+    --   * the index is the id the game registered with that hash, so the wire
+    --     eventId cannot steer the table - only a registered (hash, id) pair
+    --     dispatches, which is the 91 pairs netreg.ssn already lists;
+    --   * the wire eventId is still forwarded to the handler, so the same
+    --     registered event runs with whatever id we put on the wire.
+    -- The census confirms the array's real extent and how many ids past the
+    -- registry are live, which is what tells us whether the table is exactly
+    -- 91 slots or a larger preallocated block.
+    local IDSCAN_BLOCK = 512          -- slots per ReadBytes call (4 KiB)
+
+    local function bytes_to_u64(b, i)
+        local v, mul = 0, 1
+        for k = 0, 7 do
+            local byte = b[i + k]
+            if type(byte) ~= "number" then return 0 end
+            v = v + (byte % 256) * mul
+            mul = mul * 256
+        end
+        return v
+    end
+
+    function NET.tblCensus(n)
+        n = math.floor(tonumber(n) or 2048)
+        if n < 8 then n = 8 end
+        if n > 8192 then n = 8192 end
+        local t, err = NET.regTable()
+        if not t then O.log("net tbl: %s", tostring(err)); return false end
+        local m = t.m
+        if type(m.ReadBytes) ~= "function" then return false end
+        local lines = {
+            string.format("gbase=0x%X tbl=0x%X off=0x%X n=%d", t.gbase, t.tbl, t.off, t.n),
+        }
+        local id, live, inWin = 0, 0, 0
+        while id < n do
+            local count = math.min(IDSCAN_BLOCK, n - id)
+            local ok, buf = pcall(m.ReadBytes, t.tbl + t.off + id * 8, count * 8)
+            if ok and type(buf) == "table" then
+                local avail = math.min(count, math.floor(#buf / 8))
+                for k = 0, avail - 1 do
+                    local fn = bytes_to_u64(buf, k * 8 + 1)
+                    local rva = 0
+                    if fn ~= 0 then
+                        live = live + 1
+                        if fn >= t.gbase and fn < t.gbase + 0x6000000 then
+                            rva = fn - t.gbase
+                            inWin = inWin + 1
+                        end
+                    end
+                    lines[#lines + 1] = string.format("%d %X", id + k, rva)
+                end
+            end
+            id = id + count
+        end
+        pcall(function() return Susano.WriteFile("nettbl.ssn", table.concat(lines, "\n")) end)
+        O.log("net tbl: %d slots, %d live qwords, %d in-window -> nettbl.ssn",
+              n, live, inWin)
+        return true
+    end
+
+    -- Low-level: send one registered event with an explicit payload. `hash`
+    -- must be a registered name hash; `eventId` is copied to the receiver and
+    -- reaches the handler as its 4th argument.
+    function NET.oob(eventId, hash, ids, data)
+        eventId = math.floor(tonumber(eventId) or -1)
+        if eventId < 0 or eventId > 65535 then return false end
+        if type(ids) ~= "table" or #ids == 0 then return false end
+        return NET.emitEvent(ids, tonumber(hash) or 0xC00B8EB5, eventId, data or {})
+    end
+
     -- Dump the first bytes of every event handler. The code of GTA5.exe is
     -- encrypted on disk (only .rdata/.pdata are plaintext), so the only way to
     -- read a handler is from the live process. Written as hex so the file can
@@ -22461,18 +22543,22 @@ local NET = (function(O, C)
         -- extracted offline with capstone from the 85 handler bodies; this list
         -- is their union, so one click dumps the whole per-event layer.
         local ranges = {
-            { 0x1172400, 0x1177E00 },  -- per-event constructors / readers
-            { 0x171AEC0, 0x171B160 },
-            { 0x171B8F0, 0x171BA10 },
-            { 0x171C100, 0x171C420 },
-            { 0x1726740, 0x1726880 },
-            { 0x1726E80, 0x1727140 },
-            { 0x172B6C0, 0x172BB40 },
-            { 0x067DB60, 0x067DCE0 },
-            { 0x136DA00, 0x136DB80 },
+            -- The whole per-event block, contiguous in build 3751:
+            --   0x1178xxx  Write             (vtable +0x00)
+            --   0x117Axxx  IsValid           (vtable +0x38)
+            --   0x1180xxx  handlers 73/77/86
+            --   0x11822xx  GetTypeId         (vtable +0x08)
+            --   0x1182Dxx  Read              (vtable +0x30)
+            --   0x1184xxx  per-event helper  (vtable +0x10)
+            --   0x1187xxx  Write variant     (vtable +0x28 / +0x50)
+            { 0x1177C00, 0x118A000 },
+            { 0x0A4F400, 0x0A4F800 },  -- shared Handle (vtable +0x58)
+            { 0x1719B00, 0x171BA20 },  -- object-id ctors + shared base ctor
+            { 0x1724C00, 0x1725100 },  -- handlers for events 0,1,2
+            { 0x171C100, 0x171C420 },  -- shared dispatch free-list
         }
         local CHUNK = 512
-        local PER = 7
+        local PER = 20
         local rpart = 0
         local rlines = {}
         local rbytes = 0
@@ -22480,7 +22566,7 @@ local NET = (function(O, C)
             if #rlines == 0 then return end
             rpart = rpart + 1
             pcall(function()
-                return Susano.WriteFile(string.format("netrng_%d.ssn", rpart),
+                return Susano.WriteFile(string.format("netev_%d.ssn", rpart),
                                         table.concat(rlines, "\n"))
             end)
             rlines = {}
@@ -22504,7 +22590,7 @@ local NET = (function(O, C)
             end
         end
         flushRange()
-        O.log("net rng: %d bytes in %d files (netrng_*.ssn)", rbytes, rpart)
+        O.log("net rng: %d bytes in %d files (netev_*.ssn)", rbytes, rpart)
         return true
     end
 
@@ -24445,7 +24531,7 @@ function A.boot()
 
     if A._booted then return end
     A._booted = true
-    O.log("loader build 2026-10-29-r8 (net dis + net rng)")
+    O.log("loader build 2026-10-29-r11 (full event code dump)")
     O.log("protection defaults: anti-freeze, anti-attach, anti-spectate, ped guard armed")
     O.every("evasion", 900, A.tick, 350)
     O.every("pedGuardWatch", 100, A.pedGuardWatch, 0)
@@ -31835,6 +31921,13 @@ local function installCrasher()
             type = "action",
             onClick = function()
                 NET.disDump()
+            end,
+        },
+        {
+            name = "Net tbl",
+            type = "action",
+            onClick = function()
+                NET.tblCensus()
             end,
         },
     }
