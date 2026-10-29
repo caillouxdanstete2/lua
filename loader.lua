@@ -22346,6 +22346,49 @@ local NET = (function(O, C)
         return nil
     end
 
+    -- Sniffer for outgoing msgNetGameEventV2 (0x2B513E19). The game itself
+    -- emits SCRIPT_WORLD_STATE_EVENT for rope, PtFX, road nodes, car gens,
+    -- pop areas, etc. Capturing one gives the real ScEvent bitstream instead
+    -- of a guess, and it can be replayed verbatim afterwards.
+    NET.captured = {}
+    local function sniff_event_cb(get)
+        local ptr = get(3)
+        local len = get(4)
+        if type(ptr) ~= "number" or type(len) ~= "number" then return nil end
+        if len < 12 or len > 1200 then return nil end
+        local magic = read_u32(ptr)
+        if magic ~= 0x2B513E19 then return nil end
+        local n = math.min(len, 1024)
+        local ok, bytes = pcall(Susano.Memory.ReadBytes, ptr, n)
+        if not ok or type(bytes) ~= "table" or #bytes == 0 then return nil end
+        local out = {}
+        for i = 1, #bytes do out[i] = string.format("%02x", bytes[i] % 256) end
+        local hex = table.concat(out)
+        NET.captured[#NET.captured + 1] = hex
+        if #NET.captured <= 40 then
+            O.log("net event #%d len=%d %s", #NET.captured, n, hex)
+        end
+        return nil
+    end
+
+    function NET.sniffEvents(seconds)
+        NET.captured = {}
+        return run_window(sniff_event_cb, seconds or 60, "sniff")
+    end
+
+    function NET.dumpEvents()
+        local list = NET.captured or {}
+        local lines = { ("net event dump: %d captured"):format(#list) }
+        for i = 1, #list do
+            lines[#lines + 1] = ("ev %d: %s"):format(i, list[i])
+        end
+        for i = 1, #lines do O.log("%s", lines[i]) end
+        if type(Susano) == "table" and type(Susano.CopyToClipboard) == "function" then
+            pcall(Susano.CopyToClipboard, table.concat(lines, "\n"))
+        end
+        return #list
+    end
+
     local function run_window(callback, seconds, label)
         if NET.busy or NET.releasePending then O.log("net: lane busy"); return false end
         if not NET.init() then O.log("net: net.dll not ready"); return false end
@@ -31487,6 +31530,20 @@ local function installCrasher()
             type = "action",
             onClick = function()
                 C.crawlProbe()
+            end,
+        },
+        {
+            name = "Net sniff",
+            type = "action",
+            onClick = function()
+                NET.sniffEvents(60)
+            end,
+        },
+        {
+            name = "Net dump",
+            type = "action",
+            onClick = function()
+                NET.dumpEvents()
             end,
         },
     }
