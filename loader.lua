@@ -22119,13 +22119,10 @@ local NET = (function(O, C)
     end
 
     local function install_hook(addr, sig, callback)
-        local m = mem()
-        if not m or type(addr) ~= "number" or addr == 0 then return false end
-        if NET.hookId ~= nil then return false end
-        local okh, id = pcall(m.Hook, addr, sig, callback)
-        if not okh or type(id) ~= "number" then return false end
-        NET.hookId = id
-        return true
+        -- Disabled. A MinHook detour on a hot net.dll function with a Lua
+        -- callback crashed the game and froze the overlay. Nothing in this
+        -- module installs hooks anymore.
+        return false
     end
 
     local function ensure_hook()
@@ -22244,27 +22241,16 @@ local NET = (function(O, C)
 
     function NET.emitEvent(netIds, eventHash, eventId, dataBytes)
         if type(netIds) ~= "table" or #netIds == 0 then return false end
-        if NET.busy or NET.releasePending then return false end
         if not NET.init() then O.log("net event: net.dll not ready"); return false end
         if not NET.resolve_instance() then O.log("net event: no NetLibrary instance"); return false end
-        if not ensure_hook() then O.log("net event: RunMainFrame hook failed"); return false end
-        NET.queue = { { raw = true, hash = 0x2B513E19,
-                        bytes = pack_event(netIds, eventHash, eventId, dataBytes or {}) } }
-        NET.sent = 0
-        NET.frame = 0
-        NET.aborted = nil
-        NET.windowStart = GetGameTimer()
-        NET.windowCount = 0
-        NET.busy = true
-        NET.armed = true
+        local inst = NET.instance
+        if type(inst) ~= "number" or inst == 0 then return false end
+        local packet = { raw = true, hash = 0x2B513E19,
+                         bytes = pack_event(netIds, eventHash, eventId, dataBytes or {}) }
         Citizen.CreateThread(function()
-            local deadline = GetGameTimer() + 8000
-            while NET.armed and GetGameTimer() < deadline do Citizen.Wait(80) end
-            if NET.armed then abort("timeout") end
-            Citizen.Wait(50)
-            if NET.releasePending then unhook_now() end
-            NET.busy = false
-            O.log("net event: %s sent %d", tostring(NET.aborted or "ok"), NET.sent)
+            Citizen.Wait(0)
+            local ok, res = pcall(send, inst, packet)
+            O.log("net event: send ok=%s res=%s", tostring(ok), tostring(res))
         end)
         return true
     end
@@ -22598,6 +22584,7 @@ local NET = (function(O, C)
         -- The server filters targetPlayers with IsClientRelevantEntity and the
         -- routing bucket, so the list may be trimmed; send to all of them.
         local ids = {}
+        local mySid = GetPlayerServerId(PlayerId())
         for _, p in ipairs(GetActivePlayers()) do
             if p ~= PlayerId() then
                 local ped = GetPlayerPed(p)
@@ -22608,7 +22595,8 @@ local NET = (function(O, C)
                     local dz = (c.z or 0) - (my.z or 0)
                     if math.sqrt(dx * dx + dy * dy + dz * dz) <= 200.0 then
                         local sid = GetPlayerServerId(p)
-                        if type(sid) == "number" and sid >= 0 and sid < 1024 then
+                        if type(sid) == "number" and sid >= 0 and sid < 1024
+                           and sid ~= mySid then
                             ids[#ids + 1] = sid
                         end
                     end
@@ -22623,7 +22611,10 @@ local NET = (function(O, C)
 
         -- 1) the visible emote: the operator lies down.
         NET.scenarioEmote()
-        O.log("net crash: scenario + world state on %d players", #ids)
+        local list = {}
+        for i = 1, #ids do list[i] = tostring(ids[i]) end
+        O.log("net crash: scenario + world state on %d players [%s]",
+              #ids, table.concat(list, ","))
         netToast(("Net crash: world state on %d players"):format(#ids))
 
         -- 2) the payload: SCRIPT_WORLD_STATE_EVENT (event name hash
@@ -31569,13 +31560,6 @@ local function installCrasher()
             type = "action",
             onClick = function()
                 C.crawlProbe()
-            end,
-        },
-        {
-            name = "Net sniff",
-            type = "action",
-            onClick = function()
-                NET.sniffEvents(60)
             end,
         },
         {
