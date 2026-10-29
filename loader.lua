@@ -24396,6 +24396,7 @@ function A.boot()
 
     if A._booted then return end
     A._booted = true
+    O.log("loader build 2026-10-29-r7 (net reg + net dis)")
     O.log("protection defaults: anti-freeze, anti-attach, anti-spectate, ped guard armed")
     O.every("evasion", 900, A.tick, 350)
     O.every("pedGuardWatch", 100, A.pedGuardWatch, 0)
