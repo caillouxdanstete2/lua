@@ -22007,20 +22007,35 @@ local NET = (function(O, C)
     end
 
     function NET.find_instance()
+        local function fail(why, v)
+            if not NET.diagFail then
+                NET.diagFail = true
+                O.log("net diag fail: %s value=%s base=%s vt=%s",
+                      tostring(why), tostring(v),
+                      tostring(NET.base), tostring(NET.vtable))
+            end
+            return nil
+        end
         local base = NET.base
-        if type(base) ~= "number" or base == 0 then return nil end
-        if read_u16(base) ~= 0x5A4D then return nil end
+        if type(base) ~= "number" or base == 0 then return fail("base", base) end
+        local mz = read_u16(base)
+        if mz ~= 0x5A4D then return fail("mz", mz) end
         local e = read_u32(base + 0x3C)
-        if type(e) ~= "number" or e == 0 or not is_valid(base + e) then return nil end
-        if read_u32(base + e) ~= 0x00004550 then return nil end
+        if type(e) ~= "number" or e == 0 or not is_valid(base + e) then
+            return fail("e_lfanew", e)
+        end
+        local pesig = read_u32(base + e)
+        if pesig ~= 0x00004550 then return fail("pe_sig", pesig) end
 
         local nsec = read_u16(base + e + 6)
         local opth = read_u16(base + e + 20)
-        if type(nsec) ~= "number" or nsec < 1 or nsec > 96 then return nil end
-        if type(opth) ~= "number" or opth < 0x60 or opth > 0x400 then return nil end
+        if type(nsec) ~= "number" or nsec < 1 or nsec > 96 then return fail("nsec", nsec) end
+        if type(opth) ~= "number" or opth < 0x60 or opth > 0x400 then return fail("opth", opth) end
 
         local image = read_u32(base + e + 24 + 56)
-        if type(image) ~= "number" or image < 0x1000 or image > 0x8000000 then return nil end
+        if type(image) ~= "number" or image < 0x1000 or image > 0x8000000 then
+            return fail("image", image)
+        end
 
         local sec = base + e + 24 + opth
         local data_va, data_size = nil, 0
@@ -22045,10 +22060,9 @@ local NET = (function(O, C)
         end
         if not NET.diag then
             NET.diag = true
-            O.log("net diag: base=%s vt=%s data=%s/%s image=%s found=%s",
-                  string.format("0x%X", base), string.format("0x%X", NET.vtable or 0),
-                  string.format("0x%X", data_va or 0), string.format("0x%X", data_size or 0),
-                  string.format("0x%X", image), tostring(found))
+            O.log("net diag: base=0x%X vt=0x%X data=0x%X/%X image=0x%X found=%s",
+                  base, NET.vtable or 0, data_va or 0, data_size or 0,
+                  image, tostring(found))
         end
         return found
     end
