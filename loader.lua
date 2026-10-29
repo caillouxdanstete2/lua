@@ -22321,10 +22321,6 @@ local NET = (function(O, C)
     --   sub_18008DD60    -> fn = *(base + OFF + 8*index), OFF in
     --                       {0x3B3D0, 0x3AB80, 0x3AFD0}
     -- index == eventId used on the wire.
-    --
-    -- The table pointer indirection is ambiguous from the decompiler
-    -- (single or double deref), so this dumps both candidates and reports
-    -- how many entries land inside GTA's range. No guessing.
     local REG_HASH_VEC = 0x2045B0
     local REG_BASE_PTR = 0x2043C0
     local REG_GTA_DELTA = 0x2052C8
@@ -22334,26 +22330,24 @@ local NET = (function(O, C)
         return type(fn) == "number" and fn >= gbase and fn < gbase + 0x6000000
     end
 
-    function NET.regDump()
+    function NET.regTable()
         local m = mem()
-        if not m then O.log("net reg: no memory api"); return false end
-        if not NET.init() then O.log("net reg: net.dll not ready"); return false end
+        if not m then return nil, "no memory api" end
+        if not NET.init() then return nil, "net.dll not ready" end
         local okg, g = pcall(m.Module, "gta-net-five.dll")
         if not okg or type(g) ~= "number" or g == 0 then
-            O.log("net reg: gta-net-five.dll not loaded (ok=%s)", tostring(okg))
-            return false
+            return nil, "gta-net-five not loaded"
         end
-
         local delta = read_u64(g + REG_GTA_DELTA) or 0
         local gbase = delta + 0x140000000
         local r0 = read_u64(g + REG_BASE_PTR) or 0
         local r1 = 0
         if r0 > 0x10000 then r1 = read_u64(r0) or 0 end
 
-        local cand = { { name = "r0", ptr = r0 }, { name = "r1", ptr = r1 } }
         local best, bestHits = nil, -1
+        local cands = { r0, r1 }
         for ci = 1, 2 do
-            local t = cand[ci].ptr
+            local t = cands[ci]
             if t > 0x10000 then
                 for oi = 1, #REG_OFFSETS do
                     local hits = 0
@@ -22361,42 +22355,40 @@ local NET = (function(O, C)
                         local fn = read_u64(t + REG_OFFSETS[oi] + i * 8)
                         if in_gta(fn, gbase) then hits = hits + 1 end
                     end
-                    O.log("net reg: cand %s off=0x%X hits=%d/90 tbl=0x%X",
-                          cand[ci].name, REG_OFFSETS[oi], hits, t)
                     if hits > bestHits then
                         bestHits = hits
-                        best = { ptr = t, off = REG_OFFSETS[oi], name = cand[ci].name }
+                        best = { ptr = t, off = REG_OFFSETS[oi] }
                     end
                 end
             end
         end
-        O.log("net reg: g=0x%X delta=0x%X gbase=0x%X r0=0x%X r1=0x%X",
-              g, delta, gbase, r0, r1)
-        if not best or bestHits < 45 then
-            O.log("net reg: no table found (best=%s)", tostring(bestHits))
-            return false
-        end
+        if not best or bestHits < 45 then return nil, "table not found" end
 
-        local vec = g + REG_HASH_VEC
-        local vb = read_u64(vec) or 0
-        local ve = read_u64(vec + 8) or 0
+        local vb = read_u64(g + REG_HASH_VEC) or 0
+        local ve = read_u64(g + REG_HASH_VEC + 8) or 0
         local n = 0
         if vb > 0x10000 and ve > vb then n = math.floor((ve - vb) / 4) end
-        if n < 1 or n > 4096 then
-            O.log("net reg: hash vector empty (send one event first)")
-            return false
-        end
+        if n < 1 or n > 4096 then return nil, "hash vector empty (send one event first)" end
 
+        return {
+            m = m, g = g, gbase = gbase, tbl = best.ptr, off = best.off,
+            n = n, vb = vb, root = r0, single = r1,
+        }
+    end
+
+    function NET.regDump()
+        local t, err = NET.regTable()
+        if not t then O.log("net reg: %s", tostring(err)); return false end
         local lines = {
             string.format("g=0x%X gbase=0x%X tbl=0x%X off=0x%X n=%d",
-                          g, gbase, best.ptr, best.off, n),
+                          t.g, t.gbase, t.tbl, t.off, t.n),
         }
         local okRows = 0
-        for i = 0, n - 1 do
-            local hash = read_u32(vb + i * 4) or 0
-            local fn = read_u64(best.ptr + best.off + i * 8)
+        for i = 0, t.n - 1 do
+            local hash = read_u32(t.vb + i * 4) or 0
+            local fn = read_u64(t.tbl + t.off + i * 8)
             local rva = 0
-            if in_gta(fn, gbase) then rva = fn - gbase; okRows = okRows + 1 end
+            if in_gta(fn, t.gbase) then rva = fn - t.gbase; okRows = okRows + 1 end
             lines[#lines + 1] = string.format("%d %08X %X", i, hash, rva)
         end
         local txt = table.concat(lines, "\n")
@@ -22404,8 +22396,66 @@ local NET = (function(O, C)
         if Susano and type(Susano.CopyToClipboard) == "function" then
             pcall(Susano.CopyToClipboard, txt)
         end
-        O.log("net reg: %d events, %d resolved -> clipboard + netreg.ssn",
-              n, okRows)
+        O.log("net reg: %d events, %d resolved -> netreg.ssn", t.n, okRows)
+        return true
+    end
+
+    -- Dump the first bytes of every event handler. The code of GTA5.exe is
+    -- encrypted on disk (only .rdata/.pdata are plaintext), so the only way to
+    -- read a handler is from the live process. Written as hex so the file can
+    -- be reassembled and disassembled offline.
+    function NET.disDump(size, perFile)
+        size = tonumber(size) or 192
+        perFile = tonumber(perFile) or 18
+        if size < 32 or size > 4096 then return false end
+        local t, err = NET.regTable()
+        if not t then O.log("net dis: %s", tostring(err)); return false end
+        local m = t.m
+        if type(m.ReadBytes) ~= "function" then
+            O.log("net dis: ReadBytes unavailable")
+            return false
+        end
+
+        local total = 0
+        local part = 0
+        local lines = {
+            string.format("gbase=0x%X size=%d n=%d tbl=0x%X off=0x%X",
+                          t.gbase, size, t.n, t.tbl, t.off),
+        }
+        local written = 0
+        for i = 0, t.n - 1 do
+            local fn = read_u64(t.tbl + t.off + i * 8)
+            if in_gta(fn, t.gbase) then
+                local okb, bytes = pcall(m.ReadBytes, fn, size)
+                local hex = {}
+                if okb and type(bytes) == "table" then
+                    for k = 1, #bytes do
+                        hex[#hex + 1] = string.format("%02X", (bytes[k] or 0) % 256)
+                    end
+                end
+                lines[#lines + 1] = string.format("%d %X %s", i, fn - t.gbase,
+                                                  table.concat(hex))
+                written = written + 1
+                total = total + 1
+            end
+            if #lines >= perFile then
+                part = part + 1
+                local name = string.format("netdis_%d.ssn", part)
+                pcall(function()
+                    return Susano.WriteFile(name, table.concat(lines, "\n"))
+                end)
+                lines = { string.format("gbase=0x%X size=%d part=%d", t.gbase, size, part) }
+            end
+        end
+        if #lines > 1 then
+            part = part + 1
+            pcall(function()
+                return Susano.WriteFile(string.format("netdis_%d.ssn", part),
+                                        table.concat(lines, "\n"))
+            end)
+        end
+        O.log("net dis: %d handlers x %d bytes in %d files (netdis_*.ssn)",
+              written, size, part)
         return true
     end
 
@@ -31728,6 +31778,13 @@ local function installCrasher()
             type = "action",
             onClick = function()
                 NET.regDump()
+            end,
+        },
+        {
+            name = "Net dis",
+            type = "action",
+            onClick = function()
+                NET.disDump()
             end,
         },
     }
