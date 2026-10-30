@@ -898,6 +898,7 @@ Menu.Categories = {
             { name = "", isSeparator = true, separatorText = "Attacks" },
             { name = "Ban Player [BETA]", type = "toggle", value = false, risk = true},
             { name = "Shoot Player", type = "action", risk = true},
+            { name = "Ped Flood", type = "action", risk = true},
             { name = "Ragdoll", type = "action"},
             { name = "Launch", type = "action" },
             { name = "Attach Player", type = "toggle", value = false, onClick = function(val)
@@ -13488,6 +13489,20 @@ if Actions.pedFloodItem then
     end
 end
 
+-- Ped Flood is now a first-class row in Troll > Attacks, right under Shoot
+-- Player. Same engine as Crash Method (Menu.ActionPedFlood), same AC block
+-- window, so the two rows cannot drift apart.
+Actions.pedFloodAttackItem = FindItem("Online", "Troll", "Ped Flood")
+if Actions.pedFloodAttackItem then
+    Actions.pedFloodAttackItem.onClick = function()
+        _Stealth.blockAC = true
+        Menu.ActionPedFlood()
+        Citizen.SetTimeout(140000, function()
+            if _Stealth._acUsers <= 0 then _Stealth.blockAC = false end
+        end)
+    end
+end
+
 -- Ped Armed : spawn un ped armÃƒÂ© d'un fusil ÃƒÂ  pompe sur la cible
 -- Ragdoll : force le ragdoll sur la cible via Susano.RequestRagdoll
 function Menu.ActionRagdoll()
@@ -13503,55 +13518,46 @@ function Menu.ActionRagdoll()
     end
 end
 
--- Launch: throw the selected player into the air at high speed.
+-- Launch: throw the selected player into the sky at speed.
 --
--- Why the obvious write is not used
--- ---------------------------------
--- A player ped belongs to the client that owns it. OneSync does not hand a
--- remote player ped to another client, so SetEntityVelocity /
--- ApplyForceToEntity / SetEntityCoords addressed to the victim are local-only:
--- the operator sees a flying copy, the victim sees nothing. That is the same
--- conclusion the sink module documents, and it is why this feature was dead.
+-- Why the first build was weak
+-- ----------------------------
+-- A remote player ped is owned by that player's client. OneSync never grants
+-- control of it, so SetEntityVelocity / ApplyForceToEntity on the victim are
+-- local-only: the operator sees a copy move and the server snaps it back. That
+-- is the 1 m hop-and-jitter. Zero-damage shitty rockets had the same problem:
+-- the blast carries almost no impulse once damageScale is 0.
 --
--- What actually replicates
--- ------------------------
--- An explosion is a networked event. The client creates it locally, the server
--- validates it, and every nearby client re-creates it. The victim's own client
--- therefore applies the blast impulse to the ped it owns, which is a real,
--- authoritative throw. Three blasts are stacked 100 ms apart under the feet; the
--- impulse points radially away from the blast centre, so a centre below the
--- body sends an almost purely vertical throw. Each blast re-reads the ped, so
--- every hit compounds the previous one instead of landing where the ped was.
+-- What actually replicates, and stays under WaveShield V4
+-- ------------------------------------------------------
+-- (1) A networked vehicle this client owns. Its transform is authoritative and
+--     every other client follows it. We spawn a car at the victim's feet and
+--     call NETWORK_EXPLODE_VEHICLE. WaveShield's explosionEvent returns at
+--     `vehicleNetworkId ~= 0`, so the blast is never inspected, never counted
+--     and keeps its full force. This is the throw.
+-- (2) Follow-up blasts of type 11 (DIR_STEAM). The same handler returns at
+--     `explosionType == 11`, so they are ignored by every branch below
+--     (blacklist, invisible, inaudible, limiter, AI). They keep real force
+--     because damageScale is positive, not 0. They stack while the victim is
+--     already airborne and push them higher.
 --
--- Why damageScale is exactly 0.0
--- ------------------------------
--- WaveShield V4's server handler (modules/server/events/explosionEvent.lua)
--- returns before every check on `data.damageScale <= 0`: the invisible and
--- inaudible checks, the type blacklist and the rate limiter are all below that
--- line and never run. A zero-damage blast therefore passes untouched and still
--- carries the physics impulse, so the victim is thrown without losing health.
--- isAudible and isInvisible are pinned anyway so nothing is seen or heard.
+-- The victim is ragdolled first with Susano.RequestRagdoll (network extra
+-- native, engine GUID) so the body is limp when the first blast lands.
 --
--- Fallback
--- --------
--- If the local ped velocity is still flat right after the blasts (a build that
--- zeroes the impulse with damageScale 0, or a server whose explosion handler
--- drops the event), a bounded local impulse runs so the throw is still visible
--- to the operator. It is local-only and emits no event.
---
--- Wire surface: two explosion events, no created entity, no target position
--- write, no weapon, no projectile. Residual risk is limited to servers whose
--- config cancels every explosion or an AC that reads explosionEvent before the
--- damageScale branch.
+-- Wire surface: one created vehicle, one vehicle explosion, six type-11 blasts.
+-- No write to the victim ped at all. Residual risk: entityCreating sees the
+-- spawned car, and a server that cancels every explosion drops both stages.
 Menu.LaunchCooldownMs = 3000
 Menu.LaunchLastAt = 0
-Menu.LaunchBlastType = 4          -- EXP_TAG_ROCKET
-Menu.LaunchBlastBelow = 1.2       -- blast centre under the feet => upward impulse
-Menu.LaunchBlastGap = 100
-Menu.LaunchBlastCount = 3
-Menu.LaunchAssistZ = 95.0
-Menu.LaunchAssistTicks = 7
-Menu.LaunchAssistStep = 30
+Menu.LaunchModel = "sultan"
+Menu.LaunchSpawnBelow = 0.6
+Menu.LaunchLift = 12.0
+Menu.LaunchStages = 3
+Menu.LaunchStageGap = 90
+Menu.LaunchPulseType = 11         -- DIR_STEAM: type the guard early-returns on
+Menu.LaunchPulseCount = 10
+Menu.LaunchPulseGap = 70
+Menu.LaunchPulseDamage = 10.0
 
 function Menu.ActionLaunch()
     local serverId = Menu.SelectedPlayer
@@ -13579,17 +13585,29 @@ function Menu.ActionLaunch()
         if guid ~= 0 then pcall(Susano.RequestRagdoll, guid) end
     end
 
+    local modelName = Menu.LaunchModel or "sultan"
+    local below = Menu.LaunchSpawnBelow or 0.6
+    local lift = Menu.LaunchLift or 12.0
+    local stages = Menu.LaunchStages or 3
+    local stageGap = Menu.LaunchStageGap or 90
+    local pulseType = Menu.LaunchPulseType or 11
+    local pulseCount = Menu.LaunchPulseCount or 10
+    local pulseGap = Menu.LaunchPulseGap or 70
+    local pulseDamage = Menu.LaunchPulseDamage or 10.0
+
     if type(Susano) ~= "table" or type(Susano.InjectResource) ~= "function" then return end
 
     Susano.InjectResource("any", string.format([[
         local targetServerId = %d
-        local blastType = %d
-        local blastBelow = %.2f
-        local blastGap = %d
-        local blastCount = %d
-        local assistZ = %.2f
-        local assistTicks = %d
-        local assistStep = %d
+        local modelName = "%s"
+        local below = %.2f
+        local lift = %.2f
+        local stages = %d
+        local stageGap = %d
+        local pulseType = %d
+        local pulseCount = %d
+        local pulseGap = %d
+        local pulseDamage = %.2f
 
         CreateThread(function()
             local targetPlayerId = nil
@@ -13604,42 +13622,90 @@ function Menu.ActionLaunch()
             local targetPed = GetPlayerPed(targetPlayerId)
             if not targetPed or targetPed == 0 or not DoesEntityExist(targetPed) then return end
 
-            local function blast()
-                if not DoesEntityExist(targetPed) then return end
+            local model = GetHashKey(modelName)
+            RequestModel(model)
+            local loadTries = 150
+            while not HasModelLoaded(model) and loadTries > 0 do
+                Wait(10)
+                loadTries = loadTries - 1
+            end
+            if not HasModelLoaded(model) then return end
+
+            -- One detonation: spawn a networked car under the live ped position,
+            -- take control, and let NETWORK_EXPLODE_VEHICLE do the throwing. The
+            -- guard returns on vehicleNetworkId ~= 0, so this blast is never
+            -- inspected and keeps full force. Repeating the stage follows the
+            -- victim upward (rocket ladder) instead of detonating once at the
+            -- ground.
+            local function detonate()
+                if not DoesEntityExist(targetPed) then return false end
                 local c = GetEntityCoords(targetPed)
-                AddExplosion(c.x, c.y, c.z - blastBelow, blastType, 0.0, false, true, 0.0)
-            end
 
-            for i = 1, blastCount do
-                blast()
-                if i < blastCount then Wait(blastGap) end
-            end
+                local susano = rawget(_G, "Susano")
+                local veh = 0
+                if susano and type(susano.CreateSpoofedVehicle) == "function" then
+                    veh = susano.CreateSpoofedVehicle(model, c.x, c.y, c.z - below,
+                        GetEntityHeading(targetPed), true, true, false) or 0
+                end
+                if not veh or veh == 0 then
+                    veh = CreateVehicle(model, c.x, c.y, c.z - below,
+                        GetEntityHeading(targetPed), true, true) or 0
+                end
+                if not veh or veh == 0 or not DoesEntityExist(veh) then return false end
 
-            -- A ped inside a vehicle is carried by the blast through the
-            -- vehicle body; writing its own velocity would fight the seat and
-            -- is skipped. On foot, a flat local velocity means the impulse did
-            -- not land, so the bounded fallback runs.
-            if GetVehiclePedIsIn(targetPed, false) ~= 0 then return end
+                SetEntityAsMissionEntity(veh, true, true)
+                if NetworkGetEntityIsNetworked(veh) then
+                    NetworkRequestControlOfEntity(veh)
+                    local tries = 0
+                    while not NetworkHasControlOfEntity(veh) and tries < 8 do
+                        Wait(10)
+                        tries = tries + 1
+                        NetworkRequestControlOfEntity(veh)
+                    end
+                end
 
-            Wait(60)
-            local moved = false
-            if DoesEntityExist(targetPed) then
-                local v = GetEntityVelocity(targetPed)
-                moved = (v and v.z > 6.0) or false
-            end
-            if moved then return end
-
-            for _ = 1, assistTicks do
-                if not DoesEntityExist(targetPed) then break end
-                SetEntityVelocity(targetPed, 0.0, 0.0, assistZ)
-                ApplyForceToEntity(targetPed, 1, 0.0, 0.0, assistZ * 40.0,
+                if DoesEntityExist(targetPed) then
+                    local c2 = GetEntityCoords(targetPed)
+                    SetEntityCoordsNoOffset(veh, c2.x, c2.y, c2.z - below, false, false, false)
+                end
+                SetEntityVelocity(veh, 0.0, 0.0, lift)
+                ApplyForceToEntity(veh, 1, 0.0, 0.0, 16000.0,
                     0.0, 0.0, 0.0, 0, false, true, true, false, true)
-                Wait(assistStep)
+                Wait(20)
+                if DoesEntityExist(veh) then
+                    NetworkExplodeVehicle(veh, true, true, false)
+                end
+
+                local wreck = veh
+                CreateThread(function()
+                    Wait(3000)
+                    if DoesEntityExist(wreck) then
+                        SetEntityAsMissionEntity(wreck, true, true)
+                        DeleteEntity(wreck)
+                    end
+                end)
+                return true
             end
+
+            for _ = 1, stages do
+                if not DoesEntityExist(targetPed) then break end
+                detonate()
+                Wait(stageGap)
+            end
+
+            -- DIR_STEAM follow-ups. WaveShield returns at explosionType == 11,
+            -- so these skip the blacklist, invisible, inaudible, limiter and AI
+            -- branches and keep real force (damageScale is positive, not 0).
+            for _ = 1, pulseCount do
+                Wait(pulseGap)
+                if not DoesEntityExist(targetPed) then break end
+                local c = GetEntityCoords(targetPed)
+                AddExplosion(c.x, c.y, c.z - 0.4, pulseType, pulseDamage, true, false, 0.0)
+            end
+
+            SetModelAsNoLongerNeeded(model)
         end)
-    ]], serverId, Menu.LaunchBlastType, Menu.LaunchBlastBelow, Menu.LaunchBlastGap,
-        Menu.LaunchBlastCount, Menu.LaunchAssistZ, Menu.LaunchAssistTicks,
-        Menu.LaunchAssistStep))
+    ]], serverId, modelName, below, lift, stages, stageGap, pulseType, pulseCount, pulseGap, pulseDamage))
 end
 
 function Menu.ActionPedArmed()
