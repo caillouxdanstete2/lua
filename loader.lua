@@ -25504,7 +25504,7 @@ function A.boot()
 
     if A._booted then return end
     A._booted = true
-    O.log("loader build 2026-10-29-r35 (drop: live status in menu row, ground order fix)")
+    O.log("loader build 2026-10-29-r36 (drop: dump-faithful variation, hold 1200)")
     O.log("protection defaults: anti-freeze, anti-attach, anti-spectate, ped guard armed")
     O.every("evasion", 900, A.tick, 350)
     O.every("pedGuardWatch", 100, A.pedGuardWatch, 0)
@@ -33471,11 +33471,16 @@ local DROP = {
 
     -- Cadence de spawn : la reference fait un 13 ms parfaitement regulier,
     -- c'est une signature a elle seule. Jitter entre 13 et 45 ms.
-    waves = 2,
-    perWave = 50,
+    -- Trois vagues de 60 : plus d'echantillons par tentative, et chaque
+    -- vague est supprimee avant la suivante, donc l'empreinte ne grandit pas.
+    waves = 3,
+    perWave = 60,
     spawnGapMin = 13,
     spawnGapMax = 45,
-    hold = 500,
+    -- Maintien avant suppression. 500 ms suffisait pour l'enveloppe mais
+    -- laisse l'update de variation arriver en course avec le delete chez le
+    -- recepteur. 1200 ms : le clone-create et l'update sont traites avant.
+    hold = 1200,
     betweenWaves = 800,
 
     -- Le modele n'est plus `player_zero` en dur : on prend celui de la cible.
@@ -33878,7 +33883,24 @@ local function dropWave(targetPed, model, healthFloor, myPed, wave, createdHandl
         local y = c.y + (math.random() - 0.5) * 1.5
         local z = c.z + 2.0 + math.random() * 3.0
 
-        local ped = dropMake(model, x, y, z, scriptHost, myPed, targetPed)
+        -- Deux variantes alternees, une sur deux.
+        --
+        -- A (paire) : ped cree directement avec le modele final. Le mismatch
+        --             est pedType 4 + modele joueur.
+        -- B (impaire): ped cree avec freemode (jeu de composants large), on
+        --             pose la variation du dump, PUIS on swappe le modele vers
+        --             player_zero (jeu de composants etroit). L'update de
+        --             modele part avec une variation qui n'existe pas pour le
+        --             nouveau modele : c'est litteralement le
+        --             `SetVariation: Invalid variation` du dump, et c'est le
+        --             chemin HandleCloneUpdate.
+        local useModel = model
+        if i % 2 == 0 and DROP.playerFallback2 ~= 0
+           and dropLoadModel(DROP.playerFallback2) then
+            useModel = DROP.playerFallback2
+        end
+
+        local ped = dropMake(useModel, x, y, z, scriptHost, myPed, targetPed)
         if ped ~= 0 and DoesEntityExist(ped) then
             pcall(SetEntityLocallyInvisible, ped)
             pcall(SetEntityCollision, ped, false, false)
@@ -33896,6 +33918,22 @@ local function dropWave(targetPed, model, healthFloor, myPed, wave, createdHandl
             end
             pcall(TaskStartScenarioInPlace, ped,
                   DROP.scenarios[(i % scenarioCount) + 1], 0, true)
+
+            -- Variation exacte du dump du 2026-10-29 : slot 3 drawbl 0 tex 5
+            -- et slot 8 drawbl 0 tex 1. Sur notre client le ped porte un
+            -- modele joueur, donc ces indices sont valides et rien ne casse
+            -- ici. Chez le recepteur, le clone-create dit pedType 4 : sa
+            -- table de composants est celle d'un civil, ces deux indices n'y
+            -- existent pas, SetVariation echoue, et c'est le DEP.
+            pcall(SetPedComponentVariation, ped, 3, 0, 5, 0)
+            pcall(SetPedComponentVariation, ped, 8, 0, 1, 0)
+
+            -- Variante B : le modele change APRES la variation. L'update de
+            -- modele transporte une variation calibree pour freemode, que le
+            -- recepteur applique a un ped dont le modele vient de changer.
+            if useModel ~= model then
+                pcall(SetEntityModel, ped, model)
+            end
             batch[#batch + 1] = ped
             if createdHandles then createdHandles[#createdHandles + 1] = ped end
             made = made + 1
@@ -34113,7 +34151,7 @@ local function dropRun()
             removed = removed + gone
             O.log("drop: wave %d/%d, %d created, %d removed, %d unnetworked",
                   wave, DROP.waves, made, gone, notNet)
-            dropStatus(("w%d %d/%d"):format(wave, made, gone))
+            dropStatus(("w%d %d/%d u%d"):format(wave, made, gone, notNet))
             if wave < DROP.waves then Citizen.Wait(DROP.betweenWaves) end
         end
     end)
