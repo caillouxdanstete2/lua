@@ -25504,7 +25504,7 @@ function A.boot()
 
     if A._booted then return end
     A._booted = true
-    O.log("loader build 2026-10-29-r34 (drop: player model forced, no cooldown)")
+    O.log("loader build 2026-10-29-r35 (drop: live status in menu row, ground order fix)")
     O.log("protection defaults: anti-freeze, anti-attach, anti-spectate, ped guard armed")
     O.every("evasion", 900, A.tick, 350)
     O.every("pedGuardWatch", 100, A.pedGuardWatch, 0)
@@ -33534,6 +33534,16 @@ DROP.fallbackModel = dropS("player_", "zero")
 -- et toutes les appels suivants echouent en silence : la ligne ne fait plus
 -- rien et personne ne voit pourquoi. On resout au premier appel utile, avec
 -- fallback sur le nom voisin.
+-- Statut affiche DANS le libelle de la ligne du menu. La library relit
+-- item.name a chaque frame (library.lua:610), donc l'operateur voit l'etat
+-- sans console et sans notification.
+local function dropStatus(text)
+    local row = DROP.row
+    if type(row) == "table" then
+        row.name = "Crash  " .. tostring(text)
+    end
+end
+
 local function dropNative(name)
     local ok, fn = pcall(function() return _G[name] end)
     if ok and type(fn) == "function" then return fn end
@@ -33966,11 +33976,14 @@ local function dropGround(targetPed, model, myPed, healthFloor)
                 Citizen.Wait(10)
             end
             local okM, origModel = pcall(GetEntityModel, pick)
-            local c = GetEntityCoords(targetPed)
-            pcall(SetEntityCoords, pick, c.x, c.y, c.z + 0.5, false, false, false, false)
+            -- Le modele D'ABORD : tant que le ped est dans notre portee, on est
+            -- sur de pouvoir le modifier. Le deplacement vers la cible vient
+            -- apres, parce qu'il peut nous sortir de portee.
             pcall(SetEntityModel, pick, model)
             local okV, got = pcall(GetEntityModel, pick)
             if okV and got == model then
+                local c = GetEntityCoords(targetPed)
+                pcall(SetEntityCoords, pick, c.x, c.y, c.z + 0.5, false, false, false, false)
                 touched[#touched + 1] = { ped = pick, model = (okM and origModel) or 0 }
                 made = made + 1
             end
@@ -33993,6 +34006,7 @@ local function dropRun()
     if type(api) ~= "table" then
         DROP.running = false
         O.log("drop: abort, executor missing")
+        dropStatus("abort executor")
         pcall(Notify, "Drop: no executor", CLR.red)
         return
     end
@@ -34001,6 +34015,7 @@ local function dropRun()
     if not player then
         DROP.running = false
         O.log("drop: abort, no target")
+        dropStatus("abort target")
         pcall(Notify, "Drop: no target", CLR.red)
         return
     end
@@ -34009,6 +34024,7 @@ local function dropRun()
     if type(targetPed) ~= "number" or targetPed == 0 or not DoesEntityExist(targetPed) then
         DROP.running = false
         O.log("drop: abort, bad target ped")
+        dropStatus("abort ped")
         pcall(Notify, "Drop: bad target", CLR.red)
         return
     end
@@ -34021,11 +34037,13 @@ local function dropRun()
     if dist > DROP.maxDist then
         DROP.running = false
         O.log("drop: abort, target at %.0f m beyond %.0f m", dist, DROP.maxDist)
+        dropStatus(("abort %.0f m"):format(dist))
         pcall(Notify, "Drop: target too far", CLR.red)
         return
     end
 
     O.log("drop: start, target %d at %.0f m", GetPlayerServerId(player), dist)
+    dropStatus(("start %.0f m"):format(dist))
     pcall(Notify, ("Drop: start %.0f m"):format(dist), CLR.blue)
 
     local okHp0, hp0 = pcall(GetEntityHealth, myPed)
@@ -34037,10 +34055,12 @@ local function dropRun()
     if type(model) ~= "number" or model == 0 or not HasModelLoaded(model) then
         DROP.running = false
         O.log("drop: abort, no usable model")
+        dropStatus("abort model")
         pcall(Notify, "Drop: no model", CLR.red)
         return
     end
     O.log("drop: rung %d, model %d", DROP.rung, model)
+    dropStatus(("rung %d"):format(DROP.rung))
 
     local total, removed = 0, 0
     local createdHandles = {}
@@ -34080,6 +34100,7 @@ local function dropRun()
         dropRestore(myPed, origin)
         DROP.running = false
         O.log("drop: abort, envelope refused, only %.0f m", lift)
+        dropStatus("abort envelope")
         pcall(Notify, "Drop: envelope refused", CLR.red)
         return
     end
@@ -34092,6 +34113,7 @@ local function dropRun()
             removed = removed + gone
             O.log("drop: wave %d/%d, %d created, %d removed, %d unnetworked",
                   wave, DROP.waves, made, gone, notNet)
+            dropStatus(("w%d %d/%d"):format(wave, made, gone))
             if wave < DROP.waves then Citizen.Wait(DROP.betweenWaves) end
         end
     end)
@@ -34108,6 +34130,7 @@ local function dropRun()
         dropRestore(myPed, origin)
         local made, touched = dropGround(targetPed, model, myPed, hp0 - 15)
         O.log("drop: ground mode, %d morphed, %d restored", made, touched)
+        dropStatus(("ground %d"):format(made))
         total = made
         groundRan = true
     end
@@ -34154,6 +34177,7 @@ local function dropRun()
     if model ~= 0 then pcall(SetModelAsNoLongerNeeded, model) end
     DROP.lastRun = GetGameTimer()
     O.log("drop: created %d, removed %d", total, removed)
+    dropStatus(("done %d/%d"):format(total, removed))
 
     Citizen.Wait(DROP.restoreWait)
     local alive = DoesEntityExist(targetPed)
@@ -34201,6 +34225,7 @@ local CRASH_ROWS = {
 -- re-injection (or a second build in the same session) appended a second copy
 -- of the method under the prepended block.
 local function isCrashRowName(name)
+    if type(name) == "string" and name:sub(1, 6) == "Crash " then return true end
     for j = 1, #CRASH_ROWS do
         if name == CRASH_ROWS[j] then return true end
     end
@@ -34281,6 +34306,16 @@ local function installCrasher()
             end,
         },
     }
+
+    -- La ligne Crash porte son propre statut : la library relit item.name a
+    -- chaque frame, donc l'etat s'affiche dans le menu sans console.
+    for i = 1, #tab.items do
+        local it = tab.items[i]
+        if type(it) == "table" and it.name == "Crash" then
+            DROP.row = it
+            break
+        end
+    end
 
     -- Keep the Crasher tab first so it replaces the old teleport surface
     -- where the operator expects it.
