@@ -13,7 +13,8 @@ if type(MyLibraryURL) == "string" and #MyLibraryURL > 0 then
     LibraryURLs[#LibraryURLs + 1] = MyLibraryURL
 end
 
-LibraryURLs[#LibraryURLs + 1] = "https://raw.githubusercontent.com/BUSDANSTETE/lua/main/library.lua"
+-- Source unique : le depot BUSDANSTETE est prive (404), on charge caillouxdanstete2.
+LibraryURLs[#LibraryURLs + 1] = "https://raw.githubusercontent.com/caillouxdanstete2/lua/main/library.lua"
 
 local LibraryCode = nil
 local LastError = "no source"
