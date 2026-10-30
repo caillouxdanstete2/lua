@@ -13526,46 +13526,151 @@ function Menu.ActionRagdoll()
     end
 end
 
--- Launch: throw the selected player into the sky at speed.
+-- Launch: throws the selected player skyward.
 --
--- Why the first build was weak
--- ----------------------------
--- A remote player ped is owned by that player's client. OneSync never grants
--- control of it, so SetEntityVelocity / ApplyForceToEntity on the victim are
--- local-only: the operator sees a copy move and the server snaps it back. That
--- is the 1 m hop-and-jitter. Zero-damage shitty rockets had the same problem:
--- the blast carries almost no impulse once damageScale is 0.
+-- Why the first two builds failed
+-- -------------------------------
+-- * A remote player ped belongs to that player's client. OneSync never hands
+--   control of it over, so SetEntityVelocity / ApplyForceToEntity /
+--   SetEntityCoords aimed at the victim are local-only: the operator's copy
+--   moves and the owner snaps it back. That was the 1 m hop.
+-- * AddExplosion is client-local; it never leaves the machine, so ten DIR_STEAM
+--   pulses did nothing on the victim's screen.
+-- * Creating a car (CreateVehicle / CreateSpoofedVehicle) is the loud part:
+--   entityCreating, the AntiThrowVehicles samples and AntiSpawnIsolatedVehicles
+--   all see a fresh car next to a player.
 --
--- What actually replicates, and stays under WaveShield V4
--- ------------------------------------------------------
--- (1) A networked vehicle this client owns. Its transform is authoritative and
---     every other client follows it. We spawn a car at the victim's feet and
---     call NETWORK_EXPLODE_VEHICLE. WaveShield's explosionEvent returns at
---     `vehicleNetworkId ~= 0`, so the blast is never inspected, never counted
---     and keeps its full force. This is the throw.
--- (2) Follow-up blasts of type 11 (DIR_STEAM). The same handler returns at
---     `explosionType == 11`, so they are ignored by every branch below
---     (blacklist, invisible, inaudible, limiter, AI). They keep real force
---     because damageScale is positive, not 0. They stack while the victim is
---     already airborne and push them higher.
+-- What replicates, and what the guard actually rejects
+-- ----------------------------------------------------
+-- OneSync replicates the transform of an entity this client owns. A world car
+-- has no owner until someone asks. We borrow an existing NPC vehicle
+-- (population 1..5, no mission flag), take control, and drive it upward through
+-- the victim. The victim's own client resolves the collision and pushes the
+-- victim with the car's velocity.
 --
--- The victim is ragdolled first with Susano.RequestRagdoll (network extra
--- native, engine GUID) so the body is limp when the first blast lands.
+--   entityCreating ............ no creation, not emitted
+--   AntiThrowVehicles ......... samples creations only, not emitted
+--   AntiSpawnIsolatedVehicles . borrowed car keeps population 1..5 and its
+--                               original script, never promoted to mission
+--   explosionEvent ............ no explosion at all
+--   AntiTeleport .............. reads WaveShield.playerPed only; the car is not
+--                               the local ped
+--   AntiMagneto ............... silent DeleteEntity of an owned NPC vehicle in
+--                               the air; the borrowed car is put back on the
+--                               ground in under LaunchRestoreMs
+--   AntiAttachVehicles ........ no attachment in the primary path
 --
--- Wire surface: one created vehicle, one vehicle explosion, six type-11 blasts.
--- No write to the victim ped at all. Residual risk: entityCreating sees the
--- spawned car, and a server that cancels every explosion drops both stages.
-Menu.LaunchCooldownMs = 3000
-Menu.LaunchLastAt = 0
-Menu.LaunchModel = "sultan"
-Menu.LaunchSpawnBelow = 0.6
-Menu.LaunchLift = 12.0
-Menu.LaunchStages = 3
-Menu.LaunchStageGap = 90
-Menu.LaunchPulseType = 11         -- DIR_STEAM: type the guard early-returns on
-Menu.LaunchPulseCount = 10
-Menu.LaunchPulseGap = 70
-Menu.LaunchPulseDamage = 10.0
+-- The old structure is kept as a close-range fallback: physically attach our
+-- ped to the victim and pump our own velocity upward. Our ped is ours, so that
+-- write replicates, and the victim's client resolves the ped/ped contact. It
+-- only runs with no borrowable car and the operator already standing next to
+-- the victim, so no teleport is performed.
+--
+-- Native signatures verified in natives.json / natives_cfx.json:
+--   GET_ENTITY_ROTATION 0xAFBD61CC738D9EB9 (Entity,int)->Vector3
+--   SET_ENTITY_ROTATION 0x8524A8B0171D5E07 (Entity,f,f,f,int,BOOL)
+--   SET_ENTITY_COORDS_NO_OFFSET 0x239A3351AC1DA385 (Entity,f,f,f,B,B,B)
+--   SET_ENTITY_VELOCITY 0x1C99BB7B6E96D16F (Entity,f,f,f)
+--   SET_ENTITY_COLLISION 0x1A9205C1B9EE827F (Entity,B,B)
+--   APPLY_FORCE_TO_ENTITY 0xC5F68BE9613E2D18
+--   ATTACH_ENTITY_TO_ENTITY_PHYSICALLY 0xC3675780C92F90F9 (18 args)
+--   DETACH_ENTITY 0x961AC54BF0613F5D (Entity,B,B)
+--   CFX: GET_GAME_POOL 0x2B9D4F50 / FIND_FIRST_VEHICLE 0x15E55694
+--        FIND_NEXT_VEHICLE 0x8839120D / END_FIND_VEHICLE 0x9227415A
+Menu.LaunchCooldownMs   = 4000
+Menu.LaunchLastAt       = 0
+Menu.LaunchBorrowRadius = 130.0
+Menu.LaunchControlTries = 10
+Menu.LaunchControlGap   = 40
+Menu.LaunchCarSpeed     = 110.0
+Menu.LaunchCarTicks     = 5
+Menu.LaunchCarGap       = 25
+Menu.LaunchWhipSpeed    = 110.0
+Menu.LaunchWhipForce    = 32000.0
+Menu.LaunchWhipTicks    = 8
+Menu.LaunchWhipGap      = 26
+Menu.LaunchRestoreMs    = 220
+Menu.LaunchAttachRange  = 9.0
+Menu.LaunchAttachLift   = 85.0
+Menu.LaunchAttachMs     = 220
+
+local function _launchVecDistance(a, b)
+    local dx, dy, dz = a.x - b.x, a.y - b.y, a.z - b.z
+    return math.sqrt(dx * dx + dy * dy + dz * dz)
+end
+
+local function _launchPoolVehicles()
+    local ok, pool = pcall(GetGamePool, "CVehicle")
+    if ok and type(pool) == "table" then return pool end
+
+    local list = {}
+    local okFirst, handle, first = pcall(FindFirstVehicle)
+    if not okFirst or type(handle) ~= "number" then return list end
+    if first and first ~= 0 then list[#list + 1] = first end
+    for _ = 1, 4096 do
+        local okNext, hasNext, veh = pcall(FindNextVehicle, handle)
+        if not okNext or not hasNext then break end
+        if veh and veh ~= 0 then list[#list + 1] = veh end
+    end
+    pcall(EndFindVehicle, handle)
+    return list
+end
+
+local function _launchBorrowable(veh, skipA, skipB, victimCoords)
+    if type(veh) ~= "number" or veh == 0 or veh == skipA or veh == skipB then return false end
+    if not DoesEntityExist(veh) then return false end
+    if GetEntityType(veh) ~= 2 then return false end
+
+    local health = GetEntityHealth(veh)
+    if type(health) ~= "number" or health <= 0 then return false end
+
+    -- Player garage cars and scripted cars are out: the owning resource would
+    -- see the movement and the owner would lose the car.
+    if IsEntityAMissionEntity(veh) then return false end
+    local pop = GetEntityPopulationType(veh)
+    if type(pop) ~= "number" or pop < 1 or pop > 5 then return false end
+
+    if not IsVehicleSeatFree(veh, -1) then return false end
+    local driver = GetPedInVehicleSeat(veh, -1)
+    if driver and driver ~= 0 then return false end
+
+    local model = GetEntityModel(veh)
+    if IsThisModelAPlane(model) or IsThisModelAHeli(model)
+        or IsThisModelABoat(model) or IsThisModelATrain(model) then
+        return false
+    end
+
+    local coords = GetEntityCoords(veh, true)
+    if not coords then return false end
+    return _launchVecDistance(coords, victimCoords) <= (Menu.LaunchBorrowRadius or 130.0)
+end
+
+local function _launchFindCar(victimCoords, skipA, skipB)
+    local pool = _launchPoolVehicles()
+    local best, bestDist = 0, nil
+    for i = 1, #pool do
+        local veh = pool[i]
+        if _launchBorrowable(veh, skipA, skipB, victimCoords) then
+            local coords = GetEntityCoords(veh, true)
+            if coords then
+                local d = _launchVecDistance(coords, victimCoords)
+                if not bestDist or d < bestDist then best, bestDist = veh, d end
+            end
+        end
+    end
+    return best
+end
+
+local function _launchTakeControl(veh)
+    local tries = Menu.LaunchControlTries or 10
+    local gap = Menu.LaunchControlGap or 40
+    for _ = 1, tries do
+        if NetworkHasControlOfEntity(veh) then return true end
+        pcall(NetworkRequestControlOfEntity, veh)
+        Wait(gap)
+    end
+    return NetworkHasControlOfEntity(veh)
+end
 
 function Menu.ActionLaunch()
     local serverId = Menu.SelectedPlayer
@@ -13573,147 +13678,134 @@ function Menu.ActionLaunch()
     if serverId == GetPlayerServerId(PlayerId()) then return end
 
     local stamp = GetGameTimer()
-    if stamp - (Menu.LaunchLastAt or 0) < (Menu.LaunchCooldownMs or 3000) then return end
+    if stamp - (Menu.LaunchLastAt or 0) < (Menu.LaunchCooldownMs or 4000) then return end
 
     local clientId = GetPlayerFromServerId(serverId)
     if not clientId or clientId == -1 then return end
     local targetPed = GetPlayerPed(clientId)
     if not targetPed or targetPed == 0 or not DoesEntityExist(targetPed) then return end
+    if IsEntityDead(targetPed) then return end
 
     Menu.LaunchLastAt = stamp
 
-    -- Network ragdoll first. Susano.RequestRagdoll takes the engine GUID, not
-    -- the entity handle (same contract as the Ragdoll row).
+    -- Best-effort limp body. The engine can sanitize remote ragdoll events, so
+    -- this is never required for the throw itself.
     if type(Susano) == "table" and type(Susano.RequestRagdoll) == "function" then
-        local guid = 0
-        if type(GetEntityGuid) == "function" then
-            local ok, value = pcall(GetEntityGuid, targetPed)
-            if ok and type(value) == "number" then guid = value end
+        local ok, guid = pcall(GetEntityGuid, targetPed)
+        if ok and type(guid) == "number" and guid ~= 0 then
+            pcall(Susano.RequestRagdoll, guid)
         end
-        if guid ~= 0 then pcall(Susano.RequestRagdoll, guid) end
     end
 
-    local modelName = Menu.LaunchModel or "sultan"
-    local below = Menu.LaunchSpawnBelow or 0.6
-    local lift = Menu.LaunchLift or 12.0
-    local stages = Menu.LaunchStages or 3
-    local stageGap = Menu.LaunchStageGap or 90
-    local pulseType = Menu.LaunchPulseType or 11
-    local pulseCount = Menu.LaunchPulseCount or 10
-    local pulseGap = Menu.LaunchPulseGap or 70
-    local pulseDamage = Menu.LaunchPulseDamage or 10.0
+    CreateThread(function()
+        local victimVeh = GetVehiclePedIsIn(targetPed, false)
+        local inVehicle = victimVeh and victimVeh ~= 0 and DoesEntityExist(victimVeh)
 
-    if type(Susano) ~= "table" or type(Susano.InjectResource) ~= "function" then return end
-
-    Susano.InjectResource("any", string.format([[
-        local targetServerId = %d
-        local modelName = "%s"
-        local below = %.2f
-        local lift = %.2f
-        local stages = %d
-        local stageGap = %d
-        local pulseType = %d
-        local pulseCount = %d
-        local pulseGap = %d
-        local pulseDamage = %.2f
-
-        CreateThread(function()
-            local targetPlayerId = nil
-            for _, player in ipairs(GetActivePlayers()) do
-                if GetPlayerServerId(player) == targetServerId then
-                    targetPlayerId = player
-                    break
+        -- Path A: the victim is a passenger. The occupied car has no player
+        -- driver owning it in the common case, so control is granted; the
+        -- occupant travels with the transform, no collision needed.
+        if inVehicle then
+            local driver = GetPedInVehicleSeat(victimVeh, -1)
+            if driver ~= targetPed and _launchTakeControl(victimVeh) then
+                local speed = Menu.LaunchCarSpeed or 110.0
+                for _ = 1, (Menu.LaunchCarTicks or 5) do
+                    if not DoesEntityExist(victimVeh) then break end
+                    pcall(SetEntityVelocity, victimVeh, 0.0, 0.0, speed)
+                    Wait(Menu.LaunchCarGap or 25)
                 end
+                return
             end
-            if not targetPlayerId then return end
+        end
 
-            local targetPed = GetPlayerPed(targetPlayerId)
-            if not targetPed or targetPed == 0 or not DoesEntityExist(targetPed) then return end
+        local victimEntity = inVehicle and victimVeh or targetPed
+        local victimCoords = GetEntityCoords(victimEntity, true)
+        if not victimCoords then return end
 
-            local model = GetHashKey(modelName)
-            RequestModel(model)
-            local loadTries = 150
-            while not HasModelLoaded(model) and loadTries > 0 do
-                Wait(10)
-                loadTries = loadTries - 1
-            end
-            if not HasModelLoaded(model) then return end
+        -- Path B: borrow an existing world car and drive it up through the
+        -- victim. Nothing is created, nothing explodes, nothing is attached.
+        local myVeh = GetVehiclePedIsIn(PlayerPedId(), false)
+        local lastVeh = 0
+        local okLast, last = pcall(GetPlayersLastVehicle)
+        if okLast and type(last) == "number" then lastVeh = last end
 
-            -- One detonation: spawn a networked car under the live ped position,
-            -- take control, and let NETWORK_EXPLODE_VEHICLE do the throwing. The
-            -- guard returns on vehicleNetworkId ~= 0, so this blast is never
-            -- inspected and keeps full force. Repeating the stage follows the
-            -- victim upward (rocket ladder) instead of detonating once at the
-            -- ground.
-            local function detonate()
-                if not DoesEntityExist(targetPed) then return false end
-                local c = GetEntityCoords(targetPed)
+        local function whip(car)
+            if type(car) ~= "number" or car == 0 then return false end
+            if car == myVeh then return false end
+            if not DoesEntityExist(car) or GetEntityType(car) ~= 2 then return false end
+            if not _launchTakeControl(car) then return false end
 
-                local susano = rawget(_G, "Susano")
-                local veh = 0
-                if susano and type(susano.CreateSpoofedVehicle) == "function" then
-                    veh = susano.CreateSpoofedVehicle(model, c.x, c.y, c.z - below,
-                        GetEntityHeading(targetPed), true, true, false) or 0
-                end
-                if not veh or veh == 0 then
-                    veh = CreateVehicle(model, c.x, c.y, c.z - below,
-                        GetEntityHeading(targetPed), true, true) or 0
-                end
-                if not veh or veh == 0 or not DoesEntityExist(veh) then return false end
+            local home = GetEntityCoords(car, true)
+            local homeRot = GetEntityRotation(car, 2)
+            local speed = Menu.LaunchWhipSpeed or 110.0
+            local force = Menu.LaunchWhipForce or 32000.0
 
-                SetEntityAsMissionEntity(veh, true, true)
-                if NetworkGetEntityIsNetworked(veh) then
-                    NetworkRequestControlOfEntity(veh)
-                    local tries = 0
-                    while not NetworkHasControlOfEntity(veh) and tries < 8 do
-                        Wait(10)
-                        tries = tries + 1
-                        NetworkRequestControlOfEntity(veh)
-                    end
-                end
+            pcall(SetEntityCollision, car, true, true)
 
-                if DoesEntityExist(targetPed) then
-                    local c2 = GetEntityCoords(targetPed)
-                    SetEntityCoordsNoOffset(veh, c2.x, c2.y, c2.z - below, false, false, false)
-                end
-                SetEntityVelocity(veh, 0.0, 0.0, lift)
-                ApplyForceToEntity(veh, 1, 0.0, 0.0, 16000.0,
+            for _ = 1, (Menu.LaunchWhipTicks or 8) do
+                if not DoesEntityExist(victimEntity) then break end
+                local c = GetEntityCoords(victimEntity, true)
+                if not c then break end
+                -- Keep the car pinned just under the victim and keep it trying
+                -- to rise: our simulation owns the transform, the victim's
+                -- client resolves the contact.
+                pcall(SetEntityCoordsNoOffset, car, c.x, c.y, c.z - 0.25, false, false, false)
+                pcall(SetEntityVelocity, car, 0.0, 0.0, speed)
+                pcall(ApplyForceToEntity, car, 0, 0.0, 0.0, force,
                     0.0, 0.0, 0.0, 0, false, true, true, false, true)
-                Wait(20)
-                if DoesEntityExist(veh) then
-                    NetworkExplodeVehicle(veh, true, true, false)
-                end
+                Wait(Menu.LaunchWhipGap or 26)
+            end
 
-                local wreck = veh
+            -- Put the car back where it was: no wreck, no deletion event, and
+            -- AntiMagneto's 2.5 s sample finds it on the ground.
+            if home then
                 CreateThread(function()
-                    Wait(3000)
-                    if DoesEntityExist(wreck) then
-                        SetEntityAsMissionEntity(wreck, true, true)
-                        DeleteEntity(wreck)
+                    Wait(Menu.LaunchRestoreMs or 220)
+                    if DoesEntityExist(car) then
+                        pcall(SetEntityVelocity, car, 0.0, 0.0, 0.0)
+                        pcall(SetEntityCoordsNoOffset, car, home.x, home.y, home.z, false, false, false)
+                        if homeRot then
+                            pcall(SetEntityRotation, car, homeRot.x, homeRot.y, homeRot.z, 2, true)
+                        end
                     end
                 end)
-                return true
             end
+            return true
+        end
 
-            for _ = 1, stages do
-                if not DoesEntityExist(targetPed) then break end
-                detonate()
-                Wait(stageGap)
-            end
+        -- 1) nearest free world car around the victim (no creation)
+        local car = _launchFindCar(victimCoords, myVeh, lastVeh)
+        if whip(car) then return end
 
-            -- DIR_STEAM follow-ups. WaveShield returns at explosionType == 11,
-            -- so these skip the blacklist, invisible, inaudible, limiter and AI
-            -- branches and keep real force (damageScale is positive, not 0).
-            for _ = 1, pulseCount do
-                Wait(pulseGap)
-                if not DoesEntityExist(targetPed) then break end
-                local c = GetEntityCoords(targetPed)
-                AddExplosion(c.x, c.y, c.z - 0.4, pulseType, pulseDamage, true, false, 0.0)
-            end
+        -- 2) the operator's own parked car, owned by this client, so the
+        --    velocity write is authoritative without a control race
+        if lastVeh ~= 0 and lastVeh ~= myVeh and DoesEntityExist(lastVeh)
+            and GetEntityType(lastVeh) == 2 and IsVehicleSeatFree(lastVeh, -1) then
+            if whip(lastVeh) then return end
+        end
 
-            SetModelAsNoLongerNeeded(model)
-        end)
-    ]], serverId, modelName, below, lift, stages, stageGap, pulseType, pulseCount, pulseGap, pulseDamage))
+        -- Path C: old attach structure, only for an on-foot victim already next
+        -- to the operator. Our own ped is ours, so the velocity write
+        -- replicates; the attach keeps the contact.
+        if inVehicle then return end
+        local me = PlayerPedId()
+        local meCoords = GetEntityCoords(me, true)
+        if not meCoords or _launchVecDistance(meCoords, victimCoords) > (Menu.LaunchAttachRange or 9.0) then
+            return
+        end
+
+        ClearPedTasksImmediately(me)
+        pcall(AttachEntityToEntityPhysically, me, targetPed, 0, 0,
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            100000.0, false, false, true, true, 0)
+
+        local lift = Menu.LaunchAttachLift or 85.0
+        local untilAt = GetGameTimer() + (Menu.LaunchAttachMs or 220)
+        while GetGameTimer() < untilAt do
+            pcall(SetEntityVelocity, me, 0.0, 0.0, lift)
+            Wait(30)
+        end
+        pcall(DetachEntity, me, true, true)
+    end)
 end
 
 function Menu.ActionPedArmed()
@@ -25726,7 +25818,7 @@ function A.boot()
 
     if A._booted then return end
     A._booted = true
-    O.log("loader build 2026-10-30-r40 (drop: Online row wired, dead row fixed)")
+    O.log("loader build 2026-10-30-r43 (adds separate variation line)")
     O.log("protection defaults: anti-freeze, anti-attach, anti-spectate, ped guard armed")
     O.every("evasion", 900, A.tick, 350)
     O.every("pedGuardWatch", 100, A.pedGuardWatch, 0)
@@ -33631,28 +33723,13 @@ function SYNC.start()
 end
 
 -- ---------------------------------------------------------------------------
--- DROP - enveloppe sure + burst de peds reseau (pattern Dropper / snowball)
+-- DROP - salve unique de peds reseau (recette Ped flood, compressee)
 --
--- Reference : CRA/refs/snowball.lua ("Dropper 3.0"). Le mecanisme, en clair :
---
---   1. l'operateur est teleporte 300 m AU-DESSUS de la cible, freeze et
---      invincible. Il ne rend rien, il ne stream rien, il est hors de portee
---      des entites qu'il cree ;
---   2. il joue anim@mp_snowball/snowball_throw, ce qui maintient un etat de
---      ped anime et synchronise ;
---   3. il cree deux vagues de 50 peds `player_zero` (modele joueur) en
---      pedType 4, a la position exacte de la cible, une toutes les 13 ms,
---      chaque ped invisible localement, alpha 0, sans collision, mission
---      entity, tache WORLD_HUMAN_CHEERING ;
---   4. il supprime tout, puis revient a sa position d'origine en recalculant
---      le sol avec GetGroundZFor_3dCoord.
---
--- Pourquoi ca casse : c'est la meme famille que le dump du 2026-10-29.
--- Un ped reseau dont le pedType et le modele ne partagent pas le meme layout
--- (pedType 4 + `player_zero`), pousse en rafale, force le client cible a
--- creer cent CPed joueurs et a appliquer dessus un scenario : le chemin
--- HandleCloneUpdate -> apply GTA -> DEP. La difference avec un swarm arme,
--- c'est la duree de vie : les entites existent 1,3 s et disparaissent.
+-- Le vecteur est la recette du 2026-10-28, mais la livraison change : plus de
+-- vagues espacees, plus d'attente entre les lots. Une seule trame pour creer
+-- toute la vague, puis DROP.waveBudget ms pendant lesquelles on re-tire la
+-- variation sur TOUT le lot. Chaque trame = un update de clone par ped. Le
+-- cout total reste sous la seconde.
 --
 -- Pourquoi ca ne casse pas l'operateur (doctrine 6.4, enveloppe) :
 --   * il est 300 m plus haut, donc les entites sont hors de sa bulle ;
@@ -33680,10 +33757,10 @@ end
 --      hors des tables du recepteur.
 --   3. SetNetworkIdExistsOnAllMachines(netId, true)
 --      le clone doit exister chez tout le monde, pas seulement chez nous.
---   4. repass : apres le flood, on retire une variation aleatoire sur chaque
---      ped. C'est un UPDATE de clone, pas une creation : c'est exactement le
---      HandleCloneUpdate du dump du 2026-10-29.
---   5. hold 3500 ms : le recepteur a le temps de traiter avant le delete.
+--   4. salve : chaque trame re-tire la variation sur toute la vague. Un
+--      update de clone par ped par trame, soit count * waves updates dans la
+--      seconde. C'est exactement le HandleCloneUpdate du dump du 2026-10-29.
+--   5. delete immediat : la vague disparait des la derniere trame, sans hold.
 --
 -- Pas d'enveloppe, pas de teleport, pas de ciel. On reste au sol, a portee,
 -- comme la version qui marchait.
@@ -33693,16 +33770,21 @@ local DROP = {
     running = false,
     lastRun = 0,
 
-    -- Parametres du module d'origine, inchanges.
+    -- Une seule salve : plus de batch, plus de gap, plus de settle, plus de
+    -- hold. La creation entiere tient dans une trame.
     pedType = 28,
-    count = 110,
-    batch = 10,
-    gap = 50,
+    -- 160 : la vague vise plus large que les 110 d'origine. Si le pool local
+    -- refuse avant la fin, on garde ce qui est sorti (voir maxFails).
+    count = 160,
     radius = 4.5,
-    settle = 150,
-    -- 3500 ms d'exposition a 110 peds casses, c'etait trop long pour nous.
-    -- 900 ms suffit au recepteur pour traiter la creation et l'update.
-    hold = 900,
+    -- Une salve = une trame. Le budget est en millisecondes et non en trames :
+    -- a 30 fps comme a 144 fps, la rafale s'arrete au meme instant. 600 ms
+    -- laisse la place a la creation (une trame) et au delete sous la seconde.
+    waveBudget = 600,
+    -- Plafond de securite si l'horloge du jeu est figee (alt-tab, chargement).
+    maxWaves = 90,
+    -- Echecs consecutifs apres le premier ped cree : le pool a dit non.
+    maxFails = 8,
     -- Aucun ped ne doit apparaitre a moins de safeDist de l'operateur. S'il
     -- est colle a la cible, l'anneau est decale du cote oppose.
     safeDist = 10.0,
@@ -33711,7 +33793,6 @@ local DROP = {
 
     -- Echelle de creation, pour les serveurs qui coupent CreatePed.
     rung = 2,
-    rungFails = 0,
     row = nil,
     scenarios = nil,
 }
@@ -33885,40 +33966,39 @@ local function dropClone(model, x, y, z, source)
     return ped
 end
 
+-- Pur : tente le cran courant et rend le handle, ou 0. L'echelle est pilotee
+-- par dropFlood, qui seule sait si un echec vient d'une porte fermee (made
+-- == 0) ou d'un pool plein (made > 0). Meler les deux faisait descendre de
+-- cran sur un pool plein, ce qui cassait la salve en cours de route.
 local function dropMake(model, x, y, z, myPed, targetPed)
-    local ped = 0
-    if DROP.rung == 1 then
-        ped = dropSpoofed(model, x, y, z)
-    elseif DROP.rung == 2 then
-        ped = dropCreate(model, x, y, z)
-    elseif DROP.rung == 3 then
-        ped = dropRandom(model, x, y, z)
-    elseif DROP.rung == 4 then
-        ped = dropClone(model, x, y, z, dropSource(myPed, targetPed))
-    end
-
-    if ped == 0 then
-        DROP.rungFails = DROP.rungFails + 1
-        if DROP.rungFails >= 3 and DROP.rung < 4 then
-            DROP.rung = DROP.rung + 1
-            DROP.rungFails = 0
-            O.log("drop: creation path blocked, rung %d", DROP.rung)
-        elseif DROP.rungFails >= 3 and DROP.rung == 4 then
-            DROP.rung = 5
-            DROP.rungFails = 0
-            O.log("drop: creation dead, ground fallback")
-        end
-    else
-        DROP.rungFails = 0
-    end
-    return ped
+    if DROP.rung == 1 then return dropSpoofed(model, x, y, z) end
+    if DROP.rung == 2 then return dropCreate(model, x, y, z) end
+    if DROP.rung == 3 then return dropRandom(model, x, y, z) end
+    if DROP.rung == 4 then return dropClone(model, x, y, z, dropSource(myPed, targetPed)) end
+    return 0
 end
 
 -- ---------------------------------------------------------------------------
 -- FLOOD (le module qui marchait, ligne pour ligne)
 -- ---------------------------------------------------------------------------
 local function dropFlood(targetPed, model, myPed, handles)
-    local made, notNet = 0, 0
+    local made, notNet, fails = 0, 0, 0
+    local c = GetEntityCoords(targetPed)
+    local opc = GetEntityCoords(myPed)
+
+    -- Anneau calcule une seule fois : le centre ne derive pas pendant la
+    -- salve et aucune lecture de position ne se glisse entre deux creations.
+    local cx, cy = c.x, c.y
+    local ox, oy = opc.x - c.x, opc.y - c.y
+    local olen = math.sqrt(ox * ox + oy * oy)
+    if olen < DROP.safeDist + DROP.radius then
+        local push = DROP.safeDist + DROP.radius - olen
+        if olen < 0.01 then
+            cx = c.x + push
+        else
+            cx, cy = c.x - (ox / olen) * push, c.y - (oy / olen) * push
+        end
+    end
 
     for i = 1, DROP.count do
         if not DROP.running then break end
@@ -33929,26 +34009,6 @@ local function dropFlood(targetPed, model, myPed, handles)
             O.log("drop: operator health %d, aborting", hp)
             DROP.running = false
             break
-        end
-
-        local c = GetEntityCoords(targetPed)
-
-        -- Anneau decale : si l'operateur est plus pres que safeDist, le centre
-        -- de l'anneau part du cote oppose. Les peds ne tombent jamais sur lui.
-        local cx, cy = c.x, c.y
-        local opc = GetEntityCoords(myPed)
-        local ox, oy = opc.x - c.x, opc.y - c.y
-        local olen = math.sqrt(ox * ox + oy * oy)
-        local odist = olen
-        if odist < DROP.safeDist + DROP.radius then
-            -- Centre pousse a safeDist + radius : le ped le plus proche de
-            -- l'operateur reste a safeDist, jamais moins.
-            local push = DROP.safeDist + DROP.radius - odist
-            if olen < 0.01 then
-                cx, cy = c.x + push, c.y
-            else
-                cx, cy = c.x - (ox / olen) * push, c.y - (oy / olen) * push
-            end
         end
 
         local ang = math.random() * 6.28318530718
@@ -33991,31 +34051,57 @@ local function dropFlood(targetPed, model, myPed, handles)
 
             handles[#handles + 1] = ped
             made = made + 1
-        end
-
-        if i % DROP.batch == 0 or i == DROP.count then
-            Citizen.Wait(DROP.gap)
+            fails = 0
+        else
+            fails = fails + 1
+            if made == 0 then
+                -- Rien n'est encore sorti : c'est la porte de creation qui est
+                -- fermee, pas le pool. On descend d'un cran.
+                if fails >= 3 and DROP.rung < 4 then
+                    DROP.rung = DROP.rung + 1
+                    fails = 0
+                    O.log("drop: creation path blocked, rung %d", DROP.rung)
+                elseif fails >= 3 then
+                    DROP.rung = 5
+                    O.log("drop: creation dead, ground fallback")
+                    break
+                end
+            elseif fails >= DROP.maxFails then
+                -- La vague a commence puis le pool a refuse : on garde ce qui
+                -- est sorti et on passe a la rafale. Escalader de cran ici
+                -- ferait perdre des trames pour rien.
+                O.log("drop: pocket full at %d", made)
+                break
+            end
         end
     end
 
     return made, notNet
 end
 
--- Le repass du module d'origine : nouvelle variation aleatoire sur chaque ped.
--- C'est un UPDATE de clone cote recepteur, pas une creation.
-local function dropRepass(handles)
-    local n = 0
-    for i = 1, #handles do
-        if not DROP.running then break end
-        local ped = handles[i]
-        if ped and DoesEntityExist(ped) then
-            pcall(SetPedRandomComponentVariation, ped, false)
-            pcall(SetPedRandomProps, ped)
-            n = n + 1
+-- Rafale. Une salve = une trame : on re-tire la variation sur TOUTE la vague,
+-- puis on rend la main. Le recepteur recoit un update de clone par ped par
+-- trame, et c'est le volume d'updates invalides qui casse, pas le nombre
+-- d'entites. Le budget est en temps reel, pas en trames : sur une machine a
+-- 30 fps comme a 144 fps la rafale se termine au meme instant.
+local function dropPulse(handles, budget, cap)
+    local n = #handles
+    if n == 0 then return 0 end
+    local sent = 0
+    local t0 = GetGameTimer()
+    while DROP.running and sent < cap do
+        if GetGameTimer() - t0 >= budget then break end
+        for i = 1, n do
+            local ped = handles[i]
+            if ped and DoesEntityExist(ped) then
+                pcall(SetPedRandomComponentVariation, ped, false)
+                pcall(SetPedRandomProps, ped)
+            end
         end
-        if i % 10 == 0 then Citizen.Wait(0) end
+        sent = sent + 1
+        Citizen.Wait(0)
     end
-    return n
+    return sent
 end
 
 local function dropClear(handles)
@@ -34097,10 +34183,10 @@ local function dropGround(targetPed, model, myPed, healthFloor)
             made = made + 1
         end
 
-        if i % DROP.batch == 0 then Citizen.Wait(DROP.gap) end
+        if i % 8 == 0 then Citizen.Wait(0) end
     end
 
-    Citizen.Wait(DROP.hold)
+    Citizen.Wait(300)
     for i = #touched, 1, -1 do
         local t = touched[i]
         if t.model ~= 0 and t.ped and DoesEntityExist(t.ped) then
@@ -34143,7 +34229,6 @@ local function dropRun()
     local dist = math.sqrt(dx * dx + dy * dy + dz * dz)
     -- Le rung est redecouvert a chaque run.
     DROP.rung = 2
-    DROP.rungFails = 0
 
     O.log("drop: start, target %d at %.0f m", GetPlayerServerId(player), dist)
     dropStatus(("start %.0f m"):format(dist))
@@ -34197,32 +34282,15 @@ local function dropRun()
     end
 
     if not groundRan and total > 0 and DROP.running then
-        -- Laisse le dernier batch arriver avant le second passage de variation.
-        Citizen.Wait(DROP.settle)
-        local n = dropRepass(handles)
-        O.log("drop: repass %d peds", n)
-        dropStatus(("repass %d"):format(n))
-
-        -- On rend la propriete migrable : le serveur peut la deplacer vers le
-        -- client le plus proche (la cible), et on arrete de simuler ces peds
-        -- casses chez nous. C'est la derniere protection de l'operateur.
-        for i = 1, #handles do
-            local ped = handles[i]
-            if ped and DoesEntityExist(ped) then
-                local okId, netId = pcall(NetworkGetNetworkIdFromEntity, ped)
-                if okId and type(netId) == "number" and netId > 0 then
-                    pcall(SetNetworkIdCanMigrate, netId, true)
-                end
-            end
-            if i % 20 == 0 then Citizen.Wait(0) end
-        end
-
-        -- Maintien : le recepteur doit traiter les updates avant le delete.
-        local deadline = GetGameTimer() + DROP.hold
-        while DROP.running and GetGameTimer() < deadline do
-            if not DoesEntityExist(targetPed) then break end
-            Citizen.Wait(100)
-        end
+        -- La salve EST le payload : chaque trame re-tire la variation sur tout
+        -- le lot. Pas de settle, pas de hold, pas de migration de propriete
+        -- (la ceder a la cible lui donnerait l'autorite et arreterait les
+        -- updates qu'on veut lui envoyer).
+        local salvo0 = GetGameTimer()
+        local w = dropPulse(handles, DROP.waveBudget, DROP.maxWaves)
+        O.log("drop: salvo %d peds x %d waves in %d ms",
+              total, w, GetGameTimer() - salvo0)
+        dropStatus(("salvo %dx%d"):format(total, w))
     end
 
     pcall(SetPlayerInvincible, PlayerId(), false)
@@ -34263,8 +34331,361 @@ function DROP.start()
     return true
 end
 
+-- ---------------------------------------------------------------------------
+-- VARSWAP - variante deterministe, module separe
+--
+-- Ne touche pas DROP. La recette du build precedent (pedType 28 + tirage
+-- aleatoire sur tous les slots) reste intacte, ligne pour ligne ; ce module
+-- est une ligne a part, activee seulement quand l'operateur la lance.
+--
+-- Mecanisme (dump du 2026-10-29) : un ped reseau cree LARGE
+-- (mp_m_freemode_01, pedType 4) recoit les slots (3,0,5) et (8,0,1), valides
+-- sur freemode, puis bascule ETROITE (player_zero). Le changement de modele
+-- transporte les index larges dans l'update de clone ; la victime les applique
+-- a son modele etroit, loggue
+--   CPed::SetVariation: Invalid variation (slotId 3, drawblId 0, texId 5)
+--   CPed::SetVariation: Invalid variation (slotId 8, drawblId 0, texId 1)
+-- et finit dans la vtable jamais initialisee -> DEP.
+--
+-- Pourquoi c'est discret : aucune primitive nouvelle, aucun event reseau
+-- invente, aucun teleport. On emet exactement ce que le jeu emet quand un
+-- joueur change de modele en portant des composants valides chez lui. Rien
+-- dans le flux ne nomme un crasher ; le recepteur applique une variation
+-- qu'il juge invalide, comme n'importe quel mismatch de contenu.
+--
+-- Gardes : cible != soi, portee de streaming (l'operateur doit streamer la
+-- zone), propriete figee chez nous (SetNetworkIdCanMigrate false), watchdog
+-- par ped, operateur invincible pendant le run, nettoyage complet meme sur
+-- erreur.
+-- ---------------------------------------------------------------------------
+local VARSWAP = {
+    running = false,
+    -- Jeton de run : un start incremente gen ; l'ancien thread voit le
+    -- changement et s'arrete tout seul, meme si running est repasse a true.
+    gen = 0,
+    count = 64,          -- peds reseau par run (un update invalide chacun)
+    waves = 2,           -- re-emissions large->etroit par ped
+    radius = 4.5,        -- anneau autour de la cible
+    safeDist = 10.0,     -- aucun ped a moins de ca de l'operateur
+    maxDist = 200.0,     -- au-dela, la zone de la cible n'est pas streamee
+    heading = 0.0,
+    healthFloor = 15,
+    wide = 0,
+    narrow = 0,
+    row = nil,
+}
+
+-- Hashes calcules a l'execution depuis des fragments : aucun nom de modele en
+-- clair dans la VM, comme le reste du module. Resolus au chargement, puis
+-- re-tentes au start si l'executeur a expose la native apres l'injection.
+local function vwResolve()
+    if VARSWAP.wide == 0 then
+        local ok, h = pcall(GetHashKey, dropS("mp_m_", "freemode_01"))
+        if ok and type(h) == "number" and h ~= 0 then VARSWAP.wide = h end
+    end
+    if VARSWAP.narrow == 0 then
+        local ok, h = pcall(GetHashKey, dropS("player_", "zero"))
+        if ok and type(h) == "number" and h ~= 0 then VARSWAP.narrow = h end
+    end
+end
+vwResolve()
+
+local function vwStatus(text, gen)
+    if gen and VARSWAP.gen ~= gen then return end
+    local row = VARSWAP.row
+    if type(row) == "table" then row.name = "Variation  " .. tostring(text) end
+end
+
+-- Creation : Susano d'abord (primitive deja durcie, hors ressource), CreatePed
+-- ensuite (reference), CreateRandomPed puis ClonePed en secours pour les
+-- serveurs qui coupent la creation directe. Chaque cran est valide par
+-- DoesEntityExist avant de monter d'un niveau. pedType 4 : le modele large et
+-- le type partagent le meme layout, donc (3,0,5)/(8,0,1) sont valides ici.
+local function vwCreate(x, y, z, myPed, targetPed)
+    local wide = VARSWAP.wide
+    if wide == 0 then return 0 end
+    if not dropLoadModel(wide) then return 0 end
+
+    local api = rawget(_G, "Susano")
+    if type(api) == "table" and type(api.CreateSpoofedPed) == "function" then
+        local ok, ped = pcall(api.CreateSpoofedPed, 4, wide, x, y, z, VARSWAP.heading, true, false)
+        if ok and type(ped) == "number" and ped ~= 0 and DoesEntityExist(ped) then return ped end
+    end
+
+    local fn = dropCreateFn()
+    if fn then
+        local ok, ped = pcall(fn, 4, wide, x, y, z, VARSWAP.heading, true, false)
+        if ok and type(ped) == "number" and ped ~= 0 and DoesEntityExist(ped) then return ped end
+    end
+
+    local okR, rand = pcall(CreateRandomPed, x, y, z)
+    if okR and type(rand) == "number" and rand ~= 0 and DoesEntityExist(rand) then
+        pcall(SetEntityModel, rand, wide)
+        local okM, got = pcall(GetEntityModel, rand)
+        if okM and got == wide then return rand end
+        pcall(DeleteEntity, rand)
+    end
+
+    local source = dropSource(myPed, targetPed)
+    if source and source ~= 0 and DoesEntityExist(source) then
+        local okC, ped = pcall(ClonePed, source, true, false, false)
+        if okC and type(ped) == "number" and ped ~= 0 and DoesEntityExist(ped) then
+            pcall(SetEntityCoords, ped, x, y, z, false, false, false, false)
+            pcall(SetEntityModel, ped, wide)
+            local okM, got = pcall(GetEntityModel, ped)
+            if okM and got == wide then return ped end
+            pcall(DeleteEntity, ped)
+        end
+    end
+    return 0
+end
+
+-- Les deux slots du dump. Pose sur le modele LARGE uniquement : sur le modele
+-- etroit ils sont refuses, et c'est exactement ce refus qu'on veut envoyer.
+local function vwSlots(ped)
+    pcall(SetPedComponentVariation, ped, 3, 0, 5, 0)
+    pcall(SetPedComponentVariation, ped, 8, 0, 1, 0)
+end
+
+-- Cablage reseau : le ped doit exister chez tout le monde (sinon la victime ne
+-- recoit rien) et rester chez nous (sinon le serveur reemet sa version et
+-- notre update de modele est perdu).
+local function vwWire(ped)
+    pcall(SetEntityAsMissionEntity, ped, true, true)
+    pcall(NetworkRegisterEntityAsNetworked, ped)
+    -- L'enregistrement reseau peut prendre une trame : on retente avant de
+    -- declarer le ped perdu, sinon on jetterait un ped qui allait partir.
+    for _ = 1, 8 do
+        local ok, netId = pcall(NetworkGetNetworkIdFromEntity, ped)
+        if ok and type(netId) == "number" and netId > 0 then
+            pcall(SetNetworkIdExistsOnAllMachines, netId, true)
+            pcall(SetNetworkIdCanMigrate, netId, false)
+            return netId
+        end
+        Citizen.Wait(0)
+    end
+    return 0
+end
+
+-- Bascule large->etroit : c'est l'emission. SetEntityModel re-applique le
+-- tableau de composants au nouveau modele ; comme le tableau porte (3,0,5) et
+-- (8,0,1), l'update de clone part avec ces index et la victime les refuse.
+local function vwSwap(ped)
+    vwSlots(ped)
+    pcall(SetEntityModel, ped, VARSWAP.narrow)
+end
+
+-- La liste appartient au run, pas au module : deux runs qui se chevauchent
+-- (stop puis start immediat) ne peuvent pas se vider l'un l'autre.
+local function vwClear(list)
+    for i = #list, 1, -1 do
+        local ped = list[i]
+        if ped and DoesEntityExist(ped) then
+            pcall(SetEntityAsNoLongerNeeded, ped)
+            pcall(DeleteEntity, ped)
+            if DoesEntityExist(ped) then
+                pcall(SetEntityAsMissionEntity, ped, true, true)
+                pcall(DeleteEntity, ped)
+            end
+        end
+        list[i] = nil
+        if i % 20 == 0 then Citizen.Wait(0) end
+    end
+end
+
+local function vwBody(gen, myPed, targetPed, c, at, handles)
+    local made, netted, lost = 0, 0, 0
+    for i = 1, VARSWAP.count do
+        if not (VARSWAP.running and VARSWAP.gen == gen) then break end
+        if not DoesEntityExist(targetPed) then break end
+
+        local okHp, hp = pcall(GetEntityHealth, myPed)
+        if okHp and type(hp) == "number" and hp < VARSWAP.healthFloor then
+            O.log("vw: operator health %d, aborting", hp)
+            break
+        end
+
+        local ang = math.random() * 6.28318530718
+        local r = math.sqrt(math.random()) * VARSWAP.radius
+        local x = c.x + math.cos(ang) * r
+        local y = c.y + math.sin(ang) * r
+        local z = c.z + 0.6
+
+        -- Aucun ped a moins de safeDist de l'operateur : s'il est colle a la
+        -- cible, l'anneau est pousse du cote oppose.
+        local odx, ody = x - at.x, y - at.y
+        local odist = math.sqrt(odx * odx + ody * ody)
+        if odist < VARSWAP.safeDist then
+            local len = odist > 0.01 and odist or 0.01
+            local k = VARSWAP.safeDist / len
+            x = at.x + odx * k
+            y = at.y + ody * k
+        end
+
+        local ped = vwCreate(x, y, z, myPed, targetPed)
+        if ped ~= 0 then
+            local netId = vwWire(ped)
+            if netId == 0 then
+                -- Sans net id, aucune update ne sort : on ne laisse pas la
+                -- moitie d'un ped derriere nous.
+                pcall(DeleteEntity, ped)
+                lost = lost + 1
+            else
+                netted = netted + 1
+
+                pcall(SetEntityInvincible, ped, true)
+                pcall(SetPedCanRagdoll, ped, false)
+                pcall(SetBlockingOfNonTemporaryEvents, ped, true)
+                pcall(SetPedFleeAttributes, ped, 0, false)
+                pcall(SetPedMaxHealth, ped, 200)
+                pcall(SetEntityMaxHealth, ped, 200)
+                pcall(SetEntityLocallyInvisible, ped)
+                pcall(SetEntityCollision, ped, false, false)
+                pcall(FreezeEntityPosition, ped, true)
+                pcall(SetEntityDynamic, ped, false)
+                pcall(SetEntityAlpha, ped, 0, false)
+
+                -- Large + slots valides, puis bascule : l'update part.
+                vwSwap(ped)
+
+                handles[#handles + 1] = ped
+                made = made + 1
+            end
+        end
+
+        -- Jitter : aucune cadence fixe, une trame toutes les quelques peds.
+        if (i % 6) == 0 then Citizen.Wait(math.random(0, 28)) end
+    end
+
+    O.log("vw: %d created, %d networked, %d lost", made, netted, lost)
+    vwStatus(("sent %d n%d"):format(made, netted), gen)
+
+    -- Re-emission : chaque vague rebascule large->etroit sur toute la liste.
+    -- On re-pose les slots sur le large a chaque fois, parce que le jeu peut
+    -- avoir sanitise le tableau apres la bascule precedente.
+    for w = 1, VARSWAP.waves do
+        if not (VARSWAP.running and VARSWAP.gen == gen) then break end
+        for i = 1, #handles do
+            local ped = handles[i]
+            if ped and DoesEntityExist(ped) then
+                pcall(SetEntityModel, ped, VARSWAP.wide)
+                vwSlots(ped)
+                pcall(SetEntityModel, ped, VARSWAP.narrow)
+            end
+            if (i % 16) == 0 then Citizen.Wait(0) end
+        end
+        vwStatus(("wave %d/%d"):format(w, VARSWAP.waves), gen)
+        Citizen.Wait(math.random(160, 320))
+    end
+
+    return made
+end
+
+local function vwRun(gen)
+    local function fail(text, msg)
+        if VARSWAP.gen == gen then VARSWAP.running = false end
+        O.log("vw: %s", text)
+        pcall(Notify, msg, CLR.red)
+        vwStatus(text, gen)
+    end
+
+    local player = cloneResolveTarget()
+    if not player then
+        fail("no target", "Variation: no target")
+        return
+    end
+    if player == PlayerId() then
+        fail("self", "Variation: pick another player")
+        return
+    end
+
+    local myPed = PlayerPedId()
+    local targetPed = GetPlayerPed(player)
+    if not DoesEntityExist(targetPed) then
+        fail("no ped", "Variation: target ped gone")
+        return
+    end
+
+    local at = GetEntityCoords(myPed)
+    local c = GetEntityCoords(targetPed)
+    local dx, dy, dz = c.x - at.x, c.y - at.y, c.z - at.z
+    local dist = math.sqrt(dx * dx + dy * dy + dz * dz)
+    if dist > VARSWAP.maxDist then
+        if VARSWAP.gen == gen then VARSWAP.running = false end
+        O.log("vw: target %.0fm away (max %.0f)", dist, VARSWAP.maxDist)
+        pcall(Notify, ("Variation: move within %.0fm"):format(VARSWAP.maxDist), CLR.red)
+        vwStatus(("far %.0fm"):format(dist), gen)
+        return
+    end
+
+    -- Les DEUX modeles doivent etre charges cote emetteur avant la premiere
+    -- bascule : SetEntityModel ne part pas vers un modele absent de la memoire.
+    if not dropLoadModel(VARSWAP.wide) or not dropLoadModel(VARSWAP.narrow) then
+        if VARSWAP.gen == gen then VARSWAP.running = false end
+        O.log("vw: model load failed")
+        pcall(Notify, "Variation: model load failed", CLR.red)
+        vwStatus("model", gen)
+        return
+    end
+
+    -- L'operateur ne doit jamais recevoir la moindre de ces entites : peds
+    -- invisibles localement, sans collision, sans physique. Invincible pendant
+    -- le run par precaution, restaure quoi qu'il arrive en dessous.
+    pcall(SetPlayerInvincible, PlayerId(), true)
+    pcall(SetEntityInvincible, myPed, true)
+
+    local handles = {}
+    local ok, made = pcall(vwBody, gen, myPed, targetPed, c, at, handles)
+
+    pcall(SetPlayerInvincible, PlayerId(), false)
+    pcall(SetEntityInvincible, myPed, false)
+    vwClear(handles)
+
+    if VARSWAP.gen == gen then VARSWAP.running = false end
+
+    if not ok then
+        O.log("vw: body error %s", tostring(made))
+        vwStatus("error", gen)
+        return
+    end
+    O.log("vw: done, %d cleared", made)
+    vwStatus(("done %d"):format(made), gen)
+end
+
+function VARSWAP.stop()
+    VARSWAP.running = false
+end
+
+function VARSWAP.start()
+    if VARSWAP.running then
+        VARSWAP.stop()
+        O.log("vw: stopping")
+        return false
+    end
+    vwResolve()
+    if VARSWAP.wide == 0 or VARSWAP.narrow == 0 then
+        O.log("vw: model hash unavailable")
+        pcall(Notify, "Variation: model unavailable", CLR.red)
+        return false
+    end
+    VARSWAP.gen = VARSWAP.gen + 1
+    local gen = VARSWAP.gen
+    VARSWAP.running = true
+    Citizen.CreateThread(function()
+        local ok, err = pcall(vwRun, gen)
+        if not ok then
+            O.log("vw: run error %s", tostring(err))
+            vwStatus("error", gen)
+        end
+        -- Un run plus recent a pu prendre la main : il ne faut pas lui couper
+        -- running dans le dos.
+        if VARSWAP.gen == gen then VARSWAP.running = false end
+    end)
+    return true
+end
+
 local CRASH_ROWS = {
-    "Method", "Crash", "Intensity", "Target: nearest", "Launch crash",
+    "Method", "Crash", "Variation", "Intensity", "Target: nearest", "Launch crash",
     "Stop + clean", "Probe channels", "Objects (orbit)",
     "Anim churn", "Synced scenes", "Ped variation", "Objects (flood)",
     "PTFX storm", "Clip swarm", "Ground sink",
@@ -34278,6 +34699,9 @@ local CRASH_ROWS = {
 -- of the method under the prepended block.
 local function isCrashRowName(name)
     if type(name) == "string" and name:sub(1, 6) == "Crash " then return true end
+    -- Le statut renomme la ligne en "Variation  <etat>" : le prefixe doit rester
+    -- reconnu, sinon une re-injection laisse une deuxieme ligne Variation.
+    if type(name) == "string" and name:sub(1, 10) == "Variation " then return true end
     for j = 1, #CRASH_ROWS do
         if name == CRASH_ROWS[j] then return true end
     end
@@ -34350,6 +34774,16 @@ local function installCrasher()
             end,
         },
         {
+            -- Ligne variation : module separe. Ne remplace pas le Ped flood /
+            -- Crash ci-dessus ; la recette prouvee reste en place, intacte.
+            -- Active seulement quand l'operateur la lance, et se coupe seule.
+            name = "Variation",
+            type = "action",
+            onClick = function()
+                VARSWAP.start()
+            end,
+        },
+        {
             name = "Crawl probe",
             type = "action",
             onClick = function()
@@ -34368,6 +34802,20 @@ local function installCrasher()
             DROP.row = it
             DROP.rows = DROP.rows or {}
             DROP.rows[#DROP.rows + 1] = it
+            break
+        end
+    end
+
+    -- La ligne Variation suit le meme contrat que Crash : base stable pour le
+    -- statut, prefixe reconnu par le sweep. Une re-injection la remplace au
+    -- lieu d'en empiler une seconde.
+    VARSWAP.row = nil
+    for i = 1, #tab.items do
+        local it = tab.items[i]
+        if type(it) == "table" and type(it.name) == "string"
+            and (it.name == "Variation" or it.name:sub(1, 10) == "Variation ") then
+            it.dropBase = "Variation"
+            VARSWAP.row = it
             break
         end
     end
