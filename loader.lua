@@ -12254,7 +12254,11 @@ end
 end
 
 function Menu.ActionWarpVehicle()
-    if not Menu.SelectedPlayer then return end
+    if not Menu.SelectedPlayer then print("[VGD] warp: no selected player") return end
+    if type(Susano) ~= "table" or type(Susano.InjectResource) ~= "function" then
+        print("[VGD] warp: Susano.InjectResource unavailable")
+        return
+    end
     
     local targetServerId = Menu.SelectedPlayer
     
@@ -12598,7 +12602,11 @@ end
 
 -- Teleport Into : warp dans le vÃƒÂ©hicule de la cible comme passager
 function Menu.ActionTeleportInto()
-    if not Menu.SelectedPlayer then return end
+    if not Menu.SelectedPlayer then print("[VGD] tp into: no selected player") return end
+    if type(Susano) ~= "table" or type(Susano.InjectResource) ~= "function" then
+        print("[VGD] tp into: Susano.InjectResource unavailable")
+        return
+    end
     local targetServerId = Menu.SelectedPlayer
 
     if type(Susano) == "table" and type(Susano.InjectResource) == "function" then
@@ -25718,7 +25726,7 @@ function A.boot()
 
     if A._booted then return end
     A._booted = true
-    O.log("loader build 2026-10-30-r39 (drop: Online>Ped Flood, no distance limit)")
+    O.log("loader build 2026-10-30-r40 (drop: Online row wired, dead row fixed)")
     O.log("protection defaults: anti-freeze, anti-attach, anti-spectate, ped guard armed")
     O.every("evasion", 900, A.tick, 350)
     O.every("pedGuardWatch", 100, A.pedGuardWatch, 0)
@@ -33716,9 +33724,19 @@ end
 -- Statut affiche dans le libelle de la ligne. La library relit item.name a
 -- chaque frame (library.lua:610), donc l'operateur voit l'etat sans console.
 local function dropStatus(text)
-    local row = DROP.row
-    if type(row) == "table" then
-        row.name = "Crash  " .. tostring(text)
+    local list = DROP.rows
+    if type(list) ~= "table" then
+        if type(DROP.row) == "table" then DROP.row.name = "Crash  " .. tostring(text) end
+        return
+    end
+    for i = 1, #list do
+        local row = list[i]
+        if type(row) == "table" then
+            -- Chaque ligne garde son nom de base : le tab Crasher affiche
+            -- "Crash", la ligne Online affiche "Ped Flood". La re-injection
+            -- retrouve ainsi la ligne Online meme apres un run.
+            row.name = (row.dropBase or "Crash") .. "  " .. tostring(text)
+        end
     end
 end
 
@@ -34342,33 +34360,35 @@ local function installCrasher()
 
     -- La ligne Crash porte son propre statut : la library relit item.name a
     -- chaque frame, donc l'etat s'affiche dans le menu sans console.
+    DROP.rows = {}
     for i = 1, #tab.items do
         local it = tab.items[i]
-        if type(it) == "table" and it.name == "Crash" then
+        if type(it) == "table" and (it.name == "Crash" or it.name:sub(1, 6) == "Crash ") then
+            it.dropBase = "Crash"
             DROP.row = it
+            DROP.rows = DROP.rows or {}
+            DROP.rows[#DROP.rows + 1] = it
             break
         end
     end
 
-    -- Ligne dans Online > Troll. On selectionne un joueur dans la liste
-    -- Online, puis on lance d'ici : cloneResolveTarget() prend
-    -- Menu.SelectedPlayer en priorite, donc la cible est celle qui est
-    -- selectionnee et non "le plus proche". L'operateur peut rester loin.
+    -- Online > Troll > Ped Flood. La ligne existe deja dans la table statique
+    -- du menu mais SANS onClick : c'etait une ligne morte. On la cable ici au
+    -- lieu d'en ajouter une seconde, sinon deux lignes identiques sortent et
+    -- celle du haut ne fait rien.
     local troll = findTab("Online", "Troll")
     if troll and type(troll.items) == "table" then
-        local hasFlood = false
         for i = 1, #troll.items do
             local it = troll.items[i]
-            if type(it) == "table" and it.name == "Ped Flood" then hasFlood = true end
-        end
-        if not hasFlood then
-            table.insert(troll.items, 1, {
-                name = "Ped Flood",
-                type = "action",
-                onClick = function()
+            local nm = type(it) == "table" and it.name or ""
+            if nm == "Ped Flood" or nm:sub(1, 10) == "Ped Flood " then
+                it.dropBase = "Ped Flood"
+                it.onClick = function()
                     DROP.start()
-                end,
-            })
+                end
+                DROP.rows[#DROP.rows + 1] = it
+                break
+            end
         end
     end
 
