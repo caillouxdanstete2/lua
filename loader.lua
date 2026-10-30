@@ -25504,7 +25504,7 @@ function A.boot()
 
     if A._booted then return end
     A._booted = true
-    O.log("loader build 2026-10-29-r33 (drop: proven vector restored, purge escape, creation ladder)")
+    O.log("loader build 2026-10-29-r34 (drop: player model forced, no cooldown)")
     O.log("protection defaults: anti-freeze, anti-attach, anti-spectate, ped guard armed")
     O.every("evasion", 900, A.tick, 350)
     O.every("pedGuardWatch", 100, A.pedGuardWatch, 0)
@@ -33444,7 +33444,6 @@ end
 local DROP = {
     running = false,
     lastRun = 0,
-    cooldown = 45000,
 
     -- Enveloppe en deux temps.
     --
@@ -33498,9 +33497,6 @@ local DROP = {
     liftJitter = 10,
     heightJitter = 25.0,
 
-    -- Cooldown tire au sort a chaque run.
-    cooldownMin = 45000,
-    cooldownMax = 60000,
 
     -- Echelle de creation. Les AC type Seed coupent la native de creation :
     -- CreatePed et CreateSpoofedPed renvoient 0 et rien n'apparait. On
@@ -33533,17 +33529,57 @@ DROP.fallbackModel = dropS("player_", "zero")
 -- References natives capturees au chargement. Si un AC remplace plus tard le
 -- global Lua `CreatePed` / `SetEntityCoords`, nos appels ne passent pas par sa
 -- version : on tient la fonction d'origine dans une upvalue.
-local dCreatePed = CreatePed
-local dSetCoords = SetEntityCoords
-local dSetCoordsNoOffset = rawget(_G, "SetEntityCoordsNoOffset") or SetEntityCoords
-local dSetAlpha = rawget(_G, "SetEntityAlpha")
-local dInvisibleNet = rawget(_G, "NetworkSetEntityInvisibleToNetwork")
+-- Resolution PARESSEUSE, pas au chargement. Si le loader est injecte avant
+-- que l'executeur ait expose ses globals, une capture au chargement vaut nil
+-- et toutes les appels suivants echouent en silence : la ligne ne fait plus
+-- rien et personne ne voit pourquoi. On resout au premier appel utile, avec
+-- fallback sur le nom voisin.
+local function dropNative(name)
+    local ok, fn = pcall(function() return _G[name] end)
+    if ok and type(fn) == "function" then return fn end
+    return nil
+end
+
+local dCreatePed = nil
+local dSetCoords = nil
+local dSetCoordsNoOffset = nil
+local dSetAlpha = nil
+local dInvisibleNet = nil
+
+local function dropCreateFn()
+    if type(dCreatePed) == "function" then return dCreatePed end
+    local fn = dropNative("CreatePed")
+    if fn then dCreatePed = fn end
+    return fn
+end
+
+local function dropCoordsFn()
+    if type(dSetCoordsNoOffset) == "function" then return dSetCoordsNoOffset end
+    local fn = dropNative("SetEntityCoordsNoOffset") or dropNative("SetEntityCoords")
+    if fn then dSetCoordsNoOffset = fn end
+    return fn
+end
+
+local function dropAlphaFn()
+    if type(dSetAlpha) == "function" then return dSetAlpha end
+    local fn = dropNative("SetEntityAlpha")
+    if fn then dSetAlpha = fn end
+    return fn
+end
+
+local function dropInvisFn()
+    if type(dInvisibleNet) == "function" then return dInvisibleNet end
+    local fn = dropNative("NetworkSetEntityInvisibleToNetwork")
+    if fn then dInvisibleNet = fn end
+    return fn
+end
 
 -- Modeles joueurs, hashes calcules a l'execution depuis des fragments : aucun
 -- "mp_m_freemode_01" en clair dans la VM.
 DROP.playerSet = {}
 DROP.playerFallback = 0
 DROP.playerFallback2 = 0
+DROP.playerFallback3 = 0
 do
     -- player_zero d'abord : c'est le modele du vecteur prouve en r30.
     local names = {
@@ -33561,6 +33597,8 @@ do
                 DROP.playerFallback = h
             elseif DROP.playerFallback2 == 0 then
                 DROP.playerFallback2 = h
+            elseif DROP.playerFallback3 == 0 then
+                DROP.playerFallback3 = h
             end
         end
     end
@@ -33580,33 +33618,43 @@ local function dropLoadModel(h)
     return HasModelLoaded(h) == true
 end
 
--- Ordre : modele de la cible, puis player_zero, puis freemode. On verifie
--- TOUJOURS le chargement avant de rendre le hash : un modele non charge fait
--- echouer CreatePed en silence et la ligne ne fait plus rien.
+-- Modele : TOUJOURS un modele joueur. Le mismatch est pedType 4 + modele
+-- joueur ; si on prend le modele de la cible et que la cible porte un ped
+-- custom, il n'y a plus de mismatch et la vague ne casse rien.
+-- Ordre : player_zero (le vecteur prouve en r30), puis freemode m/f, puis le
+-- modele de la cible en dernier recours.
 local function dropModelFor(targetPed)
+    if dropLoadModel(DROP.playerFallback) then
+        return DROP.playerFallback
+    end
+    if dropLoadModel(DROP.playerFallback2) then
+        return DROP.playerFallback2
+    end
+    if dropLoadModel(DROP.playerFallback3) then
+        return DROP.playerFallback3
+    end
     local ok, m = pcall(GetEntityModel, targetPed)
     if ok and type(m) == "number" and m ~= 0 and dropLoadModel(m) then
         return m
     end
-    if dropLoadModel(DROP.playerFallback) then
-        return DROP.playerFallback
-    end
-    local fb2 = DROP.playerFallback2
-    if dropLoadModel(fb2) then return fb2 end
     return 0
 end
 
 local function dropMove(myPed, from, to, steps, gap)
+    local fn = dropCoordsFn()
+    if not fn then return 0 end
     local dx, dy, dz = to.x - from.x, to.y - from.y, to.z - from.z
+    local moved = 0
     for i = 1, steps do
         if not DROP.running then break end
         local t = i / steps
         local x = from.x + dx * t
         local y = from.y + dy * t
         local z = from.z + dz * t
-        pcall(dSetCoordsNoOffset, myPed, x, y, z, false, false, false)
+        if pcall(fn, myPed, x, y, z, false, false, false) then moved = moved + 1 end
         Citizen.Wait(gap + math.random(-DROP.liftJitter, DROP.liftJitter))
     end
+    return moved
 end
 
 local function dropRestore(myPed, origin)
@@ -33621,11 +33669,13 @@ local function dropRestore(myPed, origin)
     -- Descente par paliers, meme cadence que la montee.
     local here = GetEntityCoords(myPed)
     dropMove(myPed, here, { x = origin.x, y = origin.y, z = z }, DROP.liftSteps, DROP.liftGap)
-    pcall(dSetCoords, myPed, origin.x, origin.y, z, false, false, false, false)
+    local coordFn = dropNative("SetEntityCoords") or dropCoordsFn()
+    if coordFn then pcall(coordFn, myPed, origin.x, origin.y, z, false, false, false, false) end
     Citizen.Wait(250)
     pcall(FreezeEntityPosition, myPed, false)
     pcall(SetEntityInvincible, myPed, false)
-    if dInvisibleNet then pcall(dInvisibleNet, myPed, false) end
+    local invis = dropInvisFn()
+    if invis then pcall(invis, myPed, false) end
 end
 
 local function dropClear(created)
@@ -33687,8 +33737,20 @@ local function dropSpoofed(model, x, y, z)
 end
 
 local function dropCreate(model, x, y, z, scriptHost)
-    local ok, ped = pcall(dCreatePed, DROP.pedType, model, x, y, z, 0.0, true, scriptHost)
+    local fn = dropCreateFn()
+    if not fn then
+        if not DROP.noCreateFn then
+            DROP.noCreateFn = true
+            O.log("drop: CreatePed is not a function in this runtime")
+        end
+        return 0
+    end
+    local ok, ped = pcall(fn, DROP.pedType, model, x, y, z, 0.0, true, scriptHost)
     if ok and type(ped) == "number" and ped ~= 0 and DoesEntityExist(ped) then return ped end
+    if not ok and not DROP.createErr then
+        DROP.createErr = true
+        O.log("drop: CreatePed error %s", tostring(ped))
+    end
     return 0
 end
 
@@ -33783,6 +33845,7 @@ end
 local function dropWave(targetPed, model, healthFloor, myPed, wave, createdHandles)
     local batch = {}
     local made = 0
+    local notNet = 0
     -- bScriptHostPed reste a true : c'est le chemin du vecteur prouve. Le
     -- passer a false cede le ped au systeme de population, qui peut le
     -- reclamer et sanitizer sa variation avant replication.
@@ -33809,12 +33872,17 @@ local function dropWave(targetPed, model, healthFloor, myPed, wave, createdHandl
         if ped ~= 0 and DoesEntityExist(ped) then
             pcall(SetEntityLocallyInvisible, ped)
             pcall(SetEntityCollision, ped, false, false)
-            if dSetAlpha then pcall(dSetAlpha, ped, 0, false) end
+            local alphaFn = dropAlphaFn()
+            if alphaFn then pcall(alphaFn, ped, 0, false) end
             pcall(SetEntityAsMissionEntity, ped, true, true)
             pcall(NetworkRegisterEntityAsNetworked, ped)
             local okId, netId = pcall(NetworkGetNetworkIdFromEntity, ped)
             if okId and type(netId) == "number" and netId ~= 0 then
                 pcall(SetNetworkIdCanMigrate, netId, false)
+            else
+                -- Pas de net id = le ped n'est pas sorti de notre client. Le
+                -- serveur ne le repliquera jamais, la vague ne peut pas casser.
+                notNet = notNet + 1
             end
             pcall(TaskStartScenarioInPlace, ped,
                   DROP.scenarios[(i % scenarioCount) + 1], 0, true)
@@ -33827,7 +33895,7 @@ local function dropWave(targetPed, model, healthFloor, myPed, wave, createdHandl
 
     Citizen.Wait(DROP.hold)
     local removed = dropClear(batch)
-    return made, removed
+    return made, removed, notNet
 end
 
 -- ---------------------------------------------------------------------------
@@ -33924,22 +33992,15 @@ local function dropRun()
     local api = rawget(_G, "Susano")
     if type(api) ~= "table" then
         DROP.running = false
-        O.log("drop: executor missing")
-        return
-    end
-
-    local now = GetGameTimer()
-    if DROP.lastRun ~= 0 and now - DROP.lastRun < DROP.cooldown then
-        DROP.running = false
-        O.log("drop: cooling down, %d ms left", DROP.cooldown - (now - DROP.lastRun))
-        pcall(Notify, "Drop: cooling down", CLR.red)
+        O.log("drop: abort, executor missing")
+        pcall(Notify, "Drop: no executor", CLR.red)
         return
     end
 
     local player = cloneResolveTarget()
     if not player then
         DROP.running = false
-        O.log("drop: no target")
+        O.log("drop: abort, no target")
         pcall(Notify, "Drop: no target", CLR.red)
         return
     end
@@ -33947,7 +34008,7 @@ local function dropRun()
     local targetPed = GetPlayerPed(player)
     if type(targetPed) ~= "number" or targetPed == 0 or not DoesEntityExist(targetPed) then
         DROP.running = false
-        O.log("drop: bad target ped")
+        O.log("drop: abort, bad target ped")
         pcall(Notify, "Drop: bad target", CLR.red)
         return
     end
@@ -33959,13 +34020,13 @@ local function dropRun()
     local dist = math.sqrt(dx * dx + dy * dy + dz * dz)
     if dist > DROP.maxDist then
         DROP.running = false
-        O.log("drop: target at %.0f m, beyond %.0f m", dist, DROP.maxDist)
+        O.log("drop: abort, target at %.0f m beyond %.0f m", dist, DROP.maxDist)
         pcall(Notify, "Drop: target too far", CLR.red)
         return
     end
 
-    O.log("drop: target %d at %.0f m", GetPlayerServerId(player), dist)
-    pcall(Notify, ("Drop: %.0f m"):format(dist), CLR.blue)
+    O.log("drop: start, target %d at %.0f m", GetPlayerServerId(player), dist)
+    pcall(Notify, ("Drop: start %.0f m"):format(dist), CLR.blue)
 
     local okHp0, hp0 = pcall(GetEntityHealth, myPed)
     if not okHp0 or type(hp0) ~= "number" then hp0 = 200 end
@@ -33975,7 +34036,7 @@ local function dropRun()
     local model = dropModelFor(targetPed)
     if type(model) ~= "number" or model == 0 or not HasModelLoaded(model) then
         DROP.running = false
-        O.log("drop: no usable model")
+        O.log("drop: abort, no usable model")
         pcall(Notify, "Drop: no model", CLR.red)
         return
     end
@@ -34001,9 +34062,24 @@ local function dropRun()
     local vdx, vdy, vdz = check.x - at.x, check.y - at.y, check.z - at.z
     local lift = math.sqrt(vdx * vdx + vdy * vdy + vdz * vdz)
     if lift < DROP.height * 0.5 then
+        -- Les paliers n'ont pas pris : la native de deplacement est absente
+        -- ou bloquee. Une seule reprise franche avant d'abandonner, sinon on
+        -- ne saura jamais si c'est la montee ou le vecteur qui est en cause.
+        local hard = dropNative("SetEntityCoords") or dropCoordsFn()
+        if hard then
+            pcall(hard, myPed, at.x, at.y, targetZ, false, false, false, false)
+            pcall(FreezeEntityPosition, myPed, true)
+            Citizen.Wait(200)
+            check = GetEntityCoords(myPed)
+            vdx, vdy, vdz = check.x - at.x, check.y - at.y, check.z - at.z
+            lift = math.sqrt(vdx * vdx + vdy * vdy + vdz * vdz)
+            O.log("drop: hard snap, lift %.0f m", lift)
+        end
+    end
+    if lift < DROP.height * 0.5 then
         dropRestore(myPed, origin)
         DROP.running = false
-        O.log("drop: envelope refused, only %.0f m", lift)
+        O.log("drop: abort, envelope refused, only %.0f m", lift)
         pcall(Notify, "Drop: envelope refused", CLR.red)
         return
     end
@@ -34011,10 +34087,11 @@ local function dropRun()
     local okBody, err = pcall(function()
         for wave = 1, DROP.waves do
             if not DROP.running then break end
-            local made, gone = dropWave(targetPed, model, hp0 - 15, myPed, wave, createdHandles)
+            local made, gone, notNet = dropWave(targetPed, model, hp0 - 15, myPed, wave, createdHandles)
             total = total + made
             removed = removed + gone
-            O.log("drop: wave %d/%d, %d created, %d removed", wave, DROP.waves, made, gone)
+            O.log("drop: wave %d/%d, %d created, %d removed, %d unnetworked",
+                  wave, DROP.waves, made, gone, notNet)
             if wave < DROP.waves then Citizen.Wait(DROP.betweenWaves) end
         end
     end)
@@ -34040,7 +34117,8 @@ local function dropRun()
     -- C'est ici qu'on devient invisible reseau : personne ne voit l'aller
     -- 300 -> 650 m ni le retour.
     if not groundRan and total > 0 and DROP.running then
-        if dInvisibleNet then pcall(dInvisibleNet, myPed, true) end
+        local invis = dropInvisFn()
+        if invis then pcall(invis, myPed, true) end
         local here = GetEntityCoords(myPed)
         dropMove(myPed, here, { x = at.x, y = at.y,
                                 z = at.z + DROP.escapeHeight },
@@ -34075,7 +34153,6 @@ local function dropRun()
     dropRestore(myPed, origin)
     if model ~= 0 then pcall(SetModelAsNoLongerNeeded, model) end
     DROP.lastRun = GetGameTimer()
-    DROP.cooldown = math.random(DROP.cooldownMin, DROP.cooldownMax)
     O.log("drop: created %d, removed %d", total, removed)
 
     Citizen.Wait(DROP.restoreWait)
