@@ -901,7 +901,7 @@ Menu.Categories = {
             { name = "Shoot Player", type = "action", risk = true},
             { name = "Ped Flood", type = "action", risk = true},
             { name = "Ragdoll", type = "action"},
-            { name = "Launch", type = "action" },
+            { name = "Launch", type = "action", onClick = function() Menu.ActionLaunch() end },
             { name = "Attach Player", type = "toggle", value = false, onClick = function(val)
                 local target = Menu.SelectedPlayer
                 if not target then
@@ -13594,6 +13594,9 @@ Menu.LaunchRestoreMs    = 220
 Menu.LaunchAttachRange  = 9.0
 Menu.LaunchAttachLift   = 85.0
 Menu.LaunchAttachMs     = 220
+Menu.LaunchDirectSpeed = 110.0
+Menu.LaunchAttachCycles = 3
+Menu.LaunchAttachTeleport = true
 
 local function _launchVecDistance(a, b)
     local dx, dy, dz = a.x - b.x, a.y - b.y, a.z - b.z
@@ -13673,24 +13676,34 @@ local function _launchTakeControl(veh)
     return NetworkHasControlOfEntity(veh)
 end
 
+local function _launchLog(fmt, ...)
+    local ok, msg = pcall(string.format, fmt, ...)
+    print("[Launch] " .. (ok and msg or tostring(fmt)))
+end
+
 function Menu.ActionLaunch()
     local serverId = Menu.SelectedPlayer
-    if type(serverId) ~= "number" then return end
-    if serverId == GetPlayerServerId(PlayerId()) then return end
+    if type(serverId) ~= "number" then _launchLog("no target selected") return end
+    if serverId == GetPlayerServerId(PlayerId()) then _launchLog("self target") return end
 
     local stamp = GetGameTimer()
-    if stamp - (Menu.LaunchLastAt or 0) < (Menu.LaunchCooldownMs or 4000) then return end
+    if stamp - (Menu.LaunchLastAt or 0) < (Menu.LaunchCooldownMs or 4000) then
+        _launchLog("cooldown")
+        return
+    end
 
     local clientId = GetPlayerFromServerId(serverId)
-    if not clientId or clientId == -1 then return end
+    _launchLog("click server=%s client=%s", tostring(serverId), tostring(clientId))
+    if not clientId or clientId == -1 then _launchLog("target not in scope") return end
     local targetPed = GetPlayerPed(clientId)
-    if not targetPed or targetPed == 0 or not DoesEntityExist(targetPed) then return end
-    if IsEntityDead(targetPed) then return end
+    if not targetPed or targetPed == 0 or not DoesEntityExist(targetPed) then
+        _launchLog("no ped")
+        return
+    end
+    if IsEntityDead(targetPed) then _launchLog("target dead") return end
 
     Menu.LaunchLastAt = stamp
 
-    -- Best-effort limp body. The engine can sanitize remote ragdoll events, so
-    -- this is never required for the throw itself.
     if type(Susano) == "table" and type(Susano.RequestRagdoll) == "function" then
         local ok, guid = pcall(GetEntityGuid, targetPed)
         if ok and type(guid) == "number" and guid ~= 0 then
@@ -13699,113 +13712,155 @@ function Menu.ActionLaunch()
     end
 
     CreateThread(function()
-        local victimVeh = GetVehiclePedIsIn(targetPed, false)
-        local inVehicle = victimVeh and victimVeh ~= 0 and DoesEntityExist(victimVeh)
+        local ok, err = xpcall(function()
+            local victimVeh = GetVehiclePedIsIn(targetPed, false)
+            local inVehicle = victimVeh and victimVeh ~= 0 and DoesEntityExist(victimVeh)
+            _launchLog("inVeh=%s veh=%s", tostring(inVehicle), tostring(victimVeh))
 
-        -- Path A: the victim is a passenger. The occupied car has no player
-        -- driver owning it in the common case, so control is granted; the
-        -- occupant travels with the transform, no collision needed.
-        if inVehicle then
-            local driver = GetPedInVehicleSeat(victimVeh, -1)
-            if driver ~= targetPed and _launchTakeControl(victimVeh) then
-                local speed = Menu.LaunchCarSpeed or 110.0
-                for _ = 1, (Menu.LaunchCarTicks or 5) do
-                    if not DoesEntityExist(victimVeh) then break end
-                    pcall(SetEntityVelocity, victimVeh, 0.0, 0.0, speed)
-                    Wait(Menu.LaunchCarGap or 25)
+            -- 0) Direct ped control. On a server that does not pin ownership,
+            --    this alone replicates: SetEntityVelocity becomes authoritative.
+            local mine = false
+            for _ = 1, 8 do
+                if NetworkHasControlOfEntity(targetPed) then mine = true break end
+                pcall(NetworkRequestControlOfEntity, targetPed)
+                Wait(35)
+            end
+            _launchLog("pedControl=%s", tostring(mine))
+            if mine then
+                local speed = Menu.LaunchDirectSpeed or 110.0
+                for _ = 1, 10 do
+                    if not DoesEntityExist(targetPed) then break end
+                    pcall(SetEntityVelocity, targetPed, 0.0, 0.0, speed)
+                    Wait(30)
                 end
+                _launchLog("ped velocity sent")
                 return
             end
-        end
 
-        local victimEntity = inVehicle and victimVeh or targetPed
-        local victimCoords = GetEntityCoords(victimEntity, true)
-        if not victimCoords then return end
-
-        -- Path B: borrow an existing world car and drive it up through the
-        -- victim. Nothing is created, nothing explodes, nothing is attached.
-        local myVeh = GetVehiclePedIsIn(PlayerPedId(), false)
-        local lastVeh = 0
-        local okLast, last = pcall(GetPlayersLastVehicle)
-        if okLast and type(last) == "number" then lastVeh = last end
-
-        local function whip(car)
-            if type(car) ~= "number" or car == 0 then return false end
-            if car == myVeh then return false end
-            if not DoesEntityExist(car) or GetEntityType(car) ~= 2 then return false end
-            if not _launchTakeControl(car) then return false end
-
-            local home = GetEntityCoords(car, true)
-            local homeRot = GetEntityRotation(car, 2)
-            local speed = Menu.LaunchWhipSpeed or 110.0
-            local force = Menu.LaunchWhipForce or 32000.0
-
-            pcall(SetEntityCollision, car, true, true)
-
-            for _ = 1, (Menu.LaunchWhipTicks or 8) do
-                if not DoesEntityExist(victimEntity) then break end
-                local c = GetEntityCoords(victimEntity, true)
-                if not c then break end
-                -- Keep the car pinned just under the victim and keep it trying
-                -- to rise: our simulation owns the transform, the victim's
-                -- client resolves the contact.
-                pcall(SetEntityCoordsNoOffset, car, c.x, c.y, c.z - 0.25, false, false, false)
-                pcall(SetEntityVelocity, car, 0.0, 0.0, speed)
-                pcall(ApplyForceToEntity, car, 0, 0.0, 0.0, force,
-                    0.0, 0.0, 0.0, 0, false, true, true, false, true)
-                Wait(Menu.LaunchWhipGap or 26)
+            -- 1) Vehicle explosion. vehicleNetworkId ~= 0 short-circuits the
+            --    server explosion gate before any blacklist or limiter.
+            if inVehicle then
+                pcall(NetworkExplodeVehicle, victimVeh, true, true, false)
+                _launchLog("victim vehicle exploded")
+                return
             end
 
-            -- Put the car back where it was: no wreck, no deletion event, and
-            -- AntiMagneto's 2.5 s sample finds it on the ground.
-            if home then
-                CreateThread(function()
-                    Wait(Menu.LaunchRestoreMs or 220)
-                    if DoesEntityExist(car) then
-                        pcall(SetEntityVelocity, car, 0.0, 0.0, 0.0)
-                        pcall(SetEntityCoordsNoOffset, car, home.x, home.y, home.z, false, false, false)
-                        if homeRot then
-                            pcall(SetEntityRotation, car, homeRot.x, homeRot.y, homeRot.z, 2, true)
+            local victimCoords = GetEntityCoords(targetPed, true)
+            if not victimCoords then _launchLog("no victim coords") return end
+
+            local myVeh = GetVehiclePedIsIn(PlayerPedId(), false)
+            local lastVeh = 0
+            local okLast, last = pcall(GetPlayersLastVehicle)
+            if okLast and type(last) == "number" then lastVeh = last end
+
+            local pool = _launchPoolVehicles()
+            _launchLog("pool=%d last=%s my=%s", #pool, tostring(lastVeh), tostring(myVeh))
+
+            local function whip(car)
+                if type(car) ~= "number" or car == 0 then return false end
+                if car == myVeh then return false end
+                if not DoesEntityExist(car) or GetEntityType(car) ~= 2 then return false end
+                if not _launchTakeControl(car) then
+                    _launchLog("control refused %s", tostring(car))
+                    return false
+                end
+
+                _launchLog("whip car=%s", tostring(car))
+                local home = GetEntityCoords(car, true)
+                local homeRot = GetEntityRotation(car, 2)
+                local speed = Menu.LaunchWhipSpeed or 110.0
+                local force = Menu.LaunchWhipForce or 32000.0
+
+                pcall(SetEntityCollision, car, true, true)
+
+                for _ = 1, (Menu.LaunchWhipTicks or 8) do
+                    if not DoesEntityExist(targetPed) then break end
+                    local c = GetEntityCoords(targetPed, true)
+                    if not c then break end
+                    pcall(SetEntityCoordsNoOffset, car, c.x, c.y, c.z - 0.25, false, false, false)
+                    pcall(SetEntityVelocity, car, 0.0, 0.0, speed)
+                    pcall(ApplyForceToEntity, car, 0, 0.0, 0.0, force,
+                        0.0, 0.0, 0.0, 0, false, true, true, false, true)
+                    Wait(Menu.LaunchWhipGap or 26)
+                end
+
+                local cc = GetEntityCoords(targetPed, true)
+                _launchLog("whip done pedZ=%.1f", cc and cc.z or -1.0)
+
+                if home then
+                    CreateThread(function()
+                        Wait(Menu.LaunchRestoreMs or 220)
+                        if DoesEntityExist(car) then
+                            pcall(SetEntityVelocity, car, 0.0, 0.0, 0.0)
+                            pcall(SetEntityCoordsNoOffset, car, home.x, home.y, home.z, false, false, false)
+                            if homeRot then
+                                pcall(SetEntityRotation, car, homeRot.x, homeRot.y, homeRot.z, 2, true)
+                            end
                         end
-                    end
-                end)
+                    end)
+                end
+                return true
             end
-            return true
-        end
 
-        -- 1) nearest free world car around the victim (no creation)
-        local car = _launchFindCar(victimCoords, myVeh, lastVeh)
-        if whip(car) then return end
+            local car = _launchFindCar(victimCoords, myVeh, lastVeh)
+            if whip(car) then return end
+            if lastVeh ~= 0 and lastVeh ~= myVeh and DoesEntityExist(lastVeh)
+                and GetEntityType(lastVeh) == 2 and IsVehicleSeatFree(lastVeh, -1) then
+                if whip(lastVeh) then return end
+            end
 
-        -- 2) the operator's own parked car, owned by this client, so the
-        --    velocity write is authoritative without a control race
-        if lastVeh ~= 0 and lastVeh ~= myVeh and DoesEntityExist(lastVeh)
-            and GetEntityType(lastVeh) == 2 and IsVehicleSeatFree(lastVeh, -1) then
-            if whip(lastVeh) then return end
-        end
+            -- 2) Old attach structure, kept as the last resort.
+            local me = PlayerPedId()
+            local meCoords = GetEntityCoords(me, true)
+            if not meCoords then return end
+            local dist = _launchVecDistance(meCoords, victimCoords)
+            _launchLog("attach dist=%.1f", dist)
 
-        -- Path C: old attach structure, only for an on-foot victim already next
-        -- to the operator. Our own ped is ours, so the velocity write
-        -- replicates; the attach keeps the contact.
-        if inVehicle then return end
-        local me = PlayerPedId()
-        local meCoords = GetEntityCoords(me, true)
-        if not meCoords or _launchVecDistance(meCoords, victimCoords) > (Menu.LaunchAttachRange or 9.0) then
-            return
-        end
+            local restore = nil
+            if dist > (Menu.LaunchAttachRange or 9.0) then
+                if Menu.LaunchAttachTeleport == false then
+                    _launchLog("too far and teleport off")
+                    return
+                end
+                restore = meCoords
+                local angle = math.random() * 2 * math.pi
+                local radius = math.random(3, 6)
+                local nx = victimCoords.x + math.cos(angle) * radius
+                local ny = victimCoords.y + math.sin(angle) * radius
+                pcall(SetEntityCoordsNoOffset, me, nx, ny, victimCoords.z, false, false, false)
+                pcall(SetEntityVisible, me, false, false)
+                _launchLog("teleported next to victim")
+                Wait(140)
+            end
 
-        ClearPedTasksImmediately(me)
-        pcall(AttachEntityToEntityPhysically, me, targetPed, 0, 0,
-            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-            100000.0, false, false, true, true, 0)
+            ClearPedTasksImmediately(me)
+            local lift = Menu.LaunchAttachLift or 85.0
+            for _ = 1, (Menu.LaunchAttachCycles or 3) do
+                if not DoesEntityExist(targetPed) then break end
+                local c = GetEntityCoords(targetPed, true)
+                if not c then break end
+                pcall(SetEntityCoordsNoOffset, me, c.x, c.y, c.z + 0.4, false, false, false)
+                pcall(AttachEntityToEntityPhysically, me, targetPed, 0, 0,
+                    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                    100000.0, false, false, true, true, 0)
+                local untilAt = GetGameTimer() + (Menu.LaunchAttachMs or 180)
+                while GetGameTimer() < untilAt do
+                    pcall(SetEntityVelocity, me, 0.0, 0.0, lift)
+                    Wait(30)
+                end
+                pcall(DetachEntity, me, true, true)
+                Wait(120)
+            end
+            _launchLog("attach done")
 
-        local lift = Menu.LaunchAttachLift or 85.0
-        local untilAt = GetGameTimer() + (Menu.LaunchAttachMs or 220)
-        while GetGameTimer() < untilAt do
-            pcall(SetEntityVelocity, me, 0.0, 0.0, lift)
-            Wait(30)
-        end
-        pcall(DetachEntity, me, true, true)
+            if restore then
+                pcall(SetEntityCoordsNoOffset, me, restore.x, restore.y, restore.z, false, false, false)
+                pcall(SetEntityVisible, me, true, false)
+            end
+        end, function(e)
+            return tostring(e)
+        end)
+        if not ok then _launchLog("error: %s", err) end
     end)
 end
 
@@ -13885,8 +13940,8 @@ if Actions.ragdollItem then
     end
 end
 
--- The Launch row was declared as an action with no handler, so clicking it did
--- nothing. Bind it once, here, next to the other Troll actions.
+-- The Launch row carries its own onClick now, so this binding survives any tab
+-- rebuild that copies the row spec. Kept as a second safety net.
 Actions.launchItem = FindItem("Online", "Troll", "Launch")
 if Actions.launchItem then
     Actions.launchItem.onClick = function()
