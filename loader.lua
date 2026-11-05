@@ -17496,7 +17496,7 @@ end)()
 -- >>> VANGUARD MODULE BEGIN
 -- ============================================================================
 -- VANGUARD  (integrated artifact - edit src/ and rebuild)
--- Generated: 2026-11-05 20:21:19
+-- Generated: 2026-11-05 20:28:52
 --
 -- This block lives in loader.lua and in dist/loader.built.lua at the same
 -- time. It is the only place the local Menu table is in scope. Rebuilding
@@ -29529,6 +29529,17 @@ local FP = (function(O,S,B,Menu)
 --   burst; the weapon is unarmed, so WaveShield's client damage branch (which
 --   only inspects damage types 3 and 10) does not enter it.
 --
+-- Why the task runs from a resource chunk (Stage B):
+--   A game native that creates a scripted task needs a resource script
+--   context. The Susano scheduler is an external thread; the call can be
+--   accepted and never emit the scripted task event. The loader's own Shoot
+--   Player and Twerk actions already inject their native calls for the same
+--   reason. Stage B is one small chunk: it resolves the targets by server id,
+--   re-tasks every second, and exits when the feature is disabled. The stop
+--   chunk flips the flag and releases with TASK_WANDER_STANDARD. Neither chunk
+--   has Susano.*; only the injection call lives in the main stage, once per
+--   start and once per stop.
+--
 -- Why this route survives the reference guard (WaveShield V4):
 --   * givePedScriptedTaskEvent is registered with an empty handler. The task
 --     is not inspected, cancelled or reported.
@@ -29593,6 +29604,9 @@ local FP = (function(O,S,B,Menu)
 --   7. With one other player the effect is the flex scenario, not a brawl:
 --      a fight needs an opponent, and inventing one would mean spawning or
 --      tasking the operator. The flex is the dict-free compromise.
+--   8. Resource injection is the one Susano primitive WaveShield names
+--      (ANTI_RESOURCE_INJECTION). The injection is one chunk per start/stop,
+--      not per frame; the chunk itself only calls task natives.
 -- ============================================================================
 
 local FP = {}
@@ -29884,6 +29898,109 @@ local function pickFoe(rec, list)
 end
 
 -- ---------------------------------------------------------------------------
+-- STAGE B. A game native that creates a scripted task needs a resource script
+-- context; the Susano scheduler is not one. The host menu already injects for
+-- the same reason (Shoot Player, Twerk, Black Hole all call game natives from
+-- an injected chunk). The runner resolves the targets by server id, re-tasks
+-- them on its own loop, and never touches the operator. The stop chunk flips
+-- the flag and hands the peds back to their own input with TASK_WANDER_STANDARD
+-- (a task, not a clear: clearPedTasksEvent never sees it).
+--
+-- Neither chunk uses Susano.*: they only have resource globals and natives.
+-- The only Susano call is the injection itself, in this stage.
+-- ---------------------------------------------------------------------------
+local RUNNER = [==[
+local targets = %s
+_G.__vgd_fp_run = true
+local deadline = GetGameTimer() + 600000
+CreateThread(function()
+    while _G.__vgd_fp_run and GetGameTimer() < deadline do
+        local me = PlayerPedId()
+        local bySid = {}
+        for _, p in ipairs(GetActivePlayers()) do
+            bySid[GetPlayerServerId(p)] = p
+        end
+        for i = 1, #targets do
+            local rec = targets[i]
+            local tp = bySid[rec.t]
+            if tp then
+                local tPed = GetPlayerPed(tp)
+                if tPed ~= 0 and tPed ~= me and DoesEntityExist(tPed)
+                    and not IsPedDeadOrDying(tPed, true)
+                    and not IsPedInAnyVehicle(tPed, false) then
+                    if rec.f and rec.f ~= -1 then
+                        local fp = bySid[rec.f]
+                        local fPed = fp and GetPlayerPed(fp) or 0
+                        if fPed ~= 0 and fPed ~= me and fPed ~= tPed
+                            and DoesEntityExist(fPed)
+                            and not IsPedDeadOrDying(fPed, true) then
+                            TaskCombatPed(tPed, fPed, 0, 16)
+                        end
+                    else
+                        TaskStartScenarioInPlace(tPed, "WORLD_HUMAN_MUSCLE_FLEX", 0, false)
+                    end
+                end
+            end
+        end
+        Wait(1000)
+    end
+end)
+]==]
+
+local STOPPER = [==[
+local targets = %s
+_G.__vgd_fp_run = false
+local me = PlayerPedId()
+local bySid = {}
+for _, p in ipairs(GetActivePlayers()) do
+    bySid[GetPlayerServerId(p)] = p
+end
+for i = 1, #targets do
+    local tp = bySid[targets[i].t]
+    if tp then
+        local tPed = GetPlayerPed(tp)
+        if tPed ~= 0 and tPed ~= me and DoesEntityExist(tPed)
+            and not IsPedDeadOrDying(tPed, true) then
+            TaskWanderStandard(tPed, 0.0, 0)
+        end
+    end
+end
+]==]
+
+local function targetLiteral()
+    local parts = {}
+    for i = 1, #FP.targets do
+        local rec = FP.targets[i]
+        local t = GetPlayerServerId(rec.player)
+        local f = -1
+        if rec.mode == "combat" and rec.foePlayer then
+            f = GetPlayerServerId(rec.foePlayer)
+        end
+        if t and t ~= -1 then
+            parts[#parts + 1] = ("{t=%d,f=%d}"):format(t, f or -1)
+        end
+    end
+    return "{" .. table.concat(parts, ",") .. "}"
+end
+
+local function injectTargets()
+    if type(Susano) ~= "table" or type(Susano.InjectResource) ~= "function" then
+        return false
+    end
+    local literal = targetLiteral()
+    if literal == "{}" then return false end
+    local ok, err = pcall(Susano.InjectResource, "any", RUNNER:format(literal))
+    if not ok then
+        log("inject failed: %s", tostring(err))
+        return false
+    end
+    FP.literal = literal
+    FP.injected = true
+    log("stage B armed: %s", literal)
+    return true
+end
+
+-- ---------------------------------------------------------------------------
 -- TICK. Membership, foe health and task health. A target that stops fighting
 -- is re-tasked on the next pass; a target that leaves is released.
 -- ---------------------------------------------------------------------------
@@ -29991,7 +30108,13 @@ function FP.status()
 end
 
 function FP.stop(reason)
+    if FP.injected and FP.literal and type(Susano) == "table"
+        and type(Susano.InjectResource) == "function" then
+        pcall(Susano.InjectResource, "any", STOPPER:format(FP.literal))
+    end
     for i = #FP.targets, 1, -1 do release(FP.targets[i]) end
+    FP.injected = false
+    FP.literal = nil
 
     local was = FP.active
     FP.active = false
@@ -30101,6 +30224,7 @@ function FP.start()
         end
     end
     log("armed %d/%d", made, math.min(#list, MAX_TARGETS))
+    if made > 0 then injectTargets() end
 
     if made == 0 then
         FP.stop("no targets")
