@@ -17496,7 +17496,7 @@ end)()
 -- >>> VANGUARD MODULE BEGIN
 -- ============================================================================
 -- VANGUARD  (integrated artifact - edit src/ and rebuild)
--- Generated: 2026-11-05 19:54:24
+-- Generated: 2026-11-05 20:13:03
 --
 -- This block lives in loader.lua and in dist/loader.built.lua at the same
 -- time. It is the only place the local Menu table is in scope. Rebuilding
@@ -18488,7 +18488,7 @@ local FAMILIES = {
     -- Combat Unlock installs four scoped native hooks. The token caps how often
     -- the operator can re-install them, not the hook traffic itself.
     combat    = { strikes = 3, window = 8000,  cost = 1 },
-    -- Fight Party puts every other player in the ring into a melee task. The
+    -- Fight Party puts every other player in the ring into a combat task. The
     -- token caps how often the ring can be armed; the reference guard's task
     -- handler is empty, so the cap is an unknown-guard margin, not a known
     -- detector. Six sights per window leaves five usable arms for testing.
@@ -29463,17 +29463,17 @@ end)(Menu)
 -- ---------------------------------------------------------------------------
 local FP = (function(O,S,B,Menu)
 -- ============================================================================
--- VANGUARD / 28 FIGHT PARTY (REMOTE MELEE LOCK)
+-- VANGUARD / 28 FIGHT PARTY (REMOTE COMBAT LOCK)
 -- ----------------------------------------------------------------------------
 -- Exploit > Exploit > "Party" (Fight Party, Fight Party Radius).
 --
 -- What the feature does:
 --   A ring is anchored on the selected player, or on the operator when nothing
 --   is selected. Every OTHER real player on foot inside the ring is put into a
---   melee task against another ring member. The task is applied by the owner's
---   client, so the target sees his own character fight, and every other client
---   sees the same task through the ped's task tree. The operator is never put
---   in the ring's target list and is never a melee target.
+--   combat task against another ring member. The task is applied by the
+--   owner's client, so the target sees his own character fight, and every
+--   other client sees the same task through the ped's task tree. The operator
+--   is never put in the ring's target list and is never a combat target.
 --
 --   When the ring holds exactly one other player there is nobody to fight, so
 --   that player is put into WORLD_HUMAN_MUSCLE_FLEX. The scenario is also an
@@ -29481,15 +29481,15 @@ local FP = (function(O,S,B,Menu)
 --   dictionary, and gives a single selected player a visible effect instead of
 --   a silent refusal. The operator is still never the subject.
 --
--- Why melee and not a scripted animation:
+-- Why combat and not a scripted animation:
 --   TASK_PLAY_ANIM on a ped owned by another client is forwarded to the owner,
 --   but the owner has not loaded the animation dictionary. The Cfx bug tracker
 --   is explicit about it ("TaskPlayAnim ... does not automatically load or
 --   request the dictionary"), and the client-side request never leaves this
 --   machine. A plain animation task with an unloaded dictionary lands and does
---   nothing, which is exactly what the previous build hit.
+--   nothing, which is exactly what the first build hit.
 --
--- Why melee and not a synchronised scene:
+-- Why combat and not a synchronised scene:
 --   The server refuses START_NETWORK_SYNCED_SCENE_EVENT when any entity in the
 --   scene is owned by another client and the entity has not been allowlisted
 --   (ServerGameState::SanitizeEntity: `!entity->allowRemoteSyncedScenes`).
@@ -29497,14 +29497,20 @@ local FP = (function(O,S,B,Menu)
 --   client-only executor cannot arm a scene on a remote player ped. That route
 --   is structurally closed regardless of how the packet is shaped.
 --
--- Why melee works:
---   TASK_PUT_PED_DIRECTLY_INTO_MELEE is a task native. The task is serialized
---   as GIVE_PED_SCRIPTED_TASK_EVENT, routed to the ped's owner, and applied by
---   the owner's task tree. The combat clip set is part of the base combat
---   locomotion, not a mission dictionary, so the owner does not need a
---   RequestAnimDict before the task can play. The target's own character is
---   the one that fights, which satisfies "the target sees it"; the task tree
---   replicates to the other clients, which satisfies "everyone sees it".
+-- Why combat works:
+--   TASK_COMBAT_PED is a task native. The task is serialized as
+--   GIVE_PED_SCRIPTED_TASK_EVENT, routed to the ped's owner, and applied by
+--   the owner's task tree. The combat clip set is base-game combat locomotion,
+--   not a mission dictionary, so the owner does not need a RequestAnimDict
+--   before the task can play. The target's own character is the one that
+--   fights, which satisfies "the target sees it"; the task tree replicates to
+--   the other clients, which satisfies "everyone sees it".
+--
+--   TASK_COMBAT_PED is also the exact primitive the reference client menus
+--   use to make a real ped fight (dev.lua: TaskCombatPed(ped, targetPed, 0, 16)
+--   and the NPC brawler loops). Using the same task keeps this feature on a
+--   path the reference corpus already exercises, instead of a task type that
+--   may not be in the game's scripted-task serializer.
 --
 --   The single-target fallback is TASK_START_SCENARIO_IN_PLACE. Scenario
 --   names are compiled into the game's scenario store (the name below is from
@@ -29526,13 +29532,12 @@ local FP = (function(O,S,B,Menu)
 --     ped. The only write is an ordinary scripted task.
 --
 -- Verified natives (citizenfx native database, alloc8or dump):
---   TASK_PUT_PED_DIRECTLY_INTO_MELEE 0x1C6CD14A876FFE39
---     (Ped ped, Ped meleeTarget, float blendInDuration, float timeInMelee,
---      float strafePhaseSync, int aiCombatFlags)->void
+--   TASK_COMBAT_PED                  0xF166E48407BAC484
+--     (Ped ped, Ped targetPed, int combatFlags, int threatResponseFlags)->void
+--   IS_PED_IN_COMBAT                 0x4859F1FC66A6278E (Ped,Ped)->BOOL
+--   IS_PED_IN_MELEE_COMBAT           0x4E209B2C1EAD5159 (Ped)->BOOL
 --   TASK_START_SCENARIO_IN_PLACE     0x142A02425FF02BD9
 --     (Ped ped, const char* scenarioName, int unkDelay, BOOL playEnterAnim)->void
---   IS_PED_IN_MELEE_COMBAT           0x4E209B2C1EAD5159 (Ped)->BOOL
---   IS_PED_IN_COMBAT                 0x4859F1FC66A6278E (Ped,Ped)->BOOL
 --   TASK_WANDER_STANDARD             0xBB9CE077274F6A1B (Ped,float,int)->void
 --   GET_ENTITY_COORDS                0x3FEF770D40960D5A (Entity,BOOL)->Vector3
 --   DOES_ENTITY_EXIST                0x7239B21A38F536BA (Entity)->BOOL
@@ -29544,23 +29549,22 @@ local FP = (function(O,S,B,Menu)
 --   GET_GROUND_Z_FOR_3D_COORD        0xC906A7DAB05C8D2B
 --     (float,float,float,float*,BOOL,BOOL)->BOOL
 --
--- Task arguments:
---   blendInDuration 0.0  the ped enters the melee clip immediately
---   timeInMelee     -1.0 the melee state is held until another task replaces it
---   strafePhaseSync 0.0  no phase offset
---   aiCombatFlags   0    no special AI flags
+-- Combat arguments:
+--   combatFlags          0   no special combat flags
+--   threatResponseFlags  16  the pair the reference menus use for aggro
 --
 -- Residual risk:
---   1. The fight is real melee combat. It produces ordinary weaponDamageEvent
---      traffic between players and can knock a target down. A human reviewer
---      or a server-side damage heuristic can notice a player who fights
---      without input. This is the cost of a dict-free, owner-applied task;
---      it is not a task-event fingerprint.
+--   1. The fight is real combat. It produces ordinary weaponDamageEvent
+--      traffic between players and can knock a target down. If the target has
+--      a firearm equipped, the combat task can use it. A human reviewer or a
+--      server-side damage heuristic can notice a player who fights without
+--      input. This is the cost of a dict-free, owner-applied task; it is not a
+--      task-event fingerprint.
 --   2. GTA limits simultaneous melee attackers per victim (about three); the
 --      rest stand in the guard stance. The module keeps tasking everyone so
 --      the ring rotates as fighters drop.
 --   3. A target can interrupt the task with input. The health pass re-issues
---      it only when IS_PED_IN_MELEE_COMBAT/IS_PED_IN_COMBAT reports idle, and
+--      it only when IS_PED_IN_COMBAT/IS_PED_IN_MELEE_COMBAT reports idle, and
 --      never more than once per RETASK_MS. This is the escape window.
 --   4. The ring itself stays on the Susano overlay, outside the game render
 --      path; the target never sees the ring.
@@ -29568,7 +29572,7 @@ local FP = (function(O,S,B,Menu)
 --      with TASK_WANDER_STANDARD and removed; the task is not forced through a
 --      state the game will refuse.
 --   6. The operator is excluded twice: the gather pass drops PlayerId(), and
---      both startMelee and startScenario refuse any record or foe that
+--      both startCombat and startScenario refuse any record or foe that
 --      resolves to PlayerPedId().
 --   7. With one other player the effect is the flex scenario, not a brawl:
 --      a fight needs an opponent, and inventing one would mean spawning or
@@ -29584,10 +29588,8 @@ local RETASK_MS    = 2500
 local LEASH_M      = 1.5
 local RADIUS_MIN   = 8.0
 local RADIUS_MAX   = 40.0
-local MELEE_TIME   = -1.0
-local MELEE_BLEND  = 0.0
-local MELEE_PHASE  = 0.0
-local MELEE_FLAGS  = 0
+local COMBAT_FLAGS = 0
+local COMBAT_RESPONSE = 16
 local SCENARIO     = "WORLD_HUMAN_MUSCLE_FLEX"
 local SCENARIO_MS  = 2000
 
@@ -29602,6 +29604,8 @@ FP.byPlayer    = {}
 FP.count       = 0
 FP.startedAt   = 0
 FP.onChange    = nil
+FP.note        = nil
+FP.noteUntil   = 0
 
 FP.canRender = type(Susano) == "table"
     and type(Susano.WorldToScreen) == "function"
@@ -29609,6 +29613,11 @@ FP.canRender = type(Susano) == "table"
 
 local function log(fmt, ...)
     O.log("fight: " .. tostring(fmt), ...)
+end
+
+local function note(text, ms)
+    FP.note = tostring(text)
+    FP.noteUntil = GetGameTimer() + (ms or 3000)
 end
 
 local function notify()
@@ -29632,23 +29641,23 @@ local function pedUsable(ped)
 end
 
 -- ---------------------------------------------------------------------------
--- TASK. One melee task per target. The task is the only write; the ped's
+-- TASK. One combat task per target. The task is the only write; the ped's
 -- coordinates, heading, health and weapons are never touched.
 -- ---------------------------------------------------------------------------
-local function meleeEngaged(rec)
+local function combatEngaged(rec)
     if not rec or not rec.ped or rec.ped == 0 then return false end
     if not rec.foePed or rec.foePed == 0 or rec.foePed == rec.ped then return false end
     if not DoesEntityExist(rec.foePed) then return false end
     if IsPedDeadOrDying(rec.foePed, true) then return false end
 
-    local okMelee, melee = pcall(IsPedInMeleeCombat, rec.ped)
-    if okMelee and melee == true then return true end
-
     local okCombat, combat = pcall(IsPedInCombat, rec.ped, rec.foePed)
-    return okCombat and combat == true
+    if okCombat and combat == true then return true end
+
+    local okMelee, melee = pcall(IsPedInMeleeCombat, rec.ped)
+    return okMelee and melee == true
 end
 
-local function startMelee(rec, foe)
+local function startCombat(rec, foe)
     if not rec or not rec.ped or not foe or not foe.ped then return false end
     if not DoesEntityExist(rec.ped) or not DoesEntityExist(foe.ped) then return false end
     if rec.ped == foe.ped then return false end
@@ -29658,11 +29667,13 @@ local function startMelee(rec, foe)
     local me = PlayerPedId()
     if rec.ped == me or foe.ped == me then return false end
 
-    local ok = pcall(TaskPutPedDirectlyIntoMelee,
-        rec.ped, foe.ped, MELEE_BLEND, MELEE_TIME, MELEE_PHASE, MELEE_FLAGS)
-    if not ok then return false end
+    local ok, err = pcall(TaskCombatPed, rec.ped, foe.ped, COMBAT_FLAGS, COMBAT_RESPONSE)
+    if not ok then
+        log("combat native failed on %d: %s", rec.ped, tostring(err))
+        return false
+    end
 
-    rec.mode      = "melee"
+    rec.mode      = "combat"
     rec.foePlayer = foe.player
     rec.foePed    = foe.ped
     rec.retaskAt  = O.now() + RETASK_MS
@@ -29678,8 +29689,11 @@ local function startScenario(rec)
     if not DoesEntityExist(rec.ped) then return false end
     if rec.ped == PlayerPedId() then return false end
 
-    local ok = pcall(TaskStartScenarioInPlace, rec.ped, SCENARIO, 0, false)
-    if not ok then return false end
+    local ok, err = pcall(TaskStartScenarioInPlace, rec.ped, SCENARIO, 0, false)
+    if not ok then
+        log("scenario native failed on %d: %s", rec.ped, tostring(err))
+        return false
+    end
 
     rec.mode      = "scenario"
     rec.foePlayer = nil
@@ -29699,7 +29713,7 @@ local function release(rec)
         return false
     end
 
-    -- TASK_WANDER_STANDARD replaces the melee task and gives the ped back to
+    -- TASK_WANDER_STANDARD replaces the combat task and gives the ped back to
     -- its own input. It is a task, not a clear: no clearPedTasksEvent is
     -- emitted, so clearPedTasksEvent.lua never sees it.
     pcall(TaskWanderStandard, rec.ped, 0.0, 0)
@@ -29840,7 +29854,7 @@ local function tick(now)
 
             local foe = pickFoe(rec, list)
 
-            if rec.mode == "melee" then
+            if rec.mode == "combat" then
                 local foeOk = rec.foePed and rec.foePed ~= 0
                     and rec.foePed ~= rec.ped
                     and rec.foePed ~= PlayerPedId()
@@ -29853,22 +29867,22 @@ local function tick(now)
                     -- another ring member is still available, re-pair; if
                     -- this is now the last one, keep him in the scenario
                     -- rather than dropping him out of the feature.
-                    if foe then
-                        startMelee(rec, foe)
-                    else
-                        startScenario(rec)
-                    end
+                    local restarted = false
+                    if foe then restarted = startCombat(rec, foe) end
+                    if not restarted then startScenario(rec) end
                 elseif now >= (rec.retaskAt or 0) then
                     rec.retaskAt = now + RETASK_MS
-                    if not meleeEngaged(rec) then
-                        if foe then startMelee(rec, foe) else startScenario(rec) end
+                    if not combatEngaged(rec) then
+                        local restarted = false
+                        if foe then restarted = startCombat(rec, foe) end
+                        if not restarted then startScenario(rec) end
                     end
                 end
             else
                 -- Scenario fallback. If a second player appears, promote the
                 -- target to a real bout; otherwise refresh the loop.
                 if foe then
-                    startMelee(rec, foe)
+                    if not startCombat(rec, foe) then startScenario(rec) end
                 elseif now >= (rec.retaskAt or 0) then
                     startScenario(rec)
                 end
@@ -29884,7 +29898,8 @@ local function tick(now)
             local foe = pickFoe(rec, list)
             local armed = false
             if foe then
-                armed = startMelee(rec, foe)
+                armed = startCombat(rec, foe)
+                if not armed then armed = startScenario(rec) end
             else
                 armed = startScenario(rec)
             end
@@ -29925,6 +29940,7 @@ function FP.stop(reason)
     FP.byPlayer = {}
     FP.targets = {}
     FP.count = 0
+    FP.note = nil
 
     if FP.canRender and Menu then Menu.PreventResetFrame = false end
 
@@ -29971,6 +29987,7 @@ function FP.start()
     local list = gather(FP.radius)
     if #list == 0 then
         FP.stop("no targets")
+        note("NO TARGET IN RANGE")
         B.refund("fight")
         return false
     end
@@ -29989,6 +30006,7 @@ function FP.start()
     if not anchor then anchor = list[1] end
     if not anchor or anchor.ped == myPed then
         FP.stop("no anchor")
+        note("NO ANCHOR")
         B.refund("fight")
         return false
     end
@@ -29998,6 +30016,7 @@ function FP.start()
     FP.targets = {}
     FP.byPlayer = {}
     FP.startedAt = O.now()
+    log("start: players=%d radius=%.0f anchor=%d", #list, FP.radius, anchor.player)
 
     local made = 0
     for i = 1, math.min(#list, MAX_TARGETS) do
@@ -30005,7 +30024,8 @@ function FP.start()
         local foe = pickFoe(rec, list)
         local armed = false
         if foe then
-            armed = startMelee(rec, foe)
+            armed = startCombat(rec, foe)
+            if not armed then armed = startScenario(rec) end
         else
             armed = startScenario(rec)
         end
@@ -30013,11 +30033,15 @@ function FP.start()
             FP.targets[#FP.targets + 1] = rec
             FP.byPlayer[rec.player] = rec
             made = made + 1
+        else
+            log("not armed: player=%d ped=%d", rec.player, rec.ped)
         end
     end
+    log("armed %d/%d", made, math.min(#list, MAX_TARGETS))
 
     if made == 0 then
         FP.stop("no targets")
+        note("NO TARGET ARMED")
         B.refund("fight")
         return false
     end
@@ -30053,8 +30077,27 @@ local function stroke(x1, y1, x2, y2, alpha)
 end
 
 function FP.render()
-    if not FP.active or not FP.ring then return end
     if not FP.canRender then return end
+
+    local nowMs = GetGameTimer()
+    if FP.note and nowMs < FP.noteUntil and not FP.active then
+        local width, height = 1920, 1080
+        if type(Susano.GetScreenWidth) == "function" then
+            local ok, value = pcall(Susano.GetScreenWidth)
+            if ok and type(value) == "number" and value > 0 then width = value end
+        end
+        if type(Susano.GetScreenHeight) == "function" then
+            local ok, value = pcall(Susano.GetScreenHeight)
+            if ok and type(value) == "number" and value > 0 then height = value end
+        end
+        if type(Susano.DrawTextCentered) == "function" then
+            pcall(Susano.DrawTextCentered, width * 0.5, height * 0.855,
+                "FIGHT PARTY · " .. FP.note, 15, 0.94, 0.72, 0.72, 0.92)
+        end
+        return
+    end
+
+    if not FP.active or not FP.ring then return end
 
     local now = GetGameTimer() / 1000.0
     local pulse = 0.52 + 0.08 * math.sin(now * 3.4)
@@ -31104,7 +31147,7 @@ end
 --
 -- One toggle and one radius slider, installed at the top of the Exploit tab
 -- after the flash rows exist. The module tasks every OTHER player in the ring
--- into melee; the operator is never a subject or a foe. No entity is spawned,
+-- into combat; the operator is never a subject or a foe. No entity is spawned,
 -- no scene is armed and no coordinate is written on someone else's body. The
 -- module owns its own rows so a re-injection cannot duplicate them.
 -- ---------------------------------------------------------------------------
