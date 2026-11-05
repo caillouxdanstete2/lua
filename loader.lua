@@ -900,7 +900,6 @@ Menu.Categories = {
             { name = "Ban Player [BETA]", type = "toggle", value = false, risk = true},
             { name = "Shoot Player", type = "action", risk = true},
             { name = "Ped Flood", type = "action", risk = true},
-            { name = "Ragdoll", type = "action"},
             { name = "Launch", type = "action", onClick = function() Menu.ActionLaunch() end },
             { name = "Attach Player", type = "toggle", value = false, onClick = function(val)
                 local target = Menu.SelectedPlayer
@@ -13976,12 +13975,7 @@ function Menu.ActionPedArmed()
     end
 end
 
-Actions.ragdollItem = FindItem("Online", "Troll", "Ragdoll")
-if Actions.ragdollItem then
-    Actions.ragdollItem.onClick = function()
-        Menu.ActionRagdoll()
-    end
-end
+-- [REMOVED] Actions.ragdollItem handler (menu item deleted)
 
 -- The Launch row carries its own onClick now, so this binding survives any tab
 -- rebuild that copies the row spec. Kept as a second safety net.
@@ -34808,21 +34802,23 @@ end
 -- ---------------------------------------------------------------------------
 local WORLD = {
     running = false,
+    busy = false,
     gen = 0,
     row = nil,
     minDist = 200.0,
     maxDist = 250.0,
     radius = 20.0,
     pedDensity = 0.0,
-    vehicleDensity = 1e38,
-    vehicleDensity2 = 0 / 0,
+    -- Echelle de densites : la native rejette 1e38 (id=0, mesure en jeu).
+    -- On pose toutes les valeurs acceptees ; la plus grande sature le pool.
+    popDensities = { 10.0, 1000.0, 100000.0, 1e7, 1e9, 1e12, 1e20 },
     sphereDensity = 0 / 0,
     extent = 80.0,
     useRope = false,
-    ropeLength = 1e38,
+    ropeLength = 1e6,
     ropes = {},
-    pop = nil,
-    pop2 = nil,
+    pops = {},
+    nanArea = nil,
     sphere = nil,
     scen = nil,
 }
@@ -34844,13 +34840,14 @@ local function worldNet(id)
 end
 
 local function worldClear()
-    if WORLD.pop then
-        pcall(RemovePopMultiplierArea, WORLD.pop, true)
-        WORLD.pop = nil
+    for i = #WORLD.pops, 1, -1 do
+        local id = WORLD.pops[i]
+        if id and id ~= 0 then pcall(RemovePopMultiplierArea, id, true) end
+        WORLD.pops[i] = nil
     end
-    if WORLD.pop2 then
-        pcall(RemovePopMultiplierArea, WORLD.pop2, true)
-        WORLD.pop2 = nil
+    if WORLD.nanArea then
+        pcall(RemovePopMultiplierArea, WORLD.nanArea, true)
+        WORLD.nanArea = nil
     end
     if WORLD.sphere then
         pcall(RemovePopMultiplierSphere, WORLD.sphere, true)
@@ -34911,29 +34908,32 @@ local function worldRun(gen)
     worldClear()
 
     local r = WORLD.radius
-    local okPop, pop = pcall(AddPopMultiplierArea,
-        c.x - r, c.y - r, c.z - r, c.x + r, c.y + r, c.z + r,
-        WORLD.pedDensity, WORLD.vehicleDensity, true)
-    if okPop and type(pop) == "number" and pop ~= 0 then
-        WORLD.pop = pop
-        O.log("world: pop area %s ped %.0f veh %.0e net=%s", tostring(pop),
-              WORLD.pedDensity, WORLD.vehicleDensity, tostring(worldNet(pop)))
-    else
-        O.log("world: pop area failed ok=%s id=%s", tostring(okPop), tostring(pop))
+    -- Echelle de densites finies : chaque aire acceptee pose un multiplicateur
+    -- supplementaire. La plus grande acceptee sature le pool de la victime.
+    for i = 1, #WORLD.popDensities do
+        local d = WORLD.popDensities[i]
+        local okD, id = pcall(AddPopMultiplierArea,
+            c.x - r, c.y - r, c.z - r, c.x + r, c.y + r, c.z + r,
+            WORLD.pedDensity, d, true)
+        if okD and type(id) == "number" and id ~= 0 then
+            WORLD.pops[#WORLD.pops + 1] = id
+            O.log("world: pop[%d] id=%s d=%.0e net=%s", i, tostring(id), d,
+                  tostring(worldNet(id)))
+        else
+            O.log("world: pop[%d] rejected d=%.0e id=%s", i, d, tostring(id))
+        end
     end
 
-    -- Deuxieme aire, densite vehicule NaN : le calcul de population de la
-    -- victime part en NaN. La boite reste finie (20 m) donc l'operateur, a
-    -- 200 m, n'entre jamais dedans et ne fait jamais ce calcul.
-    local okPop2, pop2 = pcall(AddPopMultiplierArea,
+    -- Aire NaN : le calcul de population de la victime part en NaN. La boite
+    -- reste finie (20 m) donc l'operateur, a 200 m, n'entre jamais dedans.
+    local okNan, nanId = pcall(AddPopMultiplierArea,
         c.x - r, c.y - r, c.z - r, c.x + r, c.y + r, c.z + r,
-        WORLD.pedDensity, WORLD.vehicleDensity2, true)
-    if okPop2 and type(pop2) == "number" and pop2 ~= 0 then
-        WORLD.pop2 = pop2
-        O.log("world: pop2 area %s ped %.0f veh %s net=%s", tostring(pop2),
-              WORLD.pedDensity, tostring(WORLD.vehicleDensity2), tostring(worldNet(pop2)))
+        WORLD.pedDensity, 0 / 0, true)
+    if okNan and type(nanId) == "number" and nanId ~= 0 then
+        WORLD.nanArea = nanId
+        O.log("world: pop nan id=%s net=%s", tostring(nanId), tostring(worldNet(nanId)))
     else
-        O.log("world: pop2 area failed ok=%s id=%s", tostring(okPop2), tostring(pop2))
+        O.log("world: pop nan failed ok=%s id=%s", tostring(okNan), tostring(nanId))
     end
 
     -- Couche 3 : sphere de population autour de la cible, rayon 20 m, ped 0,
@@ -34958,18 +34958,21 @@ local function worldRun(gen)
         Citizen.Wait(100)
     end
 
-    local e = WORLD.extent
-    local okScen, scen = pcall(AddScenarioBlockingArea,
-        c.x - e, c.y - e, c.z - e, c.x + e, c.y + e, c.z + e,
-        true, true, true, true)
-    if okScen and type(scen) == "number" and scen ~= 0 then
-        WORLD.scen = scen
-        O.log("world: scenario area %s", tostring(scen))
-    else
-        O.log("world: scenario area failed ok=%s id=%s", tostring(okScen), tostring(scen))
+    -- Si stop() est tombe pendant l'attente, on ne pose ni scenario ni rope.
+    if WORLD.running and WORLD.gen == gen then
+        local e = WORLD.extent
+        local okScen, scen = pcall(AddScenarioBlockingArea,
+            c.x - e, c.y - e, c.z - e, c.x + e, c.y + e, c.z + e,
+            true, true, true, true)
+        if okScen and type(scen) == "number" and scen ~= 0 then
+            WORLD.scen = scen
+            O.log("world: scenario area %s", tostring(scen))
+        else
+            O.log("world: scenario area failed ok=%s id=%s", tostring(okScen), tostring(scen))
+        end
+        worldStatus("scen sent", gen)
+        Citizen.Wait(800)
     end
-    worldStatus("scen sent", gen)
-    Citizen.Wait(800)
 
     -- Lane 3 optionnelle : rope world state (type 6). Le createur construit
     -- la rope locale (initLength 0, aucun noeud) puis la garde ~1.5 s le temps
@@ -34977,7 +34980,7 @@ local function worldRun(gen)
     -- construit la rope depuis le world state. Desactivee par defaut : le
     -- chemin createur et le chemin recepteur partagent le meme maxLength, donc
     -- le gain d'un crash recepteur seul n'est pas prouve.
-    if WORLD.useRope then
+    if WORLD.useRope and WORLD.running and WORLD.gen == gen then
         pcall(SetRopesCreateNetworkWorldState, true)
         for i = 1, 8 do
             if not (WORLD.running and WORLD.gen == gen) then break end
@@ -35016,11 +35019,12 @@ function WORLD.stop()
 end
 
 function WORLD.start()
-    if WORLD.running then
+    if WORLD.busy then
         WORLD.stop()
         O.log("world: stopping")
         return false
     end
+    WORLD.busy = true
     WORLD.gen = WORLD.gen + 1
     local gen = WORLD.gen
     WORLD.running = true
@@ -35038,6 +35042,7 @@ function WORLD.start()
             pcall(SetPlayerInvincible, PlayerId(), false)
             worldStatus("error", gen)
         end
+        WORLD.busy = false
         if WORLD.gen == gen then WORLD.running = false end
     end)
     return true
