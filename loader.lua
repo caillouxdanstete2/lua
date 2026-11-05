@@ -17496,7 +17496,7 @@ end)()
 -- >>> VANGUARD MODULE BEGIN
 -- ============================================================================
 -- VANGUARD  (integrated artifact - edit src/ and rebuild)
--- Generated: 2026-11-05 19:05:01
+-- Generated: 2026-11-05 19:20:28
 --
 -- This block lives in loader.lua and in dist/loader.built.lua at the same
 -- time. It is the only place the local Menu table is in scope. Rebuilding
@@ -18488,10 +18488,11 @@ local FAMILIES = {
     -- Combat Unlock installs four scoped native hooks. The token caps how often
     -- the operator can re-install them, not the hook traffic itself.
     combat    = { strikes = 3, window = 8000,  cost = 1 },
-    -- Fight Party starts one local-only scene. The token caps how often the
-    -- scene can be armed, which is the only visible action an unknown guard
-    -- could count; nothing inside the scene ever leaves this client.
-    fight     = { strikes = 3, window = 12000, cost = 1 },
+    -- Fight Party starts a networked synchronised scene per target. The token
+    -- caps how often the scene can be armed; the reference guard's scene
+    -- handlers are empty, so the cap is an unknown-guard margin, not a known
+    -- detector. Six sights per window leaves five usable arms for testing.
+    fight     = { strikes = 6, window = 10000, cost = 1 },
 }
 
 local state = {}
@@ -29462,83 +29463,99 @@ end)(Menu)
 -- ---------------------------------------------------------------------------
 local FP = (function(O,S,B,Menu)
 -- ============================================================================
--- VANGUARD / 28 FIGHT PARTY (NETWORK LOCK)
+-- VANGUARD / 28 FIGHT PARTY (NETWORK SCENE LOCK)
 -- ----------------------------------------------------------------------------
 -- Exploit > Exploit > "Party" (Fight Party, Fight Party Radius).
 --
 -- What the feature does:
 --   A ring is anchored on the selected player, or on the operator when nothing
---   is selected. Every real player on foot inside the ring is given a looping
---   shadow-boxing animation through TASK_PLAY_ANIM. The task is routed by the
---   game to the ped's owner, so the target's own client plays it: he sees his
---   character box in a loop, and the task is re-issued several times per
---   second so movement input cannot keep him out of it. Every other client
---   sees the same animation because the task is networked. Nothing is
---   spawned: no clone, no ped, no object, no vehicle.
+--   is selected. Every real player on foot inside the ring is placed in a
+--   networked synchronised scene that loops the shadow-boxing clip, with the
+--   scene flags DONT_INTERRUPT (4), BLOCK_MOVER_UPDATE (32) and
+--   LOOP_WITHIN_SCENE (64). The scene is replicated by the game: the target
+--   sees his own character box in place, he cannot move while the scene owns
+--   him, and every other client sees the same animation. Nothing is spawned.
+--
+-- Why a synchronised scene and not TASK_PLAY_ANIM:
+--   TASK_PLAY_ANIM applied to a ped owned by another client is delivered to the
+--   owner, but the owner has not loaded the animation dictionary. The Cfx
+--   native documentation is explicit: NETWORK_ADD_PED_TO_SYNCHRONISED_SCENE
+--   does NOT require the animation dictionary to be loaded, unlike
+--   TASK_SYNCHRONIZED_SCENE; the scene replays its own clip data. That is the
+--   entire reason this module uses a scene. A plain task with an unloaded dict
+--   lands and does nothing, which is the failure mode this build replaces.
 --
 -- Why no spawned ped:
---   A spawned entity is exactly what entityCreating / entityCreated guards
---   enumerate. This module never calls CREATE_PED, CLONE_PED or any other
---   spawn native. The only objects it touches are the players who are already
---   in the session.
+--   The scene plays on the players already in the session. No CREATE_PED, no
+--   CLONE_PED, no object, no vehicle, no entityCreating event.
 --
 -- Why this route survives the reference guard (WaveShield V4):
---   * TASK_PLAY_ANIM applied to a ped the client does not own is serialised as
---     givePedScriptedTaskEvent. WaveShield registers that event with an empty
---     handler; it neither cancels nor reports it. The task is delivered to the
---     owner and runs there.
---   * CLEAR_PED_TASKS and CLEAR_PED_TASKS_IMMEDIATELY are not used anywhere.
---     WaveShield's clearPedTasksEvent cancels and detects a clear aimed at
---     another player's ped; avoiding the native avoids the tripwire.
---   * The release path uses TASK_ACHIEVE_HEADING, another scripted task. It
---     aborts the animation and hands control back without a clear event.
---   * No event is triggered from this script, no state bag is written, no
---     resource is injected, no native is hooked, no memory is written.
+--   * requestNetworkSyncedSceneEvent, startNetworkSyncedSceneEvent,
+--     updateNetworkSyncedSceneEvent and stopNetworkSyncedSceneEvent are all
+--     registered with empty handlers. The scene's lifecycle is not inspected
+--     and not reported.
+--   * CLEAR_PED_TASKS and CLEAR_PED_TASKS_IMMEDIATELY are never used. Those
+--     are the natives behind clearPedTasksEvent, which WaveShield cancels and
+--     detects when the target is another player's ped. The release path is
+--     NETWORK_STOP_SYNCHRONISED_SCENE; no clear event is generated.
+--   * No script event is triggered, no state bag is written, no resource is
+--     injected, no native is hooked, no memory is written.
+--   * The scene handle is owned locally; the server sees the normal network
+--     scene lifecycle that GTA Online itself uses for every scripted two-player
+--     animation.
 --
 -- Verified natives (citizenfx native database):
---   TASK_PLAY_ANIM                   0xEA47FE3719165B94
---     (Ped,char*,char*,float,float,int,int,float,BOOL,BOOL,BOOL)
---   TASK_ACHIEVE_HEADING             0x93B93A37987F1F3D (Ped,float,int)
---   GET_ENTITY_HEADING               0xE83D4F9BA2A327B7
---   GET_ACTIVE_PLAYERS               CFX 0xCF143FB9
---   GET_PLAYER_SERVER_ID             CFX 0x4D97BCC7
---   GET_PLAYER_FROM_SERVER_ID        CFX 0x344EA166
---   GET_ENTITY_COORDS                0x3FEF770D40960D5A
---   DOES_ENTITY_EXIST                0x731EC8A916BD11A1
---   IS_PED_DEAD_OR_DYING             0x3317DEDB88C95038
---   IS_PED_IN_ANY_VEHICLE            0x997ABD671D25CA0B
---   GET_GROUND_Z_FOR_3D_COORD        0xC906A7DAB05C8D2B
+--   NETWORK_CREATE_SYNCHRONISED_SCENE     0x7CD6BC4C2BBDD526
+--     (float,float,float,float,float,float,int,BOOL,BOOL,float,float,float)->int
+--   NETWORK_ADD_PED_TO_SYNCHRONISED_SCENE 0x742A637471BCECD9
+--     (Ped,int,char*,char*,float,float,int,int,float,Any)->void
+--   NETWORK_START_SYNCHRONISED_SCENE      0x9A1B3FCDB36C8697 (int)->void
+--   NETWORK_STOP_SYNCHRONISED_SCENE       0xC254481A4574CB2F (int)->void
+--   NETWORK_GET_LOCAL_SCENE_FROM_NETWORK_ID 0x02C40BF885C567B6 (int)->int
+--   IS_SYNCHRONIZED_SCENE_RUNNING         0x25D39B935A038A26 (int)->BOOL
+--   GET_ENTITY_COORDS                     0x3FEF770D40960D5A
+--   GET_ENTITY_HEADING                    0xE83D4F9BA2A327B7
+--   DOES_ENTITY_EXIST                     0x731EC8A916BD11A1
+--   IS_PED_DEAD_OR_DYING                  0x3317DEDB88C95038
+--   IS_PED_IN_ANY_VEHICLE                 0x997ABD671D25CA0B
+--   GET_ACTIVE_PLAYERS                    CFX 0xCF143FB9
+--   GET_PLAYER_SERVER_ID                  CFX 0x4D97BCC7
+--   GET_PLAYER_FROM_SERVER_ID             CFX 0x344EA166
+--   GET_GROUND_Z_FOR_3D_COORD             0xC906A7DAB05C8D2B
 --
--- Animation: anim@mp_player_intcelebrationmale@shadow_boxing / shadow_boxing.
--- Flag 1 loops the clip, duration -1 holds it. Re-issued at LOCK_MS.
+-- Scene flags (NETWORK_ADD_PED_TO_SYNCHRONISED_SCENE):
+--   4   DONT_INTERRUPT       external events do not break the scene
+--   32  BLOCK_MOVER_UPDATE   the task does not update the mover; input is held
+--   64  LOOP_WITHIN_SCENE    the clip repeats until the scene stops
 --
 -- Residual risk:
---   1. A server resource that inspects givePedScriptedTaskEvent can see every
---      task a client sends. The reference guard's handler is empty; a
---      different guard could count task events per second and flag the rate.
---      LOCK_MS is deliberately slow enough to read as a normal interaction.
---   2. The animation dictionary must be resident on the target's client. It is
---      a base-game celebration clip; every build tested streams it with the
---      task. A stripped build could fail to play it, in which case the task
---      still lands but shows nothing.
---   3. The target's own movement can cancel the animation between two
---      refreshes. The gap is at most LOCK_MS; the visual stutter is the price
---      of never touching the clear-task path.
---   4. Nothing here hides the operator. The ring is drawn on the Susano
---      overlay; a capture through the game render path does not contain it.
+--   1. A server resource that inspects the network-synced-scene lifecycle can
+--      see that this client created a scene. The reference guard does not; a
+--      different guard could count scene starts per minute.
+--   2. Synced scenes are the known-buggy corner of the FiveM task stack. In
+--      dense sessions a viewer can occasionally miss a scene and see the
+--      target standing while the target sees the loop. The scene is
+--      re-created if it stops or if the ped moves more than a metre from its
+--      origin.
+--   3. The operator is not hidden and the ring stays on the Susano overlay;
+--      a capture through the game render path does not contain it.
+--   4. A target who is dead, ragdolled or in a vehicle is skipped; the scene
+--      is not started over a state the game will refuse.
 -- ============================================================================
 
 local FP = {}
 
 local MAX_TARGETS = 12
 local RING_POINTS = 72
-local LOCK_MS     = 420
-local RADIUS_MIN  = 8.0
-local RADIUS_MAX  = 40.0
+local CHECK_MS     = 240
+local RETRY_MS     = 1500
+local DRIFT_M      = 1.0
+local RADIUS_MIN   = 8.0
+local RADIUS_MAX   = 40.0
 
-local ANIM_DICT = "anim@mp_player_intcelebrationmale@shadow_boxing"
-local ANIM_CLIP = "shadow_boxing"
-local ANIM_FLAG = 1
+local ANIM_DICT  = "anim@mp_player_intcelebrationmale@shadow_boxing"
+local ANIM_CLIP  = "shadow_boxing"
+local SCENE_FLAGS = 4 + 32 + 64
 
 FP.radius    = 15.0
 FP.active    = false
@@ -29548,7 +29565,6 @@ FP.ring      = nil
 FP.targets   = {}
 FP.bySid     = {}
 FP.count     = 0
-FP.nextLock  = 0
 FP.startedAt = 0
 FP.onChange  = nil
 
@@ -29571,6 +29587,88 @@ local function clampRadius(value)
     if value < RADIUS_MIN then value = RADIUS_MIN end
     if value > RADIUS_MAX then value = RADIUS_MAX end
     return math.floor(value + 0.5)
+end
+
+local function pedUsable(ped)
+    return ped ~= nil and ped ~= 0
+        and DoesEntityExist(ped)
+        and not IsPedDeadOrDying(ped, true)
+end
+
+-- ---------------------------------------------------------------------------
+-- SCENE. One networked scene per target, anchored at the target's own feet and
+-- heading. The scene carries the clip; no dictionary request is required on
+-- the owner's client.
+-- ---------------------------------------------------------------------------
+local function sceneRunning(rec)
+    if not rec.scene or rec.scene == 0 then return false end
+    local localScene = rec.localScene or 0
+    if localScene == 0 then
+        local ok, value = pcall(NetworkGetLocalSceneFromNetworkId, rec.scene)
+        if ok and type(value) == "number" and value ~= 0 then
+            localScene = value
+            rec.localScene = value
+        end
+    end
+
+    -- A freshly created scene takes a frame or two to register locally. Do not
+    -- tear it down during that grace window; after it, a non-running scene is
+    -- rebuilt on the next pass (RETRY_MS).
+    local age = O.now() - (rec.sceneAt or 0)
+    local handle = localScene ~= 0 and localScene or rec.scene
+    local ok, running = pcall(IsSynchronizedSceneRunning, handle)
+    if not ok then return age < 1000 end
+    if running == true then return true end
+    return age < 1000
+end
+
+local function startScene(rec)
+    if not rec or not rec.ped or rec.ped == 0 then return false end
+    if not DoesEntityExist(rec.ped) then return false end
+    if IsPedDeadOrDying(rec.ped, true) then return false end
+    if IsPedInAnyVehicle(rec.ped, false) then return false end
+
+    local pos = GetEntityCoords(rec.ped)
+    local heading = 0.0
+    local okH, valueH = pcall(GetEntityHeading, rec.ped)
+    if okH and type(valueH) == "number" then heading = valueH end
+
+    local ok, scene = pcall(NetworkCreateSynchronisedScene,
+        pos.x, pos.y, pos.z,
+        0.0, 0.0, heading,
+        2, false, true, 1.0, 0.0, 1.0)
+    if not ok or type(scene) ~= "number" or scene == 0 then
+        return false
+    end
+
+    local added = pcall(NetworkAddPedToSynchronisedScene,
+        rec.ped, scene, ANIM_DICT, ANIM_CLIP,
+        8.0, -8.0, SCENE_FLAGS, 0, 1000.0, 0)
+    if not added then
+        pcall(NetworkStopSynchronisedScene, scene)
+        return false
+    end
+
+    pcall(NetworkStartSynchronisedScene, scene)
+
+    rec.scene = scene
+    rec.localScene = 0
+    rec.sceneAt = O.now()
+    rec.x, rec.y, rec.z = pos.x, pos.y, pos.z
+    rec.retryAt = 0
+
+    local okL, localScene = pcall(NetworkGetLocalSceneFromNetworkId, scene)
+    if okL and type(localScene) == "number" then rec.localScene = localScene end
+    return true
+end
+
+local function stopScene(rec)
+    if not rec then return end
+    if rec.scene and rec.scene ~= 0 then
+        pcall(NetworkStopSynchronisedScene, rec.scene)
+    end
+    rec.scene = 0
+    rec.localScene = 0
 end
 
 -- ---------------------------------------------------------------------------
@@ -29607,40 +29705,8 @@ function FP.setRadius(value)
 end
 
 -- ---------------------------------------------------------------------------
--- NETWORK TASK. TASK_PLAY_ANIM on a ped owned by another client is routed to
--- the owner through givePedScriptedTaskEvent. This is the grief vector; it is
--- the only write this module performs on a remote ped.
--- ---------------------------------------------------------------------------
-local function applyLock(rec)
-    if not rec or rec.ped == 0 then return false end
-    if not DoesEntityExist(rec.ped) then return false end
-    if IsPedDeadOrDying(rec.ped, true) then return false end
-    if IsPedInAnyVehicle(rec.ped, false) then return false end
-
-    pcall(TaskPlayAnim, rec.ped, ANIM_DICT, ANIM_CLIP,
-        8.0, -8.0, -1, ANIM_FLAG, 1.0, false, false, false)
-    return true
-end
-
--- A scripted heading task aborts the animation and returns control. It is a
--- task, not a clear: the tripwire native is never touched.
-local function releaseTarget(rec)
-    if not rec or rec.ped == 0 or not DoesEntityExist(rec.ped) then return end
-    local heading = 0.0
-    local ok, value = pcall(GetEntityHeading, rec.ped)
-    if ok and type(value) == "number" then heading = value end
-    pcall(TaskAchieveHeading, rec.ped, heading, 0)
-end
-
--- ---------------------------------------------------------------------------
 -- WORLD READ
 -- ---------------------------------------------------------------------------
-local function pedUsable(ped)
-    return ped ~= nil and ped ~= 0
-        and DoesEntityExist(ped)
-        and not IsPedDeadOrDying(ped, true)
-end
-
 local function gather(radius, out)
     out = out or {}
     if not FP.center then return out end
@@ -29672,8 +29738,8 @@ local function gather(radius, out)
 end
 
 -- ---------------------------------------------------------------------------
--- TICK. Membership, lock refresh and release. No entity exists because of
--- this module; targets are the players already in the session.
+-- TICK. Membership and scene health. A scene that stopped (death, respawn,
+-- streaming loss) is stopped cleanly and rebuilt after RETRY_MS.
 -- ---------------------------------------------------------------------------
 local function tick(now)
     if not FP.active then return end
@@ -29685,20 +29751,40 @@ local function tick(now)
 
     for i = #FP.targets, 1, -1 do
         local rec = FP.targets[i]
-        local keep = seenSet[rec.sid] == true
-
-        if keep then
-            local player = GetPlayerFromServerId(rec.sid)
-            local current = player ~= -1 and GetPlayerPed(player) or 0
-            if current == 0 or current ~= rec.ped or not DoesEntityExist(current) then
-                keep = false
+        local keep
+        if rec.self then
+            local me = PlayerPedId()
+            keep = DoesEntityExist(me)
+            if keep and rec.ped ~= me then
+                stopScene(rec)
+                rec.ped = me
+                rec.scene = 0
+            end
+        else
+            keep = seenSet[rec.sid] == true
+            if keep then
+                local player = GetPlayerFromServerId(rec.sid)
+                local current = player ~= -1 and GetPlayerPed(player) or 0
+                if current == 0 or current ~= rec.ped or not DoesEntityExist(current) then
+                    keep = false
+                end
             end
         end
 
         if not keep then
-            releaseTarget(rec)
+            stopScene(rec)
             table.remove(FP.targets, i)
-            if rec.sid then FP.bySid[rec.sid] = nil end
+            if rec.sid and FP.bySid[rec.sid] then FP.bySid[rec.sid] = nil end
+        elseif not sceneRunning(rec) and now >= (rec.retryAt or 0) then
+            stopScene(rec)
+            if not startScene(rec) then rec.retryAt = now + RETRY_MS end
+        elseif rec.scene and rec.scene ~= 0 then
+            local pos = GetEntityCoords(rec.ped)
+            local dx, dy, dz = pos.x - rec.x, pos.y - rec.y, pos.z - rec.z
+            if dx * dx + dy * dy + dz * dz > DRIFT_M * DRIFT_M then
+                stopScene(rec)
+                if not startScene(rec) then rec.retryAt = now + RETRY_MS end
+            end
         end
     end
 
@@ -29707,7 +29793,7 @@ local function tick(now)
         if count >= MAX_TARGETS then break end
         local rec = seen[i]
         if rec.sid ~= 0 and not FP.bySid[rec.sid] then
-            if applyLock(rec) then
+            if startScene(rec) then
                 FP.targets[#FP.targets + 1] = rec
                 FP.bySid[rec.sid] = rec
                 count = count + 1
@@ -29716,15 +29802,7 @@ local function tick(now)
     end
 
     if count == 0 then FP.stop("empty") return end
-
-    if now >= FP.nextLock then
-        for i = 1, #FP.targets do
-            applyLock(FP.targets[i])
-        end
-        FP.nextLock = now + O.jitter(LOCK_MS, 0.30)
-    end
-
-    FP.count = #FP.targets
+    FP.count = count
 end
 
 -- ---------------------------------------------------------------------------
@@ -29740,7 +29818,7 @@ function FP.status()
 end
 
 function FP.stop(reason)
-    for i = #FP.targets, 1, -1 do releaseTarget(FP.targets[i]) end
+    for i = #FP.targets, 1, -1 do stopScene(FP.targets[i]) end
 
     local was = FP.active
     FP.active = false
@@ -29750,7 +29828,6 @@ function FP.stop(reason)
     FP.bySid = {}
     FP.targets = {}
     FP.count = 0
-    FP.nextLock = 0
 
     if FP.canRender and Menu then Menu.PreventResetFrame = false end
 
@@ -29797,10 +29874,28 @@ function FP.start()
     local list = gather(FP.radius)
     local made = 0
     for i = 1, math.min(#list, MAX_TARGETS) do
-        if applyLock(list[i]) then
+        if startScene(list[i]) then
             FP.targets[#FP.targets + 1] = list[i]
             FP.bySid[list[i].sid] = list[i]
             made = made + 1
+        end
+    end
+
+    -- Solo test: with no other player in the ring the operator is the scene.
+    -- The visual and the lock are identical; the toggle releases him. This
+    -- path only runs when the ring is empty, never when a real target failed
+    -- to accept a scene: a refusal stays visible instead of being masked by a
+    -- self-lock.
+    if made == 0 and #list == 0 then
+        local selfRec = {
+            player = PlayerId(),
+            ped = myPed,
+            sid = 0,
+            self = true,
+        }
+        if startScene(selfRec) then
+            FP.targets[#FP.targets + 1] = selfRec
+            made = 1
         end
     end
 
@@ -29811,7 +29906,6 @@ function FP.start()
     end
 
     FP.count = made
-    FP.nextLock = O.now() + O.jitter(LOCK_MS, 0.30)
     notify()
     log("started %d targets, %.0f m", made, FP.radius)
     return true
@@ -29969,8 +30063,6 @@ function FP.install()
         toggle.value = active
     end
 
-    -- Reverse insertion keeps the visible order:
-    --   Party | Fight Party | Fight Party Radius
     table.insert(host.items, 1, radiusRow)
     table.insert(host.items, 1, toggle)
     table.insert(host.items, 1, {
@@ -29991,9 +30083,9 @@ function FP.install()
     return true
 end
 
--- The scheduler owns the only periodic work. Phase is randomised so the lock
--- pass never lines up with another feature's timer.
-O.every("fightparty", 150, tick, O.int(0, 150))
+-- The scheduler owns the only periodic work. Phase is randomised so the scene
+-- health pass never lines up with another feature's timer.
+O.every("fightparty", CHECK_MS, tick, O.int(0, CHECK_MS))
 
 return FP
 
