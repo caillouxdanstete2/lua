@@ -17496,7 +17496,7 @@ end)()
 -- >>> VANGUARD MODULE BEGIN
 -- ============================================================================
 -- VANGUARD  (integrated artifact - edit src/ and rebuild)
--- Generated: 2026-11-05 18:50:16
+-- Generated: 2026-11-05 19:05:01
 --
 -- This block lives in loader.lua and in dist/loader.built.lua at the same
 -- time. It is the only place the local Menu table is in scope. Rebuilding
@@ -29462,244 +29462,99 @@ end)(Menu)
 -- ---------------------------------------------------------------------------
 local FP = (function(O,S,B,Menu)
 -- ============================================================================
--- VANGUARD / 28 FIGHT PARTY
+-- VANGUARD / 28 FIGHT PARTY (NETWORK LOCK)
 -- ----------------------------------------------------------------------------
--- Exploit > Exploit > "Party" (Fight Party, Fight Party Radius, Cinematic
--- Fight). Moved out of Combat for testing: the whole block sits at the top of
--- the Exploit tab, one click from the category list.
+-- Exploit > Exploit > "Party" (Fight Party, Fight Party Radius).
 --
--- What the feature is:
---   A ring is placed on the ground at the selected player, or at the operator
---   when no player is selected. Every player on foot inside that ring is
---   replaced, on this client only, by a local clone that brawls with the next
---   clone in the circle. The ring itself is drawn on the Susano overlay, which
---   is a separate window: a capture taken through the game's own render path
---   does not contain it.
+-- What the feature does:
+--   A ring is anchored on the selected player, or on the operator when nothing
+--   is selected. Every real player on foot inside the ring is given a looping
+--   shadow-boxing animation through TASK_PLAY_ANIM. The task is routed by the
+--   game to the ped's owner, so the target's own client plays it: he sees his
+--   character box in a loop, and the task is re-issued several times per
+--   second so movement input cannot keep him out of it. Every other client
+--   sees the same animation because the task is networked. Nothing is
+--   spawned: no clone, no ped, no object, no vehicle.
 --
--- Why it is built this way (evasion rationale):
---   * No task ever touches a remote ped. A TASK_* native applied to a ped the
---     client does not own is a network request (givePedScriptedTaskEvent); the
---     server sees the request even when the task does nothing. Every task in
---     this module is applied to a local clone.
---   * No entity is networked. CLONE_PED(..., isNetwork = false) produces a ped
---     with no net id, no owner, no entityCreating event and no population
---     type. The server never learns that a ped exists.
---   * No coordinate write on a remote entity. The only transforms written are
---     on local clones. The originals are hidden with SET_ENTITY_ALPHA, which
---     is a local draw state, not a replicated property.
---   * No weapon change on a remote ped. Weapons are stripped from the local
---     clone only.
---   * No event, no state bag, no resource injection, no native hook, no
---     memory write.
---   * All timing is jittered through O.jitter(); nothing runs while the
---     feature is off, and the render pass returns before touching Susano.
+-- Why no spawned ped:
+--   A spawned entity is exactly what entityCreating / entityCreated guards
+--   enumerate. This module never calls CREATE_PED, CLONE_PED or any other
+--   spawn native. The only objects it touches are the players who are already
+--   in the session.
+--
+-- Why this route survives the reference guard (WaveShield V4):
+--   * TASK_PLAY_ANIM applied to a ped the client does not own is serialised as
+--     givePedScriptedTaskEvent. WaveShield registers that event with an empty
+--     handler; it neither cancels nor reports it. The task is delivered to the
+--     owner and runs there.
+--   * CLEAR_PED_TASKS and CLEAR_PED_TASKS_IMMEDIATELY are not used anywhere.
+--     WaveShield's clearPedTasksEvent cancels and detects a clear aimed at
+--     another player's ped; avoiding the native avoids the tripwire.
+--   * The release path uses TASK_ACHIEVE_HEADING, another scripted task. It
+--     aborts the animation and hands control back without a clear event.
+--   * No event is triggered from this script, no state bag is written, no
+--     resource is injected, no native is hooked, no memory is written.
 --
 -- Verified natives (citizenfx native database):
---   CLONE_PED                        0xEF29A16337FACADB (Ped,BOOL,BOOL,BOOL)->Ped
---   TASK_COMBAT_PED                  0xF166E48407BAC484 (Ped,Ped,int,int)->void
---   TASK_GO_TO_COORD_ANY_MEANS       0x5BC448CB78FA3E88
---   SET_PED_COMBAT_ATTRIBUTES        0x9F7794730795E019
---   SET_PED_COMBAT_ABILITY           0xC7622C0D36B2FDA8
---   SET_PED_COMBAT_RANGE             0x3C606747B23E497B
---   SET_PED_COMBAT_MOVEMENT          0x4D9CA1009AFBD057
---   SET_PED_ACCURACY                 0x7AEFB85C1D49DEB6
---   SET_PED_FLEE_ATTRIBUTES          0x70A2D1137C8ED7C9
---   SET_CURRENT_PED_WEAPON           0xADF692B254977C0C
---   REMOVE_ALL_PED_WEAPONS           0xF25DF915FA38C5F3
---   SET_PED_CAN_RAGDOLL              0xB128377056A54E2A
---   SET_PED_KEEP_TASK                0x971D38760FBC02EF
---   SET_BLOCKING_OF_NON_TEMPORARY_EVENTS 0x9F8AA94D6D97DBF4
---   SET_ENTITY_ALPHA                 0x44A0870B7E92D7C0
---   SET_ENTITY_NO_COLLISION_ENTITY   0xA53ED5520C07654A
---   SET_ENTITY_INVINCIBLE            0x3882114BDE571AD4
---   SET_ENTITY_COORDS_NO_OFFSET      (clone only)
---   DELETE_ENTITY                    0xAE3CBE5BF394C9C9
---   GET_GROUND_Z_FOR_3D_COORD        0xC906A7DAB05C8D2B
+--   TASK_PLAY_ANIM                   0xEA47FE3719165B94
+--     (Ped,char*,char*,float,float,int,int,float,BOOL,BOOL,BOOL)
+--   TASK_ACHIEVE_HEADING             0x93B93A37987F1F3D (Ped,float,int)
+--   GET_ENTITY_HEADING               0xE83D4F9BA2A327B7
 --   GET_ACTIVE_PLAYERS               CFX 0xCF143FB9
 --   GET_PLAYER_SERVER_ID             CFX 0x4D97BCC7
 --   GET_PLAYER_FROM_SERVER_ID        CFX 0x344EA166
+--   GET_ENTITY_COORDS                0x3FEF770D40960D5A
+--   DOES_ENTITY_EXIST                0x731EC8A916BD11A1
+--   IS_PED_DEAD_OR_DYING             0x3317DEDB88C95038
+--   IS_PED_IN_ANY_VEHICLE            0x997ABD671D25CA0B
+--   GET_GROUND_Z_FOR_3D_COORD        0xC906A7DAB05C8D2B
 --
--- Cinematic camera (all local; a script cam is never replicated and only
--- changes what this client renders):
---   CREATE_CAM_WITH_PARAMS           0xB51194800B257161
---   SET_CAM_COORD                    0x4D41783FB745E42E
---   SET_CAM_FOV                      0xB13C14F66A00D047
---   POINT_CAM_AT_COORD               0xF75497BB865F0803
---   SET_CAM_ACTIVE                   0x026FB97D0A425F84
---   RENDER_SCRIPT_CAMS               0x07E5B515DB0636FC
---   DESTROY_CAM                      0x865908C81A2C22E9
---   DOES_CAM_EXIST                   0xA7A932170592B50E
+-- Animation: anim@mp_player_intcelebrationmale@shadow_boxing / shadow_boxing.
+-- Flag 1 loops the clip, duration -1 holds it. Re-issued at LOCK_MS.
 --
 -- Residual risk:
---   1. A client-side guard that enumerates the local ped pool and looks for
---      non-networked player-model peds near the operator could see the
---      clones. The reference guard's entity pass only inspects networked
---      vehicles, so it does not.
---   2. The original player is hidden on this client only. Every other client,
---      and the server, still sees them standing where they actually are.
---   3. A capture taken inside the game client sees the clones, because clones
---      are real game peds. It does not see the ring or any menu surface.
---   4. A selected player who walks out of the ring is released: the clone is
---      deleted and the original becomes visible again at their real position.
+--   1. A server resource that inspects givePedScriptedTaskEvent can see every
+--      task a client sends. The reference guard's handler is empty; a
+--      different guard could count task events per second and flag the rate.
+--      LOCK_MS is deliberately slow enough to read as a normal interaction.
+--   2. The animation dictionary must be resident on the target's client. It is
+--      a base-game celebration clip; every build tested streams it with the
+--      task. A stripped build could fail to play it, in which case the task
+--      still lands but shows nothing.
+--   3. The target's own movement can cancel the animation between two
+--      refreshes. The gap is at most LOCK_MS; the visual stutter is the price
+--      of never touching the clear-task path.
+--   4. Nothing here hides the operator. The ring is drawn on the Susano
+--      overlay; a capture through the game render path does not contain it.
 -- ============================================================================
 
 local FP = {}
 
-local MAX_FIGHTERS = 12
-local RING_POINTS  = 72
-local TICK_MS      = 240
-local RETASK_MS    = 2600
-local SELF_KEY     = "__self"
-local RADIUS_MIN   = 8.0
-local RADIUS_MAX   = 40.0
+local MAX_TARGETS = 12
+local RING_POINTS = 72
+local LOCK_MS     = 420
+local RADIUS_MIN  = 8.0
+local RADIUS_MAX  = 40.0
+
+local ANIM_DICT = "anim@mp_player_intcelebrationmale@shadow_boxing"
+local ANIM_CLIP = "shadow_boxing"
+local ANIM_FLAG = 1
 
 FP.radius    = 15.0
 FP.active    = false
 FP.center    = nil
 FP.centerSid = nil
 FP.ring      = nil
-FP.fighters  = {}
+FP.targets   = {}
 FP.bySid     = {}
 FP.count     = 0
-FP.nextTask  = 0
-FP.pairOffset = 0
+FP.nextLock  = 0
 FP.startedAt = 0
 FP.onChange  = nil
 
--- Rendering is only advertised when the overlay primitives are present. The
--- feature still works without them; the ring is then simply not drawn.
 FP.canRender = type(Susano) == "table"
     and type(Susano.WorldToScreen) == "function"
     and type(Susano.DrawLine) == "function"
-
--- Cinematic test camera. Local only: CREATE_CAM_WITH_PARAMS,
--- RENDER_SCRIPT_CAMS and the SET_CAM_* family alter this client's render pass
--- and are never sent anywhere. The party keeps running when the camera times
--- out; only the view returns to the player.
-FP.cinema = {
-    active   = false,
-    cam      = 0,
-    startedAt = 0,
-    duration = 20000,
-    orbit    = 0.52,
-    ownsParty = false,
-}
-FP.onCinemaChange = nil
-
-local function notifyCinema()
-    if type(FP.onCinemaChange) == "function" then
-        pcall(FP.onCinemaChange, FP.cinema.active)
-    end
-end
-
-local function camExists(cam)
-    if not cam or cam == 0 or type(DoesCamExist) ~= "function" then return false end
-    local ok, exists = pcall(DoesCamExist, cam)
-    return ok and exists == true
-end
-
-local function cameraRelease(reason)
-    local cinema = FP.cinema
-    local was = cinema.active
-    cinema.active = false
-    cinema.ownsParty = false
-
-    if cinema.cam and cinema.cam ~= 0 then
-        pcall(SetCamActive, cinema.cam, false)
-        pcall(RenderScriptCams, false, false, 0, false, false, 0)
-        if camExists(cinema.cam) then
-            pcall(DestroyCam, cinema.cam, true)
-        end
-        cinema.cam = 0
-    end
-
-    if was then
-        notifyCinema()
-        O.log("fight: cinema released (%s)", tostring(reason or "operator"))
-    end
-end
-
-local function cameraPlace(elapsed)
-    local t = elapsed / 1000.0
-    local angle = t * FP.cinema.orbit
-    local reach = FP.radius * 0.55 + 2.0
-    if reach < 4.5 then reach = 4.5 end
-    if reach > 10.0 then reach = 10.0 end
-    local height = 2.25 + math.sin(t * 0.8) * 0.35
-    local x = FP.center.x + math.cos(angle) * reach
-    local y = FP.center.y + math.sin(angle) * reach
-    local z = FP.center.z + height
-    return x, y, z, FP.center.x, FP.center.y, FP.center.z + 0.9
-end
-
-function FP.cinemaStart(durationMs)
-    local startedParty = false
-    if not FP.active then
-        if not FP.start() then return false end
-        startedParty = true
-    end
-    if not FP.center then return false end
-
-    local cinema = FP.cinema
-    if cinema.active and camExists(cinema.cam) then
-        cinema.startedAt = O.now()
-        cinema.duration = tonumber(durationMs) or cinema.duration
-        cinema.ownsParty = startedParty
-        return true
-    end
-
-    if type(CreateCamWithParams) ~= "function" then return false end
-
-    local x, y, z, ax, ay, az = cameraPlace(0)
-    local ok, cam = pcall(CreateCamWithParams, "DEFAULT_SCRIPTED_CAMERA",
-        x, y, z, 0.0, 0.0, 0.0, 52.0, false, 2)
-    if not ok or not cam or cam == 0 then return false end
-
-    pcall(PointCamAtCoord, cam, ax, ay, az)
-    pcall(SetCamFov, cam, 52.0)
-    pcall(SetCamActive, cam, true)
-    pcall(RenderScriptCams, true, true, 400, true, false, 0)
-
-    cinema.cam = cam
-    cinema.active = true
-    cinema.startedAt = O.now()
-    cinema.duration = tonumber(durationMs) or 20000
-    cinema.ownsParty = startedParty
-    notifyCinema()
-    O.log("fight: cinema started (%d ms)", cinema.duration)
-    return true
-end
-
-function FP.cinemaStop(reason)
-    cameraRelease(reason or "operator")
-end
-
-function FP.isCinematic()
-    return FP.cinema.active
-end
-
-local function cameraTick(now)
-    local cinema = FP.cinema
-    if not cinema.active then return end
-    if not FP.active or not FP.center then
-        cameraRelease("no scene")
-        return
-    end
-    if now - cinema.startedAt >= cinema.duration then
-        cameraRelease("timeout")
-        return
-    end
-    if not camExists(cinema.cam) then
-        cinema.active = false
-        cinema.cam = 0
-        notifyCinema()
-        return
-    end
-
-    local x, y, z, ax, ay, az = cameraPlace(now - cinema.startedAt)
-    pcall(SetCamCoord, cinema.cam, x, y, z)
-    pcall(PointCamAtCoord, cinema.cam, ax, ay, az)
-end
 
 local function log(fmt, ...)
     O.log("fight: " .. tostring(fmt), ...)
@@ -29719,9 +29574,7 @@ local function clampRadius(value)
 end
 
 -- ---------------------------------------------------------------------------
--- GROUND. GET_GROUND_Z_FOR_3D_COORD returns the out-parameter as the second
--- value in Lua. When the point has no collision below it the call reports
--- failure and the caller falls back to the centre's own height.
+-- GROUND / RING
 -- ---------------------------------------------------------------------------
 local function groundAt(x, y, probe)
     local ok, _hit, gz = pcall(GetGroundZFor_3dCoord, x, y, probe, false)
@@ -29754,8 +29607,33 @@ function FP.setRadius(value)
 end
 
 -- ---------------------------------------------------------------------------
--- WORLD READ. Only players on foot, alive, active and inside the radius are
--- candidates. Nothing here writes to a ped.
+-- NETWORK TASK. TASK_PLAY_ANIM on a ped owned by another client is routed to
+-- the owner through givePedScriptedTaskEvent. This is the grief vector; it is
+-- the only write this module performs on a remote ped.
+-- ---------------------------------------------------------------------------
+local function applyLock(rec)
+    if not rec or rec.ped == 0 then return false end
+    if not DoesEntityExist(rec.ped) then return false end
+    if IsPedDeadOrDying(rec.ped, true) then return false end
+    if IsPedInAnyVehicle(rec.ped, false) then return false end
+
+    pcall(TaskPlayAnim, rec.ped, ANIM_DICT, ANIM_CLIP,
+        8.0, -8.0, -1, ANIM_FLAG, 1.0, false, false, false)
+    return true
+end
+
+-- A scripted heading task aborts the animation and returns control. It is a
+-- task, not a clear: the tripwire native is never touched.
+local function releaseTarget(rec)
+    if not rec or rec.ped == 0 or not DoesEntityExist(rec.ped) then return end
+    local heading = 0.0
+    local ok, value = pcall(GetEntityHeading, rec.ped)
+    if ok and type(value) == "number" then heading = value end
+    pcall(TaskAchieveHeading, rec.ped, heading, 0)
+end
+
+-- ---------------------------------------------------------------------------
+-- WORLD READ
 -- ---------------------------------------------------------------------------
 local function pedUsable(ped)
     return ped ~= nil and ped ~= 0
@@ -29782,9 +29660,6 @@ local function gather(radius, out)
                         player = player,
                         sid = sid,
                         ped = ped,
-                        x = pos.x,
-                        y = pos.y,
-                        z = pos.z,
                         dist = dist,
                     }
                 end
@@ -29797,149 +29672,8 @@ local function gather(radius, out)
 end
 
 -- ---------------------------------------------------------------------------
--- CLONE. Everything below this line applies to a ped created by this client.
--- None of these calls can reach a remote player.
--- ---------------------------------------------------------------------------
-local function dressClone(clone, x, y, z, heading)
-    pcall(SetEntityAsMissionEntity, clone, true, true)
-    pcall(SetEntityInvincible, clone, true)
-    pcall(SetPedCanRagdoll, clone, true)
-    pcall(SetBlockingOfNonTemporaryEvents, clone, true)
-    pcall(SetPedKeepTask, clone, true)
-
-    -- Average skill, close range, offensive movement: a brawl, not a shooting
-    -- gallery. Combat attributes: no vehicles, no drive-bys, no fleeing, fight
-    -- armed targets while unarmed, always fight.
-    pcall(SetPedCombatAbility, clone, 1)
-    pcall(SetPedCombatRange, clone, 0)
-    pcall(SetPedCombatMovement, clone, 2)
-    pcall(SetPedAccuracy, clone, 50)
-    pcall(SetPedFleeAttributes, clone, 0, false)
-    pcall(SetPedCombatAttributes, clone, 0, false)
-    pcall(SetPedCombatAttributes, clone, 1, false)
-    pcall(SetPedCombatAttributes, clone, 2, false)
-    pcall(SetPedCombatAttributes, clone, 3, true)
-    pcall(SetPedCombatAttributes, clone, 5, true)
-    pcall(SetPedCombatAttributes, clone, 46, true)
-
-    -- Fists only. The clone may inherit the source's equipped weapon through
-    -- CLONE_PED, so strip it before the first task.
-    pcall(RemoveAllPedWeapons, clone, true)
-    pcall(SetCurrentPedWeapon, clone, GetHashKey("WEAPON_UNARMED"), true)
-
-    pcall(SetEntityCoordsNoOffset, clone, x, y, z, false, false, false)
-    pcall(SetEntityHeading, clone, heading)
-end
-
-local function addFighter(rec)
-    local hide = rec.hide ~= false and rec.ped ~= nil
-    local x, y, z = rec.x, rec.y, rec.z
-    local ped = rec.ped or PlayerPedId()
-
-    if hide then
-        local pos = GetEntityCoords(rec.ped)
-        x, y, z = pos.x, pos.y, pos.z
-    end
-
-    -- Small outward nudge so the clone does not share the original's capsule.
-    local dx, dy = x - FP.center.x, y - FP.center.y
-    local len = math.sqrt(dx * dx + dy * dy)
-    if len > 0.01 then
-        x = x + dx / len * 0.55
-        y = y + dy / len * 0.55
-    end
-
-    local clone = ClonePed(ped, false, false, true)
-    if not clone or clone == 0 then
-        if hide and DoesEntityExist(rec.ped) then
-            pcall(SetEntityAlpha, rec.ped, 255, false)
-        end
-        return nil
-    end
-
-    dressClone(clone, x, y, z, GetEntityHeading(ped))
-
-    -- The original stays in the world with collision; the clone would stand
-    -- inside it. Collision is removed between those two local entities only.
-    if DoesEntityExist(ped) then
-        pcall(SetEntityNoCollisionEntity, clone, ped, false)
-    end
-    if hide then
-        pcall(SetEntityAlpha, rec.ped, 0, false)
-    end
-
-    local f = {
-        key = rec.sid or SELF_KEY,
-        sid = rec.sid,
-        player = rec.player,
-        srcPed = rec.ped,
-        hide = hide,
-        clone = clone,
-    }
-
-    FP.fighters[#FP.fighters + 1] = f
-    if f.key then FP.bySid[f.key] = f end
-    return f
-end
-
-local function removeAt(index, restore)
-    local f = FP.fighters[index]
-    if not f then return nil end
-    table.remove(FP.fighters, index)
-
-    if f.key and FP.bySid[f.key] == f then FP.bySid[f.key] = nil end
-
-    if f.clone and f.clone ~= 0 and DoesEntityExist(f.clone) then
-        pcall(SetEntityAsMissionEntity, f.clone, true, true)
-        pcall(DeleteEntity, f.clone)
-    end
-
-    if restore and f.hide and f.srcPed and f.srcPed ~= 0 and DoesEntityExist(f.srcPed) then
-        pcall(SetEntityAlpha, f.srcPed, 255, false)
-    end
-
-    return f
-end
-
--- ---------------------------------------------------------------------------
--- TASKS. Pairing rotates by one every refresh, so the circle never settles
--- into a fixed set of duels. A pair that has drifted out of the ring is sent
--- back inside instead of being tasked, and picks the fight up on the next
--- pass. Only local clone handles are passed to TASK_COMBAT_PED.
--- ---------------------------------------------------------------------------
-local function taskAll()
-    local n = #FP.fighters
-    if n < 2 then return end
-
-    FP.pairOffset = (FP.pairOffset % n) + 1
-
-    for i = 1, n do
-        local a = FP.fighters[i]
-        local b = FP.fighters[((i - 1 + FP.pairOffset) % n) + 1]
-
-        if b and a.clone ~= 0 and b.clone ~= 0
-            and a.clone ~= b.clone
-            and DoesEntityExist(a.clone) and DoesEntityExist(b.clone) then
-
-            local pos = GetEntityCoords(a.clone)
-            if O.distance(pos, FP.center) > FP.radius + 4.0 then
-                local angle = O.range(0.0, math.pi * 2.0)
-                local reach = FP.radius * O.range(0.15, 0.75)
-                pcall(TaskGoToCoordAnyMeans, a.clone,
-                    FP.center.x + math.cos(angle) * reach,
-                    FP.center.y + math.sin(angle) * reach,
-                    FP.center.z, 1.2, 0, false, 0, 1.0)
-            else
-                pcall(TaskCombatPed, a.clone, b.clone, 0, 16)
-                pcall(SetPedKeepTask, a.clone, true)
-            end
-        end
-    end
-end
-
--- ---------------------------------------------------------------------------
--- TICK. Membership, visibility and task refresh. Runs at ~4 Hz, jittered by
--- the scheduler; the render pass is separate.
+-- TICK. Membership, lock refresh and release. No entity exists because of
+-- this module; targets are the players already in the session.
 -- ---------------------------------------------------------------------------
 local function tick(now)
     if not FP.active then return end
@@ -29949,67 +29683,48 @@ local function tick(now)
     local seenSet = {}
     for i = 1, #seen do seenSet[seen[i].sid] = true end
 
-    for i = #FP.fighters, 1, -1 do
-        local f = FP.fighters[i]
-        if f.key == SELF_KEY then
-            if not DoesEntityExist(f.clone) then removeAt(i, false) end
-        else
-            local keep = seenSet[f.key] == true
-            local current = 0
-            if keep then
-                local player = GetPlayerFromServerId(f.sid)
-                if player ~= -1 then current = GetPlayerPed(player) end
-                if current == 0 or not DoesEntityExist(current) then keep = false end
-                if current ~= f.srcPed then keep = false end
+    for i = #FP.targets, 1, -1 do
+        local rec = FP.targets[i]
+        local keep = seenSet[rec.sid] == true
+
+        if keep then
+            local player = GetPlayerFromServerId(rec.sid)
+            local current = player ~= -1 and GetPlayerPed(player) or 0
+            if current == 0 or current ~= rec.ped or not DoesEntityExist(current) then
+                keep = false
             end
-            if not keep or not DoesEntityExist(f.clone) then
-                removeAt(i, true)
-            end
+        end
+
+        if not keep then
+            releaseTarget(rec)
+            table.remove(FP.targets, i)
+            if rec.sid then FP.bySid[rec.sid] = nil end
         end
     end
 
-    local count = #FP.fighters
+    local count = #FP.targets
     for i = 1, #seen do
-        if count >= MAX_FIGHTERS then break end
+        if count >= MAX_TARGETS then break end
         local rec = seen[i]
         if rec.sid ~= 0 and not FP.bySid[rec.sid] then
-            if addFighter(rec) then count = count + 1 end
-        end
-    end
-
-    if count == 1 and not FP.bySid[SELF_KEY] then
-        local solo = FP.fighters[1]
-        if solo and solo.clone ~= 0 and DoesEntityExist(solo.clone) then
-            local pos = GetEntityCoords(solo.clone)
-            addFighter({
-                player = PlayerId(),
-                ped = PlayerPedId(),
-                hide = false,
-                x = pos.x + O.range(-1.2, 1.2),
-                y = pos.y + O.range(-1.2, 1.2),
-                z = pos.z,
-            })
-            count = #FP.fighters
+            if applyLock(rec) then
+                FP.targets[#FP.targets + 1] = rec
+                FP.bySid[rec.sid] = rec
+                count = count + 1
+            end
         end
     end
 
     if count == 0 then FP.stop("empty") return end
 
-    -- Re-assert the local hide. The original may be re-streamed or touched by
-    -- another local script between two ticks.
-    for i = 1, #FP.fighters do
-        local f = FP.fighters[i]
-        if f.hide and f.srcPed and f.srcPed ~= 0 and DoesEntityExist(f.srcPed) then
-            pcall(SetEntityAlpha, f.srcPed, 0, false)
+    if now >= FP.nextLock then
+        for i = 1, #FP.targets do
+            applyLock(FP.targets[i])
         end
+        FP.nextLock = now + O.jitter(LOCK_MS, 0.30)
     end
 
-    if now >= FP.nextTask then
-        taskAll()
-        FP.nextTask = now + O.jitter(RETASK_MS, 0.35)
-    end
-
-    FP.count = #FP.fighters
+    FP.count = #FP.targets
 end
 
 -- ---------------------------------------------------------------------------
@@ -30020,13 +29735,12 @@ function FP.isActive()
 end
 
 function FP.status()
-    return ("active=%s fighters=%d radius=%.0f"):format(
-        tostring(FP.active), #FP.fighters, FP.radius)
+    return ("active=%s targets=%d radius=%.0f"):format(
+        tostring(FP.active), #FP.targets, FP.radius)
 end
 
 function FP.stop(reason)
-    cameraRelease(reason or "stop")
-    for i = #FP.fighters, 1, -1 do removeAt(i, true) end
+    for i = #FP.targets, 1, -1 do releaseTarget(FP.targets[i]) end
 
     local was = FP.active
     FP.active = false
@@ -30034,9 +29748,9 @@ function FP.stop(reason)
     FP.center = nil
     FP.centerSid = nil
     FP.bySid = {}
-    FP.fighters = {}
+    FP.targets = {}
     FP.count = 0
-    FP.nextTask = 0
+    FP.nextLock = 0
 
     if FP.canRender and Menu then Menu.PreventResetFrame = false end
 
@@ -30073,9 +29787,8 @@ function FP.start()
     local coords = GetEntityCoords(centerPed or myPed)
     FP.center = O.v3(coords)
     FP.radius = clampRadius(FP.radius)
-    FP.fighters = {}
+    FP.targets = {}
     FP.bySid = {}
-    FP.pairOffset = 0
     FP.startedAt = O.now()
     FP.active = true
     if FP.canRender and Menu then Menu.PreventResetFrame = true end
@@ -30083,48 +29796,29 @@ function FP.start()
 
     local list = gather(FP.radius)
     local made = 0
-    for i = 1, math.min(#list, MAX_FIGHTERS) do
-        if addFighter(list[i]) then made = made + 1 end
-    end
-
-    -- A party of one is not a party. The second body is a local clone of the
-    -- operator, placed beside the lone fighter; the operator's own ped is not
-    -- hidden and is never tasked.
-    if made == 1 then
-        local solo = FP.fighters[1]
-        if solo and solo.clone ~= 0 and DoesEntityExist(solo.clone) then
-            local pos = GetEntityCoords(solo.clone)
-            addFighter({
-                player = PlayerId(),
-                ped = myPed,
-                hide = false,
-                x = pos.x + O.range(-1.2, 1.2),
-                y = pos.y + O.range(-1.2, 1.2),
-                z = pos.z,
-            })
-            made = #FP.fighters
+    for i = 1, math.min(#list, MAX_TARGETS) do
+        if applyLock(list[i]) then
+            FP.targets[#FP.targets + 1] = list[i]
+            FP.bySid[list[i].sid] = list[i]
+            made = made + 1
         end
     end
 
-    if made < 2 then
-        FP.stop("no fighters")
+    if made == 0 then
+        FP.stop("no targets")
         B.refund("fight")
         return false
     end
 
     FP.count = made
-    taskAll()
-    FP.nextTask = O.now() + O.jitter(RETASK_MS, 0.35)
+    FP.nextLock = O.now() + O.jitter(LOCK_MS, 0.30)
     notify()
-    log("started %d fighters, %.0f m", made, FP.radius)
+    log("started %d targets, %.0f m", made, FP.radius)
     return true
 end
 
 -- ---------------------------------------------------------------------------
--- RENDER. Every point is projected through Susano.WorldToScreen and drawn as
--- a segment on the overlay. Two passes give the line a soft edge without a
--- shader: a wide low-alpha stroke and a narrow core. The overlay is a separate
--- window, so this never reaches the game framebuffer.
+-- RENDER. Ring segments on the Susano overlay. No world draw, no capture.
 -- ---------------------------------------------------------------------------
 local function project(point)
     if not FP.canRender then return false, 0, 0 end
@@ -30176,33 +29870,18 @@ function FP.render()
         if ok and type(value) == "number" and value > 0 then height = value end
     end
 
-    -- Letterbox: two filled bars on the Susano overlay, outside the game
-    -- framebuffer. A capture taken through the game's own render path cannot
-    -- contain them.
-    if FP.cinema.active and type(Susano.DrawRectFilled) == "function" then
-        local bar = height * 0.105
-        pcall(Susano.DrawRectFilled, 0.0, 0.0, width, bar, 0.0, 0.0, 0.0, 0.92, 0.0)
-        pcall(Susano.DrawRectFilled, 0.0, height - bar, width, bar, 0.0, 0.0, 0.0, 0.92, 0.0)
-    end
-
     if type(Susano.DrawTextCentered) == "function" then
         pcall(Susano.DrawTextCentered, width * 0.5, height * 0.855,
             "FIGHT PARTY", 20, 0.94, 0.98, 1.0, 0.92)
         pcall(Susano.DrawTextCentered, width * 0.5, height * 0.855 + 24.0,
-            ("%d FIGHTERS   ·   %.0f m"):format(#FP.fighters, FP.radius),
+            ("%d FIGHTERS   ·   %.0f m"):format(#FP.targets, FP.radius),
             13, 0.62, 0.75, 0.82, 0.85)
-        if FP.cinema.active then
-            pcall(Susano.DrawTextCentered, width * 0.5, height * 0.948,
-                "CINEMATIC FIGHT", 12, 0.90, 0.94, 1.0, 0.90)
-        end
     end
 end
 
 -- ---------------------------------------------------------------------------
 -- MENU + RENDER HOOK
 -- ---------------------------------------------------------------------------
--- The host is Exploit > Exploit. A base build that ships Exploit without tabs
--- is handled too: the category itself carries the rows.
 local function exploitHost()
     if type(Menu) ~= "table" then return nil end
     for _, category in ipairs(Menu.Categories or {}) do
@@ -30228,8 +29907,6 @@ local function isPartyRow(item)
         or (item.isSeparator and item.separatorText == "Party")
 end
 
--- Sweep every category and tab, not only the host: a previous build put this
--- block under Combat > General, and a reload must not leave it there.
 local function sweepPartyRows()
     if type(Menu) ~= "table" then return end
     for _, category in ipairs(Menu.Categories or {}) do
@@ -30258,7 +29935,6 @@ function FP.install()
 
     local toggle
     local radiusRow
-    local cinemaRow
 
     toggle = {
         name = "Fight Party",
@@ -30289,38 +29965,12 @@ function FP.install()
         end,
     }
 
-    -- One-click test mode. ON starts the party if it is not already running,
-    -- then drives a script camera around the centre for 25 s. OFF releases the
-    -- camera, and stops the party only if the camera started it.
-    cinemaRow = {
-        name = "Cinematic Fight",
-        type = "toggle",
-        value = FP.isCinematic(),
-        onClick = function(value)
-            local active
-            if value then
-                active = FP.cinemaStart(25000)
-            else
-                local owned = FP.cinema.ownsParty
-                FP.cinemaStop("operator")
-                if owned then FP.stop("cinema off") end
-                active = false
-            end
-            cinemaRow.value = active
-            return active
-        end,
-    }
-
     FP.onChange = function(active)
         toggle.value = active
     end
-    FP.onCinemaChange = function(active)
-        cinemaRow.value = active
-    end
 
     -- Reverse insertion keeps the visible order:
-    --   Party | Fight Party | Fight Party Radius | Cinematic Fight
-    table.insert(host.items, 1, cinemaRow)
+    --   Party | Fight Party | Fight Party Radius
     table.insert(host.items, 1, radiusRow)
     table.insert(host.items, 1, toggle)
     table.insert(host.items, 1, {
@@ -30329,8 +29979,6 @@ function FP.install()
         separatorText = "Party",
     })
 
-    -- One render hook, installed once. Wrapping instead of replacing keeps the
-    -- base loader's world-visual pass and the target panel intact.
     if type(Menu) == "table" and not Menu.__vgd_fightPartyRender then
         Menu.__vgd_fightPartyRender = true
         local previous = Menu.OnRender
@@ -30343,11 +29991,9 @@ function FP.install()
     return true
 end
 
--- The scheduler owns the only periodic work. Phase is randomised so the
--- membership pass never lines up with another feature's timer. The camera task
--- returns on its first line while the cinematic is off.
-O.every("fightparty", TICK_MS, tick, O.int(0, TICK_MS))
-O.every("fightparty_cam", 16, cameraTick, O.int(0, 16))
+-- The scheduler owns the only periodic work. Phase is randomised so the lock
+-- pass never lines up with another feature's timer.
+O.every("fightparty", 150, tick, O.int(0, 150))
 
 return FP
 
