@@ -17496,7 +17496,7 @@ end)()
 -- >>> VANGUARD MODULE BEGIN
 -- ============================================================================
 -- VANGUARD  (integrated artifact - edit src/ and rebuild)
--- Generated: 2026-11-05 20:28:52
+-- Generated: 2026-11-05 20:51:14
 --
 -- This block lives in loader.lua and in dist/loader.built.lua at the same
 -- time. It is the only place the local Menu table is in scope. Rebuilding
@@ -18488,10 +18488,10 @@ local FAMILIES = {
     -- Combat Unlock installs four scoped native hooks. The token caps how often
     -- the operator can re-install them, not the hook traffic itself.
     combat    = { strikes = 3, window = 8000,  cost = 1 },
-    -- Fight Party puts every other player in the ring into a combat task. The
-    -- token caps how often the ring can be armed; the reference guard's task
-    -- handler is empty, so the cap is an unknown-guard margin, not a known
-    -- detector. Six sights per window leaves five usable arms for testing.
+    -- Fight Party puts every other player in the ring into a brawl through the
+    -- two Susano network primitives. The token caps how often the ring can be
+    -- armed; the hit and knockdown cadence lives in the module. Six sights per
+    -- window leaves five usable arms for testing.
     fight     = { strikes = 6, window = 10000, cost = 1 },
 }
 
@@ -29463,187 +29463,137 @@ end)(Menu)
 -- ---------------------------------------------------------------------------
 local FP = (function(O,S,B,Menu)
 -- ============================================================================
--- VANGUARD / 28 FIGHT PARTY (REMOTE COMBAT LOCK)
+-- VANGUARD / 28 FIGHT PARTY (REMOTE BRAWL, NETWORK PRIMITIVES)
 -- ----------------------------------------------------------------------------
 -- Exploit > Exploit > "Party" (Fight Party, Fight Party Radius).
 --
 -- What the feature does:
---   A ring is anchored on the selected player, or on the operator when nothing
---   is selected. Every OTHER real player on foot inside the ring is put into a
---   combat task against another ring member. The task is applied by the
---   owner's client, so the target sees his own character fight, and every
---   other client sees the same task through the ped's task tree. The operator
---   is never put in the ring's target list and is never a combat target.
+--   A ring is anchored on the selected player, or on the nearest other player
+--   when nothing is selected. Every OTHER real player on foot inside the ring
+--   is put into a visible brawl: the ring trades synthetic unaanned melee hits
+--   through Susano.SendNetworkDamage and takes timed knockdowns through
+--   Susano.RequestRagdoll. The operator is never a subject, never an attacker,
+--   never a target, and is dropped before any other check.
 --
---   When the ring holds exactly one other player there is nobody to fight, so
---   that player is put into WORLD_HUMAN_MUSCLE_FLEX. The scenario is also an
---   owner-applied task: it holds the ped in place and loops, needs no
---   dictionary, and gives a single selected player a visible effect instead of
---   a silent refusal. The operator is still never the subject.
+-- Why there is no TaskCombatPed here (this is the load-bearing change):
+--   A task native applied to a ped owned by another client is not executed by
+--   the caller. Cfx only relays a scripted task to the owner through
+--   GIVE_PED_SCRIPTED_TASK_EVENT, and that event carries exactly two fields:
+--   the entity net id and the task id. A task that needs a second ped handle
+--   (TASK_COMBAT_PED) has no field to carry it, so the relay cannot reproduce
+--   the call. The server-side RPC native of the same name exists precisely
+--   because the client native stops at the ownership boundary, and an
+--   external executor has no server context. Three local builds that called
+--   TaskCombatPed on remote player peds therefore armed nothing; the peds
+--   stayed idle. The two primitives below are the ones that cross the client
+--   boundary on their own.
 --
--- Why combat and not a scripted animation:
---   TASK_PLAY_ANIM on a ped owned by another client is forwarded to the owner,
---   but the owner has not loaded the animation dictionary. The Cfx bug tracker
---   is explicit about it ("TaskPlayAnim ... does not automatically load or
---   request the dictionary"), and the client-side request never leaves this
---   machine. A plain animation task with an unloaded dictionary lands and does
---   nothing, which is exactly what the first build hit.
+-- Why SendNetworkDamage:
+--   It is the Susano extra native built for this exact case: it emits a
+--   synthetic weaponDamageEvent for a source entity against a target entity
+--   at a world position, and the server routes the event to the target owner.
+--   The victim's client applies the damage and plays the ordinary unarmed hit
+--   reaction; the reaction is part of the ped's animation state, so every
+--   other client sees it too. The hit is small (12.0) and paced, so the ring
+--   staggers instead of dying.
 --
--- Why combat and not a synchronised scene:
---   The server refuses START_NETWORK_SYNCED_SCENE_EVENT when any entity in the
---   scene is owned by another client and the entity has not been allowlisted
---   (ServerGameState::SanitizeEntity: `!entity->allowRemoteSyncedScenes`).
---   The field defaults to false and the setter is a server-side native, so a
---   client-only executor cannot arm a scene on a remote player ped. That route
---   is structurally closed regardless of how the packet is shaped.
+-- Why RequestRagdoll:
+--   It is the second Susano extra native: it requests a ragdoll on a target
+--   entity by engine GUID. The target owner applies it, and ragdoll is
+--   networked state, so the knockdown is visible to everyone. This is the
+--   same primitive the reference loader already uses for its ragdoll and
+--   launch actions. Knockdowns are spaced and probability-gated so the ring
+--   looks like a brawl, not like a metronome.
 --
--- Why combat works:
---   TASK_COMBAT_PED is a task native. The task is serialized as
---   GIVE_PED_SCRIPTED_TASK_EVENT, routed to the ped's owner, and applied by
---   the owner's task tree. The combat clip set is base-game combat locomotion,
---   not a mission dictionary, so the owner does not need a RequestAnimDict
---   before the task can play. The target's own character is the one that
---   fights, which satisfies "the target sees it"; the task tree replicates to
---   the other clients, which satisfies "everyone sees it".
+-- Why the damage flags are 198 and not the default 522:
+--   WaveShield V4 weaponDamageEvent inspects unarmed damage by exact flags.
+--   With flags 522 and a hitGlobalId it cancels the event and adds a strike
+--   when the SENDER ped is 5 m or more from the victim (an executor usually
+--   watches the ring from outside that radius). The other unarmed branches
+--   match 454/524288/525312 and the keyser punch branch matches 198 only when
+--   weaponDamage == 1. Flags 198 with 12.0 damage enters none of those
+--   branches, and the damage stays far below the >500 super-punch check.
+--   The weapon hash is WEAPON_UNARMED so the reaction reads as a punch.
 --
---   TASK_COMBAT_PED is also the exact primitive the reference client menus
---   use to make a real ped fight (dev.lua: TaskCombatPed(ped, targetPed, 0, 16)
---   and the NPC brawler loops). Using the same task keeps this feature on a
---   path the reference corpus already exercises, instead of a task type that
---   may not be in the game's scripted-task serializer.
+-- Why the target list never contains the operator:
+--   gather() drops PlayerId() before anything else. Both the hit pass and the
+--   knock pass re-check PlayerPedId() on the source and on the target, so a
+--   stale or re-used handle cannot get through.
 --
---   The single-target fallback is TASK_START_SCENARIO_IN_PLACE. Scenario
---   names are compiled into the game's scenario store (the name below is from
---   the compact scenario dump, 247 entries), so the owner's client resolves it
---   without any dictionary request. It is the only owner-applied loop that is
---   guaranteed to render on a client that has loaded nothing of ours.
---
--- Why there is also a damage pass:
---   An owner client can ignore a scripted task on a player ped, because the
---   ped is player-controlled and the task event is advisory. The Susano
---   network-damage primitive is the fallback that still lands: source is the
---   opponent, target is the record, the weapon is WEAPON_UNARMED, damage is
---   2.0 and the cadence is 1.4 s. The victim's client plays the ordinary
---   unarmed hit reaction, so the ring shows impact even when the task event is
---   dropped. It is one synthetic damage event per record per cadence, not a
---   burst; the weapon is unarmed, so WaveShield's client damage branch (which
---   only inspects damage types 3 and 10) does not enter it.
---
--- Why the task runs from a resource chunk (Stage B):
---   A game native that creates a scripted task needs a resource script
---   context. The Susano scheduler is an external thread; the call can be
---   accepted and never emit the scripted task event. The loader's own Shoot
---   Player and Twerk actions already inject their native calls for the same
---   reason. Stage B is one small chunk: it resolves the targets by server id,
---   re-tasks every second, and exits when the feature is disabled. The stop
---   chunk flips the flag and releases with TASK_WANDER_STANDARD. Neither chunk
---   has Susano.*; only the injection call lives in the main stage, once per
---   start and once per stop.
---
--- Why this route survives the reference guard (WaveShield V4):
---   * givePedScriptedTaskEvent is registered with an empty handler. The task
---     is not inspected, cancelled or reported.
---   * CLEAR_PED_TASKS and CLEAR_PED_TASKS_IMMEDIATELY are never used. Those
---     are the natives behind clearPedTasksEvent, which WaveShield cancels and
---     detects when the target is another player's ped. The release path is
---     TASK_WANDER_STANDARD; no clear event is generated.
---   * No entity is created, cloned, networked or deleted.
---   * No script event, state bag, resource injection, native hook or memory
---     write is used.
---   * No coordinate, heading, health or weapon value is written on a remote
---     ped. The only write is an ordinary scripted task.
---
--- Verified natives (citizenfx native database, alloc8or dump):
---   TASK_COMBAT_PED                  0xF166E48407BAC484
---     (Ped ped, Ped targetPed, int combatFlags, int threatResponseFlags)->void
---   IS_PED_IN_COMBAT                 0x4859F1FC66A6278E (Ped,Ped)->BOOL
---   IS_PED_IN_MELEE_COMBAT           0x4E209B2C1EAD5159 (Ped)->BOOL
---   TASK_START_SCENARIO_IN_PLACE     0x142A02425FF02BD9
---     (Ped ped, const char* scenarioName, int unkDelay, BOOL playEnterAnim)->void
---   TASK_WANDER_STANDARD             0xBB9CE077274F6A1B (Ped,float,int)->void
---   GET_ENTITY_COORDS                0x3FEF770D40960D5A (Entity,BOOL)->Vector3
---   DOES_ENTITY_EXIST                0x7239B21A38F536BA (Entity)->BOOL
---   IS_PED_DEAD_OR_DYING             0x3317DEDB88C95038 (Ped,BOOL)->BOOL
---   IS_PED_IN_ANY_VEHICLE            0x997ABD671D25CA0B (Ped,BOOL)->BOOL
+-- Verified natives (alloc8or dump):
 --   GET_ACTIVE_PLAYERS               CFX 0xCF143FB9 ()->int[]
 --   GET_PLAYER_SERVER_ID             CFX 0x4D97BCC7 (Player)->int
 --   GET_PLAYER_FROM_SERVER_ID        CFX 0x344EA166 (int)->Player
+--   GET_PLAYER_PED                   0x43A66C31C68491C0 (Player)->Ped
+--   NETWORK_IS_PLAYER_ACTIVE         0xB8DFD30D6973E135 (Player)->BOOL
+--   GET_ENTITY_COORDS                0x3FEF770D40960D5A (Entity,BOOL)->Vector3
+--   GET_ENTITY_HEALTH                0xEEF059FAD016D209 (Entity)->int
+--   DOES_ENTITY_EXIST                0x7239B21A38F536BA (Entity)->BOOL
+--   IS_PED_DEAD_OR_DYING             0x3317DEDB88C95038 (Ped,BOOL)->BOOL
+--   IS_PED_IN_ANY_VEHICLE            0x997ABD671D25CA0B (Ped,BOOL)->BOOL
+--   IS_PED_RAGDOLL                   0x47E4E977581C5B55 (Ped)->BOOL
 --   GET_GROUND_Z_FOR_3D_COORD        0xC906A7DAB05C8D2B
 --     (float,float,float,float*,BOOL,BOOL)->BOOL
 --
--- Susano primitive (verified against susano.re/docs, extra natives):
+-- Susano primitives (verified against susano.re/docs, extra natives):
 --   Susano.SendNetworkDamage(source, target, posX, posY, posZ, damage
---       [, weaponHash [, flags [, ...]]])
---
--- Combat arguments:
---   combatFlags          0   no special combat flags
---   threatResponseFlags  16  the pair the reference menus use for aggro
+--       [, weaponHash [, flags [, actionResultHash [, actionResultId
+--       [, actionUnk [, hitComponent]]]]]]) -> void
+--   Susano.RequestRagdoll(targetGuid) -> void
+--   GetEntityGuid(entity) -> int   (engine GUID, as used by the docs example
+--       and by the reference loader's ragdoll action)
 --
 -- Residual risk:
---   1. The fight is real combat. It produces ordinary weaponDamageEvent
---      traffic between players and can knock a target down. If the target has
---      a firearm equipped, the combat task can use it. The impact pass adds
---      one unarmed damage event per record per 1.4 s. A human reviewer or a
---      server-side damage heuristic can notice a player who fights without
---      input. This is the cost of a dict-free, owner-applied task plus the
---      Susano damage primitive; it is not a task-event fingerprint.
---   2. GTA limits simultaneous melee attackers per victim (about three); the
---      rest stand in the guard stance. The module keeps tasking everyone so
---      the ring rotates as fighters drop.
---   3. A target can interrupt the task with input. The health pass re-issues
---      it only when IS_PED_IN_COMBAT/IS_PED_IN_MELEE_COMBAT reports idle, and
---      never more than once per RETASK_MS. This is the escape window.
---   4. The ring itself stays on the Susano overlay, outside the game render
---      path; the target never sees the ring.
---   5. A target who dies, enters a vehicle or leaves the radius is released
---      with TASK_WANDER_STANDARD and removed; the task is not forced through a
---      state the game will refuse.
---   6. The operator is excluded twice: the gather pass drops PlayerId(), and
---      both startCombat and startScenario refuse any record or foe that
---      resolves to PlayerPedId().
---   7. With one other player the effect is the flex scenario, not a brawl:
---      a fight needs an opponent, and inventing one would mean spawning or
---      tasking the operator. The flex is the dict-free compromise.
---   8. Resource injection is the one Susano primitive WaveShield names
---      (ANTI_RESOURCE_INJECTION). The injection is one chunk per start/stop,
---      not per frame; the chunk itself only calls task natives.
+--   1. SendNetworkDamage is a synthetic damage event. A server-side damage
+--      heuristic (rate, damage per hit, attacker/victim health curve) can
+--      still notice a player who takes repeated unarmed hits with no input.
+--      The cadence is deliberately slow, the damage is 12.0, and the health
+--      floor (120) stops the pass before a kill, so no KILL log is written
+--      by the WaveShield formal report path.
+--   2. RequestRagdoll has no handler in the WaveShield V4 source in this
+--      corpus; the only ragdoll handler there is the premium custom event
+--      WS_ayznnn_ragdollRequestEvent, which is unrelated to the Susano extra
+--      native. A different AC build may treat repeated ragdoll requests as a
+--      troll signature; the knockdown period (2.4 s, jittered, 55% chance)
+--      keeps the rate low.
+--   3. A player who dies, enters a vehicle or leaves the ring is dropped on
+--      the next pass; no coordinate, heading, health or weapon value is ever
+--      written on a remote ped.
+--   4. The ring stays on the Susano overlay, outside the game render path;
+--      the target never sees the ring.
+--   5. The ring is drawn locally; it does not replicate the brawl itself. The
+--      brawl is carried by the two network events above.
 -- ============================================================================
 
 local FP = {}
 
 local MAX_TARGETS  = 12
 local RING_POINTS  = 72
-local CHECK_MS     = 260
-local RETASK_MS    = 2500
+local CHECK_MS     = 260     -- scheduler period
+local HIT_MS       = 420     -- one hit per beat, round-robin across the ring
+local KNOCK_MS     = 2400    -- per-target knockdown cadence
+local KNOCK_CHANCE = 0.55    -- probability gate on each knockdown beat
 local LEASH_M      = 1.5
 local RADIUS_MIN   = 8.0
 local RADIUS_MAX   = 40.0
-local COMBAT_FLAGS = 0
-local COMBAT_RESPONSE = 16
-local SCENARIO     = "WORLD_HUMAN_MUSCLE_FLEX"
-local SCENARIO_MS  = 2000
-
--- The task event is the clean route, but an owner client can ignore a scripted
--- task on a player ped. The impact pass is the Susano primitive: a synthetic
--- network damage event attributed to the opponent, unarmed, small and slow.
--- The victim client plays the ordinary unarmed hit reaction, which is the
--- visible brawl frame; nothing is written on the ped. It is the same damage
--- path the client already renders for a real punch, so it is not a task-event
--- fingerprint. The residual risk is a server-side damage heuristic.
-local IMPACT_DAMAGE = 2.0
-local IMPACT_MS     = 1400
-local IMPACT_FLAGS  = 522
-local IMPACT_WEAPON = GetHashKey("WEAPON_UNARMED")
+local BRAWL_DAMAGE = 12.0
+local BRAWL_FLAGS  = 198
+local HEALTH_FLOOR = 120     -- stop hitting a target at or below this health
+local KNOCK_FLOOR  = 80      -- no knockdown at or below this health
+local BRAWL_WEAPON = GetHashKey("WEAPON_UNARMED")
 
 FP.radius      = 15.0
 FP.active      = false
 FP.center      = nil
 FP.centerSid   = nil
 FP.anchorPed   = nil
+FP.anchorPlayer = nil
 FP.ring        = nil
-FP.targets     = {}
+FP.members     = {}
 FP.byPlayer    = {}
 FP.count       = 0
+FP.cursor      = 1
+FP.nextHitAt   = 0
 FP.startedAt   = 0
 FP.onChange    = nil
 FP.note        = nil
@@ -29682,118 +29632,30 @@ local function pedUsable(ped)
         and not IsPedInAnyVehicle(ped, false)
 end
 
--- ---------------------------------------------------------------------------
--- TASK. One combat task per target. The task is the only write; the ped's
--- coordinates, heading, health and weapons are never touched.
--- ---------------------------------------------------------------------------
-local function combatEngaged(rec)
-    if not rec or not rec.ped or rec.ped == 0 then return false end
-    if not rec.foePed or rec.foePed == 0 or rec.foePed == rec.ped then return false end
-    if not DoesEntityExist(rec.foePed) then return false end
-    if IsPedDeadOrDying(rec.foePed, true) then return false end
-
-    local okCombat, combat = pcall(IsPedInCombat, rec.ped, rec.foePed)
-    if okCombat and combat == true then return true end
-
-    local okMelee, melee = pcall(IsPedInMeleeCombat, rec.ped)
-    return okMelee and melee == true
+local function healthOf(ped)
+    local ok, hp = pcall(GetEntityHealth, ped)
+    if ok and type(hp) == "number" then return hp end
+    return 0
 end
 
-local function startCombat(rec, foe)
-    if not rec or not rec.ped or not foe or not foe.ped then return false end
-    if not DoesEntityExist(rec.ped) or not DoesEntityExist(foe.ped) then return false end
-    if rec.ped == foe.ped then return false end
-
-    -- The operator is never a subject. This is the second guard: gather()
-    -- already drops PlayerId(), but a stale handle must not get through.
-    local me = PlayerPedId()
-    if rec.ped == me or foe.ped == me then return false end
-
-    local ok, err = pcall(TaskCombatPed, rec.ped, foe.ped, COMBAT_FLAGS, COMBAT_RESPONSE)
-    if not ok then
-        log("combat native failed on %d: %s", rec.ped, tostring(err))
-        return false
-    end
-
-    rec.mode      = "combat"
-    rec.foePlayer = foe.player
-    rec.foePed    = foe.ped
-    rec.retaskAt  = O.now() + RETASK_MS
-    rec.impactAt  = 0
-    return true
+local function canHit(ped)
+    if not pedUsable(ped) then return false end
+    if ped == PlayerPedId() then return false end
+    local ok, ragdoll = pcall(IsPedRagdoll, ped)
+    if ok and ragdoll == true then return false end
+    local hp = healthOf(ped)
+    -- 0 means the health is not streamed yet; treat it as usable rather than
+    -- dropping a live target over a transient read.
+    return hp == 0 or hp > HEALTH_FLOOR
 end
 
--- Single-target fallback. A ring with exactly one other player has nobody to
--- fight, so the target is put into a built-in scenario. The scenario is a
--- task too: the owner's client applies it, it holds the ped in place and it
--- loops; no animation dictionary is involved. The operator is never a subject.
-local function startScenario(rec)
-    if not rec or not rec.ped or rec.ped == 0 then return false end
-    if not DoesEntityExist(rec.ped) then return false end
-    if rec.ped == PlayerPedId() then return false end
-
-    local ok, err = pcall(TaskStartScenarioInPlace, rec.ped, SCENARIO, 0, false)
-    if not ok then
-        log("scenario native failed on %d: %s", rec.ped, tostring(err))
-        return false
-    end
-
-    rec.mode      = "scenario"
-    rec.foePlayer = nil
-    rec.foePed    = 0
-    rec.retaskAt  = O.now() + SCENARIO_MS
-    rec.impactAt  = 0
-    return true
-end
-
--- The impact pass. Source is the opponent, target is the record. The native
--- resolves both handles locally and emits a network damage event; the server
--- routes it to the target owner. Unarmed, small, slow: the victim reacts, the
--- health bar barely moves.
-local function impact(rec)
-    if type(Susano) ~= "table" or type(Susano.SendNetworkDamage) ~= "function" then
-        return false
-    end
-    if not rec or not rec.ped or rec.ped == 0 then return false end
-    if not rec.foePed or rec.foePed == 0 or rec.foePed == rec.ped then return false end
-    if not DoesEntityExist(rec.ped) or not DoesEntityExist(rec.foePed) then return false end
-    if IsPedDeadOrDying(rec.ped, true) or IsPedDeadOrDying(rec.foePed, true) then return false end
-
-    local pos = GetEntityCoords(rec.ped)
-    local ok, err = pcall(Susano.SendNetworkDamage,
-        rec.foePed, rec.ped, pos.x, pos.y, pos.z + 0.15,
-        IMPACT_DAMAGE, IMPACT_WEAPON, IMPACT_FLAGS)
-    if not ok then
-        log("impact failed: %s", tostring(err))
-        return false
-    end
-    rec.impactAt = O.now() + IMPACT_MS
-    if not rec.impactMade then
-        rec.impactMade = true
-        log("impact %d <- %d", rec.ped, rec.foePed)
-    end
-    return true
-end
-
-local function release(rec)
-    if not rec or not rec.ped or rec.ped == 0 then return false end
-    if not DoesEntityExist(rec.ped) then return false end
-    if IsPedDeadOrDying(rec.ped, true) then
-        rec.mode = nil
-        rec.foePed = 0
-        rec.foePlayer = nil
-        rec.retaskAt = 0
-        return false
-    end
-
-    -- TASK_WANDER_STANDARD replaces the combat task and gives the ped back to
-    -- its own input. It is a task, not a clear: no clearPedTasksEvent is
-    -- emitted, so clearPedTasksEvent.lua never sees it.
-    pcall(TaskWanderStandard, rec.ped, 0.0, 0)
-    rec.mode = nil
-    rec.foePed = 0
-    rec.foePlayer = nil
-    rec.retaskAt = 0
+local function canKnock(ped)
+    if not pedUsable(ped) then return false end
+    if ped == PlayerPedId() then return false end
+    local hp = healthOf(ped)
+    if hp ~= 0 and hp <= KNOCK_FLOOR then return false end
+    local ok, ragdoll = pcall(IsPedRagdoll, ped)
+    if ok and ragdoll == true then return false end
     return true
 end
 
@@ -29833,8 +29695,8 @@ function FP.setRadius(value)
 end
 
 -- ---------------------------------------------------------------------------
--- WORLD READ. The operator is dropped before anything else, so no later
--- path can select him as a subject or as a foe.
+-- WORLD READ. The operator is dropped before anything else, so no later path
+-- can select him as a subject, an attacker or a target.
 -- ---------------------------------------------------------------------------
 local function gather(radius, out)
     out = out or {}
@@ -29852,6 +29714,8 @@ local function gather(radius, out)
                         player = player,
                         ped = ped,
                         dist = dist,
+                        nextHit = 0,
+                        nextKnock = 0,
                     }
                 end
             end
@@ -29862,237 +29726,169 @@ local function gather(radius, out)
     return out
 end
 
--- Foe selection. The anchor is the selected player when he is in the ring,
--- otherwise the nearest other player. A non-anchor record fights the anchor;
--- the anchor fights the nearest other record. The operator is excluded from
--- both roles.
-local function pickFoe(rec, list)
-    local me = PlayerPedId()
-    if not rec or rec.ped == me then return nil end
-
-    if rec.player ~= FP.anchorPlayer then
-        for _, cand in ipairs(list) do
-            if cand.player == FP.anchorPlayer
-                and cand.player ~= rec.player
-                and cand.ped ~= rec.ped
-                and cand.ped ~= me then
-                return cand
-            end
-        end
+-- ---------------------------------------------------------------------------
+-- PUNCH. One synthetic unarmed hit from a ring neighbour. The native resolves
+-- both handles locally, emits the damage event and the server routes it to the
+-- owner. Nothing is written on the ped. Flags 198 avoids the flags-522 branch
+-- in the reference guard; damage 12.0 is far below the super-punch threshold.
+-- ---------------------------------------------------------------------------
+local function punch(rec, source)
+    if not rec or not rec.ped or rec.ped == 0 then return false end
+    if not source or not source.ped or source.ped == 0 then return false end
+    if rec.ped == source.ped then return false end
+    if rec.ped == PlayerPedId() or source.ped == PlayerPedId() then return false end
+    if type(Susano) ~= "table" or type(Susano.SendNetworkDamage) ~= "function" then
+        return false
     end
+    if not canHit(rec.ped) then return false end
+    if not DoesEntityExist(source.ped) then return false end
+    if IsPedDeadOrDying(source.ped, true) then return false end
 
-    local best, bestDist = nil, nil
     local pos = GetEntityCoords(rec.ped)
-    for _, cand in ipairs(list) do
-        if cand.player ~= rec.player
-            and cand.ped ~= rec.ped
-            and cand.ped ~= me then
-            local d = O.distance(pos, GetEntityCoords(cand.ped))
-            if not bestDist or d < bestDist then
-                best, bestDist = cand, d
-            end
-        end
-    end
-
-    return best
-end
-
--- ---------------------------------------------------------------------------
--- STAGE B. A game native that creates a scripted task needs a resource script
--- context; the Susano scheduler is not one. The host menu already injects for
--- the same reason (Shoot Player, Twerk, Black Hole all call game natives from
--- an injected chunk). The runner resolves the targets by server id, re-tasks
--- them on its own loop, and never touches the operator. The stop chunk flips
--- the flag and hands the peds back to their own input with TASK_WANDER_STANDARD
--- (a task, not a clear: clearPedTasksEvent never sees it).
---
--- Neither chunk uses Susano.*: they only have resource globals and natives.
--- The only Susano call is the injection itself, in this stage.
--- ---------------------------------------------------------------------------
-local RUNNER = [==[
-local targets = %s
-_G.__vgd_fp_run = true
-local deadline = GetGameTimer() + 600000
-CreateThread(function()
-    while _G.__vgd_fp_run and GetGameTimer() < deadline do
-        local me = PlayerPedId()
-        local bySid = {}
-        for _, p in ipairs(GetActivePlayers()) do
-            bySid[GetPlayerServerId(p)] = p
-        end
-        for i = 1, #targets do
-            local rec = targets[i]
-            local tp = bySid[rec.t]
-            if tp then
-                local tPed = GetPlayerPed(tp)
-                if tPed ~= 0 and tPed ~= me and DoesEntityExist(tPed)
-                    and not IsPedDeadOrDying(tPed, true)
-                    and not IsPedInAnyVehicle(tPed, false) then
-                    if rec.f and rec.f ~= -1 then
-                        local fp = bySid[rec.f]
-                        local fPed = fp and GetPlayerPed(fp) or 0
-                        if fPed ~= 0 and fPed ~= me and fPed ~= tPed
-                            and DoesEntityExist(fPed)
-                            and not IsPedDeadOrDying(fPed, true) then
-                            TaskCombatPed(tPed, fPed, 0, 16)
-                        end
-                    else
-                        TaskStartScenarioInPlace(tPed, "WORLD_HUMAN_MUSCLE_FLEX", 0, false)
-                    end
-                end
-            end
-        end
-        Wait(1000)
-    end
-end)
-]==]
-
-local STOPPER = [==[
-local targets = %s
-_G.__vgd_fp_run = false
-local me = PlayerPedId()
-local bySid = {}
-for _, p in ipairs(GetActivePlayers()) do
-    bySid[GetPlayerServerId(p)] = p
-end
-for i = 1, #targets do
-    local tp = bySid[targets[i].t]
-    if tp then
-        local tPed = GetPlayerPed(tp)
-        if tPed ~= 0 and tPed ~= me and DoesEntityExist(tPed)
-            and not IsPedDeadOrDying(tPed, true) then
-            TaskWanderStandard(tPed, 0.0, 0)
-        end
-    end
-end
-]==]
-
-local function targetLiteral()
-    local parts = {}
-    for i = 1, #FP.targets do
-        local rec = FP.targets[i]
-        local t = GetPlayerServerId(rec.player)
-        local f = -1
-        if rec.mode == "combat" and rec.foePlayer then
-            f = GetPlayerServerId(rec.foePlayer)
-        end
-        if t and t ~= -1 then
-            parts[#parts + 1] = ("{t=%d,f=%d}"):format(t, f or -1)
-        end
-    end
-    return "{" .. table.concat(parts, ",") .. "}"
-end
-
-local function injectTargets()
-    if type(Susano) ~= "table" or type(Susano.InjectResource) ~= "function" then
-        return false
-    end
-    local literal = targetLiteral()
-    if literal == "{}" then return false end
-    local ok, err = pcall(Susano.InjectResource, "any", RUNNER:format(literal))
+    local damage = O.range(BRAWL_DAMAGE - 2.0, BRAWL_DAMAGE + 2.0)
+    local ok, err = pcall(Susano.SendNetworkDamage,
+        source.ped, rec.ped, pos.x, pos.y, pos.z + 0.15,
+        damage, BRAWL_WEAPON, BRAWL_FLAGS, 0, 0, 0, 0)
     if not ok then
-        log("inject failed: %s", tostring(err))
+        log("hit failed: %s", tostring(err))
         return false
     end
-    FP.literal = literal
-    FP.injected = true
-    log("stage B armed: %s", literal)
+    rec.nextHit = O.now() + HIT_MS
     return true
 end
 
 -- ---------------------------------------------------------------------------
--- TICK. Membership, foe health and task health. A target that stops fighting
--- is re-tasked on the next pass; a target that leaves is released.
+-- KNOCKDOWN. Engine GUID of the target, requested through the Susano extra
+-- native. The owner applies the ragdoll, the state replicates.
+-- ---------------------------------------------------------------------------
+local function knock(rec)
+    if not rec or not rec.ped or rec.ped == 0 then return false end
+    if type(Susano) ~= "table" or type(Susano.RequestRagdoll) ~= "function" then
+        return false
+    end
+    if not canKnock(rec.ped) then return false end
+
+    local okGuid, guid = pcall(GetEntityGuid, rec.ped)
+    if not okGuid or type(guid) ~= "number" or guid == 0 then return false end
+
+    local ok, err = pcall(Susano.RequestRagdoll, guid)
+    if not ok then
+        log("knock failed: %s", tostring(err))
+        return false
+    end
+    rec.nextKnock = O.now() + O.jitter(KNOCK_MS, 0.22)
+    return true
+end
+
+-- ---------------------------------------------------------------------------
+-- MEMBERSHIP. Rebuilds from the live gather each pass; departing, dead and
+-- vehicle-borne players are dropped without touching them.
+-- ---------------------------------------------------------------------------
+local function reconcile(list)
+    for i = #FP.members, 1, -1 do
+        local rec = FP.members[i]
+        local fresh = nil
+        for k = 1, #list do
+            if list[k].player == rec.player then fresh = list[k] break end
+        end
+        if fresh then
+            rec.ped = fresh.ped
+            rec.dist = fresh.dist
+        else
+            FP.byPlayer[rec.player] = nil
+            table.remove(FP.members, i)
+        end
+    end
+
+    for i = 1, #list do
+        if #FP.members >= MAX_TARGETS then break end
+        local cand = list[i]
+        if not FP.byPlayer[cand.player] then
+            cand.nextKnock = O.now() + O.int(400, KNOCK_MS)
+            FP.members[#FP.members + 1] = cand
+            FP.byPlayer[cand.player] = cand
+        end
+    end
+
+    FP.count = #FP.members
+    return FP.count
+end
+
+-- ---------------------------------------------------------------------------
+-- TICK. One hit per beat, round-robin; knockdown beats are per target.
 -- ---------------------------------------------------------------------------
 local function tick(now)
     if not FP.active then return end
     if not FP.center then FP.stop("no centre") return end
 
     local list = gather(FP.radius + LEASH_M)
-    local seen = {}
-    for i = 1, #list do seen[list[i].player] = true end
+    local count = reconcile(list)
+    if count == 0 then FP.stop("empty") return end
 
-    for i = #FP.targets, 1, -1 do
-        local rec = FP.targets[i]
-        local keep = seen[rec.player] == true
-        local ped = keep and GetPlayerPed(rec.player) or 0
+    -- If the anchor left the ring, promote the nearest remaining member so
+    -- the pairing stays coherent.
+    local anchorAlive = false
+    for i = 1, count do
+        if FP.members[i].player == FP.anchorPlayer then anchorAlive = true break end
+    end
+    if not anchorAlive then
+        FP.anchorPlayer = FP.members[1].player
+        FP.anchorPed = FP.members[1].ped
+    end
 
-        if keep and (ped == 0 or ped ~= rec.ped or not pedUsable(ped)) then
-            keep = false
-        end
+    -- Punch beat. The source is the anchor when the target is not the anchor,
+    -- otherwise the next member in the rotation. The operator is excluded on
+    -- both ends by gather() and by punch().
+    if now >= (FP.nextHitAt or 0) and count >= 2 then
+        local target = nil
+        local source = nil
 
-        if not keep then
-            release(rec)
-            table.remove(FP.targets, i)
-            FP.byPlayer[rec.player] = nil
-        else
-            rec.ped = ped
-
-            local foe = pickFoe(rec, list)
-
-            if rec.mode == "combat" then
-                local foeOk = rec.foePed and rec.foePed ~= 0
-                    and rec.foePed ~= rec.ped
-                    and rec.foePed ~= PlayerPedId()
-                    and seen[rec.foePlayer] == true
-                    and DoesEntityExist(rec.foePed)
-                    and not IsPedDeadOrDying(rec.foePed, true)
-
-                if not foeOk then
-                    -- The opponent left, died or went into a vehicle. If
-                    -- another ring member is still available, re-pair; if
-                    -- this is now the last one, keep him in the scenario
-                    -- rather than dropping him out of the feature.
-                    local restarted = false
-                    if foe then restarted = startCombat(rec, foe) end
-                    if not restarted then startScenario(rec) end
-                elseif now >= (rec.retaskAt or 0) then
-                    rec.retaskAt = now + RETASK_MS
-                    if not combatEngaged(rec) then
-                        local restarted = false
-                        if foe then restarted = startCombat(rec, foe) end
-                        if not restarted then startScenario(rec) end
+        for _ = 1, count do
+            local rec = FP.members[((FP.cursor - 1) % count) + 1]
+            FP.cursor = (FP.cursor % count) + 1
+            if canHit(rec.ped) then
+                if rec.player ~= FP.anchorPlayer then
+                    for i = 1, count do
+                        local cand = FP.members[i]
+                        if cand.player == FP.anchorPlayer and cand.ped ~= rec.ped
+                            and DoesEntityExist(cand.ped)
+                            and not IsPedDeadOrDying(cand.ped, true) then
+                            source = cand
+                            break
+                        end
                     end
                 end
-
-                if rec.mode == "combat" and now >= (rec.impactAt or 0) then
-                    impact(rec)
+                if not source then
+                    local alt = FP.members[(FP.cursor - 1) % count + 1]
+                    if alt.ped ~= rec.ped and DoesEntityExist(alt.ped)
+                        and not IsPedDeadOrDying(alt.ped, true) then
+                        source = alt
+                    end
                 end
-            else
-                -- Scenario fallback. If a second player appears, promote the
-                -- target to a real bout; otherwise refresh the loop.
-                if foe then
-                    if not startCombat(rec, foe) then startScenario(rec) end
-                elseif now >= (rec.retaskAt or 0) then
-                    startScenario(rec)
+                if source then
+                    target = rec
+                    break
                 end
             end
         end
-    end
 
-    local count = #FP.targets
-    for i = 1, #list do
-        if count >= MAX_TARGETS then break end
-        local rec = list[i]
-        if not FP.byPlayer[rec.player] then
-            local foe = pickFoe(rec, list)
-            local armed = false
-            if foe then
-                armed = startCombat(rec, foe)
-                if not armed then armed = startScenario(rec) end
-            else
-                armed = startScenario(rec)
-            end
-            if armed then
-                FP.targets[#FP.targets + 1] = rec
-                FP.byPlayer[rec.player] = rec
-                count = count + 1
-            end
+        if target and source and punch(target, source) then
+            FP.nextHitAt = now + O.jitter(HIT_MS, 0.20)
+        else
+            FP.nextHitAt = now + HIT_MS
         end
     end
 
-    if count == 0 then FP.stop("empty") return end
-    FP.count = count
+    -- Knockdown beats. Probability-gated and jittered so the ring does not
+    -- fold in lockstep.
+    for i = 1, count do
+        local rec = FP.members[i]
+        if now >= (rec.nextKnock or 0) and O.chance(KNOCK_CHANCE) then
+            if not knock(rec) then
+                rec.nextKnock = now + O.jitter(KNOCK_MS, 0.35)
+            end
+        end
+    end
 end
 
 -- ---------------------------------------------------------------------------
@@ -30104,18 +29900,10 @@ end
 
 function FP.status()
     return ("active=%s targets=%d radius=%.0f"):format(
-        tostring(FP.active), #FP.targets, FP.radius)
+        tostring(FP.active), #FP.members, FP.radius)
 end
 
 function FP.stop(reason)
-    if FP.injected and FP.literal and type(Susano) == "table"
-        and type(Susano.InjectResource) == "function" then
-        pcall(Susano.InjectResource, "any", STOPPER:format(FP.literal))
-    end
-    for i = #FP.targets, 1, -1 do release(FP.targets[i]) end
-    FP.injected = false
-    FP.literal = nil
-
     local was = FP.active
     FP.active = false
     FP.ring = nil
@@ -30124,8 +29912,10 @@ function FP.stop(reason)
     FP.anchorPed = nil
     FP.anchorPlayer = nil
     FP.byPlayer = {}
-    FP.targets = {}
+    FP.members = {}
     FP.count = 0
+    FP.cursor = 1
+    FP.nextHitAt = 0
     FP.note = nil
 
     if FP.canRender and Menu then Menu.PreventResetFrame = false end
@@ -30140,14 +29930,11 @@ end
 
 function FP.start()
     if FP.active then return true end
-    if not B.spend("fight") then
-        log("budget refused")
-        return false
-    end
 
     local myPed = PlayerPedId()
     local mySid = GetPlayerServerId(PlayerId())
-    local ringPed = myPed
+    local ringPed = nil
+    local selectedSid = nil
 
     FP.centerSid = nil
     FP.anchorPlayer = nil
@@ -30156,13 +29943,38 @@ function FP.start()
     local selected = Menu and Menu.SelectedPlayer
     if type(selected) == "number" then
         local player = GetPlayerFromServerId(selected)
-        if player ~= -1 then
+        if player ~= -1 and player ~= PlayerId() then
             local ped = GetPlayerPed(player)
             if pedUsable(ped) then
                 ringPed = ped
-                FP.centerSid = selected
+                selectedSid = selected
             end
         end
+    end
+
+    -- No valid remote selection: anchor on the nearest other player. The
+    -- operator is never the centre of a feature that excludes the operator.
+    if not ringPed then
+        local base = GetEntityCoords(myPed)
+        local best, bestDist = nil, nil
+        for _, player in ipairs(GetActivePlayers()) do
+            if player ~= PlayerId() and NetworkIsPlayerActive(player) then
+                local ped = GetPlayerPed(player)
+                if pedUsable(ped) then
+                    local d = O.distance(GetEntityCoords(ped), base)
+                    if not bestDist or d < bestDist then
+                        best, bestDist = ped, d
+                    end
+                end
+            end
+        end
+        ringPed = best
+    end
+
+    if not ringPed then
+        note("NO PLAYER IN RANGE")
+        log("start refused: no other player")
+        return false
     end
 
     local coords = GetEntityCoords(ringPed)
@@ -30173,71 +29985,64 @@ function FP.start()
     local list = gather(FP.radius)
     if #list == 0 then
         FP.stop("no targets")
-        note("NO TARGET IN RANGE")
-        B.refund("fight")
+        note("NO PLAYER IN RANGE")
         return false
     end
 
-    -- Anchor: the selected player when he is in the ring, otherwise the
-    -- nearest other player. Never the operator.
     local anchor
-    if type(FP.centerSid) == "number" and FP.centerSid ~= mySid then
+    if selectedSid then
         for i = 1, #list do
-            if list[i].player == GetPlayerFromServerId(FP.centerSid) then
-                anchor = list[i]
-                break
-            end
+            if list[i].ped == ringPed then anchor = list[i] break end
         end
     end
     if not anchor then anchor = list[1] end
     if not anchor or anchor.ped == myPed then
         FP.stop("no anchor")
-        note("NO ANCHOR")
-        B.refund("fight")
+        note("NO PLAYER IN RANGE")
+        return false
+    end
+
+    local canSend = type(Susano) == "table"
+        and type(Susano.SendNetworkDamage) == "function"
+    local canRagdoll = type(Susano) == "table"
+        and type(Susano.RequestRagdoll) == "function"
+    if not canSend and not canRagdoll then
+        FP.stop("no primitive")
+        note("NETWORK PRIMITIVES MISSING")
+        log("start refused: SendNetworkDamage and RequestRagdoll are absent")
+        return false
+    end
+
+    if not B.spend("fight") then
+        log("budget refused")
+        FP.stop("budget")
         return false
     end
 
     FP.anchorPlayer = anchor.player
     FP.anchorPed = anchor.ped
-    FP.targets = {}
+    FP.centerSid = selectedSid
+    FP.members = {}
     FP.byPlayer = {}
     FP.startedAt = O.now()
-    log("start: players=%d radius=%.0f anchor=%d", #list, FP.radius, anchor.player)
+    FP.cursor = 1
+    FP.nextHitAt = FP.startedAt + HIT_MS
 
-    local made = 0
     for i = 1, math.min(#list, MAX_TARGETS) do
         local rec = list[i]
-        local foe = pickFoe(rec, list)
-        local armed = false
-        if foe then
-            armed = startCombat(rec, foe)
-            if not armed then armed = startScenario(rec) end
-        else
-            armed = startScenario(rec)
-        end
-        if armed then
-            FP.targets[#FP.targets + 1] = rec
-            FP.byPlayer[rec.player] = rec
-            made = made + 1
-        else
-            log("not armed: player=%d ped=%d", rec.player, rec.ped)
-        end
-    end
-    log("armed %d/%d", made, math.min(#list, MAX_TARGETS))
-    if made > 0 then injectTargets() end
-
-    if made == 0 then
-        FP.stop("no targets")
-        note("NO TARGET ARMED")
-        B.refund("fight")
-        return false
+        rec.nextKnock = O.now() + O.int(400, KNOCK_MS)
+        FP.members[#FP.members + 1] = rec
+        FP.byPlayer[rec.player] = rec
     end
 
+    FP.count = #FP.members
     FP.active = true
     if FP.canRender and Menu then Menu.PreventResetFrame = true end
-    FP.count = made
+
     notify()
-    log("started %d targets, %.0f m", made, FP.radius)
+    log("started: players=%d radius=%.0f anchor=%d damage=%s ragdoll=%s",
+        FP.count, FP.radius, anchor.player,
+        tostring(canSend), tostring(canRagdoll))
     return true
 end
 
@@ -30317,8 +30122,8 @@ function FP.render()
         pcall(Susano.DrawTextCentered, width * 0.5, height * 0.855,
             "FIGHT PARTY", 20, 0.94, 0.98, 1.0, 0.92)
         pcall(Susano.DrawTextCentered, width * 0.5, height * 0.855 + 24.0,
-            ("%d FIGHTER%s   ·   %.0f m"):format(
-                #FP.targets, #FP.targets == 1 and "" or "S", FP.radius),
+            ("%d ATHLETE%s   ·   %.0f m"):format(
+                #FP.members, #FP.members == 1 and "" or "S", FP.radius),
             13, 0.62, 0.75, 0.82, 0.85)
     end
 end
@@ -30433,8 +30238,8 @@ function FP.install()
     return true
 end
 
--- The scheduler owns the only periodic work. Phase is randomised so the task
--- health pass never lines up with another feature's timer.
+-- The scheduler owns the only periodic work. Phase is randomised so the
+-- beat never lines up with another feature's timer.
 O.every("fightparty", CHECK_MS, tick, O.int(0, CHECK_MS))
 
 return FP
@@ -31333,10 +31138,12 @@ end
 -- EXPLOIT > EXPLOIT > FIGHT PARTY
 --
 -- One toggle and one radius slider, installed at the top of the Exploit tab
--- after the flash rows exist. The module tasks every OTHER player in the ring
--- into combat; the operator is never a subject or a foe. No entity is spawned,
--- no scene is armed and no coordinate is written on someone else's body. The
--- module owns its own rows so a re-injection cannot duplicate them.
+-- after the flash rows exist. The module drives a visible brawl on every OTHER
+-- player in the ring through the two Susano network primitives (synthetic
+-- unarmed damage and ragdoll); the operator is never a subject, attacker or
+-- target. No entity is spawned, no scene is armed and no coordinate is written
+-- on someone else's body. The module owns its own rows so a re-injection
+-- cannot duplicate them.
 -- ---------------------------------------------------------------------------
 local function installFightParty()
     return FP.install()
@@ -33176,6 +32983,7 @@ end
 -- BOOT
 -- ---------------------------------------------------------------------------
 function UI.boot()
+    O.log("loader build 2026-11-05-r1 (fight party v5: network damage + ragdoll)")
     O.thread()
 
     -- Delete fallback poll. 40 ms is faster than a frame at 30 FPS and cheap
