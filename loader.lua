@@ -17496,7 +17496,7 @@ end)()
 -- >>> VANGUARD MODULE BEGIN
 -- ============================================================================
 -- VANGUARD  (integrated artifact - edit src/ and rebuild)
--- Generated: 2026-11-05 20:13:03
+-- Generated: 2026-11-05 20:21:19
 --
 -- This block lives in loader.lua and in dist/loader.built.lua at the same
 -- time. It is the only place the local Menu table is in scope. Rebuilding
@@ -29518,6 +29518,17 @@ local FP = (function(O,S,B,Menu)
 --   without any dictionary request. It is the only owner-applied loop that is
 --   guaranteed to render on a client that has loaded nothing of ours.
 --
+-- Why there is also a damage pass:
+--   An owner client can ignore a scripted task on a player ped, because the
+--   ped is player-controlled and the task event is advisory. The Susano
+--   network-damage primitive is the fallback that still lands: source is the
+--   opponent, target is the record, the weapon is WEAPON_UNARMED, damage is
+--   2.0 and the cadence is 1.4 s. The victim's client plays the ordinary
+--   unarmed hit reaction, so the ring shows impact even when the task event is
+--   dropped. It is one synthetic damage event per record per cadence, not a
+--   burst; the weapon is unarmed, so WaveShield's client damage branch (which
+--   only inspects damage types 3 and 10) does not enter it.
+--
 -- Why this route survives the reference guard (WaveShield V4):
 --   * givePedScriptedTaskEvent is registered with an empty handler. The task
 --     is not inspected, cancelled or reported.
@@ -29549,6 +29560,10 @@ local FP = (function(O,S,B,Menu)
 --   GET_GROUND_Z_FOR_3D_COORD        0xC906A7DAB05C8D2B
 --     (float,float,float,float*,BOOL,BOOL)->BOOL
 --
+-- Susano primitive (verified against susano.re/docs, extra natives):
+--   Susano.SendNetworkDamage(source, target, posX, posY, posZ, damage
+--       [, weaponHash [, flags [, ...]]])
+--
 -- Combat arguments:
 --   combatFlags          0   no special combat flags
 --   threatResponseFlags  16  the pair the reference menus use for aggro
@@ -29556,10 +29571,11 @@ local FP = (function(O,S,B,Menu)
 -- Residual risk:
 --   1. The fight is real combat. It produces ordinary weaponDamageEvent
 --      traffic between players and can knock a target down. If the target has
---      a firearm equipped, the combat task can use it. A human reviewer or a
+--      a firearm equipped, the combat task can use it. The impact pass adds
+--      one unarmed damage event per record per 1.4 s. A human reviewer or a
 --      server-side damage heuristic can notice a player who fights without
---      input. This is the cost of a dict-free, owner-applied task; it is not a
---      task-event fingerprint.
+--      input. This is the cost of a dict-free, owner-applied task plus the
+--      Susano damage primitive; it is not a task-event fingerprint.
 --   2. GTA limits simultaneous melee attackers per victim (about three); the
 --      rest stand in the guard stance. The module keeps tasking everyone so
 --      the ring rotates as fighters drop.
@@ -29592,6 +29608,18 @@ local COMBAT_FLAGS = 0
 local COMBAT_RESPONSE = 16
 local SCENARIO     = "WORLD_HUMAN_MUSCLE_FLEX"
 local SCENARIO_MS  = 2000
+
+-- The task event is the clean route, but an owner client can ignore a scripted
+-- task on a player ped. The impact pass is the Susano primitive: a synthetic
+-- network damage event attributed to the opponent, unarmed, small and slow.
+-- The victim client plays the ordinary unarmed hit reaction, which is the
+-- visible brawl frame; nothing is written on the ped. It is the same damage
+-- path the client already renders for a real punch, so it is not a task-event
+-- fingerprint. The residual risk is a server-side damage heuristic.
+local IMPACT_DAMAGE = 2.0
+local IMPACT_MS     = 1400
+local IMPACT_FLAGS  = 522
+local IMPACT_WEAPON = GetHashKey("WEAPON_UNARMED")
 
 FP.radius      = 15.0
 FP.active      = false
@@ -29677,6 +29705,7 @@ local function startCombat(rec, foe)
     rec.foePlayer = foe.player
     rec.foePed    = foe.ped
     rec.retaskAt  = O.now() + RETASK_MS
+    rec.impactAt  = 0
     return true
 end
 
@@ -29699,6 +29728,36 @@ local function startScenario(rec)
     rec.foePlayer = nil
     rec.foePed    = 0
     rec.retaskAt  = O.now() + SCENARIO_MS
+    rec.impactAt  = 0
+    return true
+end
+
+-- The impact pass. Source is the opponent, target is the record. The native
+-- resolves both handles locally and emits a network damage event; the server
+-- routes it to the target owner. Unarmed, small, slow: the victim reacts, the
+-- health bar barely moves.
+local function impact(rec)
+    if type(Susano) ~= "table" or type(Susano.SendNetworkDamage) ~= "function" then
+        return false
+    end
+    if not rec or not rec.ped or rec.ped == 0 then return false end
+    if not rec.foePed or rec.foePed == 0 or rec.foePed == rec.ped then return false end
+    if not DoesEntityExist(rec.ped) or not DoesEntityExist(rec.foePed) then return false end
+    if IsPedDeadOrDying(rec.ped, true) or IsPedDeadOrDying(rec.foePed, true) then return false end
+
+    local pos = GetEntityCoords(rec.ped)
+    local ok, err = pcall(Susano.SendNetworkDamage,
+        rec.foePed, rec.ped, pos.x, pos.y, pos.z + 0.15,
+        IMPACT_DAMAGE, IMPACT_WEAPON, IMPACT_FLAGS)
+    if not ok then
+        log("impact failed: %s", tostring(err))
+        return false
+    end
+    rec.impactAt = O.now() + IMPACT_MS
+    if not rec.impactMade then
+        rec.impactMade = true
+        log("impact %d <- %d", rec.ped, rec.foePed)
+    end
     return true
 end
 
@@ -29877,6 +29936,10 @@ local function tick(now)
                         if foe then restarted = startCombat(rec, foe) end
                         if not restarted then startScenario(rec) end
                     end
+                end
+
+                if rec.mode == "combat" and now >= (rec.impactAt or 0) then
+                    impact(rec)
                 end
             else
                 -- Scenario fallback. If a second player appears, promote the
