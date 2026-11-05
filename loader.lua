@@ -17496,7 +17496,7 @@ end)()
 -- >>> VANGUARD MODULE BEGIN
 -- ============================================================================
 -- VANGUARD  (integrated artifact - edit src/ and rebuild)
--- Generated: 2026-11-05 19:20:28
+-- Generated: 2026-11-05 19:54:24
 --
 -- This block lives in loader.lua and in dist/loader.built.lua at the same
 -- time. It is the only place the local Menu table is in scope. Rebuilding
@@ -18488,9 +18488,9 @@ local FAMILIES = {
     -- Combat Unlock installs four scoped native hooks. The token caps how often
     -- the operator can re-install them, not the hook traffic itself.
     combat    = { strikes = 3, window = 8000,  cost = 1 },
-    -- Fight Party starts a networked synchronised scene per target. The token
-    -- caps how often the scene can be armed; the reference guard's scene
-    -- handlers are empty, so the cap is an unknown-guard margin, not a known
+    -- Fight Party puts every other player in the ring into a melee task. The
+    -- token caps how often the ring can be armed; the reference guard's task
+    -- handler is empty, so the cap is an unknown-guard margin, not a known
     -- detector. Six sights per window leaves five usable arms for testing.
     fight     = { strikes = 6, window = 10000, cost = 1 },
 }
@@ -29463,110 +29463,145 @@ end)(Menu)
 -- ---------------------------------------------------------------------------
 local FP = (function(O,S,B,Menu)
 -- ============================================================================
--- VANGUARD / 28 FIGHT PARTY (NETWORK SCENE LOCK)
+-- VANGUARD / 28 FIGHT PARTY (REMOTE MELEE LOCK)
 -- ----------------------------------------------------------------------------
 -- Exploit > Exploit > "Party" (Fight Party, Fight Party Radius).
 --
 -- What the feature does:
 --   A ring is anchored on the selected player, or on the operator when nothing
---   is selected. Every real player on foot inside the ring is placed in a
---   networked synchronised scene that loops the shadow-boxing clip, with the
---   scene flags DONT_INTERRUPT (4), BLOCK_MOVER_UPDATE (32) and
---   LOOP_WITHIN_SCENE (64). The scene is replicated by the game: the target
---   sees his own character box in place, he cannot move while the scene owns
---   him, and every other client sees the same animation. Nothing is spawned.
+--   is selected. Every OTHER real player on foot inside the ring is put into a
+--   melee task against another ring member. The task is applied by the owner's
+--   client, so the target sees his own character fight, and every other client
+--   sees the same task through the ped's task tree. The operator is never put
+--   in the ring's target list and is never a melee target.
 --
--- Why a synchronised scene and not TASK_PLAY_ANIM:
---   TASK_PLAY_ANIM applied to a ped owned by another client is delivered to the
---   owner, but the owner has not loaded the animation dictionary. The Cfx
---   native documentation is explicit: NETWORK_ADD_PED_TO_SYNCHRONISED_SCENE
---   does NOT require the animation dictionary to be loaded, unlike
---   TASK_SYNCHRONIZED_SCENE; the scene replays its own clip data. That is the
---   entire reason this module uses a scene. A plain task with an unloaded dict
---   lands and does nothing, which is the failure mode this build replaces.
+--   When the ring holds exactly one other player there is nobody to fight, so
+--   that player is put into WORLD_HUMAN_MUSCLE_FLEX. The scenario is also an
+--   owner-applied task: it holds the ped in place and loops, needs no
+--   dictionary, and gives a single selected player a visible effect instead of
+--   a silent refusal. The operator is still never the subject.
 --
--- Why no spawned ped:
---   The scene plays on the players already in the session. No CREATE_PED, no
---   CLONE_PED, no object, no vehicle, no entityCreating event.
+-- Why melee and not a scripted animation:
+--   TASK_PLAY_ANIM on a ped owned by another client is forwarded to the owner,
+--   but the owner has not loaded the animation dictionary. The Cfx bug tracker
+--   is explicit about it ("TaskPlayAnim ... does not automatically load or
+--   request the dictionary"), and the client-side request never leaves this
+--   machine. A plain animation task with an unloaded dictionary lands and does
+--   nothing, which is exactly what the previous build hit.
+--
+-- Why melee and not a synchronised scene:
+--   The server refuses START_NETWORK_SYNCED_SCENE_EVENT when any entity in the
+--   scene is owned by another client and the entity has not been allowlisted
+--   (ServerGameState::SanitizeEntity: `!entity->allowRemoteSyncedScenes`).
+--   The field defaults to false and the setter is a server-side native, so a
+--   client-only executor cannot arm a scene on a remote player ped. That route
+--   is structurally closed regardless of how the packet is shaped.
+--
+-- Why melee works:
+--   TASK_PUT_PED_DIRECTLY_INTO_MELEE is a task native. The task is serialized
+--   as GIVE_PED_SCRIPTED_TASK_EVENT, routed to the ped's owner, and applied by
+--   the owner's task tree. The combat clip set is part of the base combat
+--   locomotion, not a mission dictionary, so the owner does not need a
+--   RequestAnimDict before the task can play. The target's own character is
+--   the one that fights, which satisfies "the target sees it"; the task tree
+--   replicates to the other clients, which satisfies "everyone sees it".
+--
+--   The single-target fallback is TASK_START_SCENARIO_IN_PLACE. Scenario
+--   names are compiled into the game's scenario store (the name below is from
+--   the compact scenario dump, 247 entries), so the owner's client resolves it
+--   without any dictionary request. It is the only owner-applied loop that is
+--   guaranteed to render on a client that has loaded nothing of ours.
 --
 -- Why this route survives the reference guard (WaveShield V4):
---   * requestNetworkSyncedSceneEvent, startNetworkSyncedSceneEvent,
---     updateNetworkSyncedSceneEvent and stopNetworkSyncedSceneEvent are all
---     registered with empty handlers. The scene's lifecycle is not inspected
---     and not reported.
+--   * givePedScriptedTaskEvent is registered with an empty handler. The task
+--     is not inspected, cancelled or reported.
 --   * CLEAR_PED_TASKS and CLEAR_PED_TASKS_IMMEDIATELY are never used. Those
 --     are the natives behind clearPedTasksEvent, which WaveShield cancels and
 --     detects when the target is another player's ped. The release path is
---     NETWORK_STOP_SYNCHRONISED_SCENE; no clear event is generated.
---   * No script event is triggered, no state bag is written, no resource is
---     injected, no native is hooked, no memory is written.
---   * The scene handle is owned locally; the server sees the normal network
---     scene lifecycle that GTA Online itself uses for every scripted two-player
---     animation.
+--     TASK_WANDER_STANDARD; no clear event is generated.
+--   * No entity is created, cloned, networked or deleted.
+--   * No script event, state bag, resource injection, native hook or memory
+--     write is used.
+--   * No coordinate, heading, health or weapon value is written on a remote
+--     ped. The only write is an ordinary scripted task.
 --
--- Verified natives (citizenfx native database):
---   NETWORK_CREATE_SYNCHRONISED_SCENE     0x7CD6BC4C2BBDD526
---     (float,float,float,float,float,float,int,BOOL,BOOL,float,float,float)->int
---   NETWORK_ADD_PED_TO_SYNCHRONISED_SCENE 0x742A637471BCECD9
---     (Ped,int,char*,char*,float,float,int,int,float,Any)->void
---   NETWORK_START_SYNCHRONISED_SCENE      0x9A1B3FCDB36C8697 (int)->void
---   NETWORK_STOP_SYNCHRONISED_SCENE       0xC254481A4574CB2F (int)->void
---   NETWORK_GET_LOCAL_SCENE_FROM_NETWORK_ID 0x02C40BF885C567B6 (int)->int
---   IS_SYNCHRONIZED_SCENE_RUNNING         0x25D39B935A038A26 (int)->BOOL
---   GET_ENTITY_COORDS                     0x3FEF770D40960D5A
---   GET_ENTITY_HEADING                    0xE83D4F9BA2A327B7
---   DOES_ENTITY_EXIST                     0x731EC8A916BD11A1
---   IS_PED_DEAD_OR_DYING                  0x3317DEDB88C95038
---   IS_PED_IN_ANY_VEHICLE                 0x997ABD671D25CA0B
---   GET_ACTIVE_PLAYERS                    CFX 0xCF143FB9
---   GET_PLAYER_SERVER_ID                  CFX 0x4D97BCC7
---   GET_PLAYER_FROM_SERVER_ID             CFX 0x344EA166
---   GET_GROUND_Z_FOR_3D_COORD             0xC906A7DAB05C8D2B
+-- Verified natives (citizenfx native database, alloc8or dump):
+--   TASK_PUT_PED_DIRECTLY_INTO_MELEE 0x1C6CD14A876FFE39
+--     (Ped ped, Ped meleeTarget, float blendInDuration, float timeInMelee,
+--      float strafePhaseSync, int aiCombatFlags)->void
+--   TASK_START_SCENARIO_IN_PLACE     0x142A02425FF02BD9
+--     (Ped ped, const char* scenarioName, int unkDelay, BOOL playEnterAnim)->void
+--   IS_PED_IN_MELEE_COMBAT           0x4E209B2C1EAD5159 (Ped)->BOOL
+--   IS_PED_IN_COMBAT                 0x4859F1FC66A6278E (Ped,Ped)->BOOL
+--   TASK_WANDER_STANDARD             0xBB9CE077274F6A1B (Ped,float,int)->void
+--   GET_ENTITY_COORDS                0x3FEF770D40960D5A (Entity,BOOL)->Vector3
+--   DOES_ENTITY_EXIST                0x7239B21A38F536BA (Entity)->BOOL
+--   IS_PED_DEAD_OR_DYING             0x3317DEDB88C95038 (Ped,BOOL)->BOOL
+--   IS_PED_IN_ANY_VEHICLE            0x997ABD671D25CA0B (Ped,BOOL)->BOOL
+--   GET_ACTIVE_PLAYERS               CFX 0xCF143FB9 ()->int[]
+--   GET_PLAYER_SERVER_ID             CFX 0x4D97BCC7 (Player)->int
+--   GET_PLAYER_FROM_SERVER_ID        CFX 0x344EA166 (int)->Player
+--   GET_GROUND_Z_FOR_3D_COORD        0xC906A7DAB05C8D2B
+--     (float,float,float,float*,BOOL,BOOL)->BOOL
 --
--- Scene flags (NETWORK_ADD_PED_TO_SYNCHRONISED_SCENE):
---   4   DONT_INTERRUPT       external events do not break the scene
---   32  BLOCK_MOVER_UPDATE   the task does not update the mover; input is held
---   64  LOOP_WITHIN_SCENE    the clip repeats until the scene stops
+-- Task arguments:
+--   blendInDuration 0.0  the ped enters the melee clip immediately
+--   timeInMelee     -1.0 the melee state is held until another task replaces it
+--   strafePhaseSync 0.0  no phase offset
+--   aiCombatFlags   0    no special AI flags
 --
 -- Residual risk:
---   1. A server resource that inspects the network-synced-scene lifecycle can
---      see that this client created a scene. The reference guard does not; a
---      different guard could count scene starts per minute.
---   2. Synced scenes are the known-buggy corner of the FiveM task stack. In
---      dense sessions a viewer can occasionally miss a scene and see the
---      target standing while the target sees the loop. The scene is
---      re-created if it stops or if the ped moves more than a metre from its
---      origin.
---   3. The operator is not hidden and the ring stays on the Susano overlay;
---      a capture through the game render path does not contain it.
---   4. A target who is dead, ragdolled or in a vehicle is skipped; the scene
---      is not started over a state the game will refuse.
+--   1. The fight is real melee combat. It produces ordinary weaponDamageEvent
+--      traffic between players and can knock a target down. A human reviewer
+--      or a server-side damage heuristic can notice a player who fights
+--      without input. This is the cost of a dict-free, owner-applied task;
+--      it is not a task-event fingerprint.
+--   2. GTA limits simultaneous melee attackers per victim (about three); the
+--      rest stand in the guard stance. The module keeps tasking everyone so
+--      the ring rotates as fighters drop.
+--   3. A target can interrupt the task with input. The health pass re-issues
+--      it only when IS_PED_IN_MELEE_COMBAT/IS_PED_IN_COMBAT reports idle, and
+--      never more than once per RETASK_MS. This is the escape window.
+--   4. The ring itself stays on the Susano overlay, outside the game render
+--      path; the target never sees the ring.
+--   5. A target who dies, enters a vehicle or leaves the radius is released
+--      with TASK_WANDER_STANDARD and removed; the task is not forced through a
+--      state the game will refuse.
+--   6. The operator is excluded twice: the gather pass drops PlayerId(), and
+--      both startMelee and startScenario refuse any record or foe that
+--      resolves to PlayerPedId().
+--   7. With one other player the effect is the flex scenario, not a brawl:
+--      a fight needs an opponent, and inventing one would mean spawning or
+--      tasking the operator. The flex is the dict-free compromise.
 -- ============================================================================
 
 local FP = {}
 
-local MAX_TARGETS = 12
-local RING_POINTS = 72
-local CHECK_MS     = 240
-local RETRY_MS     = 1500
-local DRIFT_M      = 1.0
+local MAX_TARGETS  = 12
+local RING_POINTS  = 72
+local CHECK_MS     = 260
+local RETASK_MS    = 2500
+local LEASH_M      = 1.5
 local RADIUS_MIN   = 8.0
 local RADIUS_MAX   = 40.0
+local MELEE_TIME   = -1.0
+local MELEE_BLEND  = 0.0
+local MELEE_PHASE  = 0.0
+local MELEE_FLAGS  = 0
+local SCENARIO     = "WORLD_HUMAN_MUSCLE_FLEX"
+local SCENARIO_MS  = 2000
 
-local ANIM_DICT  = "anim@mp_player_intcelebrationmale@shadow_boxing"
-local ANIM_CLIP  = "shadow_boxing"
-local SCENE_FLAGS = 4 + 32 + 64
-
-FP.radius    = 15.0
-FP.active    = false
-FP.center    = nil
-FP.centerSid = nil
-FP.ring      = nil
-FP.targets   = {}
-FP.bySid     = {}
-FP.count     = 0
-FP.startedAt = 0
-FP.onChange  = nil
+FP.radius      = 15.0
+FP.active      = false
+FP.center      = nil
+FP.centerSid   = nil
+FP.anchorPed   = nil
+FP.ring        = nil
+FP.targets     = {}
+FP.byPlayer    = {}
+FP.count       = 0
+FP.startedAt   = 0
+FP.onChange    = nil
 
 FP.canRender = type(Susano) == "table"
     and type(Susano.WorldToScreen) == "function"
@@ -29593,90 +29628,96 @@ local function pedUsable(ped)
     return ped ~= nil and ped ~= 0
         and DoesEntityExist(ped)
         and not IsPedDeadOrDying(ped, true)
+        and not IsPedInAnyVehicle(ped, false)
 end
 
 -- ---------------------------------------------------------------------------
--- SCENE. One networked scene per target, anchored at the target's own feet and
--- heading. The scene carries the clip; no dictionary request is required on
--- the owner's client.
+-- TASK. One melee task per target. The task is the only write; the ped's
+-- coordinates, heading, health and weapons are never touched.
 -- ---------------------------------------------------------------------------
-local function sceneRunning(rec)
-    if not rec.scene or rec.scene == 0 then return false end
-    local localScene = rec.localScene or 0
-    if localScene == 0 then
-        local ok, value = pcall(NetworkGetLocalSceneFromNetworkId, rec.scene)
-        if ok and type(value) == "number" and value ~= 0 then
-            localScene = value
-            rec.localScene = value
-        end
-    end
-
-    -- A freshly created scene takes a frame or two to register locally. Do not
-    -- tear it down during that grace window; after it, a non-running scene is
-    -- rebuilt on the next pass (RETRY_MS).
-    local age = O.now() - (rec.sceneAt or 0)
-    local handle = localScene ~= 0 and localScene or rec.scene
-    local ok, running = pcall(IsSynchronizedSceneRunning, handle)
-    if not ok then return age < 1000 end
-    if running == true then return true end
-    return age < 1000
-end
-
-local function startScene(rec)
+local function meleeEngaged(rec)
     if not rec or not rec.ped or rec.ped == 0 then return false end
-    if not DoesEntityExist(rec.ped) then return false end
-    if IsPedDeadOrDying(rec.ped, true) then return false end
-    if IsPedInAnyVehicle(rec.ped, false) then return false end
+    if not rec.foePed or rec.foePed == 0 or rec.foePed == rec.ped then return false end
+    if not DoesEntityExist(rec.foePed) then return false end
+    if IsPedDeadOrDying(rec.foePed, true) then return false end
 
-    local pos = GetEntityCoords(rec.ped)
-    local heading = 0.0
-    local okH, valueH = pcall(GetEntityHeading, rec.ped)
-    if okH and type(valueH) == "number" then heading = valueH end
+    local okMelee, melee = pcall(IsPedInMeleeCombat, rec.ped)
+    if okMelee and melee == true then return true end
 
-    local ok, scene = pcall(NetworkCreateSynchronisedScene,
-        pos.x, pos.y, pos.z,
-        0.0, 0.0, heading,
-        2, false, true, 1.0, 0.0, 1.0)
-    if not ok or type(scene) ~= "number" or scene == 0 then
-        return false
-    end
+    local okCombat, combat = pcall(IsPedInCombat, rec.ped, rec.foePed)
+    return okCombat and combat == true
+end
 
-    local added = pcall(NetworkAddPedToSynchronisedScene,
-        rec.ped, scene, ANIM_DICT, ANIM_CLIP,
-        8.0, -8.0, SCENE_FLAGS, 0, 1000.0, 0)
-    if not added then
-        pcall(NetworkStopSynchronisedScene, scene)
-        return false
-    end
+local function startMelee(rec, foe)
+    if not rec or not rec.ped or not foe or not foe.ped then return false end
+    if not DoesEntityExist(rec.ped) or not DoesEntityExist(foe.ped) then return false end
+    if rec.ped == foe.ped then return false end
 
-    pcall(NetworkStartSynchronisedScene, scene)
+    -- The operator is never a subject. This is the second guard: gather()
+    -- already drops PlayerId(), but a stale handle must not get through.
+    local me = PlayerPedId()
+    if rec.ped == me or foe.ped == me then return false end
 
-    rec.scene = scene
-    rec.localScene = 0
-    rec.sceneAt = O.now()
-    rec.x, rec.y, rec.z = pos.x, pos.y, pos.z
-    rec.retryAt = 0
+    local ok = pcall(TaskPutPedDirectlyIntoMelee,
+        rec.ped, foe.ped, MELEE_BLEND, MELEE_TIME, MELEE_PHASE, MELEE_FLAGS)
+    if not ok then return false end
 
-    local okL, localScene = pcall(NetworkGetLocalSceneFromNetworkId, scene)
-    if okL and type(localScene) == "number" then rec.localScene = localScene end
+    rec.mode      = "melee"
+    rec.foePlayer = foe.player
+    rec.foePed    = foe.ped
+    rec.retaskAt  = O.now() + RETASK_MS
     return true
 end
 
-local function stopScene(rec)
-    if not rec then return end
-    if rec.scene and rec.scene ~= 0 then
-        pcall(NetworkStopSynchronisedScene, rec.scene)
+-- Single-target fallback. A ring with exactly one other player has nobody to
+-- fight, so the target is put into a built-in scenario. The scenario is a
+-- task too: the owner's client applies it, it holds the ped in place and it
+-- loops; no animation dictionary is involved. The operator is never a subject.
+local function startScenario(rec)
+    if not rec or not rec.ped or rec.ped == 0 then return false end
+    if not DoesEntityExist(rec.ped) then return false end
+    if rec.ped == PlayerPedId() then return false end
+
+    local ok = pcall(TaskStartScenarioInPlace, rec.ped, SCENARIO, 0, false)
+    if not ok then return false end
+
+    rec.mode      = "scenario"
+    rec.foePlayer = nil
+    rec.foePed    = 0
+    rec.retaskAt  = O.now() + SCENARIO_MS
+    return true
+end
+
+local function release(rec)
+    if not rec or not rec.ped or rec.ped == 0 then return false end
+    if not DoesEntityExist(rec.ped) then return false end
+    if IsPedDeadOrDying(rec.ped, true) then
+        rec.mode = nil
+        rec.foePed = 0
+        rec.foePlayer = nil
+        rec.retaskAt = 0
+        return false
     end
-    rec.scene = 0
-    rec.localScene = 0
+
+    -- TASK_WANDER_STANDARD replaces the melee task and gives the ped back to
+    -- its own input. It is a task, not a clear: no clearPedTasksEvent is
+    -- emitted, so clearPedTasksEvent.lua never sees it.
+    pcall(TaskWanderStandard, rec.ped, 0.0, 0)
+    rec.mode = nil
+    rec.foePed = 0
+    rec.foePlayer = nil
+    rec.retaskAt = 0
+    return true
 end
 
 -- ---------------------------------------------------------------------------
 -- GROUND / RING
 -- ---------------------------------------------------------------------------
 local function groundAt(x, y, probe)
-    local ok, _hit, gz = pcall(GetGroundZFor_3dCoord, x, y, probe, false)
-    if ok and type(gz) == "number" and gz > -100.0 then return gz end
+    local ok, hit, gz = pcall(GetGroundZFor_3dCoord, x, y, probe, false)
+    if ok and hit == true and type(gz) == "number" and gz > -100.0 then
+        return gz
+    end
     return nil
 end
 
@@ -29705,7 +29746,8 @@ function FP.setRadius(value)
 end
 
 -- ---------------------------------------------------------------------------
--- WORLD READ
+-- WORLD READ. The operator is dropped before anything else, so no later
+-- path can select him as a subject or as a foe.
 -- ---------------------------------------------------------------------------
 local function gather(radius, out)
     out = out or {}
@@ -29715,16 +29757,12 @@ local function gather(radius, out)
     for _, player in ipairs(GetActivePlayers()) do
         if player ~= me and NetworkIsPlayerActive(player) then
             local ped = GetPlayerPed(player)
-            if pedUsable(ped) and not IsPedInAnyVehicle(ped, false) then
+            if pedUsable(ped) then
                 local pos = GetEntityCoords(ped)
                 local dist = O.distance(pos, FP.center)
                 if dist <= radius then
-                    local sid = 0
-                    local ok, value = pcall(GetPlayerServerId, player)
-                    if ok and type(value) == "number" then sid = value end
                     out[#out + 1] = {
                         player = player,
-                        sid = sid,
                         ped = ped,
                         dist = dist,
                     }
@@ -29737,65 +29775,122 @@ local function gather(radius, out)
     return out
 end
 
+-- Foe selection. The anchor is the selected player when he is in the ring,
+-- otherwise the nearest other player. A non-anchor record fights the anchor;
+-- the anchor fights the nearest other record. The operator is excluded from
+-- both roles.
+local function pickFoe(rec, list)
+    local me = PlayerPedId()
+    if not rec or rec.ped == me then return nil end
+
+    if rec.player ~= FP.anchorPlayer then
+        for _, cand in ipairs(list) do
+            if cand.player == FP.anchorPlayer
+                and cand.player ~= rec.player
+                and cand.ped ~= rec.ped
+                and cand.ped ~= me then
+                return cand
+            end
+        end
+    end
+
+    local best, bestDist = nil, nil
+    local pos = GetEntityCoords(rec.ped)
+    for _, cand in ipairs(list) do
+        if cand.player ~= rec.player
+            and cand.ped ~= rec.ped
+            and cand.ped ~= me then
+            local d = O.distance(pos, GetEntityCoords(cand.ped))
+            if not bestDist or d < bestDist then
+                best, bestDist = cand, d
+            end
+        end
+    end
+
+    return best
+end
+
 -- ---------------------------------------------------------------------------
--- TICK. Membership and scene health. A scene that stopped (death, respawn,
--- streaming loss) is stopped cleanly and rebuilt after RETRY_MS.
+-- TICK. Membership, foe health and task health. A target that stops fighting
+-- is re-tasked on the next pass; a target that leaves is released.
 -- ---------------------------------------------------------------------------
 local function tick(now)
     if not FP.active then return end
     if not FP.center then FP.stop("no centre") return end
 
-    local seen = gather(FP.radius + 2.5)
-    local seenSet = {}
-    for i = 1, #seen do seenSet[seen[i].sid] = true end
+    local list = gather(FP.radius + LEASH_M)
+    local seen = {}
+    for i = 1, #list do seen[list[i].player] = true end
 
     for i = #FP.targets, 1, -1 do
         local rec = FP.targets[i]
-        local keep
-        if rec.self then
-            local me = PlayerPedId()
-            keep = DoesEntityExist(me)
-            if keep and rec.ped ~= me then
-                stopScene(rec)
-                rec.ped = me
-                rec.scene = 0
-            end
-        else
-            keep = seenSet[rec.sid] == true
-            if keep then
-                local player = GetPlayerFromServerId(rec.sid)
-                local current = player ~= -1 and GetPlayerPed(player) or 0
-                if current == 0 or current ~= rec.ped or not DoesEntityExist(current) then
-                    keep = false
-                end
-            end
+        local keep = seen[rec.player] == true
+        local ped = keep and GetPlayerPed(rec.player) or 0
+
+        if keep and (ped == 0 or ped ~= rec.ped or not pedUsable(ped)) then
+            keep = false
         end
 
         if not keep then
-            stopScene(rec)
+            release(rec)
             table.remove(FP.targets, i)
-            if rec.sid and FP.bySid[rec.sid] then FP.bySid[rec.sid] = nil end
-        elseif not sceneRunning(rec) and now >= (rec.retryAt or 0) then
-            stopScene(rec)
-            if not startScene(rec) then rec.retryAt = now + RETRY_MS end
-        elseif rec.scene and rec.scene ~= 0 then
-            local pos = GetEntityCoords(rec.ped)
-            local dx, dy, dz = pos.x - rec.x, pos.y - rec.y, pos.z - rec.z
-            if dx * dx + dy * dy + dz * dz > DRIFT_M * DRIFT_M then
-                stopScene(rec)
-                if not startScene(rec) then rec.retryAt = now + RETRY_MS end
+            FP.byPlayer[rec.player] = nil
+        else
+            rec.ped = ped
+
+            local foe = pickFoe(rec, list)
+
+            if rec.mode == "melee" then
+                local foeOk = rec.foePed and rec.foePed ~= 0
+                    and rec.foePed ~= rec.ped
+                    and rec.foePed ~= PlayerPedId()
+                    and seen[rec.foePlayer] == true
+                    and DoesEntityExist(rec.foePed)
+                    and not IsPedDeadOrDying(rec.foePed, true)
+
+                if not foeOk then
+                    -- The opponent left, died or went into a vehicle. If
+                    -- another ring member is still available, re-pair; if
+                    -- this is now the last one, keep him in the scenario
+                    -- rather than dropping him out of the feature.
+                    if foe then
+                        startMelee(rec, foe)
+                    else
+                        startScenario(rec)
+                    end
+                elseif now >= (rec.retaskAt or 0) then
+                    rec.retaskAt = now + RETASK_MS
+                    if not meleeEngaged(rec) then
+                        if foe then startMelee(rec, foe) else startScenario(rec) end
+                    end
+                end
+            else
+                -- Scenario fallback. If a second player appears, promote the
+                -- target to a real bout; otherwise refresh the loop.
+                if foe then
+                    startMelee(rec, foe)
+                elseif now >= (rec.retaskAt or 0) then
+                    startScenario(rec)
+                end
             end
         end
     end
 
     local count = #FP.targets
-    for i = 1, #seen do
+    for i = 1, #list do
         if count >= MAX_TARGETS then break end
-        local rec = seen[i]
-        if rec.sid ~= 0 and not FP.bySid[rec.sid] then
-            if startScene(rec) then
+        local rec = list[i]
+        if not FP.byPlayer[rec.player] then
+            local foe = pickFoe(rec, list)
+            local armed = false
+            if foe then
+                armed = startMelee(rec, foe)
+            else
+                armed = startScenario(rec)
+            end
+            if armed then
                 FP.targets[#FP.targets + 1] = rec
-                FP.bySid[rec.sid] = rec
+                FP.byPlayer[rec.player] = rec
                 count = count + 1
             end
         end
@@ -29818,14 +29913,16 @@ function FP.status()
 end
 
 function FP.stop(reason)
-    for i = #FP.targets, 1, -1 do stopScene(FP.targets[i]) end
+    for i = #FP.targets, 1, -1 do release(FP.targets[i]) end
 
     local was = FP.active
     FP.active = false
     FP.ring = nil
     FP.center = nil
     FP.centerSid = nil
-    FP.bySid = {}
+    FP.anchorPed = nil
+    FP.anchorPlayer = nil
+    FP.byPlayer = {}
     FP.targets = {}
     FP.count = 0
 
@@ -29847,7 +29944,12 @@ function FP.start()
     end
 
     local myPed = PlayerPedId()
-    local centerPed = nil
+    local mySid = GetPlayerServerId(PlayerId())
+    local ringPed = myPed
+
+    FP.centerSid = nil
+    FP.anchorPlayer = nil
+    FP.anchorPed = nil
 
     local selected = Menu and Menu.SelectedPlayer
     if type(selected) == "number" then
@@ -29855,47 +29957,62 @@ function FP.start()
         if player ~= -1 then
             local ped = GetPlayerPed(player)
             if pedUsable(ped) then
-                centerPed = ped
+                ringPed = ped
                 FP.centerSid = selected
             end
         end
     end
 
-    local coords = GetEntityCoords(centerPed or myPed)
+    local coords = GetEntityCoords(ringPed)
     FP.center = O.v3(coords)
     FP.radius = clampRadius(FP.radius)
-    FP.targets = {}
-    FP.bySid = {}
-    FP.startedAt = O.now()
-    FP.active = true
-    if FP.canRender and Menu then Menu.PreventResetFrame = true end
     buildRing()
 
     local list = gather(FP.radius)
-    local made = 0
-    for i = 1, math.min(#list, MAX_TARGETS) do
-        if startScene(list[i]) then
-            FP.targets[#FP.targets + 1] = list[i]
-            FP.bySid[list[i].sid] = list[i]
-            made = made + 1
-        end
+    if #list == 0 then
+        FP.stop("no targets")
+        B.refund("fight")
+        return false
     end
 
-    -- Solo test: with no other player in the ring the operator is the scene.
-    -- The visual and the lock are identical; the toggle releases him. This
-    -- path only runs when the ring is empty, never when a real target failed
-    -- to accept a scene: a refusal stays visible instead of being masked by a
-    -- self-lock.
-    if made == 0 and #list == 0 then
-        local selfRec = {
-            player = PlayerId(),
-            ped = myPed,
-            sid = 0,
-            self = true,
-        }
-        if startScene(selfRec) then
-            FP.targets[#FP.targets + 1] = selfRec
-            made = 1
+    -- Anchor: the selected player when he is in the ring, otherwise the
+    -- nearest other player. Never the operator.
+    local anchor
+    if type(FP.centerSid) == "number" and FP.centerSid ~= mySid then
+        for i = 1, #list do
+            if list[i].player == GetPlayerFromServerId(FP.centerSid) then
+                anchor = list[i]
+                break
+            end
+        end
+    end
+    if not anchor then anchor = list[1] end
+    if not anchor or anchor.ped == myPed then
+        FP.stop("no anchor")
+        B.refund("fight")
+        return false
+    end
+
+    FP.anchorPlayer = anchor.player
+    FP.anchorPed = anchor.ped
+    FP.targets = {}
+    FP.byPlayer = {}
+    FP.startedAt = O.now()
+
+    local made = 0
+    for i = 1, math.min(#list, MAX_TARGETS) do
+        local rec = list[i]
+        local foe = pickFoe(rec, list)
+        local armed = false
+        if foe then
+            armed = startMelee(rec, foe)
+        else
+            armed = startScenario(rec)
+        end
+        if armed then
+            FP.targets[#FP.targets + 1] = rec
+            FP.byPlayer[rec.player] = rec
+            made = made + 1
         end
     end
 
@@ -29905,6 +30022,8 @@ function FP.start()
         return false
     end
 
+    FP.active = true
+    if FP.canRender and Menu then Menu.PreventResetFrame = true end
     FP.count = made
     notify()
     log("started %d targets, %.0f m", made, FP.radius)
@@ -29968,7 +30087,8 @@ function FP.render()
         pcall(Susano.DrawTextCentered, width * 0.5, height * 0.855,
             "FIGHT PARTY", 20, 0.94, 0.98, 1.0, 0.92)
         pcall(Susano.DrawTextCentered, width * 0.5, height * 0.855 + 24.0,
-            ("%d FIGHTERS   ·   %.0f m"):format(#FP.targets, FP.radius),
+            ("%d FIGHTER%s   ·   %.0f m"):format(
+                #FP.targets, #FP.targets == 1 and "" or "S", FP.radius),
             13, 0.62, 0.75, 0.82, 0.85)
     end
 end
@@ -30083,7 +30203,7 @@ function FP.install()
     return true
 end
 
--- The scheduler owns the only periodic work. Phase is randomised so the scene
+-- The scheduler owns the only periodic work. Phase is randomised so the task
 -- health pass never lines up with another feature's timer.
 O.every("fightparty", CHECK_MS, tick, O.int(0, CHECK_MS))
 
@@ -30980,12 +31100,13 @@ local function installCombatUnlock()
 end
 
 -- ---------------------------------------------------------------------------
--- COMBAT > GENERAL > FIGHT PARTY
+-- EXPLOIT > EXPLOIT > FIGHT PARTY
 --
--- One toggle and one radius slider, installed under Combat Unlock. The scene
--- itself is built from local clones only: no task reaches a remote ped, no
--- entity is networked and no coordinate is written on someone else's body.
--- The module owns its own rows so a re-injection cannot duplicate them.
+-- One toggle and one radius slider, installed at the top of the Exploit tab
+-- after the flash rows exist. The module tasks every OTHER player in the ring
+-- into melee; the operator is never a subject or a foe. No entity is spawned,
+-- no scene is armed and no coordinate is written on someone else's body. The
+-- module owns its own rows so a re-injection cannot duplicate them.
 -- ---------------------------------------------------------------------------
 local function installFightParty()
     return FP.install()
