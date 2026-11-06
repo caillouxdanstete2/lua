@@ -551,23 +551,37 @@ local Actions = {}
 -- ---------------------------------------------------------------------------
 -- ATTACH ANIMATIONS (Online > Troll > Attach Animations)
 --
--- The pair is built entirely in this environment. ATTACH_ENTITY_TO_ENTITY is
--- a client-only write: it does not mutate a networked object, so the server
--- and every other client never receive the attach. TASK_PLAY_ANIM on the local
--- ped is the same task tree an ordinary emote uses, so the only observable is
--- the local animation state. No resource injection is involved; this is the
--- top-priority Susano primitive path (native call from the executor), which is
--- why it is preferred over the greffe route for a purely local feature.
+-- Two stages. Stage A (this environment, Susano executor) owns the menu state,
+-- the active row, the monotonic token, the watchdog and the direct release.
+-- Stage B is a one-shot chunk queued into a legitimate resource's VM; it owns
+-- the animation dictionary request and the first attach.
+--
+-- Why Stage B: a streaming wait (RequestAnimDict/HasAnimDictLoaded) inside the
+-- executor blocks the menu thread, and the executor-side streaming path is the
+-- one that froze the row for ~2 s. Susano.InjectResource queues the chunk and
+-- returns immediately (docs/api-reference/resource-injection/injectresource:
+-- injection is stored and executed when the target VM next runs), so the input
+-- loop never waits. The host VM is a normal FiveM resource: its animation
+-- streaming works and it is not Susano's sandbox.
+--
+-- Evasion: the attach is local-only (client-side attach of the local ped to the
+-- selected player's ped), the task is local-only (no task and no clear on a
+-- remote ped, so no givePedScriptedTaskEvent / clearPedTasksEvent reaches the
+-- server), no net event is emitted, no drawing is added, and the injected chunk
+-- lives for one asset wait at most. The only host globals are two random
+-- per-session slots; the stop chunk clears both (the cancel slot after a short
+-- grace period). The host chunk uses no Susano.* function.
 --
 -- The 11_evasion anti-attach tick reads the four LOCAL_ATTACH_ROWS and yields
--- while one of them is true. This manager is the only writer of the local
--- attachment state and clears the row before it detaches, so the guard never
--- fights an attach the operator asked for and resumes the moment it ends.
+-- while one of them is true. This manager is the only writer of the row and
+-- clears the row before it detaches, so the guard never fights an attach the
+-- operator asked for and resumes the moment it ends.
 -- ---------------------------------------------------------------------------
 local AttachAnims = {
     row = nil,
     spec = nil,
     serial = 0,
+    token = 0,
     specs = {
         twerk = {
             dict = "switch@trevor@mocks_lapdance",
@@ -608,63 +622,213 @@ local AttachAnims = {
     },
 }
 
+-- Resolves a server id to the local player index and the ped handle. The
+-- player index is local to this client; never pass -1 to GetPlayerPed (it
+-- returns the local ped), so the loop only feeds real active indices.
 function AttachAnims.resolvePlayer(serverId)
-    for _, player in ipairs(GetActivePlayers()) do
-        if GetPlayerServerId(player) == serverId then
-            return player, GetPlayerPed(player)
+    if type(GetActivePlayers) ~= "function"
+        or type(GetPlayerServerId) ~= "function"
+        or type(GetPlayerPed) ~= "function" then
+        return nil, nil
+    end
+
+    local okPlayers, players = pcall(GetActivePlayers)
+    if not okPlayers or type(players) ~= "table" then return nil, nil end
+
+    for _, player in ipairs(players) do
+        local okSid, sid = pcall(GetPlayerServerId, player)
+        if okSid and sid == serverId then
+            local okPed, ped = pcall(GetPlayerPed, player)
+            if okPed then return player, ped end
+            return player, nil
         end
     end
+
     return nil, nil
 end
 
-function AttachAnims.apply(ped, targetPed, spec)
-    if not DoesEntityExist(ped) or not DoesEntityExist(targetPed) then return false end
-    pcall(StopAnimTask, ped, spec.dict, spec.clip, 8.0)
-    pcall(AttachEntityToEntity, ped, targetPed, spec.bone,
-        spec.x, spec.y, spec.z, spec.rx, spec.ry, spec.rz,
-        spec.p9, spec.soft, spec.collision, spec.isPed, spec.order, spec.syncRot)
-    pcall(TaskPlayAnim, ped, spec.dict, spec.clip, 8.0, -8.0, -1, spec.flag, 0.0, false, false, false)
-    return true
+function AttachAnims.inject(code)
+    if type(Susano) ~= "table" or type(Susano.InjectResource) ~= "function" then
+        return false
+    end
+    local ok = pcall(Susano.InjectResource, "any", code)
+    return ok
 end
 
+-- Per-session host keys. A fixed name would be a stable signature in the host
+-- VM's global table; a random suffix changes every load and still lets the
+-- start/stop chunks address the same slot.
+function AttachAnims.keys()
+    if not AttachAnims.flagKey then
+        local suffix = string.format("%08x", math.floor(math.random(0, 2147483647)))
+        AttachAnims.flagKey = "__vga_" .. suffix
+        AttachAnims.cancelKey = AttachAnims.flagKey .. "_c"
+    end
+    return AttachAnims.flagKey, AttachAnims.cancelKey
+end
+
+-- Stage B, one-shot. Runs in a legitimate resource's VM (Susano.* is not
+-- available there) and resolves the target fresh from the server id, so no
+-- local entity handle crosses the injection boundary.
+--
+-- The flag slot is written only after the stream wait. While the chunk is
+-- yielded a stop chunk can land, write the cancel slot, and this chunk aborts
+-- before it can attach. No flag before the attach also means the stop chunk
+-- knows it must not clear a task the operator was already running.
+function AttachAnims.startCode(spec, targetServerId, token, flagKey, cancelKey)
+    return string.format([[
+local token = %d
+local flagKey = %q
+local cancelKey = %q
+if rawget(_G, cancelKey) == token then return end
+local current = rawget(_G, flagKey)
+if type(current) == "number" and current > token then return end
+
+local targetServerId = %d
+local dict = %q
+local clip = %q
+local bone = %d
+local ox, oy, oz = %.4f, %.4f, %.4f
+local rx, ry, rz = %.4f, %.4f, %.4f
+local p9, soft, collision, isPed = %s, %s, %s, %s
+local order, syncRot = %d, %s
+local flag = %d
+
+local function resolveTarget()
+    for _, player in ipairs(GetActivePlayers()) do
+        if GetPlayerServerId(player) == targetServerId then
+            return GetPlayerPed(player)
+        end
+    end
+    return 0
+end
+
+local playerPed = PlayerPedId()
+local targetPed = resolveTarget()
+if not playerPed or playerPed == 0 or not DoesEntityExist(playerPed) then return end
+if not targetPed or targetPed == 0 or not DoesEntityExist(targetPed) or targetPed == playerPed then return end
+if IsPedDeadOrDying(playerPed, true) or IsPedDeadOrDying(targetPed, true) then return end
+
+if not HasAnimDictLoaded(dict) then
+    RequestAnimDict(dict)
+    local deadline = GetGameTimer() + 3000
+    while not HasAnimDictLoaded(dict) and GetGameTimer() < deadline do
+        if rawget(_G, cancelKey) == token then return end
+        Wait(0)
+    end
+end
+
+if rawget(_G, cancelKey) == token then return end
+current = rawget(_G, flagKey)
+if type(current) == "number" and current > token then return end
+if not HasAnimDictLoaded(dict) then return end
+
+-- No yield between the flag write and the task: the stop chunk either sees the
+-- flag or runs before it, never halfway through the attach.
+rawset(_G, flagKey, token)
+if rawget(_G, cancelKey) == token then
+    if rawget(_G, flagKey) == token then rawset(_G, flagKey, nil) end
+    return
+end
+
+AttachEntityToEntity(playerPed, targetPed, bone, ox, oy, oz, rx, ry, rz, p9, soft, collision, isPed, order, syncRot)
+TaskPlayAnim(playerPed, dict, clip, 8.0, -8.0, -1, flag, 0.0, false, false, false)
+]], token, flagKey, cancelKey, targetServerId, spec.dict, spec.clip, spec.bone,
+        spec.x, spec.y, spec.z, spec.rx, spec.ry, spec.rz,
+        tostring(spec.p9), tostring(spec.soft), tostring(spec.collision), tostring(spec.isPed),
+        spec.order, tostring(spec.syncRot), spec.flag)
+end
+
+function AttachAnims.stopCode(token, flagKey, cancelKey, dict, clip)
+    return string.format([[
+local token = %d
+local flagKey = %q
+local cancelKey = %q
+local dict = %q
+local clip = %q
+rawset(_G, cancelKey, token)
+if rawget(_G, flagKey) == token then
+    rawset(_G, flagKey, nil)
+    local p = PlayerPedId()
+    if p and p ~= 0 and DoesEntityExist(p) then
+        local attached = IsEntityAttached(p) == true
+        local playing = IsEntityPlayingAnim(p, dict, clip, 3) == true
+        if not playing then playing = IsEntityPlayingAnim(p, dict, clip, 1) == true end
+        if attached then DetachEntity(p, true, true) end
+        if attached or playing then
+            StopAnimTask(p, dict, clip, 8.0)
+            ClearPedSecondaryTask(p)
+            if not IsPedDeadOrDying(p, true) then ClearPedTasksImmediately(p) end
+        end
+    end
+end
+if type(SetTimeout) == "function" then
+    SetTimeout(8000, function()
+        if rawget(_G, cancelKey) == token then rawset(_G, cancelKey, nil) end
+    end)
+end
+]], token, flagKey, cancelKey, dict, clip)
+end
+
+-- Stage A release. The direct calls are the same primitives the base loader
+-- already uses (ClearPedTasks / DetachEntity), so a stripped host chunk still
+-- releases the pair. The injected stop chunk covers the one case this thread
+-- cannot: a start chunk still yielded in the stream wait.
 function AttachAnims.stop()
     local spec = AttachAnims.spec
     local row = AttachAnims.row
+    local token = AttachAnims.token or 0
 
     AttachAnims.serial = AttachAnims.serial + 1
     AttachAnims.spec = nil
     AttachAnims.row = nil
     if row then row.value = false end
 
+    -- Nothing this feature owns is active: do not clear a legitimate task the
+    -- operator was already running just because the row was clicked.
     if not spec then return end
+
+    local flagKey, cancelKey = AttachAnims.keys()
+    if token > 0 then
+        AttachAnims.inject(AttachAnims.stopCode(token, flagKey, cancelKey, spec.dict, spec.clip))
+    end
 
     local ped = PlayerPedId()
     if not ped or ped == 0 or not DoesEntityExist(ped) then return end
-
-    pcall(StopAnimTask, ped, spec.dict, spec.clip, 8.0)
-    pcall(ClearPedSecondaryTask, ped)
-
-    -- Never rewrite task state on a dead ped: the death task owns it. The
-    -- detach below still runs because it is the release the pair needs, and
-    -- skipping the task reset is the same guard the working carry path uses
-    -- to avoid the detach crash. Every read is typed so a stripped executor
-    -- degrades to "detach anyway", never to a stuck attach.
-    local dead = false
-    if type(IsPedDeadOrDying) == "function" then
-        local ok, value = pcall(IsPedDeadOrDying, ped, true)
-        if ok then dead = value == true end
-    end
-    if not dead then
-        pcall(ClearPedTasksImmediately, ped)
-    end
 
     local attached = true
     if type(IsEntityAttached) == "function" then
         local ok, value = pcall(IsEntityAttached, ped)
         if ok then attached = value == true end
     end
+
+    local playing = true
+    if type(IsEntityPlayingAnim) == "function" then
+        local ok, value = pcall(IsEntityPlayingAnim, ped, spec.dict, spec.clip, 3)
+        if ok then playing = value == true end
+        if not playing then
+            local okPrimary, valuePrimary = pcall(IsEntityPlayingAnim, ped, spec.dict, spec.clip, 1)
+            if okPrimary then playing = valuePrimary == true end
+        end
+    end
+
+    -- Detach even when the anim task is already gone: the pair is the part that
+    -- must never survive. Task writes are skipped only when neither the attach
+    -- nor the anim exists, so a failed start cannot interrupt an unrelated task.
     if attached then
-        pcall(DetachEntity, ped, true, false)
+        pcall(DetachEntity, ped, true, true)
+    end
+    if attached or playing then
+        pcall(StopAnimTask, ped, spec.dict, spec.clip, 8.0)
+        pcall(ClearPedSecondaryTask, ped)
+        local dead = false
+        if type(IsPedDeadOrDying) == "function" then
+            local ok, value = pcall(IsPedDeadOrDying, ped, true)
+            if ok then dead = value == true end
+        end
+        if not dead then
+            pcall(ClearPedTasksImmediately, ped)
+        end
     end
 end
 
@@ -693,42 +857,29 @@ function AttachAnims.start(row, spec, targetServerId)
         return
     end
 
-    local loaded = true
-    if type(HasAnimDictLoaded) == "function" then
-        local ok, value = pcall(HasAnimDictLoaded, spec.dict)
-        loaded = ok and value == true
-        if not loaded then
-            if type(RequestAnimDict) == "function" then
-                pcall(RequestAnimDict, spec.dict)
-            end
-            local deadline = GetGameTimer() + 1500
-            while not loaded and GetGameTimer() < deadline do
-                Wait(0)
-                local okLoaded, valueLoaded = pcall(HasAnimDictLoaded, spec.dict)
-                loaded = okLoaded and valueLoaded == true
-            end
-        end
-    end
-
-    if not loaded then
-        row.value = false
-        return
-    end
+    AttachAnims.token = (AttachAnims.token or 0) + 1
+    local token = AttachAnims.token
+    local flagKey, cancelKey = AttachAnims.keys()
 
     AttachAnims.serial = AttachAnims.serial + 1
     local serial = AttachAnims.serial
     AttachAnims.row = row
     AttachAnims.spec = spec
 
-    if not AttachAnims.apply(ped, targetPed, spec) then
-        AttachAnims.stop()
+    if not AttachAnims.inject(AttachAnims.startCode(spec, targetServerId, token, flagKey, cancelKey)) then
+        AttachAnims.spec = nil
+        AttachAnims.row = nil
+        AttachAnims.serial = AttachAnims.serial + 1
+        row.value = false
         return
     end
 
-    -- Rebuild only the two things that a moving/entering/ragdolling parent can
-    -- drop: the attachment and the loop task. Nothing is written to the target,
-    -- so no network object or event is ever touched.
+    -- Executor watchdog: reads only. The one write it makes is another queued
+    -- one-shot start, which is the same attach the operator already asked for.
+    -- Death on either side ends the row: the death task owns the local ped, and
+    -- a target death removes the entity the pair was built on.
     CreateThread(function()
+        local lastKick = GetGameTimer()
         local misses = 0
         while AttachAnims.serial == serial do
             Wait(250)
@@ -751,32 +902,33 @@ function AttachAnims.start(row, spec, targetServerId)
                 local okSelf, valueSelf = pcall(IsPedDeadOrDying, myPed, true)
                 if okSelf then myDead = valueSelf == true end
             end
-            if targetDead then break end
+            if targetDead or myDead then break end
 
-            if not myDead then
-                local attached = true
-                if type(IsEntityAttachedToEntity) == "function" then
-                    local ok, value = pcall(IsEntityAttachedToEntity, myPed, liveTarget)
-                    if ok then attached = value == true end
+            local attached = false
+            if type(IsEntityAttachedToEntity) == "function" then
+                local ok, value = pcall(IsEntityAttachedToEntity, myPed, liveTarget)
+                if ok then attached = value == true end
+            end
+
+            local playing = false
+            if attached and type(IsEntityPlayingAnim) == "function" then
+                local ok, value = pcall(IsEntityPlayingAnim, myPed, spec.dict, spec.clip, 3)
+                if ok then playing = value == true end
+                if not playing then
+                    local okPrimary, valuePrimary = pcall(IsEntityPlayingAnim, myPed, spec.dict, spec.clip, 1)
+                    if okPrimary then playing = valuePrimary == true end
                 end
+            end
 
-                if not attached then
-                    -- A parent that cannot be attached (streamed out mid-frame,
-                    -- entering a vehicle) gets a short retry window, then the
-                    -- row is released instead of looping an invisible attach.
-                    misses = misses + 1
-                    if misses > 20 then break end
-                    AttachAnims.apply(myPed, liveTarget, spec)
-                else
-                    misses = 0
-                    local playing = true
-                    if type(IsEntityPlayingAnim) == "function" then
-                        local ok, value = pcall(IsEntityPlayingAnim, myPed, spec.dict, spec.clip, 3)
-                        if ok then playing = value == true end
-                    end
-                    if not playing then
-                        pcall(TaskPlayAnim, myPed, spec.dict, spec.clip, 8.0, -8.0, -1, spec.flag, 0.0, false, false, false)
-                    end
+            if attached and playing then
+                misses = 0
+            else
+                misses = misses + 1
+                if misses > 40 then break end
+                local now = GetGameTimer()
+                if now - lastKick >= 2000 then
+                    lastKick = now
+                    AttachAnims.inject(AttachAnims.startCode(spec, targetServerId, token, flagKey, cancelKey))
                 end
             end
         end
@@ -789,11 +941,12 @@ end
 
 function AttachAnims.toggle(row, spec, enable)
     if enable then
-        if not Menu.SelectedPlayer then
+        local targetServerId = tonumber(Menu.SelectedPlayer)
+        if not targetServerId or targetServerId <= 0 then
             row.value = false
             return
         end
-        AttachAnims.start(row, spec, Menu.SelectedPlayer)
+        AttachAnims.start(row, spec, targetServerId)
         return
     end
 
@@ -17541,7 +17694,7 @@ end)()
 -- >>> VANGUARD MODULE BEGIN
 -- ============================================================================
 -- VANGUARD  (integrated artifact - edit src/ and rebuild)
--- Generated: 2026-11-06 17:35:02
+-- Generated: 2026-11-06 18:00:40
 --
 -- This block lives in loader.lua and in dist/loader.built.lua at the same
 -- time. It is the only place the local Menu table is in scope. Rebuilding
@@ -29515,19 +29668,20 @@ local FP = (function(O,S,B,Menu)
 -- What the feature does:
 --   A ring is anchored on the selected player, on the ped under the camera's
 --   forward ray, or on the nearest other player. Every other ped inside the
---   ring is put into a looping shadow-boxing animation for as long as the
+--   ring is put into a shadow-boxing animation and held on the spot while the
 --   toggle stays on. The operator is never a subject, an attacker or a target,
 --   and is dropped before any other check.
 --
 -- Mechanism, two halves:
 --   NETWORK  A networked synchronised scene is created at each ped's own
 --            position and heading, the ped is added with the clip, and the
---            scene is started with looped = true. This is the route that the
---            target's own client applies, so the pose and the movement lock
---            are replicated and other players see the fight too.
+--            scene is started with looped = FALSE. The scene runs one full
+--            clip and then ends by itself on every client, owner included.
+--            That is the route the target's own client applies, so the pose
+--            and the movement lock are replicated; other players see it too.
 --   LOCAL    TASK_PLAY_ANIM + FREEZE_ENTITY_POSITION + the spot pin keep the
---            same pose on the caller's view. This is the fallback: if the
---            server drops the scene event, the operator still gets the effect.
+--            same pose on the caller's view between scenes. If the server
+--            drops the scene event the operator still gets the effect.
 --
 -- Why the network scene passes the reference guard:
 --   WaveShield V4 hooks startNetworkSyncedSceneEvent in
@@ -29540,8 +29694,23 @@ local FP = (function(O,S,B,Menu)
 --     * for a single ped owned by someone else it only increments a
 --       per-sender counter, and cancels + detects on the fifth start inside
 --       a 10 s window.
---   One scene per member, one member every 3 s, stays at four starts in any
+--   One scene per member, one start every 2.8 s, stays at four starts in any
 --   10 s window, so the event is forwarded and the target plays the scene.
+--
+-- Why the scene is not looped, and why that is the release guarantee:
+--   The stop side of the same event class is serialised too
+--   (NetworkSynchronisedSceneHacks.cpp patches the Request-/StopScene
+--   serializers of cCRequestNetworkSyncedSceneEvent), but delivery of the stop
+--   to the entity owner is not guaranteed: a remote-owned scene can survive
+--   NETWORK_STOP_SYNCHRONISED_SCENE on the caller. A looped scene that misses
+--   its stop therefore runs forever on the target, which is exactly the bug
+--   where one of two peds kept the clip after the toggle was switched off.
+--   A non-looped scene carries its own expiry: phaseToStopScene = 1.0 ends it
+--   on every client after one measured clip. NETWORK_STOP_SYNCHRONISED_SCENE
+--   is still sent on stop and repeated for two seconds, and it releases the
+--   target early when it lands; when it does not, the clip ends anyway.
+--   The lock is maintained by restarting the scene, paced by GET_ANIM_DURATION
+--   and floored at 2.8 s per start so the reference guard stays at four.
 --
 -- Why there is no damage and no ragdoll request:
 --   SendNetworkDamage is a synthetic weaponDamageEvent; it is not used here.
@@ -29559,8 +29728,8 @@ local FP = (function(O,S,B,Menu)
 --   dictionary is used for every skeleton.
 --   Local task flags 1033 = AF_LOOPING (1) + AF_NOT_INTERRUPTABLE (8) +
 --   AF_OVERRIDE_PHYSICS (1024); duration -1 loops until the toggle is off.
---   Scene flags 3140 = DONT_INTERRUPT (4) + LOOP_WITHIN_SCENE (64) +
---   HIDE_WEAPON (1024) + ABORT_ON_DEATH (2048); the scene is looped.
+--   Scene flags 3084 = DONT_INTERRUPT (4) + ON_ABORT_STOP_SCENE (8) +
+--   HIDE_WEAPON (1024) + ABORT_ON_DEATH (2048); the scene plays one clip.
 --
 -- Verified natives (alloc8or dump):
 --   NETWORK_CREATE_SYNCHRONISED_SCENE 0x7CD6BC4C2BBDD526
@@ -29569,6 +29738,9 @@ local FP = (function(O,S,B,Menu)
 --     (Ped,int,char*,char*,float,float,int,int,float,Any)->void
 --   NETWORK_START_SYNCHRONISED_SCENE 0x9A1B3FCDB36C8697 (int)->void
 --   NETWORK_STOP_SYNCHRONISED_SCENE 0xC254481A4574CB2F (int)->void
+--   NETWORK_GET_LOCAL_SCENE_FROM_NETWORK_ID 0x02C40BF885C567B6 (int)->int
+--   IS_SYNCHRONIZED_SCENE_RUNNING 0x25D39B935A038A26 (int)->BOOL
+--   GET_ANIM_DURATION             0xFEDDF04D62B8D790 (char*,char*)->float
 --   TASK_PLAY_ANIM                 0xEA47FE3719165B94
 --     (Ped,char*,char*,float,float,int,int,float,BOOL,BOOL,BOOL)->void
 --   FREEZE_ENTITY_POSITION         0x428CA6DBD1094446 (Entity,BOOL)->void
@@ -29615,11 +29787,16 @@ local FP = (function(O,S,B,Menu)
 --      also act on the local instance, so the operator sees the lock even if
 --      the network scene is dropped. The owner's transform sync is re-pinned
 --      every 300 ms.
---   4. On stop every member is unfrozen, cleared and has its network scene
---      stopped, so nothing is left running.
---   5. A player who dies, enters a vehicle or leaves the ring is unlocked and
+--   4. On stop every member is unfrozen, cleared, and has its network scene
+--      stopped on the spot and again on every beat for two seconds. Even if
+--      every stop is lost, a non-looped scene expires on its own after one
+--      clip, so no target can be left in the pose indefinitely.
+--   5. If a started scene is dead within 800 ms four times in a row the
+--      network half parks itself for 20 s and only the local half runs, so a
+--      server that rejects the event is not retried every gate.
+--   6. A player who dies, enters a vehicle or leaves the ring is unlocked and
 --      dropped on the next pass.
---   6. No damage is ever dealt and no health, armour or weapon value is written.
+--   7. No damage is ever dealt and no health, armour or weapon value is written.
 -- ============================================================================
 
 local FP = {}
@@ -29628,7 +29805,12 @@ local MAX_TARGETS   = 12
 local RING_POINTS   = 72
 local CHECK_MS      = 200     -- scheduler period
 local LOCK_MS       = 300     -- freeze / pin re-assert cadence
-local SCENE_MS      = 3000    -- one synced scene start per window (see below)
+local SCENE_GATE_MS = 2800    -- floor between two consecutive scene starts
+local SCENE_FALLBACK_MS = 3200 -- life used when GET_ANIM_DURATION is silent
+local SCENE_GRACE_MS = 350    -- slack added to the measured clip life
+local SCENE_DEAD_MS = 800     -- a scene dead before this is a failed start
+local SCENE_PARK_MS = 20000   -- pause after repeated failed starts
+local REAP_MS       = 2000    -- how long a stopped scene is retried
 local LEASH_M       = 1.5
 local RADIUS_MIN    = 8.0
 local RADIUS_MAX    = 40.0
@@ -29636,8 +29818,8 @@ local FIGHT_CLIP    = "shadow_boxing"
 local FIGHT_DICT_M  = "anim@mp_player_intcelebrationmale@shadow_boxing"
 local FIGHT_DICT_F  = "anim@mp_player_intcelebrationfemale@shadow_boxing"
 local LOCK_FLAGS    = 1 + 8 + 1024   -- loop + not interruptable + override physics
-local SYNC_FLAGS    = 4 + 64 + 1024 + 2048
-    -- DONT_INTERRUPT | LOOP_WITHIN_SCENE | HIDE_WEAPON | ABORT_ON_DEATH
+local SYNC_FLAGS    = 4 + 8 + 1024 + 2048
+    -- DONT_INTERRUPT | ON_ABORT_STOP_SCENE | HIDE_WEAPON | ABORT_ON_DEATH
 local BLEND_IN      = 8.0
 local BLEND_OUT     = -8.0
 local PLAY_RATE     = 0.0
@@ -29657,6 +29839,9 @@ FP.byKey        = {}
 FP.count        = 0
 FP.startedAt    = 0
 FP.nextSceneAt  = 0
+FP.sceneFails   = 0
+FP.sceneParked  = 0
+FP.reap         = {}
 FP.pulses       = {}
 FP.onChange     = nil
 FP.note         = nil
@@ -29900,8 +30085,21 @@ end
 local function unlock(rec)
     local ped = rec.ped
     if rec.scene then
-        pcall(NetworkStopSynchronisedScene, rec.scene)
+        local scene = rec.scene
+        pcall(NetworkStopSynchronisedScene, scene)
+        -- The stop is a network event and a remote-owned scene has been
+        -- observed to survive the first one. Retry it over REAP_MS while the
+        -- scene expires on its own in parallel.
+        if #FP.reap < 24 then
+            FP.reap[#FP.reap + 1] = {
+                scene = scene,
+                untilMs = O.now() + REAP_MS,
+            }
+        end
         rec.scene = nil
+        rec.sceneEndsAt = nil
+        rec.sceneStartedAt = nil
+        rec.sceneClipMs = nil
     end
     if not ped or not DoesEntityExist(ped) then return end
     if ped == PlayerPedId() then return end
@@ -29913,16 +30111,17 @@ local function unlock(rec)
 end
 
 -- ---------------------------------------------------------------------------
--- NETWORK HALF. A networked synchronised scene is the one animation route
--- that the other client actually applies. The scene is created at the ped's
--- own position and heading, the ped is added with the same clip, then the
--- scene starts. looped=true keeps it running until NetworkStopSynchronisedScene.
+-- NETWORK HALF. A networked synchronised scene is the animation route the
+-- other client actually applies. The scene is created at the ped's own
+-- position and heading, the ped is added with the clip, then the scene starts.
 --
--- Start pacing: WaveShield's startNetworkSyncedSceneEvent handler returns early
--- when #pedEntities ~= 1, and for a single non-owned ped it only increments a
--- per-sender counter (5 starts inside a 10 s window cancel and detect). One
--- scene per member, one member every SCENE_MS, keeps the counter at or below
--- four in any 10 s window, so the scene is forwarded and the target plays it.
+-- The scene is NOT looped. phaseToStopScene = 1.0 makes it end after one clip
+-- on every client, including the entity owner. That is the release guarantee:
+-- NETWORK_STOP_SYNCHRONISED_SCENE is still sent (and retried for two seconds)
+-- but nothing depends on it. The lock is renewed by starting a fresh scene,
+-- and GET_ANIM_DURATION sets the renewal point; a 2.8 s floor between starts
+-- keeps the reference guard at four starts in any 10 s window (its cancel
+-- threshold is five).
 -- ---------------------------------------------------------------------------
 local function sceneStart(rec)
     local ped = rec.ped
@@ -29942,12 +30141,23 @@ local function sceneStart(rec)
         return false
     end
 
+    local clipMs = 0
+    if type(GetAnimDuration) == "function" then
+        local okD, seconds = pcall(GetAnimDuration, dict, FIGHT_CLIP)
+        if okD and type(seconds) == "number"
+            and seconds == seconds and seconds > 0 then
+            clipMs = math.floor(seconds * 1000.0 + 0.5)
+        end
+    end
+    if clipMs < 1200 then clipMs = SCENE_FALLBACK_MS end
+    if clipMs > 12000 then clipMs = 12000 end
+
     local pos = GetEntityCoords(ped)
     local heading = GetEntityHeading(ped)
 
     local okScene, scene = pcall(NetworkCreateSynchronisedScene,
         pos.x, pos.y, pos.z, 0.0, 0.0, heading, 2,
-        false, true, 1.0, 0.0, 1.0)
+        false, false, 1.0, 0.0, 1.0)
     if not okScene or type(scene) ~= "number" or scene == 0 then
         return false
     end
@@ -29967,6 +30177,64 @@ local function sceneStart(rec)
     end
 
     rec.scene = scene
+    rec.sceneStartedAt = O.now()
+    rec.sceneClipMs = clipMs
+    rec.sceneEndsAt = rec.sceneStartedAt + clipMs + SCENE_GRACE_MS
+    return true
+end
+
+-- A scene is alive while its network id still resolves to a running local
+-- scene and its measured life has not elapsed. A scene that vanished before
+-- SCENE_DEAD_MS counted against the network half; four in a row park it.
+local function sceneAlive(rec)
+    if not rec.scene then return false end
+
+    if rec.sceneEndsAt and O.now() >= rec.sceneEndsAt then
+        rec.scene = nil
+        rec.sceneEndsAt = nil
+        rec.sceneStartedAt = nil
+        rec.sceneClipMs = nil
+        return false
+    end
+
+    -- Short clips cannot distinguish a natural end from a dead start, so the
+    -- failure streak is only tracked from 1.6 s up, and a death is only counted
+    -- while it is clearly before the measured clip end.
+    local clipMs = rec.sceneClipMs or SCENE_FALLBACK_MS
+    local age = rec.sceneStartedAt and (O.now() - rec.sceneStartedAt) or 0
+    local earlyMs = math.max(SCENE_DEAD_MS, clipMs - 600)
+
+    if age > earlyMs and FP.sceneFails ~= 0 then
+        FP.sceneFails = 0
+    end
+
+    if type(NetworkGetLocalSceneFromNetworkId) == "function"
+        and type(IsSynchronizedSceneRunning) == "function" then
+        local okLocal, localId = pcall(NetworkGetLocalSceneFromNetworkId, rec.scene)
+        if okLocal and type(localId) == "number" and localId ~= 0 then
+            local okRun, running = pcall(IsSynchronizedSceneRunning, localId)
+            if okRun and running == false
+                and clipMs >= 1600
+                and age > SCENE_DEAD_MS then
+                if age < earlyMs then
+                    FP.sceneFails = FP.sceneFails + 1
+                else
+                    FP.sceneFails = 0
+                end
+                if FP.sceneFails >= 4 then
+                    FP.sceneParked = O.now() + SCENE_PARK_MS
+                    FP.sceneFails = 0
+                    log("network half parked for %d ms", SCENE_PARK_MS)
+                end
+                rec.scene = nil
+                rec.sceneEndsAt = nil
+                rec.sceneStartedAt = nil
+                rec.sceneClipMs = nil
+                return false
+            end
+        end
+    end
+
     return true
 end
 
@@ -30009,11 +30277,22 @@ local function reconcile(list)
 end
 
 -- ---------------------------------------------------------------------------
--- TICK. Local lock pass keeps the clip and the freeze on the caller's view;
--- the network pass starts one synchronised scene per member, spaced so the
--- reference guard never sees five starts inside its 10 s window.
+-- TICK. The reap pass runs even while idle: a scene stopped by an earlier
+-- session keeps receiving its stop while it is still inside its retry window.
+-- The local lock only runs while a member has no live scene, so the two
+-- animation routes never fight over the same skeleton. The network pass starts
+-- one scene per gate (2.8 s) for the first member that has none.
 -- ---------------------------------------------------------------------------
 local function tick(now)
+    for i = #FP.reap, 1, -1 do
+        local entry = FP.reap[i]
+        if now >= entry.untilMs then
+            table.remove(FP.reap, i)
+        else
+            pcall(NetworkStopSynchronisedScene, entry.scene)
+        end
+    end
+
     if not FP.active then return end
     if not FP.center then FP.stop("no centre") return end
 
@@ -30030,18 +30309,19 @@ local function tick(now)
 
     for i = 1, count do
         local rec = FP.members[i]
-        if now >= (rec.nextLock or 0) then lock(rec) end
+        local alive = sceneAlive(rec)
+        if not alive and now >= (rec.nextLock or 0) then lock(rec) end
     end
 
-    if now >= (FP.nextSceneAt or 0) then
+    if now >= (FP.nextSceneAt or 0) and now >= (FP.sceneParked or 0) then
         for i = 1, count do
             local rec = FP.members[i]
-            if not rec.scene then
+            if not rec.scene and canLock(rec.ped) then
                 if sceneStart(rec) then
                     log("scene started: ped=%s scene=%s",
                         tostring(rec.player or rec.ped), tostring(rec.scene))
                 end
-                FP.nextSceneAt = now + SCENE_MS
+                FP.nextSceneAt = now + SCENE_GATE_MS
                 break
             end
         end
@@ -30062,10 +30342,10 @@ end
 
 function FP.stop(reason)
     local was = FP.active
+    FP.active = false
 
     for i = 1, #FP.members do unlock(FP.members[i]) end
 
-    FP.active = false
     FP.ring = nil
     FP.center = nil
     FP.centerSid = nil
@@ -30176,6 +30456,8 @@ function FP.start()
     FP.byKey = {}
     FP.startedAt = O.now()
     FP.nextSceneAt = O.now()
+    FP.sceneFails = 0
+    FP.sceneParked = 0
 
     for i = 1, math.min(#list, MAX_TARGETS) do
         local rec = list[i]
@@ -31352,10 +31634,11 @@ end
 --
 -- One toggle and one radius slider, installed at the top of the Exploit tab
 -- after the flash rows exist. The module puts every OTHER ped in the ring into
--- a networked synchronised scene (looping shadow boxing, movement locked) and
--- keeps a local task + freeze as the fallback; the operator is never a subject,
--- attacker or target, no damage is emitted and no ragdoll is requested. The
--- module owns its own rows so a re-injection cannot duplicate them.
+-- a networked, self-expiring synchronised scene (shadow boxing, movement
+-- locked) and keeps a local task + freeze as the fallback; the operator is
+-- never a subject, attacker or target, no damage is emitted and no ragdoll is
+-- requested. The module owns its own rows so a re-injection cannot duplicate
+-- them.
 -- ---------------------------------------------------------------------------
 local function installFightParty()
     return FP.install()
@@ -33195,7 +33478,7 @@ end
 -- BOOT
 -- ---------------------------------------------------------------------------
 function UI.boot()
-    O.log("loader build 2026-11-05-r4 (fight party v8: networked synced scene)")
+    O.log("loader build 2026-11-06-r6 (troll attach anims v4: async two-stage + watchdog)")
     O.thread()
 
     -- Delete fallback poll. 40 ms is faster than a frame at 30 FPS and cheap
