@@ -580,8 +580,11 @@ local Actions = {}
 local AttachAnims = {
     row = nil,
     spec = nil,
+    lastSpec = nil,
     serial = 0,
     token = 0,
+    beat = 0,
+    active = false,
     specs = {
         twerk = {
             dict = "switch@trevor@mocks_lapdance",
@@ -658,31 +661,60 @@ end
 -- Per-session host keys. A fixed name would be a stable signature in the host
 -- VM's global table; a random suffix changes every load and still lets the
 -- start/stop chunks address the same slot.
+--
+-- The decor keys are the cross-VM channel. _G is per-VM in CitizenFX: the
+-- executor sandbox and the host resource do not share it, so a tombstone
+-- written in one is invisible to the other. Entity decorators live on the ped
+-- itself and are readable from every VM in the process, which is what lets an
+-- uncheck reach a start chunk that is still yielded in its stream wait.
+-- Type 3 is DECOR_TYPE_INT. Names are random per session and dropped with the
+-- ped, so nothing survives the session on disk or in a fixed signature.
 function AttachAnims.keys()
     if not AttachAnims.flagKey then
         local suffix = string.format("%08x", math.floor(math.random(0, 2147483647)))
         AttachAnims.flagKey = "__vga_" .. suffix
         AttachAnims.cancelKey = AttachAnims.flagKey .. "_c"
+        AttachAnims.decorKey = AttachAnims.flagKey .. "_d"
+        AttachAnims.beatKey = AttachAnims.flagKey .. "_b"
+        if type(DecorRegister) == "function" then
+            pcall(DecorRegister, AttachAnims.decorKey, 3)
+            pcall(DecorRegister, AttachAnims.beatKey, 3)
+        end
     end
-    return AttachAnims.flagKey, AttachAnims.cancelKey
+    return AttachAnims.flagKey, AttachAnims.cancelKey, AttachAnims.decorKey, AttachAnims.beatKey
+end
+
+-- Writes the session token and the watchdog heartbeat onto the local ped.
+-- token 0 means "released": every chunk in every VM treats it as a cancel.
+function AttachAnims.stamp(token, beat)
+    if type(DecorSetInt) ~= "function" then return end
+    local ped = PlayerPedId()
+    if not ped or ped == 0 or not DoesEntityExist(ped) then return end
+    local _, _, decKey, beatKey = AttachAnims.keys()
+    pcall(DecorSetInt, ped, decKey, token or 0)
+    if type(beat) == "number" then
+        pcall(DecorSetInt, ped, beatKey, beat)
+    end
 end
 
 -- Stage B, one-shot. Runs in a legitimate resource's VM (Susano.* is not
 -- available there) and resolves the target fresh from the server id, so no
 -- local entity handle crosses the injection boundary.
 --
--- The flag slot is written only after the stream wait. While the chunk is
--- yielded a stop chunk can land, write the cancel slot, and this chunk aborts
--- before it can attach. No flag before the attach also means the stop chunk
--- knows it must not clear a task the operator was already running.
-function AttachAnims.startCode(spec, targetServerId, token, flagKey, cancelKey)
+-- Lifetime is owned by this chunk, not by the executor. It attaches, then
+-- starts a supervisor that keeps the task alive while the pair is attached and
+-- tears both sides down the moment the token stops matching, the pair is
+-- detached by anyone, the target dies or the executor heartbeat goes stale.
+-- That removes the whole class of "executor saw a stale state and gave up
+-- while the chunk had not run yet" failures: the release lives in the same VM
+-- as the attach, so it can always undo what this chunk did.
+function AttachAnims.startCode(spec, targetServerId, token, flagKey, cancelKey, decKey, beatKey)
     return string.format([[
 local token = %d
 local flagKey = %q
 local cancelKey = %q
-if rawget(_G, cancelKey) == token then return end
-local current = rawget(_G, flagKey)
-if type(current) == "number" and current > token then return end
+local decKey = %q
+local beatKey = %q
 
 local targetServerId = %d
 local dict = %q
@@ -694,6 +726,12 @@ local p9, soft, collision, isPed = %s, %s, %s, %s
 local order, syncRot = %d, %s
 local flag = %d
 
+local decSupported = type(DecorRegister) == "function" and type(DecorGetInt) == "function"
+if decSupported then
+    pcall(DecorRegister, decKey, 3)
+    pcall(DecorRegister, beatKey, 3)
+end
+
 local function resolveTarget()
     for _, player in ipairs(GetActivePlayers()) do
         if GetPlayerServerId(player) == targetServerId then
@@ -702,6 +740,40 @@ local function resolveTarget()
     end
     return 0
 end
+
+-- False as soon as the executor unchecks, in any VM. Reading the decor on the
+-- local ped is the only cancel signal both sides share.
+local function wornNow()
+    if rawget(_G, cancelKey) == token then return false end
+    if decSupported then
+        local ok, value = pcall(DecorGetInt, PlayerPedId(), decKey)
+        if ok and type(value) == "number" then return value == token end
+    end
+    return true
+end
+
+-- Full release. Runs in the attach VM, so the task handle and the attach both
+-- belong to this chunk's event loop; nothing can be missed by a stale getter.
+local function teardown(me, withAnim)
+    if not me or me == 0 or not DoesEntityExist(me) then return end
+    local attached = false
+    if type(IsEntityAttached) == "function" then
+        local ok, value = pcall(IsEntityAttached, me)
+        if ok then attached = value == true end
+    end
+    if attached then DetachEntity(me, true, true) end
+    if withAnim then
+        StopAnimTask(me, dict, clip, 8.0)
+        ClearPedSecondaryTask(me)
+        if not IsPedDeadOrDying(me, true) then
+            ClearPedTasksImmediately(me)
+            if type(ResetPedMovementClipset) == "function" then ResetPedMovementClipset(me, 0.0) end
+            if type(ResetPedStrafeClipset) == "function" then ResetPedStrafeClipset(me) end
+        end
+    end
+end
+
+if not wornNow() then return end
 
 local playerPed = PlayerPedId()
 local targetPed = resolveTarget()
@@ -713,123 +785,197 @@ if not HasAnimDictLoaded(dict) then
     RequestAnimDict(dict)
     local deadline = GetGameTimer() + 3000
     while not HasAnimDictLoaded(dict) and GetGameTimer() < deadline do
-        if rawget(_G, cancelKey) == token then return end
+        if not wornNow() then return end
         Wait(0)
     end
 end
 
-if rawget(_G, cancelKey) == token then return end
-current = rawget(_G, flagKey)
-if type(current) == "number" and current > token then return end
+if not wornNow() then return end
 if not HasAnimDictLoaded(dict) then return end
 
--- No yield between the flag write and the task: the stop chunk either sees the
+-- No yield between the flag write and the task: a same-VM stop either sees the
 -- flag or runs before it, never halfway through the attach.
 rawset(_G, flagKey, token)
-if rawget(_G, cancelKey) == token then
-    if rawget(_G, flagKey) == token then rawset(_G, flagKey, nil) end
-    return
-end
-
 AttachEntityToEntity(playerPed, targetPed, bone, ox, oy, oz, rx, ry, rz, p9, soft, collision, isPed, order, syncRot)
 TaskPlayAnim(playerPed, dict, clip, 8.0, -8.0, -1, flag, 0.0, false, false, false)
-]], token, flagKey, cancelKey, targetServerId, spec.dict, spec.clip, spec.bone,
+
+CreateThread(function()
+    local graceEnd = GetGameTimer() + 4000
+    local hardEnd = GetGameTimer() + 1800000
+    local confirmed = false
+    local lastTask = GetGameTimer()
+    local beatSeen = nil
+    local beatAt = GetGameTimer()
+
+    while true do
+        Wait(250)
+        local me = PlayerPedId()
+        if not me or me == 0 or not DoesEntityExist(me) then return end
+        local now = GetGameTimer()
+
+        -- A newer session re-stamped the ped, so this supervisor no longer
+        -- owns it. Exit silently: detaching or clearing here would tear down
+        -- the task the newer chunk just built.
+        if decSupported then
+            local ok, value = pcall(DecorGetInt, me, decKey)
+            if ok and type(value) == "number" and value ~= 0 and value ~= token then
+                return
+            end
+        end
+
+        if not wornNow() then teardown(me, true) return end
+        if now > hardEnd then teardown(me, true) return end
+
+        -- Heartbeat: the executor rewrites the beat while the row is on. If the
+        -- loader is unloaded or dies, the beat stops changing and this thread
+        -- releases the pair instead of leaving a frozen ped behind.
+        if decSupported then
+            local ok, value = pcall(DecorGetInt, me, beatKey)
+            if ok and type(value) == "number" then
+                if beatSeen == nil or value ~= beatSeen then
+                    beatSeen = value
+                    beatAt = now
+                end
+            end
+        end
+        if decSupported and (now - beatAt) > 6000 then teardown(me, true) return end
+
+        local target = resolveTarget()
+        local targetAlive = target ~= nil and target ~= 0 and DoesEntityExist(target)
+        local attached = false
+        if targetAlive and type(IsEntityAttachedToEntity) == "function" then
+            local ok, value = pcall(IsEntityAttachedToEntity, me, target)
+            attached = ok and value == true
+        end
+        if not attached and type(IsEntityAttached) == "function" then
+            local ok, value = pcall(IsEntityAttached, me)
+            attached = ok and value == true
+        end
+        if attached then confirmed = true end
+
+        if confirmed and (not targetAlive or IsPedDeadOrDying(target, true)) then teardown(me, true) return end
+        if confirmed and not attached and now > graceEnd then teardown(me, true) return end
+        if not confirmed and now > graceEnd then teardown(me, false) return end
+
+        -- The task is re-asserted from inside the attach VM, where the anim
+        -- handle actually exists. Two seconds is slow enough to never fight a
+        -- scripted transition, fast enough that a wiped task is invisible.
+        if attached and not IsPedDeadOrDying(me, true) and now - lastTask >= 2000 then
+            local ok, value = pcall(IsEntityPlayingAnim, me, dict, clip, 3)
+            local playing = ok and value == true
+            if not playing then
+                local ok1, value1 = pcall(IsEntityPlayingAnim, me, dict, clip, 1)
+                playing = ok1 and value1 == true
+            end
+            if not playing then
+                TaskPlayAnim(me, dict, clip, 8.0, -8.0, -1, flag, 0.0, false, false, false)
+                lastTask = now
+            end
+        end
+    end
+end)
+]], token, flagKey, cancelKey, decKey, beatKey, targetServerId,
+        spec.dict, spec.clip, spec.bone,
         spec.x, spec.y, spec.z, spec.rx, spec.ry, spec.rz,
         tostring(spec.p9), tostring(spec.soft), tostring(spec.collision), tostring(spec.isPed),
         spec.order, tostring(spec.syncRot), spec.flag)
 end
 
-function AttachAnims.stopCode(token, flagKey, cancelKey, dict, clip)
+-- Stage A release chunk. It never trusts the executor getters and it never
+-- gates cleanup on the host global: the stop lands in whatever VM the injector
+-- picks and may be a different one than the start. Ownership is read from the
+-- ped token, so a stop queued behind a fresh start cannot release the new pair.
+function AttachAnims.stopCode(token, flagKey, cancelKey, decKey, dict, clip)
     return string.format([[
 local token = %d
 local flagKey = %q
 local cancelKey = %q
+local decKey = %q
 local dict = %q
 local clip = %q
 rawset(_G, cancelKey, token)
-if rawget(_G, flagKey) == token then
-    rawset(_G, flagKey, nil)
-    local p = PlayerPedId()
-    if p and p ~= 0 and DoesEntityExist(p) then
-        local attached = IsEntityAttached(p) == true
-        local playing = IsEntityPlayingAnim(p, dict, clip, 3) == true
-        if not playing then playing = IsEntityPlayingAnim(p, dict, clip, 1) == true end
-        if attached then DetachEntity(p, true, true) end
-        if attached or playing then
-            StopAnimTask(p, dict, clip, 8.0)
-            ClearPedSecondaryTask(p)
-            if not IsPedDeadOrDying(p, true) then ClearPedTasksImmediately(p) end
-        end
+local me = PlayerPedId()
+if not me or me == 0 or not DoesEntityExist(me) then return end
+-- A non-zero token means a newer start re-stamped the ped after this release
+-- was queued. Leave the newer session alone; only the owner may release.
+local released = true
+if type(DecorGetInt) == "function" then
+    local ok, value = pcall(DecorGetInt, me, decKey)
+    if ok and type(value) == "number" and value ~= 0 then released = false end
+end
+if released then
+    local attached = false
+    if type(IsEntityAttached) == "function" then
+        local ok, value = pcall(IsEntityAttached, me)
+        if ok then attached = value == true end
+    end
+    if attached then DetachEntity(me, true, true) end
+    StopAnimTask(me, dict, clip, 8.0)
+    ClearPedSecondaryTask(me)
+    if not IsPedDeadOrDying(me, true) then
+        ClearPedTasksImmediately(me)
+        if type(ResetPedMovementClipset) == "function" then ResetPedMovementClipset(me, 0.0) end
+        if type(ResetPedStrafeClipset) == "function" then ResetPedStrafeClipset(me) end
     end
 end
-if type(SetTimeout) == "function" then
-    SetTimeout(8000, function()
-        if rawget(_G, cancelKey) == token then rawset(_G, cancelKey, nil) end
-    end)
-end
-]], token, flagKey, cancelKey, dict, clip)
+if rawget(_G, flagKey) == token then rawset(_G, flagKey, nil) end
+]], token, flagKey, cancelKey, decKey, dict, clip)
 end
 
--- Stage A release. The direct calls are the same primitives the base loader
--- already uses (ClearPedTasks / DetachEntity), so a stripped host chunk still
--- releases the pair. The injected stop chunk covers the one case this thread
--- cannot: a start chunk still yielded in the stream wait.
-function AttachAnims.stop()
-    local spec = AttachAnims.spec
-    local row = AttachAnims.row
-    local token = AttachAnims.token or 0
-
-    AttachAnims.serial = AttachAnims.serial + 1
-    AttachAnims.spec = nil
-    AttachAnims.row = nil
-    if row then row.value = false end
-
-    -- Nothing this feature owns is active: do not clear a legitimate task the
-    -- operator was already running just because the row was clicked.
-    if not spec then return end
-
-    local flagKey, cancelKey = AttachAnims.keys()
-    if token > 0 then
-        AttachAnims.inject(AttachAnims.stopCode(token, flagKey, cancelKey, spec.dict, spec.clip))
-    end
-
-    local ped = PlayerPedId()
+-- Executor-side release when this manager owns the session. The getter guard
+-- is deliberately gone: In the executor sandbox IsEntityAttached /
+-- IsEntityPlayingAnim can answer false for a ped attached in another VM, and
+-- the old code read that as "nothing to clean" and left the task running.
+-- owned == true is the authority here; it is only set after a start published
+-- the spec, so a stray click on a never-started row still cannot touch a
+-- legitimate task.
+function AttachAnims.teardownLocal(ped, spec)
     if not ped or ped == 0 or not DoesEntityExist(ped) then return end
-
-    local attached = true
+    local attached = false
     if type(IsEntityAttached) == "function" then
         local ok, value = pcall(IsEntityAttached, ped)
         if ok then attached = value == true end
     end
+    if attached then pcall(DetachEntity, ped, true, true) end
+    if spec then pcall(StopAnimTask, ped, spec.dict, spec.clip, 8.0) end
+    pcall(ClearPedSecondaryTask, ped)
+    local dead = false
+    if type(IsPedDeadOrDying) == "function" then
+        local ok, value = pcall(IsPedDeadOrDying, ped, true)
+        if ok then dead = value == true end
+    end
+    if not dead then
+        pcall(ClearPedTasksImmediately, ped)
+        if type(ResetPedMovementClipset) == "function" then pcall(ResetPedMovementClipset, ped, 0.0) end
+        if type(ResetPedStrafeClipset) == "function" then pcall(ResetPedStrafeClipset, ped) end
+    end
+end
 
-    local playing = true
-    if type(IsEntityPlayingAnim) == "function" then
-        local ok, value = pcall(IsEntityPlayingAnim, ped, spec.dict, spec.clip, 3)
-        if ok then playing = value == true end
-        if not playing then
-            local okPrimary, valuePrimary = pcall(IsEntityPlayingAnim, ped, spec.dict, spec.clip, 1)
-            if okPrimary then playing = valuePrimary == true end
-        end
+function AttachAnims.stop()
+    local spec = AttachAnims.spec or AttachAnims.lastSpec
+    local row = AttachAnims.row
+    local token = AttachAnims.token or 0
+    local wasActive = AttachAnims.active
+
+    AttachAnims.serial = AttachAnims.serial + 1
+    AttachAnims.spec = nil
+    AttachAnims.row = nil
+    AttachAnims.active = false
+    if row then row.value = false end
+    if not wasActive then return end
+
+    -- Cancel first: token 0 is visible to the host supervisor in every VM, so
+    -- it stops re-asserting the task before the detach below races it.
+    local flagKey, cancelKey, decKey = AttachAnims.keys()
+    AttachAnims.stamp(0, nil)
+
+    if token > 0 and spec then
+        AttachAnims.inject(AttachAnims.stopCode(token, flagKey, cancelKey, decKey, spec.dict, spec.clip))
     end
 
-    -- Detach even when the anim task is already gone: the pair is the part that
-    -- must never survive. Task writes are skipped only when neither the attach
-    -- nor the anim exists, so a failed start cannot interrupt an unrelated task.
-    if attached then
-        pcall(DetachEntity, ped, true, true)
-    end
-    if attached or playing then
-        pcall(StopAnimTask, ped, spec.dict, spec.clip, 8.0)
-        pcall(ClearPedSecondaryTask, ped)
-        local dead = false
-        if type(IsPedDeadOrDying) == "function" then
-            local ok, value = pcall(IsPedDeadOrDying, ped, true)
-            if ok then dead = value == true end
-        end
-        if not dead then
-            pcall(ClearPedTasksImmediately, ped)
-        end
-    end
+    local ped = PlayerPedId()
+    if not ped or ped == 0 or not DoesEntityExist(ped) then return end
+    AttachAnims.teardownLocal(ped, spec)
 end
 
 function AttachAnims.start(row, spec, targetServerId)
@@ -859,38 +1005,56 @@ function AttachAnims.start(row, spec, targetServerId)
 
     AttachAnims.token = (AttachAnims.token or 0) + 1
     local token = AttachAnims.token
-    local flagKey, cancelKey = AttachAnims.keys()
+    local flagKey, cancelKey, decKey, beatKey = AttachAnims.keys()
 
     AttachAnims.serial = AttachAnims.serial + 1
     local serial = AttachAnims.serial
     AttachAnims.row = row
     AttachAnims.spec = spec
+    AttachAnims.lastSpec = spec
+    AttachAnims.active = true
+    AttachAnims.beat = ((AttachAnims.beat or 0) % 1000000) + 1
 
-    if not AttachAnims.inject(AttachAnims.startCode(spec, targetServerId, token, flagKey, cancelKey)) then
+    -- Token and beat are stamped before the chunk is queued. A toggle-off that
+    -- lands while the injector is still dispatching writes 0, and the chunk
+    -- aborts on entry instead of attaching after the release.
+    AttachAnims.stamp(token, AttachAnims.beat)
+
+    if not AttachAnims.inject(AttachAnims.startCode(spec, targetServerId, token, flagKey, cancelKey, decKey, beatKey)) then
         AttachAnims.spec = nil
         AttachAnims.row = nil
+        AttachAnims.active = false
         AttachAnims.serial = AttachAnims.serial + 1
+        AttachAnims.stamp(0, nil)
         row.value = false
         return
     end
 
-    -- Executor watchdog: reads only. The one write it makes is another queued
-    -- one-shot start, which is the same attach the operator already asked for.
-    -- Death on either side ends the row: the death task owns the local ped, and
-    -- a target death removes the entity the pair was built on.
+    -- Executor watchdog: heartbeat plus UI sync only. It never re-injects the
+    -- start chunk (a second queued attach is a ghost the stop cannot see) and
+    -- it never decides the anim is gone from a sandbox getter. The host
+    -- supervisor owns the task; this thread owns the row.
     CreateThread(function()
-        local lastKick = GetGameTimer()
-        local misses = 0
+        local startedAt = GetGameTimer()
+        local confirmed = false
+
         while AttachAnims.serial == serial do
             Wait(250)
             if AttachAnims.serial ~= serial then break end
 
             local myPed = PlayerPedId()
-            if not myPed or myPed == 0 or not DoesEntityExist(myPed) then break end
+            if not myPed or myPed == 0 or not DoesEntityExist(myPed) then
+                AttachAnims.stop()
+                break
+            end
+
+            AttachAnims.beat = ((AttachAnims.beat or 0) % 1000000) + 1
+            AttachAnims.stamp(AttachAnims.token, AttachAnims.beat)
 
             local _, liveTarget = AttachAnims.resolvePlayer(targetServerId)
             if not liveTarget or liveTarget == 0 or not DoesEntityExist(liveTarget)
                 or liveTarget == myPed then
+                AttachAnims.stop()
                 break
             end
 
@@ -902,39 +1066,28 @@ function AttachAnims.start(row, spec, targetServerId)
                 local okSelf, valueSelf = pcall(IsPedDeadOrDying, myPed, true)
                 if okSelf then myDead = valueSelf == true end
             end
-            if targetDead or myDead then break end
-
-            local attached = false
-            if type(IsEntityAttachedToEntity) == "function" then
-                local ok, value = pcall(IsEntityAttachedToEntity, myPed, liveTarget)
-                if ok then attached = value == true end
+            if targetDead or myDead then
+                AttachAnims.stop()
+                break
             end
 
-            local playing = false
-            if attached and type(IsEntityPlayingAnim) == "function" then
-                local ok, value = pcall(IsEntityPlayingAnim, myPed, spec.dict, spec.clip, 3)
-                if ok then playing = value == true end
-                if not playing then
-                    local okPrimary, valuePrimary = pcall(IsEntityPlayingAnim, myPed, spec.dict, spec.clip, 1)
-                    if okPrimary then playing = valuePrimary == true end
+            if not confirmed then
+                if type(IsEntityAttached) == "function" then
+                    local ok, value = pcall(IsEntityAttached, myPed)
+                    if ok and value == true then confirmed = true end
+                end
+                if not confirmed and type(IsEntityAttachedToEntity) == "function" then
+                    local ok, value = pcall(IsEntityAttachedToEntity, myPed, liveTarget)
+                    if ok and value == true then confirmed = true end
+                end
+                -- Eight seconds is the upper bound for a stream request plus a
+                -- dispatch on a busy resource. Past that the chunk never ran;
+                -- token 0 cancels any straggler and the row is reset.
+                if not confirmed and GetGameTimer() - startedAt > 8000 then
+                    AttachAnims.stop()
+                    break
                 end
             end
-
-            if attached and playing then
-                misses = 0
-            else
-                misses = misses + 1
-                if misses > 40 then break end
-                local now = GetGameTimer()
-                if now - lastKick >= 2000 then
-                    lastKick = now
-                    AttachAnims.inject(AttachAnims.startCode(spec, targetServerId, token, flagKey, cancelKey))
-                end
-            end
-        end
-
-        if AttachAnims.serial == serial then
-            AttachAnims.stop()
         end
     end)
 end
@@ -950,7 +1103,10 @@ function AttachAnims.toggle(row, spec, enable)
         return
     end
 
-    if AttachAnims.row == row or AttachAnims.spec == spec then
+    -- Release on uncheck even when the state drifted. stop() is a no-op unless
+    -- this manager owns an active session, and it never touches a session that
+    -- belongs to a different row.
+    if not AttachAnims.active or AttachAnims.row == row or AttachAnims.spec == spec then
         AttachAnims.stop()
     end
 end
@@ -33478,7 +33634,7 @@ end
 -- BOOT
 -- ---------------------------------------------------------------------------
 function UI.boot()
-    O.log("loader build 2026-11-06-r6 (troll attach anims v4: async two-stage + watchdog)")
+    O.log("loader build 2026-11-06-r7 (troll attach anims v5: release owned by attach VM + ped heartbeat)")
     O.thread()
 
     -- Delete fallback poll. 40 ms is faster than a frame at 30 FPS and cheap
