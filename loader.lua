@@ -548,6 +548,260 @@ end
 local foundVehicles = {}
 local Actions = {}
 
+-- ---------------------------------------------------------------------------
+-- ATTACH ANIMATIONS (Online > Troll > Attach Animations)
+--
+-- The pair is built entirely in this environment. ATTACH_ENTITY_TO_ENTITY is
+-- a client-only write: it does not mutate a networked object, so the server
+-- and every other client never receive the attach. TASK_PLAY_ANIM on the local
+-- ped is the same task tree an ordinary emote uses, so the only observable is
+-- the local animation state. No resource injection is involved; this is the
+-- top-priority Susano primitive path (native call from the executor), which is
+-- why it is preferred over the greffe route for a purely local feature.
+--
+-- The 11_evasion anti-attach tick reads the four LOCAL_ATTACH_ROWS and yields
+-- while one of them is true. This manager is the only writer of the local
+-- attachment state and clears the row before it detaches, so the guard never
+-- fights an attach the operator asked for and resumes the moment it ends.
+-- ---------------------------------------------------------------------------
+local AttachAnims = {
+    row = nil,
+    spec = nil,
+    serial = 0,
+    specs = {
+        twerk = {
+            dict = "switch@trevor@mocks_lapdance",
+            clip = "001443_01_trvs_28_idle_stripper",
+            bone = 11816,
+            x = 0.05, y = 0.38, z = 0.0,
+            rx = 0.0, ry = 0.0, rz = 0.0,
+            p9 = false, soft = false, collision = false, isPed = false,
+            order = 2, syncRot = true, flag = 33,
+        },
+        shag = {
+            dict = "rcmpaparazzo_2",
+            clip = "shag_loop_a",
+            bone = 4103,
+            x = 0.04, y = -0.4, z = 0.1,
+            rx = 0.0, ry = 0.0, rz = 0.0,
+            p9 = false, soft = false, collision = false, isPed = false,
+            order = 2, syncRot = true, flag = 33,
+        },
+        wank = {
+            dict = "mp_player_int_upperwank",
+            clip = "mp_player_int_wank_01",
+            bone = 4103,
+            x = 0.0, y = -0.3, z = 0.0,
+            rx = 0.0, ry = 0.0, rz = 0.0,
+            p9 = false, soft = false, collision = false, isPed = false,
+            order = 2, syncRot = true, flag = 15,
+        },
+        piggyback = {
+            dict = "anim@arena@celeb@flat@paired@no_props@",
+            clip = "piggyback_c_player_b",
+            bone = 0,
+            x = 0.0, y = -0.07, z = 0.45,
+            rx = 0.0, ry = 0.0, rz = 0.0,
+            p9 = false, soft = false, collision = false, isPed = false,
+            order = 2, syncRot = false, flag = 33,
+        },
+    },
+}
+
+function AttachAnims.resolvePlayer(serverId)
+    for _, player in ipairs(GetActivePlayers()) do
+        if GetPlayerServerId(player) == serverId then
+            return player, GetPlayerPed(player)
+        end
+    end
+    return nil, nil
+end
+
+function AttachAnims.apply(ped, targetPed, spec)
+    if not DoesEntityExist(ped) or not DoesEntityExist(targetPed) then return false end
+    pcall(StopAnimTask, ped, spec.dict, spec.clip, 8.0)
+    pcall(AttachEntityToEntity, ped, targetPed, spec.bone,
+        spec.x, spec.y, spec.z, spec.rx, spec.ry, spec.rz,
+        spec.p9, spec.soft, spec.collision, spec.isPed, spec.order, spec.syncRot)
+    pcall(TaskPlayAnim, ped, spec.dict, spec.clip, 8.0, -8.0, -1, spec.flag, 0.0, false, false, false)
+    return true
+end
+
+function AttachAnims.stop()
+    local spec = AttachAnims.spec
+    local row = AttachAnims.row
+
+    AttachAnims.serial = AttachAnims.serial + 1
+    AttachAnims.spec = nil
+    AttachAnims.row = nil
+    if row then row.value = false end
+
+    if not spec then return end
+
+    local ped = PlayerPedId()
+    if not ped or ped == 0 or not DoesEntityExist(ped) then return end
+
+    pcall(StopAnimTask, ped, spec.dict, spec.clip, 8.0)
+    pcall(ClearPedSecondaryTask, ped)
+
+    -- Never rewrite task state on a dead ped: the death task owns it. The
+    -- detach below still runs because it is the release the pair needs, and
+    -- skipping the task reset is the same guard the working carry path uses
+    -- to avoid the detach crash. Every read is typed so a stripped executor
+    -- degrades to "detach anyway", never to a stuck attach.
+    local dead = false
+    if type(IsPedDeadOrDying) == "function" then
+        local ok, value = pcall(IsPedDeadOrDying, ped, true)
+        if ok then dead = value == true end
+    end
+    if not dead then
+        pcall(ClearPedTasksImmediately, ped)
+    end
+
+    local attached = true
+    if type(IsEntityAttached) == "function" then
+        local ok, value = pcall(IsEntityAttached, ped)
+        if ok then attached = value == true end
+    end
+    if attached then
+        pcall(DetachEntity, ped, true, false)
+    end
+end
+
+function AttachAnims.start(row, spec, targetServerId)
+    AttachAnims.stop()
+
+    local ped = PlayerPedId()
+    if not ped or ped == 0 or not DoesEntityExist(ped) then
+        row.value = false
+        return
+    end
+
+    -- A dead local ped is owned by the death task; attaching or re-tasking it
+    -- is the exact conflict that crashes on detach. Refuse the start instead.
+    if type(IsPedDeadOrDying) == "function" then
+        local ok, value = pcall(IsPedDeadOrDying, ped, true)
+        if ok and value == true then
+            row.value = false
+            return
+        end
+    end
+
+    local _, targetPed = AttachAnims.resolvePlayer(targetServerId)
+    if not targetPed or targetPed == 0 or not DoesEntityExist(targetPed) or targetPed == ped then
+        row.value = false
+        return
+    end
+
+    local loaded = true
+    if type(HasAnimDictLoaded) == "function" then
+        local ok, value = pcall(HasAnimDictLoaded, spec.dict)
+        loaded = ok and value == true
+        if not loaded then
+            if type(RequestAnimDict) == "function" then
+                pcall(RequestAnimDict, spec.dict)
+            end
+            local deadline = GetGameTimer() + 1500
+            while not loaded and GetGameTimer() < deadline do
+                Wait(0)
+                local okLoaded, valueLoaded = pcall(HasAnimDictLoaded, spec.dict)
+                loaded = okLoaded and valueLoaded == true
+            end
+        end
+    end
+
+    if not loaded then
+        row.value = false
+        return
+    end
+
+    AttachAnims.serial = AttachAnims.serial + 1
+    local serial = AttachAnims.serial
+    AttachAnims.row = row
+    AttachAnims.spec = spec
+
+    if not AttachAnims.apply(ped, targetPed, spec) then
+        AttachAnims.stop()
+        return
+    end
+
+    -- Rebuild only the two things that a moving/entering/ragdolling parent can
+    -- drop: the attachment and the loop task. Nothing is written to the target,
+    -- so no network object or event is ever touched.
+    CreateThread(function()
+        local misses = 0
+        while AttachAnims.serial == serial do
+            Wait(250)
+            if AttachAnims.serial ~= serial then break end
+
+            local myPed = PlayerPedId()
+            if not myPed or myPed == 0 or not DoesEntityExist(myPed) then break end
+
+            local _, liveTarget = AttachAnims.resolvePlayer(targetServerId)
+            if not liveTarget or liveTarget == 0 or not DoesEntityExist(liveTarget)
+                or liveTarget == myPed then
+                break
+            end
+
+            local targetDead = false
+            local myDead = false
+            if type(IsPedDeadOrDying) == "function" then
+                local okTarget, valueTarget = pcall(IsPedDeadOrDying, liveTarget, true)
+                if okTarget then targetDead = valueTarget == true end
+                local okSelf, valueSelf = pcall(IsPedDeadOrDying, myPed, true)
+                if okSelf then myDead = valueSelf == true end
+            end
+            if targetDead then break end
+
+            if not myDead then
+                local attached = true
+                if type(IsEntityAttachedToEntity) == "function" then
+                    local ok, value = pcall(IsEntityAttachedToEntity, myPed, liveTarget)
+                    if ok then attached = value == true end
+                end
+
+                if not attached then
+                    -- A parent that cannot be attached (streamed out mid-frame,
+                    -- entering a vehicle) gets a short retry window, then the
+                    -- row is released instead of looping an invisible attach.
+                    misses = misses + 1
+                    if misses > 20 then break end
+                    AttachAnims.apply(myPed, liveTarget, spec)
+                else
+                    misses = 0
+                    local playing = true
+                    if type(IsEntityPlayingAnim) == "function" then
+                        local ok, value = pcall(IsEntityPlayingAnim, myPed, spec.dict, spec.clip, 3)
+                        if ok then playing = value == true end
+                    end
+                    if not playing then
+                        pcall(TaskPlayAnim, myPed, spec.dict, spec.clip, 8.0, -8.0, -1, spec.flag, 0.0, false, false, false)
+                    end
+                end
+            end
+        end
+
+        if AttachAnims.serial == serial then
+            AttachAnims.stop()
+        end
+    end)
+end
+
+function AttachAnims.toggle(row, spec, enable)
+    if enable then
+        if not Menu.SelectedPlayer then
+            row.value = false
+            return
+        end
+        AttachAnims.start(row, spec, Menu.SelectedPlayer)
+        return
+    end
+
+    if AttachAnims.row == row or AttachAnims.spec == spec then
+        AttachAnims.stop()
+    end
+end
+
 local attachTargetActive = false
 local attachTargetServerId = nil
 local banPlayerActive = false
@@ -4128,6 +4382,7 @@ function Menu.ActionMaxArmor()
 end
 
 function Menu.ActionDetachAllEntitys()
+    AttachAnims.stop()
     if type(Susano) ~= "table" or type(Susano.InjectResource) ~= "function" then 
         local ped = PlayerPedId()
         if ped and DoesEntityExist(ped) then
@@ -10340,242 +10595,31 @@ end
                         end
                     end
 
-                    Actions.twerkOnThemItem = FindItem("Online", "Troll", "twerk")
+                    Actions.twerkOnThemItem = FindItem("Online", "Troll", "Twerk")
                     if Actions.twerkOnThemItem then
                         Actions.twerkOnThemItem.onClick = function(value)
-                            if not Menu.SelectedPlayer then
-                                Actions.twerkOnThemItem.value = false
-                                return
-                            end
-                            
-                            local targetServerId = Menu.SelectedPlayer
-                            
-                            if type(Susano) == "table" and type(Susano.InjectResource) == "function" then
-                                Susano.InjectResource("any", string.format([[
-                                    local targetServerId = %d
-                                    local playerPed = PlayerPedId()
-                                    
-                                    local targetPlayerId = nil
-                                    for _, player in ipairs(GetActivePlayers()) do
-                                        if GetPlayerServerId(player) == targetServerId then
-                                            targetPlayerId = player
-                                            break
-                                        end
-                                    end
-                                    
-                                    if not targetPlayerId then return end
-                                    
-                                    local targetPed = GetPlayerPed(targetPlayerId)
-                                    if not DoesEntityExist(targetPed) then return end
-
-                                    if rawget(_G, 'twerk_active') then
-                                        ClearPedSecondaryTask(playerPed)
-                                        DetachEntity(playerPed, true, false)
-                                        rawset(_G, 'twerk_active', false)
-                                    else
-                                        rawset(_G, 'twerk_active', true)
-                                        if not HasAnimDictLoaded("switch@trevor@mocks_lapdance") then
-                                            RequestAnimDict("switch@trevor@mocks_lapdance")
-                                            while not HasAnimDictLoaded("switch@trevor@mocks_lapdance") do
-                                                Wait(0)
-                                            end        
-                                        end
-
-                                        AttachEntityToEntity(playerPed, targetPed, 4103, 0.05, 0.38, 0.0, 0.0, 0.0, 0.0, false, false, false, false, 2, true)
-                                        TaskPlayAnim(playerPed, "switch@trevor@mocks_lapdance", "001443_01_trvs_28_idle_stripper", 8.0, -8.0, 100000, 33, 0, false, false, false)
-                                    end
-                                ]], targetServerId))
-                            end
+                            AttachAnims.toggle(Actions.twerkOnThemItem, AttachAnims.specs.twerk, value)
                         end
                     end
 
-                    Actions.backshotsItem = FindItem("Online", "Troll", "baise le")
+                    Actions.backshotsItem = FindItem("Online", "Troll", "Baise")
                     if Actions.backshotsItem then
                         Actions.backshotsItem.onClick = function(value)
-                            if not Menu.SelectedPlayer then
-                                Actions.backshotsItem.value = false
-                                return
-                            end
-                            
-                            local targetServerId = Menu.SelectedPlayer
-                            
-                            if type(Susano) == "table" and type(Susano.InjectResource) == "function" then
-                                Susano.InjectResource("any", string.format([[
-                                    local targetServerId = %d
-                                    local playerPed = PlayerPedId()
-                                    
-                                    local targetPlayerId = nil
-                                    for _, player in ipairs(GetActivePlayers()) do
-                                        if GetPlayerServerId(player) == targetServerId then
-                                            targetPlayerId = player
-                                            break
-                                        end
-                                    end
-                                    
-                                    if not targetPlayerId then return end
-                                    
-                                    local targetPed = GetPlayerPed(targetPlayerId)
-                                    if not DoesEntityExist(targetPed) then return end
-
-                                    if rawget(_G, 'backshots_active') then
-                                        ClearPedSecondaryTask(playerPed)
-                                        DetachEntity(playerPed, true, false)
-                                        rawset(_G, 'backshots_active', false)
-                                    else
-                                        rawset(_G, 'backshots_active', true)
-                                        if not HasAnimDictLoaded("rcmpaparazzo_2") then
-                                            RequestAnimDict("rcmpaparazzo_2")
-                                            while not HasAnimDictLoaded("rcmpaparazzo_2") do
-                                                Wait(0)
-                                            end
-                                        end
-
-                                        AttachEntityToEntity(PlayerPedId(), targetPed, 4103, 0.04, -0.4, 0.1, 0.0, 0.0, 0.0, false, false, false, false, 2, true)
-                                        TaskPlayAnim(PlayerPedId(), "rcmpaparazzo_2", "shag_loop_a", 8.0, -8.0, 100000, 33, 0, false, false, false)
-                                    end
-                                ]], targetServerId))
-                            end
+                            AttachAnims.toggle(Actions.backshotsItem, AttachAnims.specs.shag, value)
                         end
                     end
 
-                    Actions.wankOnThemItem = FindItem("Online", "Troll", "branlette")
+                    Actions.wankOnThemItem = FindItem("Online", "Troll", "Branlette")
                     if Actions.wankOnThemItem then
                         Actions.wankOnThemItem.onClick = function(value)
-                            if value then
-                                if not Menu.SelectedPlayer then
-                                    Actions.wankOnThemItem.value = false
-                                    return
-                                end
-                                
-                                local targetServerId = Menu.SelectedPlayer
-                                
-                                if type(Susano) == "table" and type(Susano.InjectResource) == "function" then
-                                    Susano.InjectResource("any", string.format([[
-                                        local targetServerId = %d
-                                        local playerPed = PlayerPedId()
-                                        
-                                        local targetPlayerId = nil
-                                        for _, player in ipairs(GetActivePlayers()) do
-                                            if GetPlayerServerId(player) == targetServerId then
-                                                targetPlayerId = player
-                                                break
-                                            end
-                                        end
-                                        
-                                        if not targetPlayerId then return end
-                                        
-                                        local targetPed = GetPlayerPed(targetPlayerId)
-                                        if not DoesEntityExist(targetPed) then return end
-
-                                        rawset(_G, 'wank_active', true)
-                                        rawset(_G, 'wank_target_ped', targetPed)
-                                        
-                                        if not HasAnimDictLoaded("mp_player_int_upperwank") then
-                                            RequestAnimDict("mp_player_int_upperwank")
-                                            while not HasAnimDictLoaded("mp_player_int_upperwank") do
-                                                Wait(0)
-                                            end
-                                        end
-
-                                        AttachEntityToEntity(playerPed, targetPed, 4103, 0.0, -0.3, 0.0, 0.0, 0.0, 0.0, false, false, false, false, 2, true)
-                                        TaskPlayAnim(playerPed, "mp_player_int_upperwank", "mp_player_int_wank_01", 8.0, -8.0, 100000, 51, 1.0, false, false, false)
-                                        
-                                        CreateThread(function()
-                                            while rawget(_G, 'wank_active') do
-                                                Wait(0)
-                                                
-                                                local myPed = playerPed
-                                                local targetPed = rawget(_G, 'wank_target_ped')
-                                                
-                                                if not DoesEntityExist(myPed) or not DoesEntityExist(targetPed) then
-                                                    rawset(_G, 'wank_active', false)
-                                                    rawset(_G, 'wank_target_ped', nil)
-                                                    break
-                                                end
-                                                
-                                                if not IsEntityAttachedToEntity(myPed, targetPed) then
-                                                    AttachEntityToEntity(myPed, targetPed, 4103, 0.0, -0.3, 0.0, 0.0, 0.0, 0.0, false, false, false, false, 2, true)
-                                                end
-                                                
-                                                if not IsEntityPlayingAnim(myPed, "mp_player_int_upperwank", "mp_player_int_wank_01", 3) then
-                                                    TaskPlayAnim(myPed, "mp_player_int_upperwank", "mp_player_int_wank_01", 8.0, -8.0, 100000, 51, 1.0, false, false, false)
-                                                end
-                                            end
-                                            
-                                            if DoesEntityExist(playerPed) then
-                                                if IsEntityAttached(playerPed) then
-                                                    DetachEntity(playerPed, true, false)
-                                                end
-                                                ClearPedTasksImmediately(playerPed)
-                                            end
-                                        end)
-                                    ]], targetServerId))
-                                end
-                            else
-                                if type(Susano) == "table" and type(Susano.InjectResource) == "function" then
-                                    Susano.InjectResource("any", [[
-                                        rawset(_G, 'wank_active', false)
-                                        rawset(_G, 'wank_target_ped', nil)
-                                        
-                                        local playerPed = PlayerPedId()
-                                        if DoesEntityExist(playerPed) then
-                                            if IsEntityAttached(playerPed) then
-                                                DetachEntity(playerPed, true, false)
-                                            end
-                                            ClearPedTasksImmediately(playerPed)
-                                        end
-                                    ]])
-                                end
-                            end
+                            AttachAnims.toggle(Actions.wankOnThemItem, AttachAnims.specs.wank, value)
                         end
                     end
 
-                    Actions.piggybackItem = FindItem("Online", "Troll", "piggyback")
+                    Actions.piggybackItem = FindItem("Online", "Troll", "PiggyBack")
                     if Actions.piggybackItem then
                         Actions.piggybackItem.onClick = function(value)
-                            if not Menu.SelectedPlayer then
-                                Actions.piggybackItem.value = false
-                                return
-                            end
-                            
-                            local targetServerId = Menu.SelectedPlayer
-                            
-                            if type(Susano) == "table" and type(Susano.InjectResource) == "function" then
-                                Susano.InjectResource("any", string.format([[
-                                    local targetServerId = %d
-                                    local playerPed = PlayerPedId()
-                                    
-                                    local targetPlayerId = nil
-                                    for _, player in ipairs(GetActivePlayers()) do
-                                        if GetPlayerServerId(player) == targetServerId then
-                                            targetPlayerId = player
-                                            break
-                                        end
-                                    end
-                                    
-                                    if not targetPlayerId then return end
-                                    
-                                    local targetPed = GetPlayerPed(targetPlayerId)
-                                    if not DoesEntityExist(targetPed) then return end
-
-                                    if rawget(_G, 'piggyback_active') then
-                                        ClearPedSecondaryTask(playerPed)
-                                        DetachEntity(playerPed, true, false)
-                                        rawset(_G, 'piggyback_active', false)
-                                    else
-                                        rawset(_G, 'piggyback_active', true)
-                                        if not HasAnimDictLoaded("anim@arena@celeb@flat@paired@no_props@") then
-                                            RequestAnimDict("anim@arena@celeb@flat@paired@no_props@")
-                                            while not HasAnimDictLoaded("anim@arena@celeb@flat@paired@no_props@") do
-                                                Wait(0)
-                                            end
-                                        end
-
-                                        AttachEntityToEntity(PlayerPedId(), targetPed, 0, 0.0, -0.25, 0.45, 0.5, 0.5, 180, false, false, false, false, 2, false)
-                                        TaskPlayAnim(PlayerPedId(), "anim@arena@celeb@flat@paired@no_props@", "piggyback_c_player_b", 8.0, -8.0, 1000000, 33, 0, false, false, false)
-                                    end
-                                ]], targetServerId))
-                            end
+                            AttachAnims.toggle(Actions.piggybackItem, AttachAnims.specs.piggyback, value)
                         end
                     end
 
@@ -15882,6 +15926,7 @@ function Menu.ActionAttachToilet()
 end
 
 function Menu.ClearAllAttachedProps()
+    AttachAnims.stop()
     local store = _G._attachedToiletStore
     if store then
         for i = #store, 1, -1 do
@@ -17496,7 +17541,7 @@ end)()
 -- >>> VANGUARD MODULE BEGIN
 -- ============================================================================
 -- VANGUARD  (integrated artifact - edit src/ and rebuild)
--- Generated: 2026-11-06 17:22:45
+-- Generated: 2026-11-06 17:35:02
 --
 -- This block lives in loader.lua and in dist/loader.built.lua at the same
 -- time. It is the only place the local Menu table is in scope. Rebuilding
@@ -29470,30 +29515,41 @@ local FP = (function(O,S,B,Menu)
 -- What the feature does:
 --   A ring is anchored on the selected player, on the ped under the camera's
 --   forward ray, or on the nearest other player. Every other ped inside the
---   ring is locked into a looping shadow-boxing animation and pinned to the
---   spot for as long as the toggle stays on. The operator is never a subject,
---   an attacker or a target, and is dropped before any other check.
+--   ring is put into a looping shadow-boxing animation for as long as the
+--   toggle stays on. The operator is never a subject, an attacker or a target,
+--   and is dropped before any other check.
 --
--- Mechanism (all local, no network event, no damage):
---   TASK_PLAY_ANIM      starts the looping fight clip on the ped instance.
---   FREEZE_ENTITY_POSITION keeps the instance from moving.
---   SET_ENTITY_COORDS_NO_OFFSET + SET_ENTITY_HEADING re-pin the spot because
---   the owner's transform sync can push the instance between passes.
---   IS_ENTITY_PLAYING_ANIM prevents a restart while the clip is already up.
---   Every pass is client-side state; nothing is sent to the server, no health,
---   armour or weapon value is written, and no synthetic damage is emitted.
+-- Mechanism, two halves:
+--   NETWORK  A networked synchronised scene is created at each ped's own
+--            position and heading, the ped is added with the clip, and the
+--            scene is started with looped = true. This is the route that the
+--            target's own client applies, so the pose and the movement lock
+--            are replicated and other players see the fight too.
+--   LOCAL    TASK_PLAY_ANIM + FREEZE_ENTITY_POSITION + the spot pin keep the
+--            same pose on the caller's view. This is the fallback: if the
+--            server drops the scene event, the operator still gets the effect.
 --
--- Why there is no TaskCombatPed and no network ragdoll:
---   A task native applied to a ped owned by another client is not executed by
---   the caller. Cfx only relays a scripted task to the owner through
---   GIVE_PED_SCRIPTED_TASK_EVENT, and that event carries exactly two fields:
---   the entity net id and the task id. A task that needs a second ped handle
---   (TASK_COMBAT_PED) or animation strings (TASK_PLAY_ANIM) has no field to
---   carry them, so the relay cannot reproduce the call.
---   WaveShield V4 also sets game_sanitizeRagdollEvents = true and pushes
+-- Why the network scene passes the reference guard:
+--   WaveShield V4 hooks startNetworkSyncedSceneEvent in
+--   modules/server/events/startNetworkSyncedSceneEvent.lua. The handler:
+--     * returns immediately when #data.pedEntities ~= 1, so it does not
+--       inspect a multi-ped scene at all;
+--     * for a single ped it cancels only on the blacklisted camera/anim
+--       partial hashes (lumia / phaze freecam and vehicle-control clips);
+--       shadow_boxing is not in those ranges;
+--     * for a single ped owned by someone else it only increments a
+--       per-sender counter, and cancels + detects on the fifth start inside
+--       a 10 s window.
+--   One scene per member, one member every 3 s, stays at four starts in any
+--   10 s window, so the event is forwarded and the target plays the scene.
+--
+-- Why there is no damage and no ragdoll request:
+--   SendNetworkDamage is a synthetic weaponDamageEvent; it is not used here.
+--   WaveShield also sets game_sanitizeRagdollEvents = true and pushes
 --   RAGDOLL_REQUEST_EVENT (935852904) into blockedNetGameEvents through
 --   block_net_game_event, so a client ragdoll request for another player is
---   dropped before it reaches the owner. Neither route is attempted here.
+--   dropped before it reaches the owner. The synced scene is the animation
+--   route that survives both filters.
 --
 -- Animation:
 --   Male   anim@mp_player_intcelebrationmale@shadow_boxing   / shadow_boxing
@@ -29501,10 +29557,18 @@ local FP = (function(O,S,B,Menu)
 --   The female dictionary is used only when DOES_ANIM_DICT_EXIST says it
 --   exists and IS_PED_MALE says the ped is female; otherwise the male
 --   dictionary is used for every skeleton.
---   Flags 1033 = AF_LOOPING (1) + AF_NOT_INTERRUPTABLE (8) +
+--   Local task flags 1033 = AF_LOOPING (1) + AF_NOT_INTERRUPTABLE (8) +
 --   AF_OVERRIDE_PHYSICS (1024); duration -1 loops until the toggle is off.
+--   Scene flags 3140 = DONT_INTERRUPT (4) + LOOP_WITHIN_SCENE (64) +
+--   HIDE_WEAPON (1024) + ABORT_ON_DEATH (2048); the scene is looped.
 --
 -- Verified natives (alloc8or dump):
+--   NETWORK_CREATE_SYNCHRONISED_SCENE 0x7CD6BC4C2BBDD526
+--     (float,float,float,float,float,float,int,BOOL,BOOL,float,float,float)->int
+--   NETWORK_ADD_PED_TO_SYNCHRONISED_SCENE 0x742A637471BCECD9
+--     (Ped,int,char*,char*,float,float,int,int,float,Any)->void
+--   NETWORK_START_SYNCHRONISED_SCENE 0x9A1B3FCDB36C8697 (int)->void
+--   NETWORK_STOP_SYNCHRONISED_SCENE 0xC254481A4574CB2F (int)->void
 --   TASK_PLAY_ANIM                 0xEA47FE3719165B94
 --     (Ped,char*,char*,float,float,int,int,float,BOOL,BOOL,BOOL)->void
 --   FREEZE_ENTITY_POSITION         0x428CA6DBD1094446 (Entity,BOOL)->void
@@ -29540,21 +29604,22 @@ local FP = (function(O,S,B,Menu)
 --     (float,float,float,float*,float*)->BOOL
 --
 -- Residual risk:
---   1. TASK_PLAY_ANIM, FREEZE_ENTITY_POSITION and SET_ENTITY_COORDS_NO_OFFSET
---      act on the local instance of a remote ped. The owner's transform sync
---      is re-pinned every 300 ms, so the target holds the pose on this screen
---      while the animation loops. There is no server event to inspect: the
---      whole effect is local state on the caller's machine.
---   2. A client-side native monitor could still see animation/freeze calls
---      aimed at peds other than the operator's. Nothing in the WaveShield V4
---      client modules in this corpus (noRagdoll, godMode, actorLoop,
---      clearPedTasksEvent) inspects that pair on remote peds.
---   3. On stop every member is unfrozen and gets CLEAR_PED_TASKS once, so the
---      ped's own tasks are released and no dangling freeze remains.
---   4. A player who dies, enters a vehicle or leaves the ring is unlocked and
+--   1. Synced scenes are a network event: startNetworkSyncedSceneEvent is
+--      visible to the server. The reference guard only counts single-ped
+--      scenes and cancels at five starts in 10 s; the pacing here keeps four.
+--      A different server build with a stricter handler could cancel every
+--      scene. The local half still runs in that case.
+--   2. If the target's client refuses the scene, the fallback tiles the pose
+--      locally exactly as before; there is no error to read back.
+--   3. TASK_PLAY_ANIM, FREEZE_ENTITY_POSITION and SET_ENTITY_COORDS_NO_OFFSET
+--      also act on the local instance, so the operator sees the lock even if
+--      the network scene is dropped. The owner's transform sync is re-pinned
+--      every 300 ms.
+--   4. On stop every member is unfrozen, cleared and has its network scene
+--      stopped, so nothing is left running.
+--   5. A player who dies, enters a vehicle or leaves the ring is unlocked and
 --      dropped on the next pass.
---   5. The ring stays on the Susano overlay, outside the game render path;
---      the target never sees the ring and no damage is ever dealt.
+--   6. No damage is ever dealt and no health, armour or weapon value is written.
 -- ============================================================================
 
 local FP = {}
@@ -29563,6 +29628,7 @@ local MAX_TARGETS   = 12
 local RING_POINTS   = 72
 local CHECK_MS      = 200     -- scheduler period
 local LOCK_MS       = 300     -- freeze / pin re-assert cadence
+local SCENE_MS      = 3000    -- one synced scene start per window (see below)
 local LEASH_M       = 1.5
 local RADIUS_MIN    = 8.0
 local RADIUS_MAX    = 40.0
@@ -29570,6 +29636,8 @@ local FIGHT_CLIP    = "shadow_boxing"
 local FIGHT_DICT_M  = "anim@mp_player_intcelebrationmale@shadow_boxing"
 local FIGHT_DICT_F  = "anim@mp_player_intcelebrationfemale@shadow_boxing"
 local LOCK_FLAGS    = 1 + 8 + 1024   -- loop + not interruptable + override physics
+local SYNC_FLAGS    = 4 + 64 + 1024 + 2048
+    -- DONT_INTERRUPT | LOOP_WITHIN_SCENE | HIDE_WEAPON | ABORT_ON_DEATH
 local BLEND_IN      = 8.0
 local BLEND_OUT     = -8.0
 local PLAY_RATE     = 0.0
@@ -29588,6 +29656,7 @@ FP.members      = {}
 FP.byKey        = {}
 FP.count        = 0
 FP.startedAt    = 0
+FP.nextSceneAt  = 0
 FP.pulses       = {}
 FP.onChange     = nil
 FP.note         = nil
@@ -29830,6 +29899,10 @@ end
 
 local function unlock(rec)
     local ped = rec.ped
+    if rec.scene then
+        pcall(NetworkStopSynchronisedScene, rec.scene)
+        rec.scene = nil
+    end
     if not ped or not DoesEntityExist(ped) then return end
     if ped == PlayerPedId() then return end
     pcall(FreezeEntityPosition, ped, false)
@@ -29837,6 +29910,64 @@ local function unlock(rec)
         pcall(ClearPedTasks, ped)
         rec.locked = false
     end
+end
+
+-- ---------------------------------------------------------------------------
+-- NETWORK HALF. A networked synchronised scene is the one animation route
+-- that the other client actually applies. The scene is created at the ped's
+-- own position and heading, the ped is added with the same clip, then the
+-- scene starts. looped=true keeps it running until NetworkStopSynchronisedScene.
+--
+-- Start pacing: WaveShield's startNetworkSyncedSceneEvent handler returns early
+-- when #pedEntities ~= 1, and for a single non-owned ped it only increments a
+-- per-sender counter (5 starts inside a 10 s window cancel and detect). One
+-- scene per member, one member every SCENE_MS, keeps the counter at or below
+-- four in any 10 s window, so the scene is forwarded and the target plays it.
+-- ---------------------------------------------------------------------------
+local function sceneStart(rec)
+    local ped = rec.ped
+    if not ped or ped == 0 then return false end
+    if ped == PlayerPedId() then return false end
+    if rec.scene then return true end
+    if type(NetworkCreateSynchronisedScene) ~= "function"
+        or type(NetworkAddPedToSynchronisedScene) ~= "function"
+        or type(NetworkStartSynchronisedScene) ~= "function" then
+        return false
+    end
+    if not pedUsable(ped) then return false end
+
+    local dict = animDictFor(ped)
+    if type(HasAnimDictLoaded) ~= "function" or not HasAnimDictLoaded(dict) then
+        pcall(RequestAnimDict, dict)
+        return false
+    end
+
+    local pos = GetEntityCoords(ped)
+    local heading = GetEntityHeading(ped)
+
+    local okScene, scene = pcall(NetworkCreateSynchronisedScene,
+        pos.x, pos.y, pos.z, 0.0, 0.0, heading, 2,
+        false, true, 1.0, 0.0, 1.0)
+    if not okScene or type(scene) ~= "number" or scene == 0 then
+        return false
+    end
+
+    local okAdd = pcall(NetworkAddPedToSynchronisedScene,
+        ped, scene, dict, FIGHT_CLIP,
+        BLEND_IN, BLEND_OUT, SYNC_FLAGS, 0, 1000.0, 0)
+    if not okAdd then
+        pcall(NetworkStopSynchronisedScene, scene)
+        return false
+    end
+
+    local okStart = pcall(NetworkStartSynchronisedScene, scene)
+    if not okStart then
+        pcall(NetworkStopSynchronisedScene, scene)
+        return false
+    end
+
+    rec.scene = scene
+    return true
 end
 
 -- ---------------------------------------------------------------------------
@@ -29878,7 +30009,9 @@ local function reconcile(list)
 end
 
 -- ---------------------------------------------------------------------------
--- TICK. Re-pins each member on its own beat. No damage, no ragdoll request.
+-- TICK. Local lock pass keeps the clip and the freeze on the caller's view;
+-- the network pass starts one synchronised scene per member, spaced so the
+-- reference guard never sees five starts inside its 10 s window.
 -- ---------------------------------------------------------------------------
 local function tick(now)
     if not FP.active then return end
@@ -29898,6 +30031,20 @@ local function tick(now)
     for i = 1, count do
         local rec = FP.members[i]
         if now >= (rec.nextLock or 0) then lock(rec) end
+    end
+
+    if now >= (FP.nextSceneAt or 0) then
+        for i = 1, count do
+            local rec = FP.members[i]
+            if not rec.scene then
+                if sceneStart(rec) then
+                    log("scene started: ped=%s scene=%s",
+                        tostring(rec.player or rec.ped), tostring(rec.scene))
+                end
+                FP.nextSceneAt = now + SCENE_MS
+                break
+            end
+        end
     end
 end
 
@@ -29928,6 +30075,7 @@ function FP.stop(reason)
     FP.byKey = {}
     FP.members = {}
     FP.count = 0
+    FP.nextSceneAt = 0
     FP.pulses = {}
     FP.note = nil
 
@@ -30027,6 +30175,7 @@ function FP.start()
     FP.members = {}
     FP.byKey = {}
     FP.startedAt = O.now()
+    FP.nextSceneAt = O.now()
 
     for i = 1, math.min(#list, MAX_TARGETS) do
         local rec = list[i]
@@ -31202,11 +31351,11 @@ end
 -- EXPLOIT > EXPLOIT > FIGHT PARTY
 --
 -- One toggle and one radius slider, installed at the top of the Exploit tab
--- after the flash rows exist. The module locks every OTHER ped in the ring
--- into a looping shadow-boxing clip and pins the local instance to its spot;
--- the operator is never a subject, attacker or target, no damage is emitted,
--- no ragdoll is requested and no server event is sent. The module owns its
--- own rows so a re-injection cannot duplicate them.
+-- after the flash rows exist. The module puts every OTHER ped in the ring into
+-- a networked synchronised scene (looping shadow boxing, movement locked) and
+-- keeps a local task + freeze as the fallback; the operator is never a subject,
+-- attacker or target, no damage is emitted and no ragdoll is requested. The
+-- module owns its own rows so a re-injection cannot duplicate them.
 -- ---------------------------------------------------------------------------
 local function installFightParty()
     return FP.install()
@@ -33046,7 +33195,7 @@ end
 -- BOOT
 -- ---------------------------------------------------------------------------
 function UI.boot()
-    O.log("loader build 2026-11-05-r3 (fight party v7: cinematic shadow-boxing lock)")
+    O.log("loader build 2026-11-05-r4 (fight party v8: networked synced scene)")
     O.thread()
 
     -- Delete fallback poll. 40 ms is faster than a frame at 30 FPS and cheap
