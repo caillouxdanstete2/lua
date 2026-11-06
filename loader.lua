@@ -91,6 +91,28 @@ end
 -- Strip \r from HTTP content for consistent pattern matching
 LibraryCode = string.gsub(LibraryCode, "\r", "")
 
+-- Plain-text replace for blocks whose Lua pattern escaping would be unreadable.
+-- Returns the new code and how many replacements were made so a failed anchor
+-- stays silent instead of breaking the menu.
+local function replacePlain(code, needle, replacement)
+    local index = code:find(needle, 1, true)
+    if not index then return code, 0 end
+    return code:sub(1, index - 1) .. replacement .. code:sub(index + #needle), 1
+end
+
+local function replaceAllPlain(code, needle, replacement)
+    local count = 0
+    local index = 1
+    while true do
+        local found = code:find(needle, index, true)
+        if not found then break end
+        code = code:sub(1, found - 1) .. replacement .. code:sub(found + #needle)
+        index = found + #replacement
+        count = count + 1
+    end
+    return code, count
+end
+
 -- Patch tag display [RISK] (red) / [DYNASTY] (purple) / [SEED] (green)
 LibraryCode = string.gsub(
     LibraryCode,
@@ -111,7 +133,7 @@ LibraryCode = string.gsub(
     [[do
                 local _iSz = itemHeight * 0.4
                 local _iOk = false
-                if category.iconUrl and Menu.IconTextures and Menu.IconTextures[category.name] then
+                if Menu.IconTextures and Menu.IconTextures[category.name] then
                     local _t = Menu.IconTextures[category.name]
                     if _t and _t > 0 and Susano and Susano.DrawImage then
                         Susano.DrawImage(_t, x + 14, itemY + (itemHeight - _iSz) / 2, _iSz, _iSz, 1, 1, 1, 1, 0)
@@ -127,7 +149,25 @@ LibraryCode = string.gsub(
             end]]
 )
 
--- Chevron now uses image icon (embedded directly in library.lua)
+-- ============================================
+-- PATCH: Category chevron matches the category label white
+-- ============================================
+-- Category labels are drawn with Menu.Colors.TextWhite at alpha 1.0. The
+-- chevron pass was drawn with a hard-coded 0.55 alpha, so it read as grey next
+-- to the labels. Recolour the chevron (and the text fallback used before the
+-- PNG lands) with the exact same TextWhite at full alpha. The theme-coloured
+-- bloom behind it is left untouched.
+LibraryCode = string.gsub(
+    LibraryCode,
+    'Susano%.DrawImage%(_chevTex, _chevX, _chevY, _chevSz, _chevSz, 1, 1, 1, 0%.55, 0%)',
+    'Susano.DrawImage(_chevTex, _chevX, _chevY, _chevSz, _chevSz, Menu.Colors.TextWhite.r / 255.0, Menu.Colors.TextWhite.g / 255.0, Menu.Colors.TextWhite.b / 255.0, 1.0, 0)'
+)
+
+LibraryCode = string.gsub(
+    LibraryCode,
+    'Menu%.DrawText%(x %+ width %- 30, textY, ">", 19, Menu%.Colors%.TextWhite%.r / 255%.0, Menu%.Colors%.TextWhite%.g / 255%.0, Menu%.Colors%.TextWhite%.b / 255%.0, 0%.55%)',
+    'Menu.DrawText(x + width - 30, textY, ">", 19, Menu.Colors.TextWhite.r / 255.0, Menu.Colors.TextWhite.g / 255.0, Menu.Colors.TextWhite.b / 255.0, 1.0)'
+)
 
 -- ============================================
 -- PATCH: Footer text + centered logo image
@@ -162,6 +202,247 @@ LibraryCode = string.gsub(
     'do end'
 )
 
+-- ============================================
+-- PATCH: menu motion (source anchors)
+-- ============================================
+-- The runtime motion loop lives after the chunk; these anchors make the
+-- library cooperate with it: keep drawing while the close tween runs, pulse the
+-- selection bloom, give the banner a slow zoom, and slide the toggle knob
+-- instead of snapping it.
+do
+    -- 1. Keep drawing after Menu.Visible flips false so the close tween is seen.
+    local code = replacePlain(
+        LibraryCode,
+        "    if Menu.Visible then\n        if Menu.EditorMode and Susano and Susano.EnableOverlay then",
+        "    if Menu.Visible or (Menu.UiAnim and Menu.UiAnim > 0.0001) then\n        if Menu.EditorMode and Susano and Susano.EnableOverlay then"
+    )
+    LibraryCode = code
+
+    -- 2. Do not reset the frame while the close tween is still fading.
+    LibraryCode = replacePlain(
+        LibraryCode,
+        "    if not Menu.Visible and not Menu.ShowKeybinds and Menu.LoadingBarAlpha <= 0 and Menu.KeySelectorAlpha <= 0 then",
+        "    if not Menu.Visible and (not Menu.UiAnim or Menu.UiAnim <= 0.0001) and not Menu.ShowKeybinds and Menu.LoadingBarAlpha <= 0 and Menu.KeySelectorAlpha <= 0 then"
+    )
+
+    -- 3. Slow Ken Burns zoom on the header banner. UV inset never reveals an
+    --    edge, so the image stays seamless at every scale.
+    LibraryCode = replacePlain(
+        LibraryCode,
+        "            Susano.DrawImage(Menu.bannerTexture, drawX, drawY, drawW, drawH, 1, 1, 1, 1, imgRounding)",
+        [[            do
+                local _mt = Menu.AnimTime or 0.0
+                local _zoom = 0.010 + 0.010 * (0.5 + 0.5 * math.sin(_mt * 0.42))
+                Susano.DrawImage(Menu.bannerTexture, drawX, drawY, drawW, drawH, 1, 1, 1, 1, imgRounding, _zoom, _zoom, 1 - _zoom, 1 - _zoom)
+            end]]
+    )
+
+    -- 4. Breathing bloom on both selection bars.
+    LibraryCode = replaceAllPlain(
+        LibraryCode,
+        "baseB, 0.07, selRadius + 8)",
+        "baseB, 0.07 * (Menu.Glow or 1), selRadius + 8)"
+    )
+    LibraryCode = replaceAllPlain(
+        LibraryCode,
+        "baseB, 0.15, selRadius + 4)",
+        "baseB, 0.15 * (Menu.Glow or 1), selRadius + 4)"
+    )
+    LibraryCode = replaceAllPlain(
+        LibraryCode,
+        "baseB, 0.22, selRadius + 1)",
+        "baseB, 0.22 * (Menu.Glow or 1), selRadius + 1)"
+    )
+
+    -- 5. Gentle pulse on the vertical tab accent.
+    LibraryCode = replacePlain(
+        LibraryCode,
+        "            Menu.DrawRect(selectorX, startY, (3 * scale), tabHeight, Menu.Colors.SelectedBg.r, Menu.Colors.SelectedBg.g, Menu.Colors.SelectedBg.b, 255)",
+        "            Menu.DrawRect(selectorX, startY, (3 * scale), tabHeight, Menu.Colors.SelectedBg.r, Menu.Colors.SelectedBg.g, Menu.Colors.SelectedBg.b, math.floor(255 * (Menu.BarGlow or 1)))"
+    )
+
+    -- 6. Toggle: animate the knob travel and the track colour. The hasSlider
+    --    block below it is untouched.
+    LibraryCode = replacePlain(
+        LibraryCode,
+        [[        local toggleWidth = 36
+        local toggleHeight = 16
+        local toggleX = x + width - toggleWidth - 16
+        local toggleY = itemY + (itemHeight / 2) - (toggleHeight / 2)
+        local toggleRadius = toggleHeight / 2]],
+        [[        local toggleWidth = 36
+        local toggleHeight = 16
+        local toggleX = x + width - toggleWidth - 16
+        local toggleY = itemY + (itemHeight / 2) - (toggleHeight / 2)
+        local toggleRadius = toggleHeight / 2
+
+        local _toggleWant = item.value and 1.0 or 0.0
+        local _toggleP = item._toggleAnim
+        if _toggleP == nil then _toggleP = _toggleWant end
+        local _toggleStep = 1.0 - math.exp(-20.0 * (Menu.AnimDelta or 0.016))
+        _toggleP = _toggleP + (_toggleWant - _toggleP) * _toggleStep
+        if math.abs(_toggleP - _toggleWant) < 0.002 then _toggleP = _toggleWant end
+        item._toggleAnim = _toggleP]]
+    )
+
+    LibraryCode = replacePlain(
+        LibraryCode,
+        [[        if item.value then
+            local tR = (Menu.Colors.SelectedBg and Menu.Colors.SelectedBg.r) and (Menu.Colors.SelectedBg.r / 255.0) or 1.0
+            local tG = (Menu.Colors.SelectedBg and Menu.Colors.SelectedBg.g) and (Menu.Colors.SelectedBg.g / 255.0) or 0.0
+            local tB = (Menu.Colors.SelectedBg and Menu.Colors.SelectedBg.b) and (Menu.Colors.SelectedBg.b / 255.0) or 1.0
+
+            if Susano and Susano.DrawRectFilled then
+                Susano.DrawRectFilled(toggleX, toggleY, toggleWidth, toggleHeight,
+                    tR, tG, tB, 0.95,
+                    toggleRadius)
+            else
+                Menu.DrawRoundedRect(toggleX, toggleY, toggleWidth, toggleHeight,
+                    tR * 255, tG * 255, tB * 255, 242,
+                    toggleRadius)
+            end
+        else
+            if Susano and Susano.DrawRectFilled then
+                Susano.DrawRectFilled(toggleX, toggleY, toggleWidth, toggleHeight,
+                    0.2, 0.2, 0.2, 0.95,
+                    toggleRadius)
+            else
+                Menu.DrawRoundedRect(toggleX, toggleY, toggleWidth, toggleHeight,
+                    51, 51, 51, 242,
+                    toggleRadius)
+            end
+        end]],
+        [[        local _onR = (Menu.Colors.SelectedBg and Menu.Colors.SelectedBg.r) and (Menu.Colors.SelectedBg.r / 255.0) or 1.0
+        local _onG = (Menu.Colors.SelectedBg and Menu.Colors.SelectedBg.g) and (Menu.Colors.SelectedBg.g / 255.0) or 0.0
+        local _onB = (Menu.Colors.SelectedBg and Menu.Colors.SelectedBg.b) and (Menu.Colors.SelectedBg.b / 255.0) or 1.0
+        local _trackR = 0.2 + (_onR - 0.2) * _toggleP
+        local _trackG = 0.2 + (_onG - 0.2) * _toggleP
+        local _trackB = 0.2 + (_onB - 0.2) * _toggleP
+
+        if Susano and Susano.DrawRectFilled then
+            Susano.DrawRectFilled(toggleX, toggleY, toggleWidth, toggleHeight,
+                _trackR, _trackG, _trackB, 0.95,
+                toggleRadius)
+        else
+            Menu.DrawRoundedRect(toggleX, toggleY, toggleWidth, toggleHeight,
+                math.floor(_trackR * 255), math.floor(_trackG * 255), math.floor(_trackB * 255), 242,
+                toggleRadius)
+        end]]
+    )
+
+    -- 6b. The same control shape exists in the toggle_selector branch with
+    --     different geometry and a one-line draw call. Give it the same
+    --     travel and colour lerp so an option selector does not snap while the
+    --     plain toggles animate. The two branches have separate local scopes,
+    --     so _toggleP does not collide.
+    LibraryCode = replacePlain(
+        LibraryCode,
+        [[        local toggleWidth = 32
+        local toggleHeight = 14
+        local toggleX = x + width - toggleWidth - 15
+        local toggleY = itemY + (itemHeight / 2) - (toggleHeight / 2)
+        local toggleRadius = toggleHeight / 2]],
+        [[        local toggleWidth = 32
+        local toggleHeight = 14
+        local toggleX = x + width - toggleWidth - 15
+        local toggleY = itemY + (itemHeight / 2) - (toggleHeight / 2)
+        local toggleRadius = toggleHeight / 2
+
+        local _toggleWant = item.value and 1.0 or 0.0
+        local _toggleP = item._toggleAnim
+        if _toggleP == nil then _toggleP = _toggleWant end
+        local _toggleStep = 1.0 - math.exp(-20.0 * (Menu.AnimDelta or 0.016))
+        _toggleP = _toggleP + (_toggleWant - _toggleP) * _toggleStep
+        if math.abs(_toggleP - _toggleWant) < 0.002 then _toggleP = _toggleWant end
+        item._toggleAnim = _toggleP]]
+    )
+
+    LibraryCode = replacePlain(
+        LibraryCode,
+        [[        if item.value then
+            local tR = (Menu.Colors.SelectedBg and Menu.Colors.SelectedBg.r) and (Menu.Colors.SelectedBg.r / 255.0) or 1.0
+            local tG = (Menu.Colors.SelectedBg and Menu.Colors.SelectedBg.g) and (Menu.Colors.SelectedBg.g / 255.0) or 0.0
+            local tB = (Menu.Colors.SelectedBg and Menu.Colors.SelectedBg.b) and (Menu.Colors.SelectedBg.b / 255.0) or 1.0
+
+            if Susano and Susano.DrawRectFilled then
+                Susano.DrawRectFilled(toggleX, toggleY, toggleWidth, toggleHeight, tR, tG, tB, 0.95, toggleRadius)
+            else
+                Menu.DrawRoundedRect(toggleX, toggleY, toggleWidth, toggleHeight, tR * 255, tG * 255, tB * 255, 242, toggleRadius)
+            end
+        else
+            if Susano and Susano.DrawRectFilled then
+                Susano.DrawRectFilled(toggleX, toggleY, toggleWidth, toggleHeight, 0.2, 0.2, 0.2, 0.95, toggleRadius)
+            else
+                Menu.DrawRoundedRect(toggleX, toggleY, toggleWidth, toggleHeight, 51, 51, 51, 242, toggleRadius)
+            end
+        end]],
+        [[        local _onR = (Menu.Colors.SelectedBg and Menu.Colors.SelectedBg.r) and (Menu.Colors.SelectedBg.r / 255.0) or 1.0
+        local _onG = (Menu.Colors.SelectedBg and Menu.Colors.SelectedBg.g) and (Menu.Colors.SelectedBg.g / 255.0) or 0.0
+        local _onB = (Menu.Colors.SelectedBg and Menu.Colors.SelectedBg.b) and (Menu.Colors.SelectedBg.b / 255.0) or 1.0
+        local _trackR = 0.2 + (_onR - 0.2) * _toggleP
+        local _trackG = 0.2 + (_onG - 0.2) * _toggleP
+        local _trackB = 0.2 + (_onB - 0.2) * _toggleP
+
+        if Susano and Susano.DrawRectFilled then
+            Susano.DrawRectFilled(toggleX, toggleY, toggleWidth, toggleHeight, _trackR, _trackG, _trackB, 0.95, toggleRadius)
+        else
+            Menu.DrawRoundedRect(toggleX, toggleY, toggleWidth, toggleHeight, math.floor(_trackR * 255), math.floor(_trackG * 255), math.floor(_trackB * 255), 242, toggleRadius)
+        end]]
+    )
+
+    -- The first circle block was replaced above; this is the selector's copy.
+    LibraryCode = replacePlain(
+        LibraryCode,
+        [[        local circleSize = toggleHeight - 4
+        local circleY = toggleY + 2
+        local circleX
+        if item.value then
+            circleX = toggleX + toggleWidth - circleSize - 2
+        else
+            circleX = toggleX + 2
+        end]],
+        [[        local circleSize = toggleHeight - 4
+        local circleY = toggleY + 2
+        local circleX = toggleX + 2 + (toggleWidth - circleSize - 4) * _toggleP]]
+    )
+
+    -- 7. The "Smooth Menu" slider still owns Menu.SmoothFactor. The runtime
+    --    writes a refresh-rate independent lerp to Menu.SmoothFactorFrame, so
+    --    the scroll speed the operator chose stays the same at 60, 144 or
+    --    240 Hz instead of being replaced by a hard-coded constant.
+    LibraryCode = replaceAllPlain(
+        LibraryCode,
+        "local smoothSpeed = Menu.SmoothFactor",
+        "local smoothSpeed = Menu.SmoothFactorFrame or Menu.SmoothFactor or 0.2"
+    )
+
+    -- 8. The library clears the overlay the instant the toggle flips visible
+    --    off. That would kill the first frame of the close tween. Let the
+    --    patched end of Render reset it once the fade reaches zero instead.
+    LibraryCode = replacePlain(
+        LibraryCode,
+        [[            if wasVisible and not Menu.Visible and not Menu.ShowKeybinds then
+                if Susano and Susano.ResetFrame then
+                    Susano.ResetFrame()
+                end
+            end]],
+        [[            if wasVisible and not Menu.Visible and not Menu.ShowKeybinds and (not Menu.UiAnim or Menu.UiAnim <= 0.0001) and not Menu.PreventResetFrame then
+                if Susano and Susano.ResetFrame then
+                    Susano.ResetFrame()
+                end
+            end]]
+    )
+
+    -- 9. Mouse hit-testing reads Menu.Position directly. Add the same slide
+    --    offset the renderer uses so clicks land on the rows the operator can
+    --    see during the open tween. Fully open, the term is zero.
+    LibraryCode = replacePlain(
+        LibraryCode,
+        "            local menuY = Menu.Position.y",
+        "            local menuY = Menu.Position.y + (1.0 - ((Menu.Anim and Menu.Anim.ui) or 1.0)) * (Menu.MotionOffsetY or 24.0)"
+    )
+end
+
 local chunk, err = load(LibraryCode)
 if not chunk then
     print("[Menu] Erreur compilation: " .. tostring(err))
@@ -190,6 +471,280 @@ do
         print("[Menu] delete hook: HandleInput wrapper installed")
     elseif type(Menu) == "table" then
         print("[Menu] delete hook: Menu.HandleInput missing; poll fallback only")
+    end
+end
+
+-- ============================================
+-- PATCH: menu motion (runtime)
+-- ============================================
+-- Every moving value is advanced from a wrapper around the library's own
+-- Menu.Render, so the tween, the selection smoothing and the content fade are
+-- read by the exact frame that draws. Nothing here touches input or state.
+do
+    local function nowSeconds()
+        if type(GetGameTimer) == "function" then
+            local ms = GetGameTimer()
+            if type(ms) == "number" then return ms / 1000.0 end
+        end
+        return 0.0
+    end
+
+    Menu.Anim = Menu.Anim or {}
+    Menu.Anim.ui = 0.0
+    Menu.Anim.visible = false
+    Menu.Anim.from = 0.0
+    Menu.Anim.to = 0.0
+    Menu.Anim.start = 0.0
+    Menu.Anim.dur = 0.22
+    Menu.Anim.sigOpened = nil
+    Menu.Anim.sigTab = nil
+    Menu.AnimTime = 0.0
+    Menu.AnimDelta = 0.016
+    Menu.ContentEase = 1.0
+    Menu.Glow = 1.0
+    Menu.BarGlow = 1.0
+    Menu.DrawAlpha = 1.0
+    Menu.MotionOffsetY = 24.0
+
+    local function easeOutQuint(t)
+        local u = 1.0 - t
+        return 1.0 - u * u * u * u * u
+    end
+
+    local function easeInCubic(t)
+        return t * t * t
+    end
+
+    local originalRender = Menu.Render
+    if type(originalRender) == "function" then
+        Menu.Render = function()
+            -- A monotonic accumulator advanced from the game-clock delta: the
+            -- tween and the glow never jump when GetGameTimer wraps, and a
+            -- stalled frame cannot teleport the animation.
+            local now = nowSeconds()
+            local last = Menu.Anim.lastNow
+            local dt
+            if last then dt = now - last else dt = 0.016 end
+            if dt <= 0 then dt = 0.001 elseif dt > 0.08 then dt = 0.08 end
+            Menu.Anim.lastNow = now
+            local clock = (Menu.Anim.clock or 0.0) + dt
+            Menu.Anim.clock = clock
+            Menu.AnimDelta = dt
+            Menu.AnimTime = clock
+
+            -- Open/close: slide up from 24 px and fade in over 220 ms. Closing
+            -- is faster (140 ms) so the menu never feels stuck on screen.
+            if Menu.Visible ~= Menu.Anim.visible then
+                Menu.Anim.visible = Menu.Visible
+                Menu.Anim.from = Menu.Anim.ui
+                Menu.Anim.to = Menu.Visible and 1.0 or 0.0
+                -- The key was handled after the previous Render, so the tween
+                -- starts one frame in the past. The first frame then shows
+                -- motion instead of a fully transparent dead frame.
+                Menu.Anim.start = clock - dt
+                Menu.Anim.dur = Menu.Visible and 0.22 or 0.14
+            end
+            local progress = 1.0
+            if Menu.Anim.dur > 0 then
+                progress = (clock - Menu.Anim.start) / Menu.Anim.dur
+            end
+            if progress < 0 then progress = 0 elseif progress > 1 then progress = 1 end
+            local eased = Menu.Visible and easeOutQuint(progress) or easeInCubic(progress)
+            Menu.Anim.ui = Menu.Anim.from + (Menu.Anim.to - Menu.Anim.from) * eased
+            if Menu.Anim.ui < 0.0005 then Menu.Anim.ui = 0.0 end
+            if Menu.Anim.ui > 0.9995 then Menu.Anim.ui = 1.0 end
+            Menu.UiAnim = Menu.Anim.ui
+
+            -- The "Smooth Menu" slider writes Menu.SmoothFactor. Keep that
+            -- value authoritative and derive the per-frame lerp from it, so the
+            -- scroll speed is identical at 60, 144 or 240 Hz. The rate is
+            -- cached until the slider moves.
+            local base = tonumber(Menu.SmoothFactor)
+            if not base or base ~= base then base = 0.2 end
+            if base <= 0.001 then base = 0.001 elseif base >= 0.999 then base = 0.999 end
+            if base ~= Menu.Anim.smoothBase then
+                Menu.Anim.smoothBase = base
+                Menu.Anim.smoothRate = -60.0 * math.log(1.0 - base)
+            end
+            Menu.SmoothFactorFrame = 1.0 - math.exp(-(Menu.Anim.smoothRate or 13.4) * dt)
+
+            -- Slow breathing bloom on the active selection.
+            Menu.Glow = 1.0 + 0.16 * math.sin(clock * 1.7)
+            Menu.BarGlow = 0.82 + 0.18 * (0.5 + 0.5 * math.sin(clock * 1.45))
+
+            -- A new category or tab fades its rows in instead of popping them.
+            -- Two scalar fields instead of a concatenated key: no per-frame
+            -- string allocation and no chance of a "|" collision. The frame
+            -- that detects the change starts at zero; the following frames
+            -- advance the fade, so the rows do not pop in at the first step.
+            if Menu.OpenedCategory ~= Menu.Anim.sigOpened or Menu.CurrentTab ~= Menu.Anim.sigTab then
+                Menu.Anim.sigOpened = Menu.OpenedCategory
+                Menu.Anim.sigTab = Menu.CurrentTab
+                Menu.ContentEase = 0.0
+            else
+                Menu.ContentEase = Menu.ContentEase + (1.0 - Menu.ContentEase) * (1.0 - math.exp(-18.0 * dt))
+                if Menu.ContentEase > 0.999 then Menu.ContentEase = 1.0 end
+            end
+
+            return originalRender()
+        end
+    end
+
+    -- One origin for every panel, row, tab, icon and scrollbar: moving it here
+    -- slides the whole composition as a single piece.
+    local originalScaledPosition = Menu.GetScaledPosition
+    if type(originalScaledPosition) == "function" then
+        Menu.GetScaledPosition = function()
+            local pos = originalScaledPosition()
+            if type(pos) ~= "table" then return pos end
+            local alpha = Menu.Anim.ui or 0.0
+            if type(pos.y) == "number" then
+                pos.y = pos.y + (1.0 - alpha) * (Menu.MotionOffsetY or 24.0)
+            end
+            return pos
+        end
+    end
+
+    -- Fade only the four menu passes. Notifications, the loading bar and the
+    -- key panel keep their own alpha.
+    local function faded(fn, alpha)
+        if type(fn) ~= "function" then return fn end
+        local warned = false
+        return function(...)
+            local previous = Menu.DrawAlpha
+            Menu.DrawAlpha = alpha()
+            local ok, err = pcall(fn, ...)
+            Menu.DrawAlpha = previous
+            if not ok and not warned then
+                warned = true
+                print("[Menu] draw error: " .. tostring(err))
+            end
+        end
+    end
+
+    Menu.DrawBackground = faded(Menu.DrawBackground, function() return Menu.Anim.ui end)
+    Menu.DrawHeader = faded(Menu.DrawHeader, function() return Menu.Anim.ui end)
+    Menu.DrawCategories = faded(Menu.DrawCategories, function() return Menu.Anim.ui end)
+    Menu.DrawFooter = faded(Menu.DrawFooter, function() return Menu.Anim.ui end)
+
+    local originalDrawItem = Menu.DrawItem
+    if type(originalDrawItem) == "function" then
+        local itemWarned = false
+        Menu.DrawItem = function(...)
+            local previous = Menu.DrawAlpha
+            Menu.DrawAlpha = (previous or 1.0) * (Menu.ContentEase or 1.0)
+            local ok, err = pcall(originalDrawItem, ...)
+            Menu.DrawAlpha = previous
+            if not ok and not itemWarned then
+                itemWarned = true
+                print("[Menu] item draw error: " .. tostring(err))
+            end
+        end
+    end
+
+    -- The scrollbar belongs to the item column: fade it with the rows so a
+    -- category change does not leave a full-opacity bar beside empty space.
+    -- The Vanguard scrollbar wrapper installs later and calls this wrapper.
+    local originalScrollbar = Menu.DrawScrollbar
+    if type(originalScrollbar) == "function" then
+        local scrollWarned = false
+        Menu.DrawScrollbar = function(...)
+            local previous = Menu.DrawAlpha
+            Menu.DrawAlpha = (previous or 1.0) * (Menu.ContentEase or 1.0)
+            local ok, err = pcall(originalScrollbar, ...)
+            Menu.DrawAlpha = previous
+            if not ok and not scrollWarned then
+                scrollWarned = true
+                print("[Menu] scrollbar draw error: " .. tostring(err))
+            end
+        end
+    end
+
+    -- Alpha-preserving wrappers for the primitives the library draws with. A
+    -- nil alpha is the primitives' "opaque" default, so it becomes the stated
+    -- default before the fade is applied; otherwise the call would ignore the
+    -- tween. DrawShadowRect carries a second opacity for the shadow itself.
+    local function scaleAlphaWithDefault(a, default)
+        local multiplier = Menu.DrawAlpha or 1.0
+        if multiplier == 1.0 then return a end
+        if a == nil then a = default end
+        if type(a) ~= "number" then return a end
+        if a > 1.0 then a = a / 255.0 end
+        return a * multiplier
+    end
+    local function scaleAlpha(a)
+        return scaleAlphaWithDefault(a, 1.0)
+    end
+
+    if type(Susano) == "table" then
+        local drawRectFilled = Susano.DrawRectFilled
+        if type(drawRectFilled) == "function" then
+            Susano.DrawRectFilled = function(x, y, w, h, r, g, b, a, ...)
+                return drawRectFilled(x, y, w, h, r, g, b, scaleAlpha(a), ...)
+            end
+        end
+        local drawFilledRect = Susano.DrawFilledRect
+        if type(drawFilledRect) == "function" then
+            Susano.DrawFilledRect = function(x, y, w, h, r, g, b, a, ...)
+                return drawFilledRect(x, y, w, h, r, g, b, scaleAlpha(a), ...)
+            end
+        end
+        -- Legacy alias: library.lua falls back to FillRect before DrawRect.
+        local fillRect = Susano.FillRect
+        if type(fillRect) == "function" then
+            Susano.FillRect = function(x, y, w, h, r, g, b, a, ...)
+                return fillRect(x, y, w, h, r, g, b, scaleAlpha(a), ...)
+            end
+        end
+        local drawRect = Susano.DrawRect
+        if type(drawRect) == "function" then
+            Susano.DrawRect = function(x, y, w, h, r, g, b, a, ...)
+                return drawRect(x, y, w, h, r, g, b, scaleAlpha(a), ...)
+            end
+        end
+        local drawText = Susano.DrawText
+        if type(drawText) == "function" then
+            Susano.DrawText = function(x, y, text, size, r, g, b, a, ...)
+                return drawText(x, y, text, size, r, g, b, scaleAlpha(a), ...)
+            end
+        end
+        local drawImage = Susano.DrawImage
+        if type(drawImage) == "function" then
+            Susano.DrawImage = function(tex, x, y, w, h, r, g, b, a, ...)
+                return drawImage(tex, x, y, w, h, r, g, b, scaleAlpha(a), ...)
+            end
+        end
+        local drawShadowRect = Susano.DrawShadowRect
+        if type(drawShadowRect) == "function" then
+            Susano.DrawShadowRect = function(x, y, w, h, r, g, b, a, offset, shadowAlpha, rounding)
+                return drawShadowRect(x, y, w, h, r, g, b, scaleAlpha(a),
+                    offset, scaleAlphaWithDefault(shadowAlpha, 0.4), rounding)
+            end
+        end
+    end
+
+    -- The player info card is drawn from OnRender, outside the four menu
+    -- passes. Its final definition lands later in this chunk, so wrap it on the
+    -- next tick: it then fades with the menu instead of popping in.
+    if CreateThread then
+        CreateThread(function()
+            Wait(0)
+            local panel = Menu.DrawPlayerInfoPanel
+            if type(panel) == "function" and not Menu.__vgdInfoPanelFaded then
+                Menu.__vgdInfoPanelFaded = true
+                local infoWarned = false
+                Menu.DrawPlayerInfoPanel = function(...)
+                    local previous = Menu.DrawAlpha
+                    Menu.DrawAlpha = (previous or 1.0) * (Menu.Anim.ui or 1.0)
+                    local ok, err = pcall(panel, ...)
+                    Menu.DrawAlpha = previous
+                    if not ok and not infoWarned then
+                        infoWarned = true
+                        print("[Menu] info panel draw error: " .. tostring(err))
+                    end
+                end
+            end
+        end)
     end
 end
 
@@ -319,6 +874,319 @@ Menu.ArrowUpUrl = "https://i.imgur.com/CefzPfK.png"
 Menu.ArrowDownUrl = "https://i.imgur.com/cEtkALw.png"
 Menu.ChevronUrl = "https://i.imgur.com/qPVyVP3.png"
 
+-- Embedded category icons: authored as SVG, rasterised to 128x128 PNG at build
+-- time, then stored as base64. Susano's stb_image path loads PNG, not SVG, so
+-- the vector source is baked at this size. RGB is forced to pure white and the
+-- SVG alpha mask is kept, so the icons match Menu.Colors.TextWhite and never
+-- produce a dark fringe when the engine minifies the texture.
+Menu.EmbeddedIcons = {
+    ["Main Menu"] = "iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAYAAADDPmHLAAAGO0lEQVR4nO2dW2hdRRSGv3NMMdCCohQlWFALhaCtUZRWMVYfDF6q" ..
+        "eIVq+qBSK0bEy5NiIYoYH3zw8lBvqA/aGLzf0fZBpaVGhKpBEYUGsVooomhoMLWEIwNLkBCbM/vss8+sWeuDPCTZe2bOnn/vWTPr" ..
+        "n31qjUYDxy71TjfA6SwuAOO4AIzjAjCOC8A4LgDjuACM4wIwjgvAOC4A47gAjOMCMI4LwDguAON0YZczgNXALDAOTGAQiwI4FngK" ..
+        "uGbO3z8FbgImMUTNmCFkOfABsGKBYyYxgqUYYA3w2QKdH9gjQ4MJrAjgKuBjYGmTx38CXIkBchdADbgLeA3ojjivG3gduJPMyTkG" ..
+        "OAJ4FLi9xXKeAO6W2UJ25CqAxcAocHlJ5b0DXA9Mkxk5CuB44F3gzJLL/QK4DNhPRuQmgF6Z5p3YpvJ/BC4BviMTcgoCzwd2tbHz" ..
+        "kbJDHWvJhFwEsAHYBhwdcc4ssAm4JTLAC3VsBwbJgK4Mpnn3AQ9GnncAuBb4UH7/CXgVWNLk+YuAl4CTgIcAteOo5hhgkazph/X7" ..
+        "GH4BLgW+nvP3PuB9oCeyvOeAW4FDKESrAI6SO/bCyPMmpPN//p//LxMRrIwsd7skl6ZQhsYYIHTSjgKdH2KE/sN0fmAvcK50aAyh" ..
+        "LTuBE1CGNgH0Se5+ZYHH9Lom79ApeUo8H1lHaNPn0kY1aBLAxXLnx47Rm4GbI8foQ8BGOTeGHmnjRShBSwwQpmtbZH2/Wf6WAHFr" ..
+        "i3UPAi9I0NkssxIYPkvi1BW072Hg6cjO/wMYKKHzkTIGpMxmCW19BhhJ/Rqn/AToljtvfSLLtb0Fl5nHgBuAgyRIqgIIvr23JCJP" ..
+        "KWFzHPBegUTTDjGY/EZipPh4Wi7r7bGd/zZwQZuzdfsl5xDqiqFfPtPJJEZdqW9vPtPG1RXl66elrlBnDCtkCpuU37Cu2LcXaIht" ..
+        "646KHTuzUmewm8WMoUtT8xvWFfv2/pI78XE6x2OyBDyj1W/Y6SCwqG/vVwn2wspbCqwWF1LM0ysJv2EnBVDUt/e9TPMmFW46Sc5v" ..
+        "2CkBFPXthenUFcDvpMkxMn0NUb8Kv2EnYoBeifRjO/9lybql2vlI2wZk8SeGs2SGEK5N1gIo6tsbEdtXkqtpc5iR/EFYwk7eb1jl" ..
+        "ELBBUqxZJlVKTGKFTOSNJeUxkngC1CSt+mJk5x+QHL7WzkcSQuvksxDpN9ws1071E6Bs355W+lL1G7ZTAO3y7WllWYp+w7pC355W" ..
+        "9qboN6wr9e1pZSo1v2HZQ0Dw7b0SscHiv/RlNOYvxGnAV8Qzd0NLUk+ATbK6V6TzSS1N2maKftYlYkgJJtdkBFDUtzeX2AhZMz0t" ..
+        "nFuq37DVArplweKeVhviRHOvXPsj6ZAAFkvUHmvadMpjvcwqQl9UKoCarNDFZr2c8umXIaFWpQBOBa4reK5TPsFPcEqVAjgv4thG" ..
+        "mdMWQ3wU6TdcW6UADkb69lKxbmliPNJvGONLbFkAu5v07QWf/psF63DgDfFQhGu5EF9WLYCxBXx7wePvd37rhGt4NvDDYY4Za/Km" ..
+        "LHUauFFsWvM15pwETZua2SMimO+mG5W+qPwlUdNifRqRAGRGHkOFlOg05TcMM69HgNNlES58x8G3rbykqtW3hIWKv5Efpxp2l3mT" ..
+        "pbAzyOkgLgDjuACM4wIwjgvAOC4A47gAjOMCMI4LwDjavy8gsEoST1WbSvfl8J3DmgUQtp49mYAzaRQYAv5EIZoFsCWBzv/XjtWQ" ..
+        "7e/qqCt+7IcLnwqD0iZ1aBVAGPNTYw0K0SqAFHcR3Y9CtAogRcZRiAugPFROB10AxtE8DWyGB0oqZ5hM6cq888sMzIbJEB8CjOMC" ..
+        "MI4LwDguAOO4AIzjAjCOC8A4LgDjuACM4wIwjgvAOC4A47gAjOMCMI4LwDgp+QGGlefmh9t0rBkBJHVhrLTfhwDjuACM4wIwTr3C" ..
+        "rdRVU2ad+0osK6k66xnvmimzzvESy0qqznqFu2bCPvqq2FryTp0J5e1PIgYYqugihot3WxvKHVLe/o58e3iVr3Sp6pUtq5S3v+MC" ..
+        "cBLCp4HGcQEYxwVgHBeAcVwAxnEBGMcFYBwXgHFcAMZxARjHBWAcF4BxXADGcQEYxwVgHBeAcf4B7ZhbEvPWCuoAAAAASUVORK5C" ..
+        "YII=",
+    ["Player"] = "iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAYAAADDPmHLAAAIoUlEQVR4nO2daahVVRTHf0+fWe/ZQMNLA8sssKgkSxu0zMosc4CS" ..
+        "oqIPfWgeoEIoSmyyPkUYjVYfs6AgSnOqFBvUzMZXUYHaYORMFr5nDvlixbpwUd47+9x7zj17nb1/cAnsvHP23ft/19577bXWaerq" ..
+        "6iISLr2KbkCkWKIAAicKIHCiAAInCiBwogACJwogcKIAAicKIHCiAAInCiBwogACJwogcKIAAicKIHCiAAInCiBwmgnv+54InAwM" ..
+        "AA7Vf/8LWA/8AKwG9hAIIQigBRgHXAlMAg5LuH4bMBd4C3gP6KTENJU4JnAwMB24SkVQC53Am8CjwFpKSBkF0B+YBtwM9MnonruB" ..
+        "WcAMYCMlomwCuAmYWccvPokO4B7gZUpCWQRwAPA0cGuDnvcCcDewC+OUQQBH6oLt/AY/92NdWG7BMNYFIL/8DwoY/AofAWN1jWAS" ..
+        "646gmQUOvjBa22AWyxZAFnwv1biQWw78AWzWfzsKOAYYCbTWcM+brS4MrQrgaN2Xp1nty1TxJLAU2NnNNX2BMcBUNe1pRHWCxS2i" ..
+        "1SlgWorBFxfvBPUGLuph8NH/t0ivlb/ZgBtiNR7EIBYtgHj4fnR08nyj7t91NT5rIPAuMNThWlkIDgF+xhAWLcD0FIM/uo7BR/9W" ..
+        "FpntJCNteghjWLMALbpwa3Ew+2fXOfj7WoLP1M2cdHYgfokdGMGaBRjnOPffmOHgo/eSe7qePJrBmgDE8+ay2l+Qw7PnA4szaqM3" ..
+        "WJoCmtX8J53nX6Yr+Ty4zEFc29SvYCKoxJIATtKInaT9+BEJW716OBDY6jANSVt/wgCWpgAJ40pieY6DL/wDLCObtnqBJQFIDF8S" ..
+        "4t7Nm/UZtdULLAmgEsDZExXffp5syqitXmBJAJHABSCh20nI6jtv2jJqqxdYEoDL3CtHunkzIKO2eoElASRtAdHzfDnSJcdt4KiM" ..
+        "2uoFlgSwWp0sSceycp6fF2McfADSxjUYwZIA9mjGThISzNGUw/Ob9N5JzLHiBbQmADT6NwmJ5Bmfw7MvBy7OqI3eYMkVLMTj4MAt" ..
+        "QCVXz2WlLpE8h2TwzEP0XkmxAGjbzMQCWLQAaUPCJJJnYh2xAcfquiOGhHnEWk3UdGGoRvJMSLkwbNK/Wek4+MKL1uIBrVqASlj4" ..
+        "mpQx/IurwsLlVK+7fX4lLNxlwWc+LNyqAOpJDOnUI931VQc7bbpuGFVjZrG05RUMYlkAwvPAbR604Q6MYl0AMTk0sG3gvuzSIExJ" ..
+        "1S4iM3iK5czgMggAzc8fq0UbGmn2x1qvDVAWAVQswe2apSsr8rzo0GfcYf2XXzYBVHhZt2PPZjxAu4Fn9N4m08DLugjsieM1Vy+L" ..
+        "MnGPWHTyhC6ACgdVFYqc7Fgock5VoUhTvv20hCCAfbOLTkgoFbvG0nl+vYQmgEjJF4GRlEQBBE4I1cLRU0PZFRyni8BW/bRUrfY7" ..
+        "9COLwF911Z+nT8ELmkto0YZodRD5DNMAkloTRjZr/MFXGhuwUrN+91ISyrAIbNPgDdniXZRRGFhP/A0s0a3iPMdcQW+xKgDZvl0P" ..
+        "XAecm1MYuAtdmpL+OvCqpZQwqwI4UyuCX5djSfhakXXEaxoa9gVGsCIASfl6TE28BZZoMcsVeI7v28AzdJ5dZmjw0bYu17bLd/AW" ..
+        "Xy3AwcATeuxa1PyeFV16OvkAsB3P8FEA43UelZj8MvEbcAuwEI/wSQCS6PEUcGcO9+7Q5JB1WgC6Uz87qk4MW/TTXyuDDqyxdHwS" ..
+        "Yg3u9SWgxBcBiKPmjYxSu8XMfqgJIat0RS4OnbRftEnbJTuPEcBZwAVAvwzauFTjFAoPKfNBAKdq7p24aWtlgwZuzNVgzbxKxfXV" ..
+        "AtSTdABd8gW741dNW/uOgAUwVDN2pMByLbyvaWJzCjCpfdT7KPP6JTXeY4tmILlUIy+dAOoZ/AX6ggbx0fvAMODxGusSFCqCogQg" ..
+        "Bzaf1DD47bpILCIPwIXRGjzqmlBaLYLziigv26sgP/47KQdfQrQe1sWYr4OPrj9GaFvThJVJX7zdgIOswi1AL/2isohy5WcN6Pwa" ..
+        "W5yugaUSh+CKrGWuaORxc6MtwLSUgy+LvOEGBx9t8wh9f4Erk7WPSmkBhum+vLfj9bN0vt9TgqCb5zSjyIV/Gyn6RlmA3ppR0ztl" ..
+        "2rf1wUe/w60pchfT9pUJAdylHjUXXtBffuEeqgzp0oMtOeNwYXhOLvFCpoA2jatz8asvVO+YmMEy0qxez0sdzy8G5x1y1ggLMNVx" ..
+        "8GUPfG2JB78yHVzjuN9vdaxM6rUFaNNtXFL41m4NnCjUL97g848vHUrddeo2cpNVCzDVMXZvRkCDj35XcR0n0ZK3FcjTArTqKV3S" ..
+        "8en3+uuXIg8hcYBagVMcjrf755WkkqcFmOJ4dn5fgIOPfuf7SaZfni+jzFMANzhcs0rfyBkq84DPM+pLr6aAQY4VNSZqJ4TMRMf3" ..
+        "IAzSIBITFuBqh2vW5fSOX2vMB37PqE+9EYCUUEtidpmSLOtgr/ZFFn3qxRQgBZf/1P8m7YVlBxDh/774NqEjJIL58B4KXXtjAUY6" ..
+        "DP4vcfD38wskze8HaSIsvgvgQodrJGw7kr5PLrIggNMcrokCqK1PZKrwXgAS8JnEpzk81zorMurbQheBzXqA0dMhR5fOZ3klb1il" ..
+        "ry70mhIOzVqyDJTJ2gIc73DCJfv/OPj7s9PBH9BHHUL4KgCX9C4zr1UtAJe+8VoALnHt5l6s1EA2OtZO8FYALo0rfe29OuiwLgAX" ..
+        "CxAFUF/fZJo9FC2AX2y3bgFcCh6IGzhSe99sxWMBuDh4ohPIo/7LWgDtWiyxO2YXWQzBAO2N7r88XMG3d/MlZlt+w2YDaWj/5RkV" ..
+        "LEUSzqkyW/GX72H/FV0jKFIwvpeKjeRMFEDgRAEEThRA4EQBBE4UQOBEAQROFEDgRAEEThRA4EQBBE4UQOBEAQROFEDg/AdxIh64" ..
+        "pDCIXwAAAABJRU5ErkJggg==",
+    ["Online"] = "iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAYAAADDPmHLAAAL3klEQVR4nO2de6wXRxXHv/dekdIGKNxqoZTCvUZpKaGgYBWiCAWp" ..
+        "tba2EiHWNn3S/mWjKZbIPyZaE9uqJf6hUARjm4LPFtIqoCnSGjS2+CBFHkkBK49SHqWXlJe5jDnm+0s2v9z72zP7m92d/c18kg33" ..
+        "cndnZ8+cnZk9c86ZNmMMIuHSXnYFIuUSFSBwogIETlSAwIkKEDhRAQInKkDgRAUInKgAgRMVIHCiAgROVIDAiQoQOFEBAicqQOBE" ..
+        "BQic9yAcRb8CQDeAiwFM4O8j+fdDAN4A8BqAEwD28PfzaHFaUQE6AEwCMIv/XgVgHIALLcs5BWAXgB0A/gHgRf7bixairUVcwkYA" ..
+        "uBXAbACfAjAsp/u8DeCPAP4A4DcA3kTFqbICyBt9M4DbAcwtYT7TC2AjgJ8BWAvgNCpIFRXgcgCLANwFYDD84CSAlQAeB7AfFaJK" ..
+        "CiATuMUA7gQwAH7yXwCrAHyXE0nvqYICXALgEQD3cIJXBXoBrACwBMAxeIzPCiCNfR8bfziqyXEqwZO+fj34qgAT2ZV+GK3BVgB3" ..
+        "A9gGz/BNAdoALASwFMDAnO91CMB/+PPohFEoL84AeJC9gTdC90kBhgBYDmB+Ad3yAgC/r/v/OQDWFDDcyD3uB9ADD/BFAboA/I4W" ..
+        "uzzZDuBGAPsa1ON5AONzrodYGK9vUI+gFoOuAbClicbfZ2HavTXl/L0855Tje9czjs8sc52gFUDMti/RlGvLywBusDj/qwB2K9/O" ..
+        "rynLNKyD1MWWkbxuBgJVAGn89Rz7bTgIYB4F9z4AYxXXvMDJl5blAH6rOK+LdooZrJPUzQZ59g2lKoHMAUo4rjHGvGPsOG+MecIY" ..
+        "M5hlyPxlu/LaqzPUcYKybKnD/+dSxpghrKPU1QaRxcQy2qKMxu8yxhyyFNBbxpg5deVMVV77qybq+mvlPabUXfdpY8wRy2c8aIwZ" ..
+        "W3R7FD0EDOFs32bM/xOAyX18tn1Jef23kZ1vKc+rr8tG+iJI3W3mBFmGxOYoUNukm1xj+VY8ZYwZ0EdZHcpe5DkH9V6rfHs7+rh2" ..
+        "AJ/BhtWJISX3o0gFuN9SEBs4pvZV1mxlGbMc1Ps65b2u6+d6eYaNls++sNUUQCY4Z4w9J40xTxpjpte9YasU1x7o5620PTr4hqex" ..
+        "su6a6ay7PIMtp4uaFBbR+CKMraZ5jhpjnjHG3KsU6uMOn+F7ivv1sG7ShR9z8LyvOlLghkcRpuAHAPwIxSMriX93WNZWFI/Iblme" ..
+        "N8j7K6CT6/lFc5iz6q4mnUg6WIZ8tbyF4vkOZZgbefcAP+bKV5mc5wqgeOYc5SrcucQhvDdxDKF1r5Mrg2Wby5exJ6icAnTT9l4V" ..
+        "Ny5fEU+iD+XlY5indj+sbPwDCJf9inNEhl/PqwLtObpui9u2pvElcmc6feu99JtzTC+fVZ75auUC0l2UaWUUYJHSdftB+tTL2vjn" ..
+        "6Zq1WLlsWzV2s1cczWfdwvmIyCANmZs8VJU5wIUMmUoL2qithZt+fAOnAriJ0T8SzFlFXuPbvg7AKw2edTOAT6SUJS/Kpc4jkHIw" ..
+        "LixQGjrqV/caHd3GmEWmOixinbXPJ6uHGha4bq88hoA7FOe8wgBLLXsYlFkVNlnO2mWl81XFeRIH6XV4+AgGaqbxWAbX6A8oBb+C" ..
+        "xpsuGoM6E9/0w9jlNsIwCrhmOzhGF/K9PO6jN1NaXTUNmrznowB+kXLeXMr4TV8VQBwq03qVtzkmIgcFEKE/0+DvbZxQDUwcwtnE" ..
+        "cS5FOScrFcCWdUxOIQksGn0S3uLStO56CJD4/DR+TkHbohFqWrdreG+ZfR/hd/h+/tzDv6X1TJquPYsCnKVsXMi4FAUQ7ZypOO/p" ..
+        "jOVrhCpddN7szUkBtLKZ6dK66lIBJqV0X8I7AP6SsXwXPYAL9uSoAH9WRAwNYyyFdwogOXnSeCmjtW8QgFEp5xgmdsqbfyuGCanr" ..
+        "BRnK7qWMXMi6lB4gjayfcpcpzcpZ5ha2nFWsX7Qp65xVRhpZF64AYtNPQ8yfWdAkfZKJXFEcVZyTNVHVFkeyLlQBpJwrlWFXWdBE" ..
+        "7L6L4nhXcU7WKGONjK501XauFOAKjtONOEYbQBY0b5M2oNMFp3LsAY7zSFtvkUUlbwxB4vyRhixifDNj+R9RKmHW8m2Re2nMtuOb" ..
+        "ULDhii8NmZB6sRp4CxMnRopDZP6cL0NAseFMEWcyd6UAmglgxC1OZB4VoLo4+RQs2+U5UjKuFGCno3IieiSNfdNEBaguO31SAC9y" ..
+        "3gVGj0+GIFnmTUMcL37ShCFI8vulvREahwoXLFCktXu+iYDSexRxAG5eOkfepZLbRhPenbX8+cqEEijo2KiozxebKF8TXj7GJ6/g" ..
+        "NxT28c4m7OOaNQTbPYGaQXOvrOsewxVm4FOJPMdN0e4wAlezipU1G2ja4ohwEYrjIkd1ziqjna52NGsv+LNkWsayNW+TJI0sikty" ..
+        "7AGmFfUJ6FoBZEu1NNLcqftDE0A5qoAU8+A9NO5ptllDbWSkkXXhCiD76qXxyYweraeVbliaZdpmGaMILjnA/QFs6aCMXMi6lB5A" ..
+        "AhsaMRTAxzKW/7ojv4Rm6XZU1774uGKVT4aWf8JDBehlaFYaX85YvkaoEg6WN105KoBGNptc5lFwvRikCficn3GsdtEDtNNdW3qi" ..
+        "99OtajR/Hsq/tZfUA1yg3C3FJqi28NhA8Qr6YYoQhzHu/5eWZWuEOgXAbXxLx9I1OxkcerEyOPREXXDoQW4OsZf3cFHXej6nCKyR" ..
+        "N/9ZeJ4gQvLsf0YRHn6tZYSwJIz4K6rBVMvo4DY+2xSFbD8Lh+ThDyB76WoEZBPk2N3EJ2QZzLSckM5R9ixPwTF59ACDmKjRRYqY" ..
+        "m3lIMqUqsp0pYtY6SBHTw9wA3qeIkWOp0fGFuutGGmMWG2N2m9ZjlzHmYT5j8pnnKa9/Io+2yitR5OWMok3LFHaQzo0TmVnsxgAS" ..
+        "S/ZyqfhRJpHaoYgjPMc4gP1VyhS6jLuAQmE1SzOttioHlM+eW7rYmCq2Gj3GB/NKfuHaDpBkDxM2+ZAsuvY9f5T59s72kyx6ICev" ..
+        "tWTRnR54Tq/IM/NJ3tnCO5khs+jt3w8zveoOOk5kNZ120FIoPvg/pcWwSI4zUbQoby7krd1S8SUonkuZSm1fk3bzXpZxuITGF76R" ..
+        "Z+OjoO5Nduz8m4NyjjEF3L3sxtMQk7ArblOcc5J1W+2o0bay+88XzzeNkn14lhtjplVw06hprHvwm0Y1s21cbZvYKm8bNzhuGxf2" ..
+        "xpFPWz5zy24cWdtEcaelQF42xozqo6wfKK+f1ER9Jyvv8f0+rh3Futuws8FmmS2hALUgEs2YmuQIU6ony4mbR5tqKkBtUphl+/il" ..
+        "iTfEZvv4CQVuH780w/bxJ0LaPr52zMj4ZXCAK2gi9DuU17xgOa628RoNt/P8eaybLWcoi1LaoUwz52bmv7cNcryM7mSbadrVmElv" ..
+        "YJ5/LQt5TRp7+c2/mXWyzQ7aQxnI9aVQxNaxaUji4/V0dsjCPvr/QRFPN1mxIdU4bjk7yOG9+0I2obgewDaUiA8KAApxfROxg1r+" ..
+        "RZ86abi+6OJafdb8flp2sfH7q0dhlL3SVUME8VEAa3K+z3iaWMUHr545dOTMu/FX092t9Mb3qQdI+sfJWL00Y7p12y54f8KDSfYX" ..
+        "yhMJFfsK7fveCN03BaghLmIrlSliq8BWAHeXPd77PATUs41xAw80EWfvA8f5DNf62Pg+9wD1TiWPcKm1Kg6jvezql+S9nh+CAtTo" ..
+        "5t67d9J9y0fOAVhFj98i9i8KSgGQmLA9xDE1LfikKE5yzvKYIo+BV1RRAZKJmm5iXv65JQwPvQA2MBRunfOInYKosgIkGcH8+bMZ" ..
+        "l5c1GxkUyRk2MUT7WZdbuJZFqyhAkg7uqjWLZuarGH1km0buFLNx7WD2kxeZmcNZcgYfaEUF6O9zdzTDq4Yy2HRMwvhziNuvbGfW" ..
+        "09fpTu4kFZvPhKIAkYoZgiIFERUgcKICBE5UgMCJChA4UQECJypA4EQFCJyoAIETFSBwogIETlSAwIkKEDhRAQInKkDgRAUInP8B" ..
+        "4X4uyRfTK1QAAAAASUVORK5CYII=",
+    ["Player Props"] = "iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAYAAADDPmHLAAAIKklEQVR4nO2dbYhWRRTHf/uwuLEsLYkLwhqRGxgsQsH6JUn7ZOqX" ..
+        "NNOQQoWKKLcPWWqgpa4KmS99KG2hIkyDilpqodRvvWhFlkIvZJFpVipUG6KklXhi6jz0YO7qPjP33pk784OBkH3unTn339yZc+ac" ..
+        "2yAiJOKlUnQHEsWSBBA5SQCRkwQQOUkAkZMEEDlJAJGTBBA5jcRJA9AFTAR+Bz4CPiNCYhTAZGCtPvzzuQXoJyJiegVMAHYB7wzy" ..
+        "8A1v6t+Y2SEKYhBAJ9AHfAxMuYS/nwLs1d+Y35aaMgugA9gGfA7MrOP3M/W32/RapaShhNHAduBR4C6Ha5yzwPPAauAnSkSZBNAG" ..
+        "PAIsBJoyuscZYDPwOPALJaAMAmgFHgIeBFpyuucp4ElgI3CCgAlZAM3AA8BS4IqC+vCbzgZPqz8hOEIUgJne7wGWAaPxg+PAGuBZ" ..
+        "4E8CIqRdgFnQLQC+Bp5y8PAPAHOA2/W/bRits8A32sdwHGxmBvC8VURktogcEDccEpH5ItJYc49G/bfDju7xlfa54oH9hmyFd2CI" ..
+        "Zl5P00Vkv6OHckxE7heREUPcs0lEFurfumCfjuGfV62PrfAODNImi8geRw/hVxFZLCLNw7h/s4gs0d+6YLeOqWi7ei+ACSKyy5HR" ..
+        "T4rIKhFptehPq17DXMsFZmxdHtjZOwF0ikifIyOfFpH1IjLKYf/aRGSDXtsFfTpmYhdAh4hsE5FzDoz6l4g8IyLtGfa3Xe9h7mXL" ..
+        "OR17R4wCMIbsdWjIF0VkbI79H6v3dCXc3oyF640AzFS6UUTOiBteL3gq7dQ+uOC0vmZGlVEAZjHV43AxtdOzxVSX9skFJ9VWrWUQ" ..
+        "gNlOLRWRAUfGeV9EJnnwwBmkTdYtnwsGdCvaHKIAjEOl27FDZZrPDhX5rzVoX02fXXBMnVMjQhCAcakucOxSvS0El6r8v1W072YM" ..
+        "Ljistm30UQB5+OtDbY0+xxlcTHdmejqSo78+1NbkOM5wRK9n9Vq0OQ9wJfChnsGzZUAPVmwO9WDFMA+ydOtBlpHY8yNwA/BDPT+2" ..
+        "EYC54Rjsj1Zt0hb00ao6j7It0tbiQATmf8jcDoTMtXz45nDlBuBqYEWEDx8dsxn7WD1baGxSL2P0meQmgBnUTy9wDbC4LCdrLfkZ" ..
+        "eFhtYmxTLyatLTcBXI5dYmbCvW3MKyU3AdS14FDuBb7VV8Aoi+uUKZ9hI3BQbUOez6ReARzFjsv0LP8hoKde9QZOq479O10I2iaz" ..
+        "HA3xVHCLpnEZISzRLVLZadYt4CEde17JLF4KoIpJ7Fin06BJ7RpB+WjS/f9B9XkUlczipQDCP1+fXz5DqQVQ5SrgBU3Pnu1xP4ei" ..
+        "on3/QsdixuQdWRr2bU2ZsuFa4FXgE2B6IFvIBu3rp9r3cZbXO662DE4Ae7WwwlL19dtwPfAW8L7W+PGVycBu7et1ltca0IVxh9oy" ..
+        "E7KeWk1g5wl1d/ao79+GiVrjx7c6PhNq6g+ZwIwNp9RWxmbrsw6OVQL0e/tUx6dzmPWHvIuPVAr2e5vSKzYUVcenw7L+UC1ni4yP" ..
+        "FLW6NnV27tMFkjGkWC667tQU715H5xMGo13vcUDvabMoFR37OLVFIbWHit5eGTfoPGC8TqW2++2s4gxt5/nrbf0TfTrmeWqDwiha" ..
+        "AFW+BGbVLKZ8iTO0OvbX79IxztIxF44vAqhi9vtTgZuAPQXGGZod++t36xZxqo7RG3wTQJV3gRvVobI/xzhDk2N//X4dwyTgPTzE" ..
+        "VwFUF0k7dL8/O+M6Po0Z1B+arX03Y/C2EpfPAqhyDnhNF03mIX3vMM4wR4tEufLXH9Y+jtc+m757TQgCqN0vb9VtU7ejOMMrwMuO" ..
+        "/PUL9TpbHfg3ciMkAVT5Q/MHXMUZXPnrt4RWIzBUAWQVZ/DWX58lIQsgqzhDVPkMZRBAVnEGb/z1WVImAWQRZxAf/PVZUkYBuIoz" ..
+        "9Pnir8+SMgvgQnEG4+G7GAd989dnSQwCqGJ88Nsv4e+2++avz5KYBJC4AEkAkZMEEDlJAJGTBBA5SQCRkwQQOUkAkZMEEDlZCmCF" ..
+        "Z/l7oTJBbRnkDOBD/l6odNbkHQb9Cigqfy9UOhzmHWYmAPPRZF/z90Kl3TLvcCBPAXzgYf5eqLQ5yjs0hbtzE4B5t/dTP6lOIE7z" ..
+        "DvvrrSJiswaYZykCQ6oTiHXeYb8+C/IWwAktGp13/l6oNGWUdzjD5nRyJaD8vVBp9DnvsBJA/l6qE5hh3mElgPy9VCeQ7PIOK4Hk" ..
+        "78VeJ3BLVnmHqU6gG1KdwIuQ6gRenFQnsA5SnUBLUp3A4ZHqBDom1Qkk1Qk0pDqBBeHbkbBUJzBnbD4dmzUNWlhxrfoBbDFOqX3q" ..
+        "Px+KHXo/F592Mf76ZcBOX0vF+SyA2lnqVmC1egZD4IBWGO3zvVRcCAKoDarcAazy9fs7/OuvXwm8FEqpuJAEUBtWvRtY7tEXuI7r" ..
+        "DPVcaKXiQhRAbUHnbo01jCyoDwMa298caqm4kAVQe7RqkbaWHOsEbtIWdKm4Mgig9nDlUg2dmjOHWXBGD6ysK0upuDIJoNZdu1zX" ..
+        "Ca5OFJ3V9/uaspWKK6MAqozVFbnNt31Ei0atLGupuDILoDbFqkd9CcOhD3is7KXiYhBAlS6dwm++hO/6LI+lVFxMAqgyTc/WtV2g" ..
+        "1vB8dQVHQ4wCQNcEc/VMvTHAG/rhiOiMEasAEp6GgxM5kwQQOUkAkZMEEDlJAJGTBBA5SQCRkwQQOUkAkZMEEDlJAJGTBBA5SQCR" ..
+        "kwQQOUkAkZMEEDlJAJGTBBA5SQCRkwQQOX8DS/sOVP/tDOsAAAAASUVORK5CYII=",
+    ["Visual"] = "iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAYAAADDPmHLAAAKu0lEQVR4nO2dfYxeRRXGn11qu4W2LpaPFrsV4gcadTWA261aBA1o" ..
+        "qkalRqq1sK2x+IcKlVoFhYJAoikkKlRDFTXtgh9RqbEYyh9+tXy0S4wgpSyaLoFuEWhpu5Tv7B5z8NnkDdl3d869M++99535JZMm" ..
+        "3ffemTvz3DszZ86caRERJOKltegCJIolCSBykgAiJwkgcpIAIicJIHKSACInCSBykgAiJwkgcpIAIicJIHKSACInCSBykgAiJwkg" ..
+        "cpIAIicJIHKSACInCSBykgAiJwkgciYhDqYDmAPgBKYZAKYCaOPfXwDwPIAhAHuZ9gB4Bk1OMwrgKADvBfB+AO8G0AngxIz3egTA" ..
+        "/QD+CWAbgLsAPIsmoqVJNoacBOBcAB8D0AXgNYHyeRnADgCbAfwawAAqTpUFoJ/x8wAsZaMXwQ4AGwFsYPdROaoogJMBfAXA+QCm" ..
+        "oRwcBvALADcA6EeFqJIA3gLgCgCLtdwoJwLglwCuBPAwKkAVBPB6AFfxja/KtHWY3cJlAAZRYsosAB3IfZVvfVk+9Vm6Bi3/DzmA" ..
+        "LB1lFYBO49YDeDuagwcAXMBpZKkomwD0rb8cwKUBPvc6p38KwEEAB2r+VY4G0F7z77E5bAf1GAFwDbuz0nwNyiSANwPo9TSl28sp" ..
+        "mqY+APeywS20AzgNwHtYpi5aEfOiZVoC4D8oAWURwCc5n87T1+/jPX4O4F8IQyeAZQA+D+CYnGMDvccfUDQqgAJTq4hcIdkZFpE/" ..
+        "isg5IjK5geWezDw3swxZWcM6KKwNimz8aSJya47K2ygiHQULGCxDb47nuJV1UUj5i+oCdJD1J/axVrRPvxDA3SjfzOUHOZ7poxyk" ..
+        "NpQiDCtv4MqataL+C6AHQHcJGx+c4s3jGOEJ2NCB5lbWTUNp9BdA5/V3ZBhNq01gVYXW52cAWAtghfE6tRp+GMBONKEA3gHgL8bR" ..
+        "84sAvsSFliqyDMCPAUwxzmbOaJQIGiWAtwH4K4DjjIabRQD+gWpzCoDfGz/vT1IEu9AEYwBdvv2zsfG3cIxQ9cYHn+FUdn2uHMc6" ..
+        "0xXQSguggw8yy3DNNRwR70fzsB/AQj6bK7NYd1qHlewCpnG0/y7DNRdy5SwULazQOTUJdAAdTY9xXT8U+ozfN/xe/REX0Hron0AG" ..
+        "BrVubTIaRC4KWJb5InKtiOx2KMdu/nZ+QCvdygzGoiBlCSWA7xkfcGWAMkwSkeUiMiDZGRCRZbyX7/J9zViW71ZFAD3GB7vYc/4t" ..
+        "tNPvEn/s4j1f6TI9plXGcvSUXQCni8hLhgf6uuf8p3KNIBQbmIfPMq825K91u6CsAnijiOw3PMwlnityjoj0SXj6mJfPsl9qyH8f" ..
+        "69pL3r5mAe20z7/V8fc3Afiix9G2jua3e3LYcHU4mcdZg6/ZyU8BLHf8vRqI5gM4lDtjDwJo5cqe2rBdUKGcSTOvD3SP398zrsLl" ..
+        "Qb2MTueeQh9MobVUF7tcjWUL6WpWqCFopaHxB2nefdHjm7O+gMYH81zvcY+C1sk5/Lq4oHV+UdFfgE6uZU92fMAF/L0vtMJ+Z7xm" ..
+        "hH55/TXr78fSZN2V4aVYRFu/L7r4RXNZQHqJQszuApdjANEmIvcbBi9LPQ+cJhmneoc465g5zj1nclSuv3XlQRE5wvOznWfIX9tg" ..
+        "Sta88hRSrWWuXOu5gkADjStbReR4w72PF5FtRc7PReQ6Q/5rGy2AM0VkxLFwWwJY0loNFr7fZnxD2nitCwMBTLVaZ3c45q9tcUaj" ..
+        "BNAuIo86FmyPiLwuwNuhdnrXNz/z51H+LwLXL0F3gOfUuht0zP9Rto0pjyyzgHWGJUr1iHka/tGB10Tofv1P55xxvMC8hjyVycrT" ..
+        "rEMXOrg93YZRMYvFnesDvBGaWhw//xOZmTtFZAVTpwdz7e4AawWj6QZDvZ9rubfV//2AYyEeEpEjA1XGXIf8h8fpel4rIreMcc3N" ..
+        "/Fu92YHLBpBQ+xS0Lvsd6/6AxVRt6QJ+QpOvy954DdvyHMIw6sQxHjvG6Xp+BOCzY/z/59i91fPo6fNUtiw8xzrVup2IdraVE60G" ..
+        "v3VXa9/Vno09WSq5fxzDlTZ0PZbwN5Z7WsuWlR0Gl7KPsM28CUAXHlw4bPR7y4JLJdfbYeNiZ+8ex1N3IoL67/Hlcv2yOq0pVCXk" ..
+        "SiIQrgK42+AI+i2ExWUJVm37Y3GPw7X31Pl/F7d2dSgNybcBHOmzzVwF0MflR9dCdhUsAF3YGQuN+nnLONfdzN9Y7mktW1a6DC/X" ..
+        "7VyunhjDVGSOYRrYX/JpoE75Xk3vBNPAkWacBloLkgxBERuCRtNYb089zgpUIS4rkYeMK4Cok2aJyFDIFbkJ0tmG+u613r/ZF4N0" ..
+        "ISctBkn9uswyDTzIqJ3iGOXzVwHC0m/n7uGJeB8HdqPnAlhoY9QyvcdEPEJDjU8mse5cHF2FgbOtkdCicQjZZuwOZiWHkIkraUoF" ..
+        "XcJWO7qEDVXIJey+PN1cXqfQd3K+WTWn0D7a9p+sMfKcTPt5cgo1qkj39rmi3i2zPb4pLYG3grlsFfM59Ztt8AASbjDNlWfaGJId" ..
+        "/Yp8oMCNIbczkEbhG0NGeIjDQ4aVxXUeN1RoA3zKsKHCB3uZp6/Gb2EwqW7D1rDFeRvf52rgQR7Y5BrW5QsAvgl/7OFePTf7d/43" ..
+        "f57ngyAuMfj+aR1/3Me+wFcoeHv46gpuD2/zXOZvNMv28KwBIlYFChCh0zNfPBgoQIQ6rlo433d7hRBAlhAxuUezdewEyzyEiOkJ" ..
+        "MM+3zp4qFSKmjEGiurlY4xokai2vafogUTGGiasNEddR48lTGyoumjBxoUPFdtDFyhK5Q51K1zi6QFeJIwB8h+chuTLIafNjVY4V" ..
+        "rOFO/2aMFrqFLtrNEi10Jl3RzjZc8zjjBQc9gDIFiw7PqVyvsASLfoKN72pcy0yj3MLVcvVBhkJ35UQewuBqICkjywHcaWx83dPw" ..
+        "oUY0fqP3BeykqgeN9vGfAbgRwHRUhxmMH3ST8ayAQQbQatiBEY3eGLKTHjbWfm0Fr+kp+WaWVn6xHmYYPAv9PHeoYY2vFHlo1G2u" ..
+        "+9dexb08U7jZDo1aaOwivVDU2/QUxwSbMlx7GscG6q83F8Uzl36Hd2Zs/E0Zxkf+CGTpsljp9PDErAzz8MZFBRwcuUhEbst5cOTl" ..
+        "RR8cWZajYz/BNzrv0bG9PDq23vauvHRyZL+kWY6OLYsAlDfxU+pjX+HjYxwePXpSuCtHj3F49GxPLu3a+Onw6DrHx1/GTZAhjo/f" ..
+        "53h8/DGBjo+/mikdH+8wor6RZw02Aw8AuICD11JR1jn1XTxv7+JghyU1hsN8hlPK2PhlGwOMt73sKm590hW1KjAMYAO7M5++g1EK" ..
+        "oHZVcQ0jfPnyKPaNcNXvSgD/RgWokgBG0R08X6ZZOM+00SfP8HzjdY7RxEpDFQVQu+CylEndtItgO4CNTC7hZEtHlQVQy0kAPsO9" ..
+        "CfM4nQzBy2z0zQB+A2AAFadZBFDLUXSjWkB/xE4KJAsDtCreB2ArF6CeRRPRjAIYi+mcTZzANIOHTU3l359nGuK2r70cvWvf3tTE" ..
+        "IoBExQxBiQaRBBA5SQCRkwQQOUkAkZMEEDlJAJGTBBA5SQCRkwQQOUkAkZMEEDlJAJGTBBA5SQCRkwQQOUkAkZMEEDlJAJGTBBA5" ..
+        "SQCRkwQQOf8DZxdxP433GuIAAAAASUVORK5CYII=",
+    ["Combat"] = "iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAYAAADDPmHLAAAH5klEQVR4nO2dSYxVRRSGv+7GIZEEkIBxgLixXSEoBtDIoK2wMBAi" ..
+        "KDggStAF6sbI6LBQjDjEjVEXDjg1URk0CImiTJIgoASElbghghghQVhoCAGeqeS85OWl+92q1/e+qrqnvoREu+v1rfvqv+eeOnXq" ..
+        "VFulUiGhl3bfHUj4JQlAOUkAykkCUE4SgHKSAJSTBKCcJADl9EMvNwDj5L93AQdQiEYBDADeBe6v+/kqYAFwGkW0KQwFdwMPNPjd" ..
+        "QyhCmwCM2f81o81ITa8DbU7guJzalAZtArgqpzalQZsAEnUkASgnCUA5SQDKSQJQThKAcpIAlJMEoJwkAOUkASgnCUA5SQDKSQJQ" ..
+        "ThKActqVpb8Ntmg3WFOqXJkzgoYAdwBdwC1AJ3Cx5WfPAoeAn4DNwBbgBCWkbAK4HJgNPAyMzflv7wY+AT4HTlISyiKAUcBi4B6H" ..
+        "p7xZjHVYB7wK7CdyYhfAGOAF4G5P198IvAjsIVJiFcBQeQIfIQw+Egt0nMiITQBtwHzgddngERKngYXA+0A0X2pMAhgIvAfMJGxW" ..
+        "A48Dp4iAWAQwAlgPXEscHAamAQcJnBgEMB74JieTfwT4HfhDZguD5Of/iHc/HLgOGJbTK2EqsIOACV0AxrtfC1zS5OePAWskmLND" ..
+        "BtqGQSK8LnnlNLtZ5Ix83swWgiRkAZgB2ARc2sRnzedeA7YB5/vYjw5gErAImNykCCaHaglCFcAI+cJczf4B8cSNAIpgisxATP9c" ..
+        "XwfjQ/QJQhSA8fb3OTp8x2Ue/mkOT7yNRTCh5hUSj3BxDG8MbXYQmgDaZBo1w+Ez+8XjNg5eKxkmzqnZTm6LubdZIcUJQlsOnu84" ..
+        "+F8Bt3kYfOSa5tpfY8+9co/BEJIFuAL4zeG9/wrwHHAB/w/RcmCpgz/QGUrYOCQLsMJx8JcFMPhIH5ZJ/20Y4NBWjQUYI+vttmZ/" ..
+        "ZiCDX/8wmZjFdOwYG8IqYigWwCzp2jp8cwIcfKRPcxxyBJ4nAEKwAKNk2peFeWfe7Mnhc50d/GI5RRxlUbSq9BbAzN9tWBLB4CN9" ..
+        "XOpwT6otgMnh+8sijctE+G5qQZAnz2DRPouIoVmAutJnjqFvCzDbModvYUSDj/TV9DmLiyUwhFYBmJBqFpsKjO0XyXfA9xbt5qL0" ..
+        "FWCcpL8t2t0py7kx0gX8YPldnNBmAW63aPOnLOnGyjbJScjjuyidAMzTkcXayN799ZyXhJQ8vovSCcBs18oiVtNfi9lWlsWtKPMB" ..
+        "zObL/4CLLKaJtmlcoTLIYppnpoOXAedoMf36cNJGX4oqD7YY/CMFDv5EmaaNlv/fK5k+2wu4lrmHo8A1GdPBN/sYDzjW1MknxgJY" ..
+        "/htQqVRWVVrHZoe+ufxb1sv1LsjvirjmlhZ+b90yVlZ9c/EB3unhmJUiManbRTz5Zu2+t2yk5dImhnvpDXMaytu2jdsdzH5vx6wU" ..
+        "RRG7fBfKQPdGG/BMAdctesdyPQ/KmOUmAB+naFQ3beTJ6JzaNJPo2mrGxRAKTnjGVgDGu2w1RcwA9ubUxhUfqeC78hTAATlXr5WY" ..
+        "uXHemKleo8BHRdrEcC+N6LadDrq8Aha0WARmo2bebJdM4p5EUJHf/RjJvTQa/CeKjATmFQh60iIQVNQXN1G8/dE1Zv+NggJB1Xtp" ..
+        "FAgyvOUjEOQzFPyvxfQohYILxtcs4JzU4cvCbKiMnQkWbQ75WAfwPQ00RRiDXSbNEVOsMoudeMKnAGyWemdIgmWsdFjWNNqsUQA2" ..
+        "6+RXS3GGWJlk6SxvRaEATlhuBzOVOWJlsUWb3T7rEPsOBZvau1lMbrI0i2+mAHdZtPsYj6SNIcWQNoZYclIKL9sEn2z2EITCXMs6" ..
+        "Qut8Vx73bQEMaXOoR3z7AMh26o2WmyfWS/JkqPSXukE2O4M3+N4ZHIoAkJLrttbis4D6XUu7VCmzLRr1EgEQyhe5R0qu2zC9QV6f" ..
+        "T152qA6yMoTqIKH4AFWGSkzctk6QqbPzbADVQtpl8Jc4JIdcn4pE9VwBxGZLdZUlsnXMvHd90V/64FLoYVEoFcJCswDVrNwvHc8E" ..
+        "8FUocrg4palQZI4YNT4mZVVxcAxNTZ5HW7Rw1AHMA352HPzDcpBEUE9cKE5g/TtymhRUdPEfPpSyLCYEWxRT5BofONYJrt5TUHWC" ..
+        "QxUAUlV7qpRad8FE376ViiJdOVmEDvlbm+Rvu1YKPyP3Elyl8BB9gJ4OjFjT5JkBtQdGbJFkT5cDIyZIMkc6MKJER8YcrTsyZqD8" ..
+        "/FTdkTFZCZwuZj/IgyJisQBV0qFRynyAeg7KYQs25VZ8s1r6GuQ7P1YBVE3qfTKVcpkhtIrT0rdZIXr7ZRCAoSKHR3ZKPD0UVkqf" ..
+        "TN+ieKfGKoAqxyUYM1aWVX2xQfowL6TwbhmdwCxGSjy+lcfHrwhhPb+vlEUAtVvJZklKlnky82S3JHB+4TuNK0/KJoBahkgFzi6p" ..
+        "w9fpYB3OytL0Ttm0sdVn6naRlFkAPW1INaXYnrLYpfu0r716rSZWJ7AZzlma7pNaBl+bABI9kASgnCQA5SQBKCcJQDlJAMpJAlBO" ..
+        "EoBykgCUkwSgnCQA5SQBKCcJQDlJAMrRJoBjObUpDdoEsCvQ01G8oU0AWSefdDsfvBg52gTQ6OSTbpeTNsqCppzA3k4+oakjV0uC" ..
+        "ZgEklL4CEjUkASgnCUA5SQDKSQJQThKAcpIAlJMEoJz/AVPnkrEKjQHJAAAAAElFTkSuQmCC",
+    ["Vehicle"] = "iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAYAAADDPmHLAAAIg0lEQVR4nO2deYhXVRTHP/PTMkrGNJcooxqnabQ0nMgmWixtz8jS" ..
+        "Msj+KZPKNqOmoE2pKFMT26ymgkCNSDNpIYJMQ1KLsqRShxYjt1JKQytzuXHjTI3SzNy33N+77937gcfM/Ljvvnd+7/vucu65ZyqU" ..
+        "UgT8pZT1DQSyJQjAc4IAPCcIwHOCADwnCMBzggA8JwjAc4IAPCcIwHOCADwnCMBzggA8JwjAc4IAPCcIwHOCADwnCMBzggA8JwjA" ..
+        "c4IAPCcIwHOCADwnCMBzggA8JwjAc4IAPCcIwHOCADwnCMBzggA8JwjAc4IAPCcIwHOCADynI35wCHAUcCTQEzhQjo6G5+8AfgO2" ..
+        "ys8fga/l81xTRAFUAP2B84F64CSgt4Xr7AJWAl8AC4A3gc3kjIoCZQnrA4wDLrf0wNtjD/AhMAd4GdhGDsi7APTbPgS4FRgmf7vA" ..
+        "r8CTcjjdKuRVAPpBjwLuA/rhLr8DDwOTgZ04SB4FcDgwA7iY/LACGAN8gmOUcvbWXwN8lbOHrxkALAXucaibylULUCsj7iIwU1oD" ..
+        "J6aQrrcAnYD7ZapVFEbLtLErDuByC3A68Ly8/UlR0oJskBF68/GH4fn7AwcBnYEewDFAlXwel8XAuRHuwRsB6DfjUWBswnqWAe8C" ..
+        "H0n/qz14adIBqBOH03D5PSraeXSZOJWyQQvAkUOL8Qql1EYVn11KqdlKqUEZ3PupSqn5Me55RpbfuystgPbRPw1clKCON4BbxE+f" ..
+        "JcOA54DDIpyjW4F5ZEDWAtBrETcDD0ofG4etUoceXSuHurF5wGDD8r/I+sV6PBLAQKARODFBHd/Lm592/x6H9TLW0E4fzQEiyhGG" ..
+        "538JnCBrCoUWgH7TJwK3yUCqaMwGbpSWaT/gbeAcw3Nvkq6wsAK4QNy4us8vMrNkvq/pIlO+4w3O2y5ew+8omCOoF/AK8E6Ch1/2" ..
+        "/jEBV8mDRFqCkcCfhq3ji+V00JXKUP+9wCrgyph17AamiG8gT9S3+H010GB43pnADeRcAJ1k4WanjPAPjlnPpxLRc6crvvME6L59" ..
+        "oWHZSeJpzKUAzpKRcJKmbLsMEk8GlstneoSdJ5bu87ce3V8rtjnTFZRSfusbZaGjJkE9b0mQx3Rp/ptZISPsvAwCV/zP53pwd5dT" ..
+        "XUFKLsUeSqnFKhkblFIjxa3a2nW6KKVmKbeZKffZmg0lpdQHhnVtU0pVue4KPlSmOTooMy7adXo3sMWw/AAZZEVxt5bbEdQWVVLO" ..
+        "xPupxw1DbTmIkgqgUm5Qe/XisFJW/bSAfGMc8FTWDqIkAqiQ/vrCGOf+BTwEPFaA0X2S8df70tdn5iBKIoDrJGAjKgvEVarnxr5T" ..
+        "lXVXEHcWcAQwNUJ5rbL5wGliRHj4jswK4rYA2p9/vWFZvUvmkfDQU+sKBsm+xMwEoP36P8i8vy32yDr9M/FvzxuqInQFSDm96SST" ..
+        "LmCswcNH1sHDw0+/K9C8mtbG3jgCMBn1PyuBGoFo3erCiGFnFeXuArrKZsf2hNMnxpSlO1AtA0x9IPF9+vjG9U2WKdkTtStokH2H" ..
+        "8YnoOhxq4L78PEJ91UqpBqXUEoN6l0jZ6iyjaJV9e8Ypc3YopQYkueeoJ4w2uKmXDOqpVUrNVfGZI3Vk/cCxYI9eK3gvwrkrlFKd" ..
+        "4t57KYbfvz02teM6bpQNnjoUOi4jpI5GqTMrKi3Y01mCZ3SQqAn9JcYyFlEFoG+uPVrb6nSs7NYZk9IydEnqWpZw+TkuNu3pLoGk" ..
+        "eqxggg6Y6Rv3ouVgiBiWxj6/fdF1fizXoED29APOBtYaPscHXBWAfjtfl+hYW3SRa9QUzJ5O0j2YZBcZJZnQnBJApawB2Pyymuki" ..
+        "vofKgtmzKkJA6dWuCWCqpWayNfpKBHHR7Jku3YJJK2DVETTBoK+ZKOVqZWQbRWSrpG/9Wf7uKYGhUb50vQZxnNSVJrUZ26M3lrxm" ..
+        "UL6b5D4wI+K8cYLBvHSClI0yL16olBrYxnUHSpko8+q05/pzM7ang1JqnUHZ86LYZSNTqF7WfCLCvHiKLIS0FeiwXEbeOl7+DoM6" ..
+        "R8g96F23adDNAXumGWYTiRYnaaEFiMLkGG/iFOUukx2wp8GmJzBNFkVcAm2mQc51jUWO2KOTYBtTihEMkhbjY8a36XNuxz3GO2JP" ..
+        "L5sCSCsJ88YWW77i8BnwE+6w0SF7etsUgOnGDZPMHkkp2x76nNmzxaYAtBcsDdKICm7CHVY7ZM98mwLQufDXkJxNjtSRFq7Ys0ae" ..
+        "kTFxZgFnpCAC7RFLis7Y6Qo9HbBnjTybSMRxBOmYtqMl7cklkvxhbYtBTG/ZB98W2h2aZgaO1ngBWJfwOr0dtaeX3NsWafYjvfk2" ..
+        "k0R1N2zO6hKMnOske0hbKHkzkwaTdi+YPXthwxG02TCbx7SY19ep5R43KLc0pS9rc8Hs2QtbnkCTtKeDxRcelUmGGTjTTL06r2D2" ..
+        "/IeFVTMk1NmUKRIJ216dpYh+8zTDx6sLZs+/hy0BxFk+rWujrrocLgfXOW7PP4fNTKFxAihWS1+3qcXUqF4icE3ZLQEUaW9Bry2Y" ..
+        "PWVJFdsooc7lpDGFfzbhiz3WBVBpMXy6tZxD9Razh1cWzJ6yJIuukYBG25G0WyV5gu01gpoi2VOOgJAmCafSBtlC131pmRaImopk" ..
+        "TznTxdeIy7LWQjM5PIPVwZoi2FPOkLAm8Zk3ppTparfUVZ/R0nBTIeyx6Ado66iVuW2RtofPyaM9Wf/TqGrp6/RxSjtll4g7dF6E" ..
+        "XbPlpjpv9mQtgH1X3fq0klLl25ymiOnjuj0uCSCQAa7/8+iAZYIAPCcIwHOCADwnCMBzggA8JwjAc4IAPCcIwHOCADwnCMBzggA8" ..
+        "JwjAc4IAPCcIwHOCADwnCMBzggA8JwjAc4IAPCcIwHOCADwnCMBz/gZjoiCX/7F1sQAAAABJRU5ErkJggg==",
+    ["Exploit"] = "iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAYAAADDPmHLAAAGmklEQVR4nO2dW4hWVRTHf1OGYaBQgjgo9pZQY166CBUGjhQUZdqF" ..
+        "iqYg7fpWUeRDSA9FkL1VdnvQyR4irSF6yKboQmBD5ThZ1FsypgT6oA9RWH2xYH092DTfPnv2OWefs9YPhqLOZXPW/9t77bXXXruv" ..
+        "0+ng2OWMuhvg1IsLwDguAOO4AIzjAjCOC8A4LgDjuACM4wIwjgvAOC4A47gAjOMCMI4LwDguAOO4AIzjAjCOC8A4syp4x0LgfGAx" ..
+        "sAiYW8E7m8xJ4DAwCfwMHG2aAPqAi4CNwAZgoIR3WOI7YDewBzgIJE3i7EucFLoWeBa4NOVDnX8ZA7YAH5OZAJYDz6sAnPIRATwG" ..
+        "jOcggCHgVWD2TB/kFOIPYDMwTE2zgDOBbcAON34tyA9up9pAbFF5DyAvfiT2Zicp23RIqEwAQ/rLd/JhKGY4iBGAOHz7vNvP0idY" ..
+        "XdQxjBHAaIS3/y1wADgG/Fb0hcaYA8wHLgZWRthmXZkCWKsvCUEe/DrwtEa2nOJI5PQpYJMG2EJt9EkZAujTrv+ygGtPADcXEIsz" ..
+        "PYPAO8A8woJFMhR0UgtAQroTgca/UsOWTjrk+38RKIKB0O9fJA4gsf1edPSX78YvZ01Avm0nka0KC0AWdnohY753++Uh3/aNRLYq" ..
+        "NAT0A78EXCdLvu7wle8YylJxiM2OpuoBlgRO9dz45SPfeH8imwULQH7ZvZB5vlMN44lsFiwA6XZ6IUEepxqOVS2AkDQuj/BVR8i3" ..
+        "Dkq986RQ47gAjJMyKfRqYGvC5znTf+vsBLBG/5wG4UOAcUIFsKDkdjjpWVB1HMDJiyCb+RBgnFABeIy/eRxOKYBfZ9YWpwaCbOZD" ..
+        "gHFSxgE+Az5N+Dxn+kDQmtwEIMb3SGA1bE0lAB8CjOMCMI4LwDguAOO4AIxTRZWwoizV/W1/AZ8DP9TdoDaTkwDO1ooXt5z230eA" ..
+        "h4AjNbWr1eQ0BOyYwvjCjbonUf7ptFQAFwK3TvP/zwPeA7br/nmnZQK4KvC6+3UH0oqS22OGXARQpMrVBcBXwKMZtb+x5PIBi1a+" ..
+        "PEsLU36omyCdhgvgR+DtyMoZ7iC2QADdMmcfRNznDmJLBCBlzm7QgoenIu53B7HhAhD+1qqXl+uwUBR3EBsugC5SAGEV8ErEvV0H" ..
+        "cUT/3WmgALpboB8AbgKOR9x/PfBagfp6JslZAF0kArgssvjU3cAlJbSpNTRBAOhC0DWRFbGvKKE9raEpAuji3XmLl4Ono19XCyXw" ..
+        "U5QvS2hPa2hCD7Beq2TGGF9E83UJbWoNOQvgHJ0GvgucG3H/+3qmTtJj0dpGrgKQ5d5vgPsi7j2lK4XrIyOKppiVoSDlHKJnIoM4" ..
+        "Ej28I7CSppNhTqDUxL8u8v7t+sv3eoUNFcCOSONLlPBeDf2GsEwPVOinuhjGvsCzFswKYGmPnMD/4yPgnsCMYTlo4WXgdurhLc1u" ..
+        "lgM1siEXJ3BtpKN3bYF08ZdqND7qm7xIZuQiANkEUsTRk+XiF3T5OLTbFwPUzZ3almzIRQByFk6oo7cqwsuXMT8XVpMRuQjg+x45" ..
+        "gcd1Xv+ge/ntFEB36XYqEYxotxnq5U+FeOG5sI+MyGUWIPwO3KYHJUrc/08dGlJsDp1QL7xuP2BXbtPBnATQ5Sf9S41MwahRBLuA" ..
+        "h8mMHAVQFifUC3/OA0E2BdBlIrduuAlO4MmAa3zXbnXMSWSzpLWC5chzpxpCvvVkSgGEPEzOu3eqYXnVAjgUcM1KP1egEhYH1kc4" ..
+        "lFIARzQvrxcyh3fKJeQbT4ScG1w0Ergn4JpNkcmbThiDmvuQwlaFTg8XBgKnTye05EtIj+GEM6CR0XmB1x5M3QPIA8cCrpunDfWe" ..
+        "IB2DBYw/potrpBaAdBVbAq+Vhu7VzZl+4FQ8i/Qb7g00vvBkkVT4IkNAl9GIDJ79euS5nHrtSZu9gzzzdaq3IsI264rcECOA5bqk" ..
+        "ObvojU7pFVYkU+pA2fkA45EbNpxy2VzU+DNJCNmpOXlOHkhZneGqM4Ie1xc79SI2eCL25hgf4HTuUk/VfYLqx3wJvL1Zd07gsGa6" ..
+        "xpRwceIYVYdvRsZPmRQ6rtOPwcBgkRPHmE7B18U4fGUNAf95ppZ/3whsyG0jRAOZAHZrfF8ifEkNVoYATmchsESXMeVvbtkvbDgn" ..
+        "dS1/Upd0g1b1chaAkzE5bQxxasAFYBwXgHFcAMZxARjHBWAcF4BxXADGcQEYxwVgHBeAcVwAxnEBGMcFYBwXgHFcAMZxARjHBWCc" ..
+        "fwCrgDwNjX3cDwAAAABJRU5ErkJggg==",
+    ["Settings"] = "iVBORw0KGgoAAAANSUhEUgAAAIAAAACACAYAAADDPmHLAAAFB0lEQVR4nO2cTWsVSRSGX8WAkAuugiJxIQgKk2S2/oHoNpjrwg8M" ..
+        "jswYdOFPGOYn6GYYxaCCbvzArfoDdGtUdOHMZsIouBowMJBFScEJDBpJ971dXafqfR+ohdDdt3P7vdWnq8/jjhACBC87c5+AyIsC" ..
+        "QI4CQI4CQI4CQI4CQI4CQI4CQI4CQI4CQI4CQI4CQI4CQI4CQI4CQI4CQI4CQI4CQI4CQI4CQI4CQM4u+GcAYAbAARuRv228BvA5" ..
+        "8/kVjdcATAIYAjgB4BiA3d/Z7j8ATwE8AvAAwHrP51k8O5x5ARMALgD4FcC+lvt+BPAbgJsANhKdX3V4CsAsgPsADo95nHcATtrt" ..
+        "QRRSBMbp/nkHFz9yBMALAIsdHKt6PMwAQ/vlpzr2w0THroLcAZi1X34s+lIQi8Kjuh34DEAs+F51NO1vVxPMqTD0VwNc6OHib9YE" ..
+        "P/XwOUWSawaIU/6fAPY23P4TgGcA1uzf0wDmAUy1eEQ8pHUCPwtBwxYXPz7XX9ni4sUVwqsNf9377KngzgjnWjVdzgBzVnDtb7Dt" ..
+        "AoAfG2z3C4Ab22zzM4DrDY71EsBjlM8/9pi76iUAewD8DuAUumXF6oSm254HF/cAXALwb+4A3AVwGt0S7/kHW9yz4+3grxY1QS3c" ..
+        "BXA251PAXIKLDyv42rzY+Wz7sHHGrkG2AMR7fgrWetqnBo7W8C5AZGLcAMRqNAXTPe1TAy9yBmDVqtGumbfCrikD2weEReBq7lvA" ..
+        "pQQhmLJFnqZcI30CuDzuQbQQRL4QhLgOkGEshebcDCFMbnGMQQhhpcVxzmX6W+F55HwZ9L5F359eBlXYD7BsS8h9fdYfPX1WUagh" ..
+        "hJycC0Eb1r2bspd/3T5DbeJOewJh7+mj1FFaU+igBmPJQwA2Q3C7w+bQ+Ms/Z8ZQl0xWZyzlfgz535gJIbwN4/PWjtXluU2EEJZD" ..
+        "CB9GOJ8Ptu+Eg+/4m5H9BLb4oi+O8UVfTPBFz4YQ3gWfwRx7eLkFbDXVLtpUe3ybqfaJTbUPE0y1QwC3Or41LXmSVbwG4Oti64fv" ..
+        "FFtvEhZbQwZjqYQA5GCWxVhSAMiNJXUEkRtLmgHIjSWv/0VMLoZsxlKuhhCvLBRgLNGYQV5ZcWIsVW0GeeWTM2OpWjPIK8+cGUvV" ..
+        "mkFeWetpnzbIDBL1mUFeme5pH7CbQV6Zd2YsVWsGeWXKkbFUtBnklQW2haDsHSnOxhKbsaSXQeTGkgJAbiwpAN+ihhByNpiMJYYZ" ..
+        "YFSDZ7FQY6kVtQagK4NnsRBjaXQcPHp5N3hmHBtLY4/sJ1CIwTPh0FjqZNRyC+jL4Jl0Yix1Rg0ByGXwDDIZS51SegBoDJ5UlBwA" ..
+        "qgWbVJRsBlEZPKkodQagM3hSUaoZRGfwpKLUhpASGjdSITOoMIMnFTKDCjJ4UiEzqBCDJxUygwoyeFIhM0iMTq1mkEeDJxUygwow" ..
+        "eFIhM6gAgycV1GaQFoLAbQbRGTxBHUHcBk8qSn0bSGfwpKLkAKghhLwhhMrgSUXJAYC1hMXu3VQs1dwPWEMAYF27w45ngnVrAHGh" ..
+        "b6Wk5Brga2asPTz28I3bBHqy9l9+TTPAJq9tMWrZHtva8tH2nWO5+LXNAFUbPKmoNQDVGTypYAiAIKkBxAgoAOQoAOQoAOQoAOQo" ..
+        "AOQoAOQoAOQoAOQoAOQoAOQoAOQoAOQoAOQoAOQoAOQoAOQoAOQoAOQoAOQoAOR8AeinAcYC8Y1WAAAAAElFTkSuQmCC",
+}
+
+local B64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+local B64_VALUE = {}
+for i = 1, #B64_ALPHABET do
+    B64_VALUE[B64_ALPHABET:sub(i, i)] = i - 1
+end
+
+function Menu.DecodeBase64(data)
+    data = data:gsub("%s+", "")
+    local out = {}
+    local i = 1
+    while i <= #data do
+        local c1 = B64_VALUE[data:sub(i, i)]
+        local c2 = B64_VALUE[data:sub(i + 1, i + 1)]
+        local c3 = B64_VALUE[data:sub(i + 2, i + 2)]
+        local c4 = B64_VALUE[data:sub(i + 3, i + 3)]
+        if c1 and c2 then
+            local v = c1 * 262144 + c2 * 4096 + (c3 or 0) * 64 + (c4 or 0)
+            out[#out + 1] = string.char(math.floor(v / 65536) % 256)
+            if c3 then out[#out + 1] = string.char(math.floor(v / 256) % 256) end
+            if c4 then out[#out + 1] = string.char(v % 256) end
+        end
+        i = i + 4
+    end
+    return table.concat(out)
+end
+
+-- Called before the URL loader: a category whose embedded texture is already
+-- in the cache is skipped by Menu.LoadIconTexture, so no HTTP request is made
+-- for the nine base icons.
+function Menu.LoadEmbeddedIcons()
+    if not Susano or not Susano.LoadTextureFromBuffer then return end
+    for name, encoded in pairs(Menu.EmbeddedIcons) do
+        local current = Menu.IconTextures[name]
+        if not current or current == 0 then
+            local ok, tex = pcall(Susano.LoadTextureFromBuffer, Menu.DecodeBase64(encoded))
+            if ok and tex and tex ~= 0 then
+                Menu.IconTextures[name] = tex
+            end
+        end
+    end
+end
+
 -- Load a single icon texture from URL, store in Menu.IconTextures[name]
 function Menu.LoadIconTexture(name, url)
     if not url or url == "" then return end
@@ -366,21 +1234,24 @@ end
 -- Init: load all icon textures at startup
 function Menu.LoadAllIcons()
     if not Menu.Categories then return end
-    for _, cat in ipairs(Menu.Categories) do
-        if cat.iconUrl and cat.iconUrl ~= "" and not cat.iconUrl:find("PLACEHOLDER") then
-            Menu.LoadIconTexture(cat.name, cat.iconUrl)
+    CreateThread(function()
+        Menu.LoadEmbeddedIcons()
+        for _, cat in ipairs(Menu.Categories) do
+            if cat.iconUrl and cat.iconUrl ~= "" and not cat.iconUrl:find("PLACEHOLDER") then
+                Menu.LoadIconTexture(cat.name, cat.iconUrl)
+            end
         end
-    end
-    Menu.LoadFooterLogo(Menu.FooterLogoUrl)
-    if Menu.ArrowUpUrl and Menu.ArrowUpUrl ~= "" then
-        Menu.LoadIconTexture("_arrowUp", Menu.ArrowUpUrl)
-    end
-    if Menu.ArrowDownUrl and Menu.ArrowDownUrl ~= "" then
-        Menu.LoadIconTexture("_arrowDown", Menu.ArrowDownUrl)
-    end
-    if Menu.ChevronUrl and Menu.ChevronUrl ~= "" then
-        Menu.LoadIconTexture("_chevron", Menu.ChevronUrl)
-    end
+        Menu.LoadFooterLogo(Menu.FooterLogoUrl)
+        if Menu.ArrowUpUrl and Menu.ArrowUpUrl ~= "" then
+            Menu.LoadIconTexture("_arrowUp", Menu.ArrowUpUrl)
+        end
+        if Menu.ArrowDownUrl and Menu.ArrowDownUrl ~= "" then
+            Menu.LoadIconTexture("_arrowDown", Menu.ArrowDownUrl)
+        end
+        if Menu.ChevronUrl and Menu.ChevronUrl ~= "" then
+            Menu.LoadIconTexture("_chevron", Menu.ChevronUrl)
+        end
+    end)
 end
 
 Menu.DrawWatermark = function() end
@@ -3241,8 +4112,10 @@ end)
 Menu.OnRender = function()
     if not worldSettings then worldSettings = GetWorldSettings() end
     RenderWorldVisuals(worldSettings)
-    -- Draw player info panel when a player is selected
-    if Menu.Visible and Menu.SelectedPlayer then
+    -- Draw player info panel when a player is selected. The UiAnim term keeps
+    -- the card on screen for the close tween; its own wrapper reads UiAnim for
+    -- the fade.
+    if (Menu.Visible or (Menu.UiAnim and Menu.UiAnim > 0.0001)) and Menu.SelectedPlayer then
         Menu.DrawPlayerInfoPanel()
     end
 end
@@ -17726,14 +18599,23 @@ end
 -- Registrations --------------------------------------------------------------
 
 -- The library only opens entries flagged hasTabs, so each category carries a
--- single tab.
-table.insert(Menu.Categories, {
+-- single tab. Player Props is inserted directly under Online instead of at the
+-- tail of the category list.
+local playerPropsCategory = {
     name = "Player Props",
     hasTabs = true,
     tabs = {
         { name = "Actions", items = playerItems },
     },
-})
+}
+local playerPropsIndex = #Menu.Categories + 1
+for i = 1, #Menu.Categories do
+    if Menu.Categories[i].name == "Online" then
+        playerPropsIndex = i + 1
+        break
+    end
+end
+table.insert(Menu.Categories, playerPropsIndex, playerPropsCategory)
 
 if not AttachSeed(seedItem) then
     Log("WARN", "Bypass tab not found - standalone entry created")
@@ -31132,7 +32014,12 @@ end
 local function hideMenu(fromFrame)
     if type(Menu) ~= "table" or Menu.Visible ~= true then return false end
     Menu.Visible = false
-    if fromFrame and type(Susano) == "table" and type(Susano.ResetFrame) == "function" then
+    -- Let the close tween run: the patched end of Menu.Render resets the
+    -- overlay once UiAnim reaches zero. Resetting here would blank the first
+    -- frame of the fade.
+    if fromFrame and (not Menu.UiAnim or Menu.UiAnim <= 0.0001)
+        and not Menu.PreventResetFrame
+        and type(Susano) == "table" and type(Susano.ResetFrame) == "function" then
         pcall(Susano.ResetFrame)
     end
     if type(O) == "table" and type(O.log) == "function" then
@@ -32037,19 +32924,13 @@ local function installProtection()
 end
 
 -- ---------------------------------------------------------------------------
--- EXPLOIT > EXPLOIT (FOUR CRASH ACTIONS)
+-- EXPLOIT > EXPLOIT (CRASH ROW CLEANUP)
 --
--- Four independent actions: `Ped flood`, `Whale crash`, `Emote crash` and
--- `Crush crash`. The first three call C.launch(kind); the fourth is the sink's
--- slam/vehicle-explosion path with a respawn hold, built for the b3095
--- +51DE0F window. There is no shared Method selector, no Intensity slider, no
--- target row and no Launch/Stop row. One click selects one engine, one target
--- window and one wire signature. The tab lives inside Exploit instead of a
--- top-level category: fewer top-level rows, and the crash actions sit next to
--- the other exploit actions. Any stale top-level Crasher category from an
--- older loader is removed on every load. The tab itself is named "Exploit";
--- "Crasher" is only the historical module name and the old tab label that is
--- merged into it.
+-- The crash actions were removed from the menu: none of them produced a
+-- reliable effect on current builds. The sweep still removes any historical
+-- crash row left by an older loader, and the tab collapse below keeps the
+-- Exploit surface (server actions) intact. "Crasher" is only the historical
+-- module name and the old tab label that is merged into Exploit.
 -- ---------------------------------------------------------------------------
 local CRASH_ROWS = {
     "Method", "Crash", "Intensity", "Target: nearest", "Launch crash",
@@ -32079,7 +32960,7 @@ local function installCrasher()
     if not tab then return false end
 
     -- If the operator already has this tab open, remember the selected row by
-    -- object. The crash block is prepended below, which shifts every index.
+    -- object. The sweep below can remove rows and shift every index.
     local category = findCategory("Exploit")
     local tabOpen = false
     if category and type(Menu.OpenedCategory) == "number" and Menu.Categories
@@ -32106,74 +32987,9 @@ local function installCrasher()
         end
     end
 
-    -- Four direct actions. The first three call C.launch(kind); the engine owns
-    -- the target window, spawn/task path and cleanup. The fourth calls
-    -- G.start("crash"), the sink's borrowed-world-vehicle slam with the
-    -- respawn hold. Nothing is shared between the vectors, so a click never
-    -- runs a mixed object/ped/emote loop.
-    --
-    -- Prepend the crash block instead of appending it. The base Exploits tab
-    -- also carries the server rows (Staff Mode, Disable Weapon Damage, Menu
-    -- Staff, Revive); with ItemsPerPage = 8, the four crash rows and their
-    -- separator stay on the first page and the server rows remain available
-    -- underneath.
-    local crashItems = {
-        {
-            name = "",
-            isSeparator = true,
-            separatorText = "Crash",
-        },
-        {
-            name = "Ped flood",
-            type = "action",
-            onClick = function()
-                -- In the integrated loader the proven base engine lives in the
-                -- base chunk (pedType 4 + player_one). In the standalone module
-                -- harness it does not exist, so keep the old engine fallback.
-                if type(Menu.ActionPedFlood) == "function" then
-                    if type(_Stealth) == "table" then _Stealth.blockAC = true end
-                    Menu.ActionPedFlood()
-                    Citizen.SetTimeout(140000, function()
-                        if type(_Stealth) == "table" and (_Stealth._acUsers or 0) <= 0 then
-                            _Stealth.blockAC = false
-                        end
-                    end)
-                else
-                    C.launch("ped")
-                end
-            end,
-        },
-        {
-            name = "Whale crash",
-            type = "action",
-            onClick = function()
-                C.launch("whale")
-            end,
-        },
-        {
-            name = "Emote crash",
-            type = "action",
-            onClick = function()
-                C.launch("emote")
-            end,
-        },
-        {
-            name = "Crush crash",
-            type = "action",
-            onClick = function()
-                G.start("crash")
-            end,
-        },
-    }
-
-    for i = #crashItems, 1, -1 do
-        table.insert(tab.items, 1, crashItems[i])
-    end
-
-    -- A reload with this tab open must not jump to the newly prepended block.
-    -- Restore the exact row object that was selected before the insert; if it
-    -- no longer exists (an old Teleport row, for example), clamp the index so
-    -- the menu cannot point past the rebuilt list.
+    -- A reload with this tab open must keep the selection stable after the
+    -- sweep. Restore the exact row object that was selected; if it no longer
+    -- exists, clamp the index so the menu cannot point past the rebuilt list.
     if tabOpen then
         local restored = false
         local selectedName = selectedItem and selectedItem.name
@@ -32186,9 +33002,8 @@ local function installCrasher()
                 end
             end
         end
-        -- A crash row is removed and re-created by this installer; match its
-        -- stable label so a re-injection does not move the cursor to the
-        -- separator above it.
+        -- If the row object is gone, match the stable label so a re-injection
+        -- does not move the cursor to the separator above it.
         if not restored and selectedName ~= nil then
             for i = 1, #tab.items do
                 if tab.items[i].name == selectedName then
@@ -32219,12 +33034,11 @@ end
 Menu.__vgd_installCrasher = installCrasher
 
 -- ---------------------------------------------------------------------------
--- EXPLOIT > GROUND
+-- EXPLOIT > GROUND (ROW CLEANUP)
 --
--- One action, no preset selector: G picks sink or slam from the target's
--- state. The rows sit right under the crash block so the whole physical
--- surface of the tab is on the first page, and the installer is idempotent
--- like the crasher (removes its own separator/action before inserting).
+-- The Ground sink action was removed with the other crashers: the sink engine
+-- did not produce a reliable effect on current builds. The sweep below still
+-- deletes the row and its "Ground" separator from an older loader.
 -- ---------------------------------------------------------------------------
 local function installSink()
     local tab = collapseExploitTab()
@@ -32238,40 +33052,6 @@ local function installSink()
         end
     end
 
-    -- Anchor after the LAST crash row when the block is present, so Ground
-    -- stays below all four crashers instead of splitting the block. If the
-    -- crasher was not installed in this build, the block goes to the top.
-    local at = 0
-    for i = 1, #tab.items do
-        local name = tab.items[i].name
-        if name == "Clip swarm" or name == "Ped flood"
-            or name == "Whale crash" or name == "Emote crash"
-            or name == "Crush crash" then
-            at = i
-        end
-    end
-
-    local selected = (type(Menu.CurrentItem) == "number") and tab.items[Menu.CurrentItem] or nil
-
-    table.insert(tab.items, at + 1, {
-        name = "",
-        isSeparator = true,
-        separatorText = "Ground",
-    })
-    table.insert(tab.items, at + 2, {
-        name = "Ground sink",
-        type = "action",
-        onClick = function() G.start() end,
-    })
-
-    if selected then
-        for i = 1, #tab.items do
-            if tab.items[i] == selected then
-                Menu.CurrentItem = i
-                break
-            end
-        end
-    end
     return true
 end
 
@@ -33634,7 +34414,7 @@ end
 -- BOOT
 -- ---------------------------------------------------------------------------
 function UI.boot()
-    O.log("loader build 2026-11-06-r7 (troll attach anims v5: release owned by attach VM + ped heartbeat)")
+    O.log("loader build 2026-11-06-r11 (smooth menu motion: open/close slide+fade, eased selection, pulsing bloom, banner zoom, animated toggles + selectors)")
     O.thread()
 
     -- Delete fallback poll. 40 ms is faster than a frame at 30 FPS and cheap
