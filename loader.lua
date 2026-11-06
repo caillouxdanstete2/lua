@@ -17496,7 +17496,7 @@ end)()
 -- >>> VANGUARD MODULE BEGIN
 -- ============================================================================
 -- VANGUARD  (integrated artifact - edit src/ and rebuild)
--- Generated: 2026-11-05 20:51:14
+-- Generated: 2026-11-06 17:06:09
 --
 -- This block lives in loader.lua and in dist/loader.built.lua at the same
 -- time. It is the only place the local Menu table is in scope. Rebuilding
@@ -29463,47 +29463,54 @@ end)(Menu)
 -- ---------------------------------------------------------------------------
 local FP = (function(O,S,B,Menu)
 -- ============================================================================
--- VANGUARD / 28 FIGHT PARTY (REMOTE BRAWL, NETWORK PRIMITIVES)
+-- VANGUARD / 28 FIGHT PARTY (REMOTE BRAWL)
 -- ----------------------------------------------------------------------------
 -- Exploit > Exploit > "Party" (Fight Party, Fight Party Radius).
 --
 -- What the feature does:
---   A ring is anchored on the selected player, or on the nearest other player
---   when nothing is selected. Every OTHER real player on foot inside the ring
---   is put into a visible brawl: the ring trades synthetic unaanned melee hits
---   through Susano.SendNetworkDamage and takes timed knockdowns through
---   Susano.RequestRagdoll. The operator is never a subject, never an attacker,
---   never a target, and is dropped before any other check.
+--   A ring is anchored on the selected player, or on the nearest other ped
+--   when nothing is selected. Every other ped inside the ring is put into a
+--   visible brawl: each one takes local knockdowns (physics ragdoll + shove)
+--   on a jittered cadence, and the ring trades small synthetic unarmed hits
+--   between real players. The operator is never a subject, an attacker or a
+--   target, and is dropped before any other check.
 --
--- Why there is no TaskCombatPed here (this is the load-bearing change):
+-- Why the client-side task route is not used (load-bearing):
 --   A task native applied to a ped owned by another client is not executed by
 --   the caller. Cfx only relays a scripted task to the owner through
 --   GIVE_PED_SCRIPTED_TASK_EVENT, and that event carries exactly two fields:
 --   the entity net id and the task id. A task that needs a second ped handle
---   (TASK_COMBAT_PED) has no field to carry it, so the relay cannot reproduce
---   the call. The server-side RPC native of the same name exists precisely
---   because the client native stops at the ownership boundary, and an
---   external executor has no server context. Three local builds that called
---   TaskCombatPed on remote player peds therefore armed nothing; the peds
---   stayed idle. The two primitives below are the ones that cross the client
---   boundary on their own.
+--   (TASK_COMBAT_PED, TASK_GO_TO_ENTITY, TASK_TURN_PED_TO_FACE_ENTITY) has no
+--   field to carry it, so the relay cannot reproduce the call. The server-side
+--   RPC native of the same name exists precisely because the client native
+--   stops at the ownership boundary, and an external executor has no server
+--   context. Four local builds that called TaskCombatPed on remote player peds
+--   therefore armed nothing; the peds stayed idle.
 --
--- Why SendNetworkDamage:
---   It is the Susano extra native built for this exact case: it emits a
---   synthetic weaponDamageEvent for a source entity against a target entity
---   at a world position, and the server routes the event to the target owner.
---   The victim's client applies the damage and plays the ordinary unarmed hit
---   reaction; the reaction is part of the ped's animation state, so every
---   other client sees it too. The hit is small (12.0) and paced, so the ring
---   staggers instead of dying.
+-- Why the networked ragdoll route is not used either:
+--   WaveShield V4 sets game_sanitizeRagdollEvents = true and pushes
+--   RAGDOLL_REQUEST_EVENT (935852904) into blockedNetGameEvents through
+--   block_net_game_event. A client ragdoll request for another player is
+--   dropped by the sanitizer before it can reach the owner, and a blocked net
+--   game event is visible to the block counter. RequestRagdoll is dead on that
+--   stack, so it is not called at all here.
 --
--- Why RequestRagdoll:
---   It is the second Susano extra native: it requests a ragdoll on a target
---   entity by engine GUID. The target owner applies it, and ragdoll is
---   networked state, so the knockdown is visible to everyone. This is the
---   same primitive the reference loader already uses for its ragdoll and
---   launch actions. Knockdowns are spaced and probability-gated so the ring
---   looks like a brawl, not like a metronome.
+-- What carries the brawl:
+--   SET_PED_TO_RAGDOLL and SET_ENTITY_VELOCITY act on the local ped instance.
+--   A streamed ped, including another player's ped, is simulated locally for
+--   physics; forcing a ragdoll on that instance is immediate and visible in
+--   the operator's view, and the shove gives it momentum and direction. This
+--   is the same pair the "Ragdoll All" actions use in the reference menus
+--   (menuii, onyx): local state, no spawned entity, no task, no world write.
+--   The ped gets back up when time1 expires, and the per-ped cadence decides
+--   when it goes down again. Nothing here writes health, position, heading,
+--   armour or weapon state on a remote ped.
+--
+--   The networked half is Susano.SendNetworkDamage: a small synthetic unarmed
+--   weaponDamageEvent from a ring player against a ring player, routed by the
+--   server to the victim's owner. The victim's own client plays the ordinary
+--   hit reaction, so the ring reads as trading punches instead of all falling
+--   at once. The hit is 12.0 damage with flags 198.
 --
 -- Why the damage flags are 198 and not the default 522:
 --   WaveShield V4 weaponDamageEvent inspects unarmed damage by exact flags.
@@ -29516,63 +29523,72 @@ local FP = (function(O,S,B,Menu)
 --   The weapon hash is WEAPON_UNARMED so the reaction reads as a punch.
 --
 -- Why the target list never contains the operator:
---   gather() drops PlayerId() before anything else. Both the hit pass and the
---   knock pass re-check PlayerPedId() on the source and on the target, so a
---   stale or re-used handle cannot get through.
+--   gather() drops PlayerPedId() before anything else. drop() and punch()
+--   re-check PlayerPedId() on both ends, so a stale or re-used handle cannot
+--   get through.
 --
 -- Verified natives (alloc8or dump):
---   GET_ACTIVE_PLAYERS               CFX 0xCF143FB9 ()->int[]
---   GET_PLAYER_SERVER_ID             CFX 0x4D97BCC7 (Player)->int
---   GET_PLAYER_FROM_SERVER_ID        CFX 0x344EA166 (int)->Player
---   GET_PLAYER_PED                   0x43A66C31C68491C0 (Player)->Ped
---   NETWORK_IS_PLAYER_ACTIVE         0xB8DFD30D6973E135 (Player)->BOOL
---   GET_ENTITY_COORDS                0x3FEF770D40960D5A (Entity,BOOL)->Vector3
---   GET_ENTITY_HEALTH                0xEEF059FAD016D209 (Entity)->int
---   DOES_ENTITY_EXIST                0x7239B21A38F536BA (Entity)->BOOL
---   IS_PED_DEAD_OR_DYING             0x3317DEDB88C95038 (Ped,BOOL)->BOOL
---   IS_PED_IN_ANY_VEHICLE            0x997ABD671D25CA0B (Ped,BOOL)->BOOL
---   IS_PED_RAGDOLL                   0x47E4E977581C5B55 (Ped)->BOOL
---   GET_GROUND_Z_FOR_3D_COORD        0xC906A7DAB05C8D2B
+--   SET_PED_TO_RAGDOLL             0xAE99FB955581844A
+--     (Ped,int time1,int time2,int ragdollType,BOOL,BOOL,BOOL)->BOOL
+--   SET_PED_CAN_RAGDOLL            0xB128377056A54E2A (Ped,BOOL)->void
+--   SET_ENTITY_VELOCITY            0x1C99BB7B6E96D16F
+--     (Entity,float,float,float)->void
+--   IS_PED_RAGDOLL                 0x47E4E977581C5B55 (Ped)->BOOL
+--   IS_PED_HUMAN                   0xB980061DA992779D (Ped)->BOOL
+--   IS_PED_A_PLAYER                0x12534C348C6CB68B (Ped)->BOOL
+--   GET_ACTIVE_PLAYERS             CFX 0xCF143FB9 ()->int[]
+--   GET_PLAYER_SERVER_ID           CFX 0x4D97BCC7 (Player)->int
+--   GET_PLAYER_FROM_SERVER_ID      CFX 0x344EA166 (int)->Player
+--   GET_PLAYER_PED                 0x43A66C31C68491C0 (Player)->Ped
+--   NETWORK_IS_PLAYER_ACTIVE       0xB8DFD30D6973E135 (Player)->BOOL
+--   GET_ENTITY_COORDS              0x3FEF770D40960D5A (Entity,BOOL)->Vector3
+--   GET_ENTITY_HEALTH              0xEEF059FAD016D209 (Entity)->int
+--   DOES_ENTITY_EXIST              0x7239B21A38F536BA (Entity)->BOOL
+--   IS_PED_DEAD_OR_DYING           0x3317DEDB88C95038 (Ped,BOOL)->BOOL
+--   IS_PED_IN_ANY_VEHICLE          0x997ABD671D25CA0B (Ped,BOOL)->BOOL
+--   GET_GROUND_Z_FOR_3D_COORD      0xC906A7DAB05C8D2B
 --     (float,float,float,float*,BOOL,BOOL)->BOOL
+--   GET_GAME_POOL                  CFX (string)->table
 --
--- Susano primitives (verified against susano.re/docs, extra natives):
+-- Susano primitive (verified against susano.re/docs, extra natives):
 --   Susano.SendNetworkDamage(source, target, posX, posY, posZ, damage
 --       [, weaponHash [, flags [, actionResultHash [, actionResultId
 --       [, actionUnk [, hitComponent]]]]]]) -> void
---   Susano.RequestRagdoll(targetGuid) -> void
---   GetEntityGuid(entity) -> int   (engine GUID, as used by the docs example
---       and by the reference loader's ragdoll action)
 --
 -- Residual risk:
 --   1. SendNetworkDamage is a synthetic damage event. A server-side damage
 --      heuristic (rate, damage per hit, attacker/victim health curve) can
 --      still notice a player who takes repeated unarmed hits with no input.
---      The cadence is deliberately slow, the damage is 12.0, and the health
---      floor (120) stops the pass before a kill, so no KILL log is written
---      by the WaveShield formal report path.
---   2. RequestRagdoll has no handler in the WaveShield V4 source in this
---      corpus; the only ragdoll handler there is the premium custom event
---      WS_ayznnn_ragdollRequestEvent, which is unrelated to the Susano extra
---      native. A different AC build may treat repeated ragdoll requests as a
---      troll signature; the knockdown period (2.4 s, jittered, 55% chance)
---      keeps the rate low.
---   3. A player who dies, enters a vehicle or leaves the ring is dropped on
---      the next pass; no coordinate, heading, health or weapon value is ever
+--      The cadence is slow, the damage is 12.0, and the health floor (120)
+--      stops the pass before a kill, so no KILL log is written by the
+--      WaveShield formal report path.
+--   2. Local ragdoll on a remote player is corrected by the owner's sync on a
+--      few hundred milliseconds, which is exactly what makes the flop read as
+--      a stagger instead of a pinned pose. The rate is per-ped (1.9 s, jittered)
+--      and the ped is skipped while already ragdolled, so no frame spam.
+--   3. A different client guard could count SetPedToRagdoll calls made on
+--      other players' peds. There is no shared state and no network event, so
+--      only a client-side monitor of that native would see it; nothing in the
+--      WaveShield V4 client modules in this corpus does.
+--   4. A player who dies, enters a vehicle or leaves the ring is dropped on the
+--      next pass; no coordinate, heading, health or weapon value is ever
 --      written on a remote ped.
---   4. The ring stays on the Susano overlay, outside the game render path;
+--   5. The ring stays on the Susano overlay, outside the game render path;
 --      the target never sees the ring.
---   5. The ring is drawn locally; it does not replicate the brawl itself. The
---      brawl is carried by the two network events above.
 -- ============================================================================
 
 local FP = {}
 
 local MAX_TARGETS  = 12
 local RING_POINTS  = 72
-local CHECK_MS     = 260     -- scheduler period
-local HIT_MS       = 420     -- one hit per beat, round-robin across the ring
-local KNOCK_MS     = 2400    -- per-target knockdown cadence
+local CHECK_MS     = 240     -- scheduler period
+local HIT_MS       = 520     -- one networked hit per beat, round-robin
+local KNOCK_MS     = 1900    -- per-ped local knockdown cadence
 local KNOCK_CHANCE = 0.55    -- probability gate on each knockdown beat
+local LOCAL_MS1    = 3200    -- ragdoll time1 (ms), reference cadence
+local LOCAL_MS2    = 3200    -- ragdoll time2 (ms)
+local SHOVE_XY     = 2.2
+local SHOVE_Z      = 3.4
 local LEASH_M      = 1.5
 local RADIUS_MIN   = 8.0
 local RADIUS_MAX   = 40.0
@@ -29580,28 +29596,33 @@ local BRAWL_DAMAGE = 12.0
 local BRAWL_FLAGS  = 198
 local HEALTH_FLOOR = 120     -- stop hitting a target at or below this health
 local KNOCK_FLOOR  = 80      -- no knockdown at or below this health
+local PULSE_MS     = 360
+local PULSE_SEGS   = 18
 local BRAWL_WEAPON = GetHashKey("WEAPON_UNARMED")
 
-FP.radius      = 15.0
-FP.active      = false
-FP.center      = nil
-FP.centerSid   = nil
-FP.anchorPed   = nil
+FP.radius       = 15.0
+FP.active       = false
+FP.center       = nil
+FP.centerSid    = nil
+FP.anchorPed    = nil
 FP.anchorPlayer = nil
-FP.ring        = nil
-FP.members     = {}
-FP.byPlayer    = {}
-FP.count       = 0
-FP.cursor      = 1
-FP.nextHitAt   = 0
-FP.startedAt   = 0
-FP.onChange    = nil
-FP.note        = nil
-FP.noteUntil   = 0
+FP.anchorKey    = nil
+FP.ring         = nil
+FP.members      = {}
+FP.byKey        = {}
+FP.count        = 0
+FP.cursor       = 1
+FP.nextHitAt    = 0
+FP.startedAt    = 0
+FP.pulses       = {}
+FP.onChange     = nil
+FP.note         = nil
+FP.noteUntil    = 0
 
 FP.canRender = type(Susano) == "table"
-    and type(Susano.WorldToScreen) == "function"
     and type(Susano.DrawLine) == "function"
+    and (type(Susano.WorldToScreen) == "function"
+        or type(GetScreenCoordFromWorldCoord) == "function")
 
 local function log(fmt, ...)
     O.log("fight: " .. tostring(fmt), ...)
@@ -29638,25 +29659,71 @@ local function healthOf(ped)
     return 0
 end
 
+local function isRagdolled(ped)
+    local ok, value = pcall(IsPedRagdoll, ped)
+    return ok and value == true
+end
+
 local function canHit(ped)
     if not pedUsable(ped) then return false end
     if ped == PlayerPedId() then return false end
-    local ok, ragdoll = pcall(IsPedRagdoll, ped)
-    if ok and ragdoll == true then return false end
+    if isRagdolled(ped) then return false end
     local hp = healthOf(ped)
     -- 0 means the health is not streamed yet; treat it as usable rather than
     -- dropping a live target over a transient read.
     return hp == 0 or hp > HEALTH_FLOOR
 end
 
-local function canKnock(ped)
+local function canDrop(ped)
     if not pedUsable(ped) then return false end
     if ped == PlayerPedId() then return false end
+    if isRagdolled(ped) then return false end
     local hp = healthOf(ped)
     if hp ~= 0 and hp <= KNOCK_FLOOR then return false end
-    local ok, ragdoll = pcall(IsPedRagdoll, ped)
-    if ok and ragdoll == true then return false end
     return true
+end
+
+local function keyOf(rec)
+    if rec.player then return "p" .. tostring(rec.player) end
+    return "e" .. tostring(rec.ped)
+end
+
+local function isVec(v)
+    return v ~= nil
+        and type(v.x) == "number"
+        and type(v.y) == "number"
+        and type(v.z) == "number"
+end
+
+-- Aim anchor: when no player is selected in the menu, the ped closest to the
+-- camera's forward ray becomes the centre, which is the "goal pick" geometry
+-- the reference menu uses. Only four native reads, once per start.
+local function aimedPed()
+    if type(GetGameplayCamCoord) ~= "function"
+        or type(GetGameplayCamRot) ~= "function" then return nil end
+    local okC, cam = pcall(GetGameplayCamCoord)
+    local okR, rot = pcall(GetGameplayCamRot, 2)
+    if not okC or not okR then return nil end
+    if not isVec(cam) or not isVec(rot) then return nil end
+    local dir = O.rotToDir(rot)
+    if not isVec(dir) then return nil end
+
+    local best, bestDot = nil, 0.965
+    for _, player in ipairs(GetActivePlayers()) do
+        if player ~= PlayerId() and NetworkIsPlayerActive(player) then
+            local ped = GetPlayerPed(player)
+            if pedUsable(ped) then
+                local to = GetEntityCoords(ped)
+                local dx, dy, dz = to.x - cam.x, to.y - cam.y, to.z - cam.z
+                local len = math.sqrt(dx * dx + dy * dy + dz * dz)
+                if len > 0.001 and len < 80.0 then
+                    local dot = (dx * dir.x + dy * dir.y + dz * dir.z) / len
+                    if dot > bestDot then best, bestDot = ped, dot end
+                end
+            end
+        end
+    end
+    return best
 end
 
 -- ---------------------------------------------------------------------------
@@ -29695,28 +29762,51 @@ function FP.setRadius(value)
 end
 
 -- ---------------------------------------------------------------------------
--- WORLD READ. The operator is dropped before anything else, so no later path
--- can select him as a subject, an attacker or a target.
+-- WORLD READ. Players first, then human NPCs. The operator is dropped before
+-- anything else, so no later path can select him as a subject, an attacker or
+-- a target.
 -- ---------------------------------------------------------------------------
-local function gather(radius, out)
-    out = out or {}
+local function gather(radius)
+    local out = {}
     if not FP.center then return out end
 
+    local seen = {}
     local me = PlayerId()
+
+    local function add(player, ped)
+        if not ped or ped == 0 or ped == PlayerPedId() then return end
+        if seen[ped] then return end
+        if not pedUsable(ped) then return end
+        local pos = GetEntityCoords(ped)
+        local dist = O.distance(pos, FP.center)
+        if dist > radius then return end
+        seen[ped] = true
+        out[#out + 1] = {
+            player = player,
+            ped = ped,
+            dist = dist,
+            nextHit = 0,
+            nextKnock = 0,
+        }
+    end
+
     for _, player in ipairs(GetActivePlayers()) do
         if player ~= me and NetworkIsPlayerActive(player) then
-            local ped = GetPlayerPed(player)
-            if pedUsable(ped) then
-                local pos = GetEntityCoords(ped)
-                local dist = O.distance(pos, FP.center)
-                if dist <= radius then
-                    out[#out + 1] = {
-                        player = player,
-                        ped = ped,
-                        dist = dist,
-                        nextHit = 0,
-                        nextKnock = 0,
-                    }
+            add(player, GetPlayerPed(player))
+        end
+    end
+
+    if type(GetGamePool) == "function" then
+        local ok, pool = pcall(GetGamePool, "CPed")
+        if ok and type(pool) == "table" then
+            for i = 1, #pool do
+                local ped = pool[i]
+                if ped ~= PlayerPedId() then
+                    local okP, isPlayer = pcall(IsPedAPlayer, ped)
+                    if not (okP and isPlayer) then
+                        local okH, human = pcall(IsPedHuman, ped)
+                        if not okH or human then add(nil, ped) end
+                    end
                 end
             end
         end
@@ -29727,14 +29817,17 @@ local function gather(radius, out)
 end
 
 -- ---------------------------------------------------------------------------
--- PUNCH. One synthetic unarmed hit from a ring neighbour. The native resolves
--- both handles locally, emits the damage event and the server routes it to the
--- owner. Nothing is written on the ped. Flags 198 avoids the flags-522 branch
--- in the reference guard; damage 12.0 is far below the super-punch threshold.
+-- PUNCH. One synthetic unarmed hit between two real players. The native
+-- resolves both handles locally and emits the damage event; the server routes
+-- it to the victim's owner. Nothing is written on the ped. Flags 198 avoids
+-- the flags-522 branch in the reference guard; 12.0 is below the super-punch
+-- threshold.
 -- ---------------------------------------------------------------------------
 local function punch(rec, source)
     if not rec or not rec.ped or rec.ped == 0 then return false end
+    if not rec.player then return false end
     if not source or not source.ped or source.ped == 0 then return false end
+    if not source.player then return false end
     if rec.ped == source.ped then return false end
     if rec.ped == PlayerPedId() or source.ped == PlayerPedId() then return false end
     if type(Susano) ~= "table" or type(Susano.SendNetworkDamage) ~= "function" then
@@ -29758,55 +29851,72 @@ local function punch(rec, source)
 end
 
 -- ---------------------------------------------------------------------------
--- KNOCKDOWN. Engine GUID of the target, requested through the Susano extra
--- native. The owner applies the ragdoll, the state replicates.
+-- KNOCKDOWN. Local physics only: a shove gives direction, then the ragdoll
+-- forces the ped's local instance down for time1 ms. The owner's sync brings
+-- the ped back up, which is what turns the knockdown into a stagger. The call
+-- is skipped while the ped is already ragdolled, so a ped gets one drop per
+-- cadence, not one per frame.
 -- ---------------------------------------------------------------------------
-local function knock(rec)
+local function drop(rec)
     if not rec or not rec.ped or rec.ped == 0 then return false end
-    if type(Susano) ~= "table" or type(Susano.RequestRagdoll) ~= "function" then
+    if rec.ped == PlayerPedId() then return false end
+    if not canDrop(rec.ped) then
+        rec.nextKnock = O.now() + O.jitter(900, 0.30)
         return false
     end
-    if not canKnock(rec.ped) then return false end
 
-    local okGuid, guid = pcall(GetEntityGuid, rec.ped)
-    if not okGuid or type(guid) ~= "number" or guid == 0 then return false end
+    local pos = GetEntityCoords(rec.ped)
+    local angle = math.random() * 6.2831853
+    pcall(SetPedCanRagdoll, rec.ped, true)
+    pcall(SetEntityVelocity, rec.ped,
+        math.cos(angle) * SHOVE_XY, math.sin(angle) * SHOVE_XY, SHOVE_Z)
 
-    local ok, err = pcall(Susano.RequestRagdoll, guid)
-    if not ok then
-        log("knock failed: %s", tostring(err))
-        return false
+    local ok = pcall(SetPedToRagdoll, rec.ped,
+        LOCAL_MS1, LOCAL_MS2, 0, false, false, false)
+
+    if ok then
+        if #FP.pulses >= 12 then table.remove(FP.pulses, 1) end
+        FP.pulses[#FP.pulses + 1] = {
+            x = pos.x, y = pos.y, z = pos.z, t = GetGameTimer(),
+        }
+        rec.nextKnock = O.now() + O.jitter(KNOCK_MS, 0.25)
+        return true
     end
-    rec.nextKnock = O.now() + O.jitter(KNOCK_MS, 0.22)
-    return true
+
+    rec.nextKnock = O.now() + O.jitter(KNOCK_MS, 0.40)
+    return false
 end
 
 -- ---------------------------------------------------------------------------
 -- MEMBERSHIP. Rebuilds from the live gather each pass; departing, dead and
--- vehicle-borne players are dropped without touching them.
+-- vehicle-borne peds are dropped without touching them.
 -- ---------------------------------------------------------------------------
 local function reconcile(list)
+    local fresh = {}
+    for i = 1, #list do fresh[keyOf(list[i])] = list[i] end
+
     for i = #FP.members, 1, -1 do
         local rec = FP.members[i]
-        local fresh = nil
-        for k = 1, #list do
-            if list[k].player == rec.player then fresh = list[k] break end
-        end
-        if fresh then
-            rec.ped = fresh.ped
-            rec.dist = fresh.dist
+        local key = keyOf(rec)
+        local candidate = fresh[key]
+        if candidate then
+            rec.ped = candidate.ped
+            rec.dist = candidate.dist
+            rec.player = candidate.player
         else
-            FP.byPlayer[rec.player] = nil
+            FP.byKey[key] = nil
             table.remove(FP.members, i)
         end
     end
 
     for i = 1, #list do
         if #FP.members >= MAX_TARGETS then break end
-        local cand = list[i]
-        if not FP.byPlayer[cand.player] then
-            cand.nextKnock = O.now() + O.int(400, KNOCK_MS)
-            FP.members[#FP.members + 1] = cand
-            FP.byPlayer[cand.player] = cand
+        local candidate = list[i]
+        local key = keyOf(candidate)
+        if not FP.byKey[key] then
+            candidate.nextKnock = O.now() + O.int(200, 1400)
+            FP.members[#FP.members + 1] = candidate
+            FP.byKey[key] = candidate
         end
     end
 
@@ -29815,7 +29925,8 @@ local function reconcile(list)
 end
 
 -- ---------------------------------------------------------------------------
--- TICK. One hit per beat, round-robin; knockdown beats are per target.
+-- TICK. Knockdown beats are per ped; the networked hit pass is player-only and
+-- takes one target per beat.
 -- ---------------------------------------------------------------------------
 local function tick(now)
     if not FP.active then return end
@@ -29827,48 +29938,36 @@ local function tick(now)
 
     -- If the anchor left the ring, promote the nearest remaining member so
     -- the pairing stays coherent.
-    local anchorAlive = false
+    if not FP.byKey[FP.anchorKey] then
+        local first = FP.members[1]
+        FP.anchorKey = keyOf(first)
+        FP.anchorPed = first.ped
+        FP.anchorPlayer = first.player
+    end
+
+    local players = {}
     for i = 1, count do
-        if FP.members[i].player == FP.anchorPlayer then anchorAlive = true break end
-    end
-    if not anchorAlive then
-        FP.anchorPlayer = FP.members[1].player
-        FP.anchorPed = FP.members[1].ped
+        if FP.members[i].player then players[#players + 1] = FP.members[i] end
     end
 
-    -- Punch beat. The source is the anchor when the target is not the anchor,
-    -- otherwise the next member in the rotation. The operator is excluded on
-    -- both ends by gather() and by punch().
-    if now >= (FP.nextHitAt or 0) and count >= 2 then
-        local target = nil
+    if now >= (FP.nextHitAt or 0) and #players >= 2 then
         local source = nil
+        local target = nil
 
-        for _ = 1, count do
-            local rec = FP.members[((FP.cursor - 1) % count) + 1]
-            FP.cursor = (FP.cursor % count) + 1
+        for _ = 1, #players do
+            local rec = players[((FP.cursor - 1) % #players) + 1]
+            FP.cursor = (FP.cursor % #players) + 1
             if canHit(rec.ped) then
-                if rec.player ~= FP.anchorPlayer then
-                    for i = 1, count do
-                        local cand = FP.members[i]
-                        if cand.player == FP.anchorPlayer and cand.ped ~= rec.ped
-                            and DoesEntityExist(cand.ped)
-                            and not IsPedDeadOrDying(cand.ped, true) then
-                            source = cand
-                            break
-                        end
+                for j = 1, #players do
+                    local candidate = players[j]
+                    if candidate.ped ~= rec.ped
+                        and DoesEntityExist(candidate.ped)
+                        and not IsPedDeadOrDying(candidate.ped, true) then
+                        source = candidate
+                        break
                     end
                 end
-                if not source then
-                    local alt = FP.members[(FP.cursor - 1) % count + 1]
-                    if alt.ped ~= rec.ped and DoesEntityExist(alt.ped)
-                        and not IsPedDeadOrDying(alt.ped, true) then
-                        source = alt
-                    end
-                end
-                if source then
-                    target = rec
-                    break
-                end
+                if source then target = rec break end
             end
         end
 
@@ -29884,9 +29983,7 @@ local function tick(now)
     for i = 1, count do
         local rec = FP.members[i]
         if now >= (rec.nextKnock or 0) and O.chance(KNOCK_CHANCE) then
-            if not knock(rec) then
-                rec.nextKnock = now + O.jitter(KNOCK_MS, 0.35)
-            end
+            drop(rec)
         end
     end
 end
@@ -29899,7 +29996,7 @@ function FP.isActive()
 end
 
 function FP.status()
-    return ("active=%s targets=%d radius=%.0f"):format(
+    return ("active=%s peds=%d radius=%.0f"):format(
         tostring(FP.active), #FP.members, FP.radius)
 end
 
@@ -29911,11 +30008,13 @@ function FP.stop(reason)
     FP.centerSid = nil
     FP.anchorPed = nil
     FP.anchorPlayer = nil
-    FP.byPlayer = {}
+    FP.anchorKey = nil
+    FP.byKey = {}
     FP.members = {}
     FP.count = 0
     FP.cursor = 1
     FP.nextHitAt = 0
+    FP.pulses = {}
     FP.note = nil
 
     if FP.canRender and Menu then Menu.PreventResetFrame = false end
@@ -29931,14 +30030,14 @@ end
 function FP.start()
     if FP.active then return true end
 
-    local myPed = PlayerPedId()
-    local mySid = GetPlayerServerId(PlayerId())
-    local ringPed = nil
-    local selectedSid = nil
-
     FP.centerSid = nil
     FP.anchorPlayer = nil
     FP.anchorPed = nil
+    FP.anchorKey = nil
+    FP.pulses = {}
+
+    local selectedSid = nil
+    local anchorPed = nil
 
     local selected = Menu and Menu.SelectedPlayer
     if type(selected) == "number" then
@@ -29946,16 +30045,20 @@ function FP.start()
         if player ~= -1 and player ~= PlayerId() then
             local ped = GetPlayerPed(player)
             if pedUsable(ped) then
-                ringPed = ped
+                anchorPed = ped
                 selectedSid = selected
             end
         end
     end
 
-    -- No valid remote selection: anchor on the nearest other player. The
-    -- operator is never the centre of a feature that excludes the operator.
-    if not ringPed then
-        local base = GetEntityCoords(myPed)
+    -- No valid remote selection: anchor on the aimed player, then on the
+    -- nearest other player. The operator is never the centre of a feature
+    -- that excludes the operator.
+    if not anchorPed then
+        anchorPed = aimedPed()
+    end
+    if not anchorPed then
+        local base = GetEntityCoords(PlayerPedId())
         local best, bestDist = nil, nil
         for _, player in ipairs(GetActivePlayers()) do
             if player ~= PlayerId() and NetworkIsPlayerActive(player) then
@@ -29968,17 +30071,16 @@ function FP.start()
                 end
             end
         end
-        ringPed = best
+        anchorPed = best
     end
 
-    if not ringPed then
+    if not anchorPed then
         note("NO PLAYER IN RANGE")
-        log("start refused: no other player")
+        log("start refused: no other ped")
         return false
     end
 
-    local coords = GetEntityCoords(ringPed)
-    FP.center = O.v3(coords)
+    FP.center = O.v3(GetEntityCoords(anchorPed))
     FP.radius = clampRadius(FP.radius)
     buildRing()
 
@@ -29986,32 +30088,15 @@ function FP.start()
     if #list == 0 then
         FP.stop("no targets")
         note("NO PLAYER IN RANGE")
+        log("start refused: nothing inside the ring")
         return false
     end
 
-    local anchor
-    if selectedSid then
-        for i = 1, #list do
-            if list[i].ped == ringPed then anchor = list[i] break end
-        end
+    local anchor = nil
+    for i = 1, #list do
+        if list[i].ped == anchorPed then anchor = list[i] break end
     end
     if not anchor then anchor = list[1] end
-    if not anchor or anchor.ped == myPed then
-        FP.stop("no anchor")
-        note("NO PLAYER IN RANGE")
-        return false
-    end
-
-    local canSend = type(Susano) == "table"
-        and type(Susano.SendNetworkDamage) == "function"
-    local canRagdoll = type(Susano) == "table"
-        and type(Susano.RequestRagdoll) == "function"
-    if not canSend and not canRagdoll then
-        FP.stop("no primitive")
-        note("NETWORK PRIMITIVES MISSING")
-        log("start refused: SendNetworkDamage and RequestRagdoll are absent")
-        return false
-    end
 
     if not B.spend("fight") then
         log("budget refused")
@@ -30019,20 +30104,21 @@ function FP.start()
         return false
     end
 
-    FP.anchorPlayer = anchor.player
     FP.anchorPed = anchor.ped
+    FP.anchorPlayer = anchor.player
+    FP.anchorKey = keyOf(anchor)
     FP.centerSid = selectedSid
     FP.members = {}
-    FP.byPlayer = {}
+    FP.byKey = {}
     FP.startedAt = O.now()
     FP.cursor = 1
     FP.nextHitAt = FP.startedAt + HIT_MS
 
     for i = 1, math.min(#list, MAX_TARGETS) do
         local rec = list[i]
-        rec.nextKnock = O.now() + O.int(400, KNOCK_MS)
+        rec.nextKnock = O.now() + O.int(200, 1400)
         FP.members[#FP.members + 1] = rec
-        FP.byPlayer[rec.player] = rec
+        FP.byKey[keyOf(rec)] = rec
     end
 
     FP.count = #FP.members
@@ -30040,26 +30126,53 @@ function FP.start()
     if FP.canRender and Menu then Menu.PreventResetFrame = true end
 
     notify()
-    log("started: players=%d radius=%.0f anchor=%d damage=%s ragdoll=%s",
-        FP.count, FP.radius, anchor.player,
-        tostring(canSend), tostring(canRagdoll))
+    log("started: peds=%d radius=%.0f anchor=%s local=true net_damage=%s",
+        FP.count, FP.radius, tostring(FP.anchorPlayer or "npc"),
+        tostring(type(Susano) == "table"
+            and type(Susano.SendNetworkDamage) == "function"))
     return true
 end
 
 -- ---------------------------------------------------------------------------
--- RENDER. Ring segments on the Susano overlay. No world draw, no capture.
+-- RENDER. Ring, hit pulses and a status line on the Susano overlay. No world
+-- draw, no capture.
 -- ---------------------------------------------------------------------------
+local screenSize
+
 local function project(point)
     if not FP.canRender then return false, 0, 0 end
-    local ok, sx, sy = Susano.WorldToScreen(point.x, point.y, point.z)
-    if not ok or type(sx) ~= "number" or type(sy) ~= "number" then
+
+    if type(Susano.WorldToScreen) == "function" then
+        local ok, sx, sy = Susano.WorldToScreen(point.x, point.y, point.z)
+        if not ok or type(sx) ~= "number" or type(sy) ~= "number" then
+            return false, 0, 0
+        end
+        if sx ~= sx or sy ~= sy then return false, 0, 0 end
+        if math.abs(sx) > 20000.0 or math.abs(sy) > 20000.0 then
+            return false, 0, 0
+        end
+        return true, sx, sy
+    end
+
+    local ok, nx, ny = GetScreenCoordFromWorldCoord(point.x, point.y, point.z)
+    if not ok or type(nx) ~= "number" or type(ny) ~= "number" then
         return false, 0, 0
     end
-    if sx ~= sx or sy ~= sy then return false, 0, 0 end
-    if math.abs(sx) > 20000.0 or math.abs(sy) > 20000.0 then
-        return false, 0, 0
+    local width, height = screenSize()
+    return true, nx * width, ny * height
+end
+
+screenSize = function()
+    local width, height = 1920, 1080
+    if type(Susano.GetScreenWidth) == "function" then
+        local ok, value = pcall(Susano.GetScreenWidth)
+        if ok and type(value) == "number" and value > 0 then width = value end
     end
-    return true, sx, sy
+    if type(Susano.GetScreenHeight) == "function" then
+        local ok, value = pcall(Susano.GetScreenHeight)
+        if ok and type(value) == "number" and value > 0 then height = value end
+    end
+    return width, height
 end
 
 local function stroke(x1, y1, x2, y2, alpha)
@@ -30068,30 +30181,72 @@ local function stroke(x1, y1, x2, y2, alpha)
     pcall(Susano.DrawLine, x1, y1, x2, y2, 0.24, 0.80, 1.0, alpha, 1.6)
 end
 
+local function drawCentered(text, y, size, r, g, b, a)
+    if type(Susano.DrawTextCentered) == "function" then
+        local width = screenSize()
+        pcall(Susano.DrawTextCentered, width * 0.5, y, text, size, r, g, b, a)
+        return
+    end
+    if type(Susano.DrawText) ~= "function" then return end
+    local width = screenSize()
+    local x = width * 0.5 - 120.0
+    if type(Susano.GetTextWidth) == "function" then
+        local ok, tw = pcall(Susano.GetTextWidth, text, size)
+        if ok and type(tw) == "number" then x = width * 0.5 - tw * 0.5 end
+    end
+    pcall(Susano.DrawText, x, y, text, size, r, g, b, a)
+end
+
+local function drawPulses(nowMs)
+    if type(Susano.DrawLine) ~= "function" then return end
+    local keep = {}
+
+    for i = 1, #FP.pulses do
+        local pulse = FP.pulses[i]
+        local age = nowMs - pulse.t
+        if age >= 0 and age <= PULSE_MS then
+            keep[#keep + 1] = pulse
+            local frac = age / PULSE_MS
+            local radius = 0.35 + 1.55 * frac
+            local alpha = (1.0 - frac) * 0.85
+            local prevOk, px, py = false, 0.0, 0.0
+            for k = 1, PULSE_SEGS + 1 do
+                local angle = (k - 1) / PULSE_SEGS * math.pi * 2.0
+                local ok, sx, sy = project({
+                    x = pulse.x + math.cos(angle) * radius,
+                    y = pulse.y + math.sin(angle) * radius,
+                    z = pulse.z,
+                })
+                if ok then
+                    if prevOk then
+                        pcall(Susano.DrawLine, px, py, sx, sy,
+                            1.0, 0.55, 0.18, alpha, 2.0)
+                    end
+                    prevOk, px, py = true, sx, sy
+                else
+                    prevOk = false
+                end
+            end
+        end
+    end
+
+    FP.pulses = keep
+end
+
 function FP.render()
     if not FP.canRender then return end
 
     local nowMs = GetGameTimer()
     if FP.note and nowMs < FP.noteUntil and not FP.active then
-        local width, height = 1920, 1080
-        if type(Susano.GetScreenWidth) == "function" then
-            local ok, value = pcall(Susano.GetScreenWidth)
-            if ok and type(value) == "number" and value > 0 then width = value end
-        end
-        if type(Susano.GetScreenHeight) == "function" then
-            local ok, value = pcall(Susano.GetScreenHeight)
-            if ok and type(value) == "number" and value > 0 then height = value end
-        end
-        if type(Susano.DrawTextCentered) == "function" then
-            pcall(Susano.DrawTextCentered, width * 0.5, height * 0.855,
-                "FIGHT PARTY · " .. FP.note, 15, 0.94, 0.72, 0.72, 0.92)
-        end
+        local _, height = screenSize()
+        drawCentered("FIGHT PARTY · " .. FP.note,
+            height * 0.855, 15, 0.94, 0.72, 0.72, 0.92)
         return
     end
 
     if not FP.active or not FP.ring then return end
 
-    local now = GetGameTimer() / 1000.0
+    local now = nowMs / 1000.0
     local pulse = 0.52 + 0.08 * math.sin(now * 3.4)
     local points = FP.ring
     local n = #points
@@ -30108,23 +30263,16 @@ function FP.render()
         end
     end
 
-    local width, height = 1920, 1080
-    if type(Susano.GetScreenWidth) == "function" then
-        local ok, value = pcall(Susano.GetScreenWidth)
-        if ok and type(value) == "number" and value > 0 then width = value end
-    end
-    if type(Susano.GetScreenHeight) == "function" then
-        local ok, value = pcall(Susano.GetScreenHeight)
-        if ok and type(value) == "number" and value > 0 then height = value end
-    end
+    drawPulses(nowMs)
 
-    if type(Susano.DrawTextCentered) == "function" then
-        pcall(Susano.DrawTextCentered, width * 0.5, height * 0.855,
-            "FIGHT PARTY", 20, 0.94, 0.98, 1.0, 0.92)
-        pcall(Susano.DrawTextCentered, width * 0.5, height * 0.855 + 24.0,
-            ("%d ATHLETE%s   ·   %.0f m"):format(
-                #FP.members, #FP.members == 1 and "" or "S", FP.radius),
-            13, 0.62, 0.75, 0.82, 0.85)
+    local _, height = screenSize()
+    if #FP.members == 0 then
+        drawCentered("FIGHT PARTY · NO TARGET IN RING",
+            height * 0.855, 18, 0.96, 0.52, 0.52, 0.92)
+    else
+        drawCentered(("FIGHT PARTY · %d · LOCAL RAGDOLL + NET DAMAGE")
+            :format(#FP.members),
+            height * 0.855, 18, 0.94, 0.98, 1.0, 0.92)
     end
 end
 
@@ -32983,7 +33131,7 @@ end
 -- BOOT
 -- ---------------------------------------------------------------------------
 function UI.boot()
-    O.log("loader build 2026-11-05-r1 (fight party v5: network damage + ragdoll)")
+    O.log("loader build 2026-11-05-r2 (fight party v6: local ragdoll + network damage)")
     O.thread()
 
     -- Delete fallback poll. 40 ms is faster than a frame at 30 FPS and cheap
