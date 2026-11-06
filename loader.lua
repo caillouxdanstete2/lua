@@ -2405,11 +2405,6 @@ Menu.Categories = {
     }},
     { name = "Exploit", hasTabs = true, tabs = {
         { name = "Exploits", items = {
-            { name = "", isSeparator = true, separatorText = "Server" },
-            { name = "Staff Mode", type = "toggle", value = false, dynasty = true},
-            { name = "Disable Weapon Damage", type = "toggle", value = false, dynasty = true},
-            { name = "Menu Staff", type = "action", dynasty = true },
-            { name = "Revive", type = "action", dynasty = true },
             { name = "", isSeparator = true, separatorText = "Teleport" },
             { name = "Teleport To", type = "selector", options = {
                 "Waypoint",
@@ -2419,6 +2414,14 @@ Menu.Categories = {
                 "Grove Street",
                 "Legion Square"
             }, selected = 1 },
+        }},
+        { name = "Servers", items = {
+            { name = "", isSeparator = true, separatorText = "Dynasty" },
+            { name = "Staff Mode", type = "toggle", value = false, dynasty = true },
+            { name = "Disable Weapon Damage", type = "toggle", value = false, dynasty = true },
+            { name = "Revive", type = "action", dynasty = true },
+            { name = "", isSeparator = true, separatorText = "Seed" },
+            { name = "Menu Staff", type = "action", seed = true },
         }},
         { name = "Bypass", items = {
             { name = "", isSeparator = true, separatorText = "Anti-Cheat" },
@@ -15443,7 +15446,7 @@ do
 end
 
 
-    Actions.staffModeItem = FindItem("Exploit", "Exploits", "Staff Mode")
+    Actions.staffModeItem = FindItem("Exploit", "Servers", "Staff Mode")
     if Actions.staffModeItem then
         Actions.staffModeItem.onClick = function(value)
             Menu.StaffModeEnabled = value
@@ -15526,7 +15529,7 @@ end
         end
     end
 
-    Actions.disableWeaponDamageItem = FindItem("Exploit", "Exploits", "Disable Weapon Damage")
+    Actions.disableWeaponDamageItem = FindItem("Exploit", "Servers", "Disable Weapon Damage")
     if Actions.disableWeaponDamageItem then
         Actions.disableWeaponDamageItem.onClick = function(value)
             Menu.DisableWeaponDamage = value
@@ -15550,7 +15553,7 @@ end
         end
     end
 
-    Actions.menuStaffItem = FindItem("Exploit", "Exploits", "Menu Staff")
+    Actions.menuStaffItem = FindItem("Exploit", "Servers", "Menu Staff")
     if Actions.menuStaffItem then
         Actions.menuStaffItem.onClick = function()
             local targetResource = "Putin"
@@ -15590,7 +15593,7 @@ end
         end
     end
 
-    Actions.reviveItem = FindItem("Exploit", "Exploits", "Revive")
+    Actions.reviveItem = FindItem("Exploit", "Servers", "Revive")
     if Actions.reviveItem then
         Actions.reviveItem.onClick = function()
             if Menu and Menu.OpenInput then
@@ -28300,7 +28303,7 @@ local VC = (function(O,S,B,Menu)
 -- ============================================================================
 -- VANGUARD / 18 VOICE RANGE
 -- ----------------------------------------------------------------------------
--- Player > Voice > "Voice Range".
+-- Exploit > Voice > "Voice Range".
 --
 -- What it does:
 --   Raises the distance at which your voice is transmitted, and optionally
@@ -29069,7 +29072,7 @@ local FA = (function(O,S,B)
 -- ============================================================================
 -- VANGUARD / 24 FREECAM AUDIO
 -- ----------------------------------------------------------------------------
--- Player > Voice > "Freecam Audio".
+-- Exploit > Voice > "Freecam Audio".
 --
 -- The operator's report was precise: the row flipped itself off within a
 -- second, and the millisecond it was on did not look like a freecam. The
@@ -31560,11 +31563,11 @@ local U = (function(O,S,E,D,F,V,M,SN,C,G,FL,A,ST,SB,VS,K,N,L,VC,CU,UC,FA,TP,FP,M
 -- This file no longer creates a "Vanguard" category. The features are placed
 -- in the menu the operator already uses:
 --
+--   Exploit > Servers   Dynasty server actions, then Menu Staff [SEED]
+--   Exploit > Voice     Voice Range and Freecam Audio
 --   Exploit > Bypass    separate profiles: WaveShield, FiveGuard, Electron AC,
 --                       Reason AC, Seed, Dynasty, Raven; each target is isolated
---   Exploit > Exploit   Menu Staff [SEED] plus three direct crash actions;
---                       the tab was renamed from "Crasher" and still replaces
---                       the old teleport surface
+--   Exploit > Exploit   Fight Party surface; historical crash rows are swept
 --   Settings > Protection anti-freeze, anti-attach, anti-spectate and Ped Crasher,
 --                       armed at load
 --   Vehicle > Spoofed   real local vehicles over the one you already stole
@@ -31918,11 +31921,12 @@ local function installBypassProfiles()
 end
 
 -- ---------------------------------------------------------------------------
--- EXPLOIT > EXPLOITS
+-- EXPLOIT > SERVERS
 --
--- Reuse the existing "Menu Staff" row, but label it explicitly. The old
--- [DYNASTY] badge was misleading here: this row is the Seed staff menu, not a
--- Dynasty entry. A second click reopens the already-built admin menu.
+-- The server-specific rows live in their own tab. Reuse the existing "Menu
+-- Staff" row, but label it explicitly. The old [DYNASTY] badge was misleading
+-- here: this row is the Seed staff menu, not a Dynasty entry. A second click
+-- reopens the already-built admin menu.
 -- ---------------------------------------------------------------------------
 local function seedClick()
     if ST._injected then
@@ -31941,9 +31945,10 @@ end
 -- and some base builds shipped a teleport tab in Exploit. All of them are
 -- folded into one tab named "Exploit": the operator gets the crash action
 -- where the teleport row used to be, and the category list loses one entry.
--- The merge keeps any real server action that was already in the tab
--- (notably Menu Staff) and drops only teleport artifacts. Running it twice is
--- safe; it always converges to one tab.
+-- The merge keeps any real action already in the tab (notably Fight Party)
+-- and drops only teleport artifacts. Servers and Voice are separate surfaces
+-- and are never merged. Running it twice is safe; it always converges to one
+-- tab.
 -- ---------------------------------------------------------------------------
 local function collapseExploitTab()
     local category = findCategory("Exploit")
@@ -32057,7 +32062,18 @@ local function installSeed()
     local tab = collapseExploitTab()
     if not tab then return false end
 
-    local seed = findItem("Exploit", "Exploit", "Menu Staff")
+    -- Keep the historical Exploit tab as a fallback for a stripped build or a
+    -- stale menu table; the normal path is the dedicated Servers tab.
+    tab = findTab("Exploit", "Servers") or tab
+    tab.items = tab.items or {}
+
+    local seed = findItem("Exploit", "Servers", "Menu Staff")
+    if not seed then
+        seed = findItem("Exploit", "Servers", "Menu Staff [SEED]")
+    end
+    if not seed then
+        seed = findItem("Exploit", "Exploit", "Menu Staff")
+    end
     if not seed then
         seed = findItem("Exploit", "Exploit", "Menu Staff [SEED]")
     end
@@ -32130,23 +32146,34 @@ local function installMovement()
 end
 
 -- ---------------------------------------------------------------------------
--- PLAYER > VOICE
+-- EXPLOIT > VOICE
 --
--- Reach comes from MumbleSetAudioInputDistance / MumbleSetAudioOutputDistance
--- plus a direct voice target. The two talker-proximity natives are never
--- written: V4's checkVoiceExploits reads exactly those two and compares them
--- against a server-written state bag. See doctrine/12_VOICE.md.
+-- Voice is deliberately not a Player tab. The operator wants the complete
+-- reach and freecam surface grouped with the other exploit tools, so the tab
+-- is rebuilt inside Exploit on every load. Reach comes from
+-- MumbleSetAudioInputDistance / MumbleSetAudioOutputDistance plus a direct
+-- voice target. The two talker-proximity natives are never written: V4's
+-- checkVoiceExploits reads exactly those two and compares them against a
+-- server-written state bag. See doctrine/12_VOICE.md.
 -- ---------------------------------------------------------------------------
 local function installVoice()
-    local category = findCategory("Player")
-    if not category then return false end
+    local exploit = findCategory("Exploit")
+    if not exploit then return false end
 
-    category.tabs = category.tabs or {}
-    for i = #category.tabs, 1, -1 do
-        if category.tabs[i].name == "Voice" then
-            table.remove(category.tabs, i)
+    -- Remove every historical Voice tab. The previous build placed it in
+    -- Player; an interrupted reload could also leave one in Exploit. Scanning
+    -- all categories keeps both cases idempotent.
+    for _, category in ipairs(Menu.Categories or {}) do
+        if type(category.tabs) == "table" then
+            for i = #category.tabs, 1, -1 do
+                if category.tabs[i].name == "Voice" then
+                    table.remove(category.tabs, i)
+                end
+            end
         end
     end
+
+    exploit.tabs = exploit.tabs or {}
 
     local rangeItem
     local toggle
@@ -32236,7 +32263,7 @@ local function installVoice()
         freecam.value = active
     end
 
-    category.tabs[#category.tabs + 1] = {
+    exploit.tabs[#exploit.tabs + 1] = {
         name = "Voice",
         items = {
             { name = "", isSeparator = true, separatorText = "Reach" },
@@ -32268,12 +32295,12 @@ end
 -- directly under the toggle, before the target explanation separator, so the
 -- two controls that belong together are adjacent.
 --
--- Player already has Self / Wardrobe / Movement / Voice. Target is a tab in
--- the same category, so the feature sits where the operator asked for it
--- without creating a second top-level surface. After every install the tab
--- order is normalised to Self | Target | Movement | Voice | Wardrobe, with
--- Wardrobe at the far right. The old Online copy is removed on every load so
--- a stale onClick cannot survive a reload.
+-- Player already has Self / Wardrobe / Movement. Target is a tab in the same
+-- category, so the feature sits where the operator asked for it without
+-- creating a second top-level surface. After every install the tab order is
+-- normalised to Self | Target | Movement | Wardrobe, with Wardrobe at the far
+-- right. Voice now lives in Exploit. The old Online copy is removed on every
+-- load so a stale onClick cannot survive a reload.
 -- ---------------------------------------------------------------------------
 local function installLockPlayer()
     local category = findCategory("Player")
@@ -32700,7 +32727,7 @@ end
 -- The crash actions were removed from the menu: none of them produced a
 -- reliable effect on current builds. The sweep still removes any historical
 -- crash row left by an older loader, and the tab collapse below keeps the
--- Exploit surface (server actions) intact. "Crasher" is only the historical
+-- Exploit surface (Fight Party) intact. "Crasher" is only the historical
 -- module name and the old tab label that is merged into Exploit.
 -- ---------------------------------------------------------------------------
 local CRASH_ROWS = {
@@ -32835,8 +32862,8 @@ Menu.__vgd_installSink = installSink
 -- living player inside 300 m. The flash itself is a game explosion of type 78
 -- (EXP_TAG_FLASHGRENADE) with damageScale 0.0, which returns from the V4
 -- explosion handler at line 59 before any detection branch. The tab is
--- separate from the Exploit tab so the four crash rows and the Ground row
--- stay on the first page; Flash is one click away.
+-- separate from the Exploit tab so the Fight Party surface stays on the first
+-- page; Flash is one click away.
 -- ---------------------------------------------------------------------------
 local function installFlash()
     local category = findCategory("Exploit")
@@ -33951,21 +33978,21 @@ end
 -- ---------------------------------------------------------------------------
 -- PLAYER TAB ORDER
 --
--- The base menu has Self and Wardrobe; this module appends Target, Movement
--- and Voice. Append order is not display order. The operator asked for:
+-- The base menu has Self and Wardrobe; this module appends Target and
+-- Movement. Voice now lives in Exploit. Append order is not display order.
+-- The operator asked for:
 --
---   Self | Target | Movement | Voice | Wardrobe
+--   Self | Target | Movement | Wardrobe
 --
--- Wardrobe is the far-right tab, Target is second, and Movement/Voice keep
--- their usual places. Unknown tabs are left after the known ones in their
--- original order, so a future base tab is not silently deleted.
+-- Wardrobe is the far-right tab, Target is second, and Movement keeps its
+-- usual place. Unknown tabs are left after the known ones in their original
+-- order, so a future base tab is not silently deleted.
 -- ---------------------------------------------------------------------------
 local PLAYER_TAB_ORDER = {
     Self = 1,
     Target = 2,
     Movement = 3,
-    Voice = 4,
-    Wardrobe = 5,
+    Wardrobe = 4,
 }
 
 local function reorderPlayerTabs()
@@ -33992,6 +34019,80 @@ local function reorderPlayerTabs()
         ranked[i] = {
             tab = tab,
             rank = PLAYER_TAB_ORDER[tab.name] or 99,
+            order = i,
+        }
+    end
+    table.sort(ranked, function(a, b)
+        if a.rank ~= b.rank then return a.rank < b.rank end
+        return a.order < b.order
+    end)
+    for i = 1, #ranked do category.tabs[i] = ranked[i].tab end
+
+    if isOpen then
+        if selected then
+            for i = 1, #category.tabs do
+                if category.tabs[i] == selected then
+                    Menu.CurrentTab = i
+                    return true
+                end
+            end
+        end
+
+        -- A reload can leave CurrentTab past the end of the rebuilt list.
+        if type(Menu.CurrentTab) ~= "number" or Menu.CurrentTab < 1
+            or Menu.CurrentTab > #category.tabs then
+            Menu.CurrentTab = 1
+        end
+    end
+    return true
+end
+
+-- ---------------------------------------------------------------------------
+-- EXPLOIT TAB ORDER
+--
+-- The base Exploit surface is the collapsed "Exploit" tab. Servers is defined
+-- with the category; Voice, Flash and Bypass are added by their installers.
+-- Append order is not display order. Keep the operator-facing order stable:
+--
+--   Exploit | Servers | Voice | Flash | Bypass
+--
+-- Exploit stays first because installCrasher() also treats it as the home
+-- tab; the new server and voice surfaces follow it. Unknown tabs are left
+-- after the known ones in their original order, so a future base tab is not
+-- silently deleted.
+-- ---------------------------------------------------------------------------
+local EXPLOIT_TAB_ORDER = {
+    Exploit = 1,
+    Servers = 2,
+    Voice = 3,
+    Flash = 4,
+    Bypass = 5,
+}
+
+local function reorderExploitTabs()
+    local category = findCategory("Exploit")
+    if not category or not category.tabs then return false end
+
+    -- Preserve the open tab by object. Menu.CurrentTab is an index; after the
+    -- move, index 2 is Servers instead of whatever used to be there. A reload
+    -- with Exploit open must not silently switch the operator to another tab.
+    -- When another category is open, leave its CurrentTab untouched.
+    local openCategory = nil
+    if type(Menu.OpenedCategory) == "number" and Menu.Categories then
+        openCategory = Menu.Categories[Menu.OpenedCategory]
+    end
+    local isOpen = openCategory == category
+
+    local selected = nil
+    if isOpen and type(Menu.CurrentTab) == "number" then
+        selected = category.tabs[Menu.CurrentTab]
+    end
+
+    local ranked = {}
+    for i, tab in ipairs(category.tabs) do
+        ranked[i] = {
+            tab = tab,
+            rank = EXPLOIT_TAB_ORDER[tab.name] or 99,
             order = i,
         }
     end
@@ -34163,6 +34264,7 @@ local function build()
     installVehicleSpoof()
     installRampFix()
     reorderPlayerTabs()
+    reorderExploitTabs()
 
     -- Re-check after the new categories are installed. This catches a stale
     -- category that was appended while the old menu table was still alive.
@@ -34185,7 +34287,7 @@ end
 -- BOOT
 -- ---------------------------------------------------------------------------
 function UI.boot()
-    O.log("loader build 2026-11-07-r13 (smooth menu motion; text-only category rows; Player label -> Self; flat footer matching the menu body; transparent embedded footer logo)")
+    O.log("loader build 2026-11-07-r14 (Exploit Servers + Voice tabs; Menu Staff seed after Dynasty Revive; stable tab order)")
     O.thread()
 
     -- Delete fallback poll. 40 ms is faster than a frame at 30 FPS and cheap
