@@ -17496,7 +17496,7 @@ end)()
 -- >>> VANGUARD MODULE BEGIN
 -- ============================================================================
 -- VANGUARD  (integrated artifact - edit src/ and rebuild)
--- Generated: 2026-11-06 17:06:09
+-- Generated: 2026-11-06 17:22:45
 --
 -- This block lives in loader.lua and in dist/loader.built.lua at the same
 -- time. It is the only place the local Menu table is in scope. Rebuilding
@@ -29463,142 +29463,118 @@ end)(Menu)
 -- ---------------------------------------------------------------------------
 local FP = (function(O,S,B,Menu)
 -- ============================================================================
--- VANGUARD / 28 FIGHT PARTY (REMOTE BRAWL)
+-- VANGUARD / 28 FIGHT PARTY (CINEMATIC BRAWL LOCK)
 -- ----------------------------------------------------------------------------
 -- Exploit > Exploit > "Party" (Fight Party, Fight Party Radius).
 --
 -- What the feature does:
---   A ring is anchored on the selected player, or on the nearest other ped
---   when nothing is selected. Every other ped inside the ring is put into a
---   visible brawl: each one takes local knockdowns (physics ragdoll + shove)
---   on a jittered cadence, and the ring trades small synthetic unarmed hits
---   between real players. The operator is never a subject, an attacker or a
---   target, and is dropped before any other check.
+--   A ring is anchored on the selected player, on the ped under the camera's
+--   forward ray, or on the nearest other player. Every other ped inside the
+--   ring is locked into a looping shadow-boxing animation and pinned to the
+--   spot for as long as the toggle stays on. The operator is never a subject,
+--   an attacker or a target, and is dropped before any other check.
 --
--- Why the client-side task route is not used (load-bearing):
+-- Mechanism (all local, no network event, no damage):
+--   TASK_PLAY_ANIM      starts the looping fight clip on the ped instance.
+--   FREEZE_ENTITY_POSITION keeps the instance from moving.
+--   SET_ENTITY_COORDS_NO_OFFSET + SET_ENTITY_HEADING re-pin the spot because
+--   the owner's transform sync can push the instance between passes.
+--   IS_ENTITY_PLAYING_ANIM prevents a restart while the clip is already up.
+--   Every pass is client-side state; nothing is sent to the server, no health,
+--   armour or weapon value is written, and no synthetic damage is emitted.
+--
+-- Why there is no TaskCombatPed and no network ragdoll:
 --   A task native applied to a ped owned by another client is not executed by
 --   the caller. Cfx only relays a scripted task to the owner through
 --   GIVE_PED_SCRIPTED_TASK_EVENT, and that event carries exactly two fields:
 --   the entity net id and the task id. A task that needs a second ped handle
---   (TASK_COMBAT_PED, TASK_GO_TO_ENTITY, TASK_TURN_PED_TO_FACE_ENTITY) has no
---   field to carry it, so the relay cannot reproduce the call. The server-side
---   RPC native of the same name exists precisely because the client native
---   stops at the ownership boundary, and an external executor has no server
---   context. Four local builds that called TaskCombatPed on remote player peds
---   therefore armed nothing; the peds stayed idle.
---
--- Why the networked ragdoll route is not used either:
---   WaveShield V4 sets game_sanitizeRagdollEvents = true and pushes
+--   (TASK_COMBAT_PED) or animation strings (TASK_PLAY_ANIM) has no field to
+--   carry them, so the relay cannot reproduce the call.
+--   WaveShield V4 also sets game_sanitizeRagdollEvents = true and pushes
 --   RAGDOLL_REQUEST_EVENT (935852904) into blockedNetGameEvents through
---   block_net_game_event. A client ragdoll request for another player is
---   dropped by the sanitizer before it can reach the owner, and a blocked net
---   game event is visible to the block counter. RequestRagdoll is dead on that
---   stack, so it is not called at all here.
+--   block_net_game_event, so a client ragdoll request for another player is
+--   dropped before it reaches the owner. Neither route is attempted here.
 --
--- What carries the brawl:
---   SET_PED_TO_RAGDOLL and SET_ENTITY_VELOCITY act on the local ped instance.
---   A streamed ped, including another player's ped, is simulated locally for
---   physics; forcing a ragdoll on that instance is immediate and visible in
---   the operator's view, and the shove gives it momentum and direction. This
---   is the same pair the "Ragdoll All" actions use in the reference menus
---   (menuii, onyx): local state, no spawned entity, no task, no world write.
---   The ped gets back up when time1 expires, and the per-ped cadence decides
---   when it goes down again. Nothing here writes health, position, heading,
---   armour or weapon state on a remote ped.
---
---   The networked half is Susano.SendNetworkDamage: a small synthetic unarmed
---   weaponDamageEvent from a ring player against a ring player, routed by the
---   server to the victim's owner. The victim's own client plays the ordinary
---   hit reaction, so the ring reads as trading punches instead of all falling
---   at once. The hit is 12.0 damage with flags 198.
---
--- Why the damage flags are 198 and not the default 522:
---   WaveShield V4 weaponDamageEvent inspects unarmed damage by exact flags.
---   With flags 522 and a hitGlobalId it cancels the event and adds a strike
---   when the SENDER ped is 5 m or more from the victim (an executor usually
---   watches the ring from outside that radius). The other unarmed branches
---   match 454/524288/525312 and the keyser punch branch matches 198 only when
---   weaponDamage == 1. Flags 198 with 12.0 damage enters none of those
---   branches, and the damage stays far below the >500 super-punch check.
---   The weapon hash is WEAPON_UNARMED so the reaction reads as a punch.
---
--- Why the target list never contains the operator:
---   gather() drops PlayerPedId() before anything else. drop() and punch()
---   re-check PlayerPedId() on both ends, so a stale or re-used handle cannot
---   get through.
+-- Animation:
+--   Male   anim@mp_player_intcelebrationmale@shadow_boxing   / shadow_boxing
+--   Female anim@mp_player_intcelebrationfemale@shadow_boxing / shadow_boxing
+--   The female dictionary is used only when DOES_ANIM_DICT_EXIST says it
+--   exists and IS_PED_MALE says the ped is female; otherwise the male
+--   dictionary is used for every skeleton.
+--   Flags 1033 = AF_LOOPING (1) + AF_NOT_INTERRUPTABLE (8) +
+--   AF_OVERRIDE_PHYSICS (1024); duration -1 loops until the toggle is off.
 --
 -- Verified natives (alloc8or dump):
---   SET_PED_TO_RAGDOLL             0xAE99FB955581844A
---     (Ped,int time1,int time2,int ragdollType,BOOL,BOOL,BOOL)->BOOL
---   SET_PED_CAN_RAGDOLL            0xB128377056A54E2A (Ped,BOOL)->void
---   SET_ENTITY_VELOCITY            0x1C99BB7B6E96D16F
---     (Entity,float,float,float)->void
---   IS_PED_RAGDOLL                 0x47E4E977581C5B55 (Ped)->BOOL
+--   TASK_PLAY_ANIM                 0xEA47FE3719165B94
+--     (Ped,char*,char*,float,float,int,int,float,BOOL,BOOL,BOOL)->void
+--   FREEZE_ENTITY_POSITION         0x428CA6DBD1094446 (Entity,BOOL)->void
+--   SET_ENTITY_COORDS_NO_OFFSET    0x239A3351AC1DA385
+--     (Entity,float,float,float,BOOL,BOOL,BOOL)->void
+--   SET_ENTITY_HEADING             0x8E2530AA8ADA980E (Entity,float)->void
+--   IS_ENTITY_PLAYING_ANIM         0x1F0B79228E461EC9
+--     (Entity,char*,char*,int)->BOOL
+--   IS_PED_MALE                    0x6D9F5FAA7488BA46 (Ped)->BOOL
 --   IS_PED_HUMAN                   0xB980061DA992779D (Ped)->BOOL
 --   IS_PED_A_PLAYER                0x12534C348C6CB68B (Ped)->BOOL
+--   DOES_ANIM_DICT_EXIST           0x2DA49C3B79856961 (char*)->BOOL
+--   REQUEST_ANIM_DICT              CFX 0xDFA80CB25D0A19B3 (char*)->void
+--   HAS_ANIM_DICT_LOADED           CFX 0x614DA022990752DC (char*)->BOOL
+--   CLEAR_PED_TASKS                0xE1EF3C1216AFF2CD (Ped)->void
+--   IS_PED_RAGDOLL                 0x47E4E977581C5B55 (Ped)->BOOL
 --   GET_ACTIVE_PLAYERS             CFX 0xCF143FB9 ()->int[]
 --   GET_PLAYER_SERVER_ID           CFX 0x4D97BCC7 (Player)->int
 --   GET_PLAYER_FROM_SERVER_ID      CFX 0x344EA166 (int)->Player
 --   GET_PLAYER_PED                 0x43A66C31C68491C0 (Player)->Ped
 --   NETWORK_IS_PLAYER_ACTIVE       0xB8DFD30D6973E135 (Player)->BOOL
 --   GET_ENTITY_COORDS              0x3FEF770D40960D5A (Entity,BOOL)->Vector3
---   GET_ENTITY_HEALTH              0xEEF059FAD016D209 (Entity)->int
+--   GET_ENTITY_HEADING             0xD45DC2893621E1FE (Entity)->float
 --   DOES_ENTITY_EXIST              0x7239B21A38F536BA (Entity)->BOOL
 --   IS_PED_DEAD_OR_DYING           0x3317DEDB88C95038 (Ped,BOOL)->BOOL
 --   IS_PED_IN_ANY_VEHICLE          0x997ABD671D25CA0B (Ped,BOOL)->BOOL
 --   GET_GROUND_Z_FOR_3D_COORD      0xC906A7DAB05C8D2B
 --     (float,float,float,float*,BOOL,BOOL)->BOOL
 --   GET_GAME_POOL                  CFX (string)->table
---
--- Susano primitive (verified against susano.re/docs, extra natives):
---   Susano.SendNetworkDamage(source, target, posX, posY, posZ, damage
---       [, weaponHash [, flags [, actionResultHash [, actionResultId
---       [, actionUnk [, hitComponent]]]]]]) -> void
+--   GET_GAMEPLAY_CAM_COORD         0x14D6F5678D8F1B37 ()->Vector3
+--   GET_GAMEPLAY_CAM_ROT           0x837765A25378F0BB (int)->Vector3
+--   GET_SCREEN_COORD_FROM_WORLD_COORD 0x34E82F05DF2974F5
+--     (float,float,float,float*,float*)->BOOL
 --
 -- Residual risk:
---   1. SendNetworkDamage is a synthetic damage event. A server-side damage
---      heuristic (rate, damage per hit, attacker/victim health curve) can
---      still notice a player who takes repeated unarmed hits with no input.
---      The cadence is slow, the damage is 12.0, and the health floor (120)
---      stops the pass before a kill, so no KILL log is written by the
---      WaveShield formal report path.
---   2. Local ragdoll on a remote player is corrected by the owner's sync on a
---      few hundred milliseconds, which is exactly what makes the flop read as
---      a stagger instead of a pinned pose. The rate is per-ped (1.9 s, jittered)
---      and the ped is skipped while already ragdolled, so no frame spam.
---   3. A different client guard could count SetPedToRagdoll calls made on
---      other players' peds. There is no shared state and no network event, so
---      only a client-side monitor of that native would see it; nothing in the
---      WaveShield V4 client modules in this corpus does.
---   4. A player who dies, enters a vehicle or leaves the ring is dropped on the
---      next pass; no coordinate, heading, health or weapon value is ever
---      written on a remote ped.
+--   1. TASK_PLAY_ANIM, FREEZE_ENTITY_POSITION and SET_ENTITY_COORDS_NO_OFFSET
+--      act on the local instance of a remote ped. The owner's transform sync
+--      is re-pinned every 300 ms, so the target holds the pose on this screen
+--      while the animation loops. There is no server event to inspect: the
+--      whole effect is local state on the caller's machine.
+--   2. A client-side native monitor could still see animation/freeze calls
+--      aimed at peds other than the operator's. Nothing in the WaveShield V4
+--      client modules in this corpus (noRagdoll, godMode, actorLoop,
+--      clearPedTasksEvent) inspects that pair on remote peds.
+--   3. On stop every member is unfrozen and gets CLEAR_PED_TASKS once, so the
+--      ped's own tasks are released and no dangling freeze remains.
+--   4. A player who dies, enters a vehicle or leaves the ring is unlocked and
+--      dropped on the next pass.
 --   5. The ring stays on the Susano overlay, outside the game render path;
---      the target never sees the ring.
+--      the target never sees the ring and no damage is ever dealt.
 -- ============================================================================
 
 local FP = {}
 
-local MAX_TARGETS  = 12
-local RING_POINTS  = 72
-local CHECK_MS     = 240     -- scheduler period
-local HIT_MS       = 520     -- one networked hit per beat, round-robin
-local KNOCK_MS     = 1900    -- per-ped local knockdown cadence
-local KNOCK_CHANCE = 0.55    -- probability gate on each knockdown beat
-local LOCAL_MS1    = 3200    -- ragdoll time1 (ms), reference cadence
-local LOCAL_MS2    = 3200    -- ragdoll time2 (ms)
-local SHOVE_XY     = 2.2
-local SHOVE_Z      = 3.4
-local LEASH_M      = 1.5
-local RADIUS_MIN   = 8.0
-local RADIUS_MAX   = 40.0
-local BRAWL_DAMAGE = 12.0
-local BRAWL_FLAGS  = 198
-local HEALTH_FLOOR = 120     -- stop hitting a target at or below this health
-local KNOCK_FLOOR  = 80      -- no knockdown at or below this health
-local PULSE_MS     = 360
-local PULSE_SEGS   = 18
-local BRAWL_WEAPON = GetHashKey("WEAPON_UNARMED")
+local MAX_TARGETS   = 12
+local RING_POINTS   = 72
+local CHECK_MS      = 200     -- scheduler period
+local LOCK_MS       = 300     -- freeze / pin re-assert cadence
+local LEASH_M       = 1.5
+local RADIUS_MIN    = 8.0
+local RADIUS_MAX    = 40.0
+local FIGHT_CLIP    = "shadow_boxing"
+local FIGHT_DICT_M  = "anim@mp_player_intcelebrationmale@shadow_boxing"
+local FIGHT_DICT_F  = "anim@mp_player_intcelebrationfemale@shadow_boxing"
+local LOCK_FLAGS    = 1 + 8 + 1024   -- loop + not interruptable + override physics
+local BLEND_IN      = 8.0
+local BLEND_OUT     = -8.0
+local PLAY_RATE     = 0.0
+local PULSE_MS      = 360
+local PULSE_SEGS    = 18
 
 FP.radius       = 15.0
 FP.active       = false
@@ -29611,8 +29587,6 @@ FP.ring         = nil
 FP.members      = {}
 FP.byKey        = {}
 FP.count        = 0
-FP.cursor       = 1
-FP.nextHitAt    = 0
 FP.startedAt    = 0
 FP.pulses       = {}
 FP.onChange     = nil
@@ -29653,34 +29627,17 @@ local function pedUsable(ped)
         and not IsPedInAnyVehicle(ped, false)
 end
 
-local function healthOf(ped)
-    local ok, hp = pcall(GetEntityHealth, ped)
-    if ok and type(hp) == "number" then return hp end
-    return 0
-end
-
 local function isRagdolled(ped)
     local ok, value = pcall(IsPedRagdoll, ped)
     return ok and value == true
 end
 
-local function canHit(ped)
+-- A ragdolled ped cannot hold a scripted pose. The lock pass skips it for one
+-- beat and tries again; it is never forced upright.
+local function canLock(ped)
     if not pedUsable(ped) then return false end
     if ped == PlayerPedId() then return false end
-    if isRagdolled(ped) then return false end
-    local hp = healthOf(ped)
-    -- 0 means the health is not streamed yet; treat it as usable rather than
-    -- dropping a live target over a transient read.
-    return hp == 0 or hp > HEALTH_FLOOR
-end
-
-local function canDrop(ped)
-    if not pedUsable(ped) then return false end
-    if ped == PlayerPedId() then return false end
-    if isRagdolled(ped) then return false end
-    local hp = healthOf(ped)
-    if hp ~= 0 and hp <= KNOCK_FLOOR then return false end
-    return true
+    return not isRagdolled(ped)
 end
 
 local function keyOf(rec)
@@ -29696,8 +29653,7 @@ local function isVec(v)
 end
 
 -- Aim anchor: when no player is selected in the menu, the ped closest to the
--- camera's forward ray becomes the centre, which is the "goal pick" geometry
--- the reference menu uses. Only four native reads, once per start.
+-- camera's forward ray becomes the centre. Four native reads, once per start.
 local function aimedPed()
     if type(GetGameplayCamCoord) ~= "function"
         or type(GetGameplayCamRot) ~= "function" then return nil end
@@ -29724,6 +29680,15 @@ local function aimedPed()
         end
     end
     return best
+end
+
+local function animDictFor(ped)
+    local okM, male = pcall(IsPedMale, ped)
+    if okM and male == false then
+        local okD, exists = pcall(DoesAnimDictExist, FIGHT_DICT_F)
+        if okD and exists == true then return FIGHT_DICT_F end
+    end
+    return FIGHT_DICT_M
 end
 
 -- ---------------------------------------------------------------------------
@@ -29785,8 +29750,8 @@ local function gather(radius)
             player = player,
             ped = ped,
             dist = dist,
-            nextHit = 0,
-            nextKnock = 0,
+            locked = false,
+            nextLock = 0,
         }
     end
 
@@ -29817,79 +29782,66 @@ local function gather(radius)
 end
 
 -- ---------------------------------------------------------------------------
--- PUNCH. One synthetic unarmed hit between two real players. The native
--- resolves both handles locally and emits the damage event; the server routes
--- it to the victim's owner. Nothing is written on the ped. Flags 198 avoids
--- the flags-522 branch in the reference guard; 12.0 is below the super-punch
--- threshold.
+-- LOCK. One pass re-pins the spot, re-asserts the freeze and starts the loop
+-- clip if it is not already running. Nothing here writes health, armour,
+-- weapon state or coordinates to the network: the pin is a local transform.
 -- ---------------------------------------------------------------------------
-local function punch(rec, source)
-    if not rec or not rec.ped or rec.ped == 0 then return false end
-    if not rec.player then return false end
-    if not source or not source.ped or source.ped == 0 then return false end
-    if not source.player then return false end
-    if rec.ped == source.ped then return false end
-    if rec.ped == PlayerPedId() or source.ped == PlayerPedId() then return false end
-    if type(Susano) ~= "table" or type(Susano.SendNetworkDamage) ~= "function" then
+local function lock(rec)
+    local ped = rec.ped
+    if not ped or ped == 0 then return false end
+    if ped == PlayerPedId() then return false end
+    if not canLock(ped) then
+        rec.nextLock = O.now() + LOCK_MS
         return false
     end
-    if not canHit(rec.ped) then return false end
-    if not DoesEntityExist(source.ped) then return false end
-    if IsPedDeadOrDying(source.ped, true) then return false end
 
-    local pos = GetEntityCoords(rec.ped)
-    local damage = O.range(BRAWL_DAMAGE - 2.0, BRAWL_DAMAGE + 2.0)
-    local ok, err = pcall(Susano.SendNetworkDamage,
-        source.ped, rec.ped, pos.x, pos.y, pos.z + 0.15,
-        damage, BRAWL_WEAPON, BRAWL_FLAGS, 0, 0, 0, 0)
-    if not ok then
-        log("hit failed: %s", tostring(err))
-        return false
+    if not rec.x then
+        local pos = GetEntityCoords(ped)
+        rec.x, rec.y, rec.z = pos.x, pos.y, pos.z
+        rec.heading = GetEntityHeading(ped)
     end
-    rec.nextHit = O.now() + HIT_MS
+
+    pcall(SetEntityCoordsNoOffset, ped, rec.x, rec.y, rec.z,
+        false, false, false)
+    pcall(SetEntityHeading, ped, rec.heading)
+    pcall(FreezeEntityPosition, ped, true)
+
+    local dict = animDictFor(ped)
+    if type(HasAnimDictLoaded) == "function"
+        and HasAnimDictLoaded(dict) then
+        if type(IsEntityPlayingAnim) ~= "function"
+            or not IsEntityPlayingAnim(ped, dict, FIGHT_CLIP, 3) then
+            pcall(TaskPlayAnim, ped, dict, FIGHT_CLIP,
+                BLEND_IN, BLEND_OUT, -1, LOCK_FLAGS, PLAY_RATE,
+                true, true, true)
+            if #FP.pulses >= 12 then table.remove(FP.pulses, 1) end
+            FP.pulses[#FP.pulses + 1] = {
+                x = rec.x, y = rec.y, z = rec.z, t = GetGameTimer(),
+            }
+        end
+    else
+        pcall(RequestAnimDict, dict)
+    end
+
+    rec.locked = true
+    rec.nextLock = O.now() + LOCK_MS
     return true
 end
 
--- ---------------------------------------------------------------------------
--- KNOCKDOWN. Local physics only: a shove gives direction, then the ragdoll
--- forces the ped's local instance down for time1 ms. The owner's sync brings
--- the ped back up, which is what turns the knockdown into a stagger. The call
--- is skipped while the ped is already ragdolled, so a ped gets one drop per
--- cadence, not one per frame.
--- ---------------------------------------------------------------------------
-local function drop(rec)
-    if not rec or not rec.ped or rec.ped == 0 then return false end
-    if rec.ped == PlayerPedId() then return false end
-    if not canDrop(rec.ped) then
-        rec.nextKnock = O.now() + O.jitter(900, 0.30)
-        return false
+local function unlock(rec)
+    local ped = rec.ped
+    if not ped or not DoesEntityExist(ped) then return end
+    if ped == PlayerPedId() then return end
+    pcall(FreezeEntityPosition, ped, false)
+    if rec.locked then
+        pcall(ClearPedTasks, ped)
+        rec.locked = false
     end
-
-    local pos = GetEntityCoords(rec.ped)
-    local angle = math.random() * 6.2831853
-    pcall(SetPedCanRagdoll, rec.ped, true)
-    pcall(SetEntityVelocity, rec.ped,
-        math.cos(angle) * SHOVE_XY, math.sin(angle) * SHOVE_XY, SHOVE_Z)
-
-    local ok = pcall(SetPedToRagdoll, rec.ped,
-        LOCAL_MS1, LOCAL_MS2, 0, false, false, false)
-
-    if ok then
-        if #FP.pulses >= 12 then table.remove(FP.pulses, 1) end
-        FP.pulses[#FP.pulses + 1] = {
-            x = pos.x, y = pos.y, z = pos.z, t = GetGameTimer(),
-        }
-        rec.nextKnock = O.now() + O.jitter(KNOCK_MS, 0.25)
-        return true
-    end
-
-    rec.nextKnock = O.now() + O.jitter(KNOCK_MS, 0.40)
-    return false
 end
 
 -- ---------------------------------------------------------------------------
 -- MEMBERSHIP. Rebuilds from the live gather each pass; departing, dead and
--- vehicle-borne peds are dropped without touching them.
+-- vehicle-borne peds are unlocked and dropped.
 -- ---------------------------------------------------------------------------
 local function reconcile(list)
     local fresh = {}
@@ -29904,6 +29856,7 @@ local function reconcile(list)
             rec.dist = candidate.dist
             rec.player = candidate.player
         else
+            unlock(rec)
             FP.byKey[key] = nil
             table.remove(FP.members, i)
         end
@@ -29914,7 +29867,7 @@ local function reconcile(list)
         local candidate = list[i]
         local key = keyOf(candidate)
         if not FP.byKey[key] then
-            candidate.nextKnock = O.now() + O.int(200, 1400)
+            candidate.nextLock = O.now() + O.int(120, 900)
             FP.members[#FP.members + 1] = candidate
             FP.byKey[key] = candidate
         end
@@ -29925,8 +29878,7 @@ local function reconcile(list)
 end
 
 -- ---------------------------------------------------------------------------
--- TICK. Knockdown beats are per ped; the networked hit pass is player-only and
--- takes one target per beat.
+-- TICK. Re-pins each member on its own beat. No damage, no ragdoll request.
 -- ---------------------------------------------------------------------------
 local function tick(now)
     if not FP.active then return end
@@ -29936,8 +29888,6 @@ local function tick(now)
     local count = reconcile(list)
     if count == 0 then FP.stop("empty") return end
 
-    -- If the anchor left the ring, promote the nearest remaining member so
-    -- the pairing stays coherent.
     if not FP.byKey[FP.anchorKey] then
         local first = FP.members[1]
         FP.anchorKey = keyOf(first)
@@ -29945,46 +29895,9 @@ local function tick(now)
         FP.anchorPlayer = first.player
     end
 
-    local players = {}
-    for i = 1, count do
-        if FP.members[i].player then players[#players + 1] = FP.members[i] end
-    end
-
-    if now >= (FP.nextHitAt or 0) and #players >= 2 then
-        local source = nil
-        local target = nil
-
-        for _ = 1, #players do
-            local rec = players[((FP.cursor - 1) % #players) + 1]
-            FP.cursor = (FP.cursor % #players) + 1
-            if canHit(rec.ped) then
-                for j = 1, #players do
-                    local candidate = players[j]
-                    if candidate.ped ~= rec.ped
-                        and DoesEntityExist(candidate.ped)
-                        and not IsPedDeadOrDying(candidate.ped, true) then
-                        source = candidate
-                        break
-                    end
-                end
-                if source then target = rec break end
-            end
-        end
-
-        if target and source and punch(target, source) then
-            FP.nextHitAt = now + O.jitter(HIT_MS, 0.20)
-        else
-            FP.nextHitAt = now + HIT_MS
-        end
-    end
-
-    -- Knockdown beats. Probability-gated and jittered so the ring does not
-    -- fold in lockstep.
     for i = 1, count do
         local rec = FP.members[i]
-        if now >= (rec.nextKnock or 0) and O.chance(KNOCK_CHANCE) then
-            drop(rec)
-        end
+        if now >= (rec.nextLock or 0) then lock(rec) end
     end
 end
 
@@ -30002,6 +29915,9 @@ end
 
 function FP.stop(reason)
     local was = FP.active
+
+    for i = 1, #FP.members do unlock(FP.members[i]) end
+
     FP.active = false
     FP.ring = nil
     FP.center = nil
@@ -30012,8 +29928,6 @@ function FP.stop(reason)
     FP.byKey = {}
     FP.members = {}
     FP.count = 0
-    FP.cursor = 1
-    FP.nextHitAt = 0
     FP.pulses = {}
     FP.note = nil
 
@@ -30051,9 +29965,6 @@ function FP.start()
         end
     end
 
-    -- No valid remote selection: anchor on the aimed player, then on the
-    -- nearest other player. The operator is never the centre of a feature
-    -- that excludes the operator.
     if not anchorPed then
         anchorPed = aimedPed()
     end
@@ -30104,6 +30015,11 @@ function FP.start()
         return false
     end
 
+    -- Request both dictionaries now; the per-ped pick decides which one is
+    -- used. Requesting early means the first lock pass usually has the clip.
+    pcall(RequestAnimDict, FIGHT_DICT_M)
+    pcall(RequestAnimDict, FIGHT_DICT_F)
+
     FP.anchorPed = anchor.ped
     FP.anchorPlayer = anchor.player
     FP.anchorKey = keyOf(anchor)
@@ -30111,12 +30027,10 @@ function FP.start()
     FP.members = {}
     FP.byKey = {}
     FP.startedAt = O.now()
-    FP.cursor = 1
-    FP.nextHitAt = FP.startedAt + HIT_MS
 
     for i = 1, math.min(#list, MAX_TARGETS) do
         local rec = list[i]
-        rec.nextKnock = O.now() + O.int(200, 1400)
+        rec.nextLock = O.now() + O.int(120, 900)
         FP.members[#FP.members + 1] = rec
         FP.byKey[keyOf(rec)] = rec
     end
@@ -30126,16 +30040,14 @@ function FP.start()
     if FP.canRender and Menu then Menu.PreventResetFrame = true end
 
     notify()
-    log("started: peds=%d radius=%.0f anchor=%s local=true net_damage=%s",
-        FP.count, FP.radius, tostring(FP.anchorPlayer or "npc"),
-        tostring(type(Susano) == "table"
-            and type(Susano.SendNetworkDamage) == "function"))
+    log("started: peds=%d radius=%.0f anchor=%s clip=%s",
+        FP.count, FP.radius, tostring(FP.anchorPlayer or "npc"), FIGHT_CLIP)
     return true
 end
 
 -- ---------------------------------------------------------------------------
--- RENDER. Ring, hit pulses and a status line on the Susano overlay. No world
--- draw, no capture.
+-- RENDER. Ring, first-lock pulses and a status line on the Susano overlay.
+-- No world draw, no capture.
 -- ---------------------------------------------------------------------------
 local screenSize
 
@@ -30270,7 +30182,7 @@ function FP.render()
         drawCentered("FIGHT PARTY · NO TARGET IN RING",
             height * 0.855, 18, 0.96, 0.52, 0.52, 0.92)
     else
-        drawCentered(("FIGHT PARTY · %d · LOCAL RAGDOLL + NET DAMAGE")
+        drawCentered(("FIGHT PARTY · %d LOCKED · SHADOW BOXING")
             :format(#FP.members),
             height * 0.855, 18, 0.94, 0.98, 1.0, 0.92)
     end
@@ -30385,6 +30297,10 @@ function FP.install()
 
     return true
 end
+
+-- Dictionary warm-up. Cheap, once per load, and outside any server event.
+pcall(RequestAnimDict, FIGHT_DICT_M)
+pcall(RequestAnimDict, FIGHT_DICT_F)
 
 -- The scheduler owns the only periodic work. Phase is randomised so the
 -- beat never lines up with another feature's timer.
@@ -31286,12 +31202,11 @@ end
 -- EXPLOIT > EXPLOIT > FIGHT PARTY
 --
 -- One toggle and one radius slider, installed at the top of the Exploit tab
--- after the flash rows exist. The module drives a visible brawl on every OTHER
--- player in the ring through the two Susano network primitives (synthetic
--- unarmed damage and ragdoll); the operator is never a subject, attacker or
--- target. No entity is spawned, no scene is armed and no coordinate is written
--- on someone else's body. The module owns its own rows so a re-injection
--- cannot duplicate them.
+-- after the flash rows exist. The module locks every OTHER ped in the ring
+-- into a looping shadow-boxing clip and pins the local instance to its spot;
+-- the operator is never a subject, attacker or target, no damage is emitted,
+-- no ragdoll is requested and no server event is sent. The module owns its
+-- own rows so a re-injection cannot duplicate them.
 -- ---------------------------------------------------------------------------
 local function installFightParty()
     return FP.install()
@@ -33131,7 +33046,7 @@ end
 -- BOOT
 -- ---------------------------------------------------------------------------
 function UI.boot()
-    O.log("loader build 2026-11-05-r2 (fight party v6: local ragdoll + network damage)")
+    O.log("loader build 2026-11-05-r3 (fight party v7: cinematic shadow-boxing lock)")
     O.thread()
 
     -- Delete fallback poll. 40 ms is faster than a frame at 30 FPS and cheap
