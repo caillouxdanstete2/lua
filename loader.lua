@@ -121,35 +121,6 @@ LibraryCode = string.gsub(
 )
 
 -- ============================================
--- PATCH: Category icon image + bold text shadow
--- ============================================
--- Replaces category name rendering to:
---   1. Draw icon texture (from iconUrl) left of text
---   2. Add 1px shadow for bold effect
---   3. Shift text right to make room for icon
-LibraryCode = string.gsub(
-    LibraryCode,
-    'Menu%.DrawText%(textX, textY, category%.name, 19, Menu%.Colors%.TextWhite%.r / 255%.0, Menu%.Colors%.TextWhite%.g / 255%.0, Menu%.Colors%.TextWhite%.b / 255%.0, 1%.0%)',
-    [[do
-                local _iSz = itemHeight * 0.44
-                local _iOk = false
-                if Menu.IconTextures and Menu.IconTextures[category.name] then
-                    local _t = Menu.IconTextures[category.name]
-                    if _t and _t > 0 and Susano and Susano.DrawImage then
-                        Susano.DrawImage(_t, x + 14, itemY + (itemHeight - _iSz) / 2, _iSz, _iSz, 1, 1, 1, 1, 0)
-                        _iOk = true
-                    end
-                end
-                local _offX = _iOk and (14 + _iSz + 8) or 16
-                textX = x + _offX
-                local _wr = Menu.Colors.TextWhite.r / 255.0
-                local _wg = Menu.Colors.TextWhite.g / 255.0
-                local _wb = Menu.Colors.TextWhite.b / 255.0
-                Menu.DrawText(textX, textY, category.name, 19, _wr, _wg, _wb, 1.0)
-            end]]
-)
-
--- ============================================
 -- PATCH: Category chevron matches the category label white
 -- ============================================
 -- Category labels are drawn with Menu.Colors.TextWhite at alpha 1.0. The
@@ -170,12 +141,24 @@ LibraryCode = string.gsub(
 )
 
 -- ============================================
+-- PATCH: Main-menu label alias
+-- ============================================
+-- Every feature lookup still uses the original "Player" category key. Only the
+-- row label shown in the main menu changes to "Self".
+LibraryCode = replacePlain(
+    LibraryCode,
+    "            Menu.DrawText(textX, textY, category.name, 19, Menu.Colors.TextWhite.r / 255.0, Menu.Colors.TextWhite.g / 255.0, Menu.Colors.TextWhite.b / 255.0, 1.0)",
+    [[            local _catLabel = (Menu.CategoryLabels and Menu.CategoryLabels[category.name]) or category.name
+            Menu.DrawText(textX, textY, _catLabel, 19, Menu.Colors.TextWhite.r / 255.0, Menu.Colors.TextWhite.g / 255.0, Menu.Colors.TextWhite.b / 255.0, 1.0)]]
+)
+
+-- ============================================
 -- PATCH: Footer text + centered logo image
 -- Footer text + logo are now embedded directly in library.lua
 
 -- The library paints the footer plate pure black, which reads as a separate
--- slab under an anthracite card. Keep its brand/logo/page drawing and replace
--- only the plate with the theme-tinted skin defined after the chunk.
+-- slab under the anthracite menu body. Keep its brand/logo/page drawing and
+-- paint the plate with the exact menu body colour.
 do
     local footerCode = replacePlain(
         LibraryCode,
@@ -186,14 +169,12 @@ do
     else
         Menu.DrawRoundedRect(x, footerY, footerWidth, footerHeight, 0, 0, 0, 255, footerRounding)
     end]],
-        [[    if Menu.DrawFooterSkin then
-        Menu.DrawFooterSkin(x, footerY, footerWidth, footerHeight, footerRounding)
-    elseif Susano and Susano.DrawRectFilled then
+        [[    if Susano and Susano.DrawRectFilled then
         Susano.DrawRectFilled(x, footerY, footerWidth, footerHeight,
-            0.073, 0.086, 0.075, 1.0,
+            0.059, 0.059, 0.059, 0.98,
             footerRounding)
     else
-        Menu.DrawRoundedRect(x, footerY, footerWidth, footerHeight, 14, 17, 15, 255, footerRounding)
+        Menu.DrawRoundedRect(x, footerY, footerWidth, footerHeight, 15, 15, 15, 250, footerRounding)
     end]]
     )
     LibraryCode = footerCode
@@ -775,95 +756,6 @@ do
 end
 
 -- ============================================
--- FOOTER SKIN
--- ============================================
--- The library keeps drawing the brand, the centred logo and the page count.
--- This plate sits behind them: moss-tinted anthracite, a 1 px top progress
--- hairline that mirrors the page count, and a soft halo behind the logo.
-do
-    local function footerPage()
-        if Menu.OpenedCategory then
-            local category = Menu.Categories and Menu.Categories[Menu.OpenedCategory]
-            if category and category.hasTabs and category.tabs then
-                local tab = category.tabs[Menu.CurrentTab]
-                if tab and tab.items then
-                    return Menu.CurrentItem or 1, #tab.items
-                end
-            end
-            return 1, 1
-        end
-        local index = (Menu.CurrentCategory or 1) - 1
-        if index < 1 then index = 1 end
-        local total = (Menu.Categories and #Menu.Categories or 1) - 1
-        if total < 1 then total = 1 end
-        return index, total
-    end
-
-    function Menu.DrawFooterSkin(x, y, width, height, rounding)
-        if not (Susano and type(Susano.DrawRectFilled) == "function") then
-            if Menu.DrawRoundedRect then
-                Menu.DrawRoundedRect(x, y, width, height, 14, 17, 15, 255, rounding)
-            end
-            return
-        end
-
-        local accent = (Menu.Colors and Menu.Colors.SelectedBg) or { r = 76, g = 143, b = 88 }
-        local ar = (tonumber(accent.r) or 76) / 255.0
-        local ag = (tonumber(accent.g) or 143) / 255.0
-        local ab = (tonumber(accent.b) or 88) / 255.0
-
-        -- A hair of the theme colour in the anthracite ties the strip to the
-        -- selected row and follows the Green/Cyan switch without becoming a
-        -- second accent block.
-        local br = 0.058 + ar * 0.050
-        local bg = 0.058 + ag * 0.050
-        local bb = 0.058 + ab * 0.050
-
-        Susano.DrawRectFilled(x, y, width, height, br, bg, bb, 1.0, rounding)
-
-        local innerX = x + rounding
-        local innerW = width - rounding * 2
-        if innerW < 1 then
-            innerX = x
-            innerW = width
-        end
-
-        if height >= 6 then
-            Susano.DrawRectFilled(innerX, y + 0.5, innerW, 1.0, 1.0, 1.0, 1.0, 0.045, 0)
-            Susano.DrawRectFilled(innerX, y + height - 1.5, innerW, 1.0, 0.0, 0.0, 0.0, 0.16, 0)
-        end
-
-        if innerW > 4 then
-            Susano.DrawRectFilled(innerX, y, innerW, 1.0, ar, ag, ab, 0.18, 0)
-
-            local index, total = footerPage()
-            local ratio = 0.0
-            if total > 0 then
-                ratio = index / total
-            end
-            if ratio ~= ratio then ratio = 0.0 end
-            if ratio < 0.0 then ratio = 0.0 end
-            if ratio > 1.0 then ratio = 1.0 end
-
-            local fillW = innerW * ratio
-            if fillW < 2.0 then fillW = 2.0 end
-            local pulse = 0.58 + 0.08 * math.sin((Menu.AnimTime or 0.0) * 2.2)
-            Susano.DrawRectFilled(innerX, y, fillW, 1.0, ar, ag, ab, pulse, 0)
-            Susano.DrawRectFilled(innerX + fillW - 2.0, y, 2.0, 1.0, 1.0, 1.0, 1.0, 0.24, 0)
-        end
-
-        if Menu.FooterLogoTex and Menu.FooterLogoTex > 0 then
-            local halo = height * 0.86
-            Susano.DrawRectFilled(
-                x + (width - halo) * 0.5,
-                y + (height - halo) * 0.5,
-                halo, halo, ar, ag, ab, 0.10, halo * 0.5
-            )
-        end
-    end
-end
-
--- ============================================
 -- VANGUARD THEME PATCH
 -- ============================================
 -- The library is downloaded at runtime, so its palette is not guaranteed to
@@ -977,230 +869,66 @@ end
 -- ============================================
 -- ICON TEXTURE SYSTEM
 -- ============================================
--- Cache for category icon textures loaded from URLs
+-- Cache for the UI arrow/chevron textures. The footer logo is a separate
+-- Menu.FooterLogoTex loaded from the embedded transparent PNG.
 Menu.IconTextures = {}
 Menu.FooterLogoTex = nil
 Menu.FooterText = "" -- <<< CHANGE THIS to your menu name
+Menu.CategoryLabels = { Player = "Self" }
 
 -- Footer logo URL (small square image, ideally 64x64 or 128x128 PNG)
 Menu.FooterLogoUrl = "https://i.imgur.com/jY5oSqw.png" -- <<< REPLACE with your logo URL
 
+-- Transparent 64x64 version of the same artwork: white RGB, alpha taken
+-- from the source luminance. Loaded from memory, so the opaque remote
+-- square is never sampled against the menu-coloured footer.
+Menu.FooterLogoData = [[
+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
+]]
+
 Menu.ArrowUpUrl = "https://i.imgur.com/CefzPfK.png"
 Menu.ArrowDownUrl = "https://i.imgur.com/cEtkALw.png"
 Menu.ChevronUrl = "https://i.imgur.com/qPVyVP3.png"
-
--- Embedded category icons: authored as SVG, rasterised to 128x128 PNG at build
--- time, then stored as base64. Susano's stb_image path loads PNG, not SVG, so
--- the vector source is baked at this size. RGB is forced to pure white and the
--- SVG alpha mask is kept, so the icons match Menu.Colors.TextWhite and never
--- produce a dark fringe when the engine minifies the texture.
-Menu.EmbeddedIcons = {
-    ["Main Menu"] = "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAFJklEQVR4nO1bPWwVRxCeOZ8FxETQUKUhFeJHyE4USGRXhCIFbahw" ..
-        "CS0SEhJlaFEqWpSOCoUyJRQoSEGCGCVCSqpUkRKlCQoGJPu9L5rHDG+8vrt3925v33u2P+l89253Z+bbnZ39OxPtYXeDJ6UYgOjO" ..
-        "9GefmUG7BQCyOu92JADM2R3A5wC+AJD7tB0LDIl+BmANQ8jzWZ9nRwEAu5b/GsArJd7TS7Auac47JhafokL6tpEBcMO1+mbJ8w1X" ..
-        "abMdFzBs9RzAHdfqfWxH33nDnZmPCxgSOALggRLbwGhYHilzxMuaRfKnAfxeQX4zcP+wEqTsaS9zqoF3/dbIXwDwbwX5XslzWAki" ..
-        "44LrSjzNwS7T56tBK4d93d59p5flC2ODL3s11DONwY4B3HatGras//2NK3+zwhu8nNtuRJmO4Iihyx8G8INz37LWfAtg1cq68qua" ..
-        "VuY11iVEx2GvexrIHwPwqyMfwt79CWAlNN7JWdE8o+SIrmOhnEmRPw/gnxpGPwVwtMxoJ++o5h0lT3SeL5PXJXF2we6Kc9cqt/0e" ..
-        "wMFRfdfFkoMA7ju5Zd1J7lfCGWeX5DP3fMsRLQpcZvStovKT1DEWkLB1GnqZvbtfx8vGJZ/r/eOU/TN2nGlrxErNCP1LzAgda6Rp" ..
-        "u4ZfneQY3XKu0XxvAVsDUdUszSqg81layWyzaFntbbxZxKmuov0A7rqaDZVZZN5INU8vWG9slOwv+OAoHPZ7bpUK6N39IwCPnasV" ..
-        "wRRc1jLzKVZq6gHz+nw5sCWE2f6jcPIcq8ifAvDHCPLe1Za1nyVbnJg+1e1tqaoE4XQqrIRMX0jLQV3lHhHJULJBRHUC2QFm7lFi" ..
-        "qM4DNbLmykU43VOOMG/NNFOmJzNLRHSciET4wM1qoE+TQ13d88pJuC0p1wH3soCFQMksHlshqKBCDpne++oSa0T0m7rNphaSPIMu" ..
-        "QrMDsdXOHqFccuUmhzBslZPJH3UJZua3RHSRiJ5rAcn4hIiuq6BZqASz87razspFOF1UjsJ1Oxc3kcn13G5Zh50zBdHWns9pmaSj" ..
-        "gN7PVdh1Rm1fVi42m9wyVOf+h9SKDBHMLC7zk1N4iGYPh7SVH9sL5bYlcOZhKcngzu7ndAhJPsxFQE952Agg3yBsGzXyopJacyLA" ..
-        "vKLtBxBtMdYHFGp7r2qeklMHcK4WzXOK3DcG8tgCpeW1G4nsT4noA01quk6wFn9NRM8kLqlsTG0FQFsJwEkiuktEi5FEPwdwiZlf" ..
-        "xF5tZhFlheuJRQs+La+eyno/j4/5cVcWS5BbT4ixJ9TwOdXR5ppTWSJz0c/joxhN8bEQu5XcVFxkR0UWW+AI8ubWNEZ6J+uRnNIi" ..
-        "q6ikqK7d1KCuYS13jYi+JKK/3XtL+0vTrgVlOkWeQolr8UfM/AyAzQ08Fpj5IYCXQZlOkVFayLHavrJETRscb6VCllKZG9fLYPOG" ..
-        "maqATNfntjPcZaVG15VHMOqVrrbeyA/5DDaCzGS68hZlLUAta1CzfcSlID0GOtOVRzDq2xHpRbCd5nD3uQtdnXeBfsG7UdvtC2q0" ..
-        "N3yhxvjfRFfUCuAKw+oaIOVlmJM+/IiIPnGERMbPmrYvki6OWQHrKnDcIcqmueu6TfUVEX0Y5PlP06LpGrP8ELqtzHpULpsRgk33" ..
-        "9Wady05uX6ic0pbpQlfrE2sMT41PBv/m0gRrukvk5VnlvjeyK11V4JqVMNiLa7jPN9aeXkpdjdB2L65J+ZS6ONFef+N9/ZS69rCH" ..
-        "PdCuxf/wbuOJCbiGSAAAAABJRU5ErkJggg==",
-    ["Player"] = "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAE+UlEQVR4nO1bz48URRT+qndNRAyaiCBkMPFEACFZMBy8kKAXYsLN" ..
-        "k/wPhIM3/gfDiQOJHlAvnk24QPSAFxBCdK8QN15UWJVFCWGnP/Nm3mMeZU1Pz2z/mGHmSzrT2131vvdevap6VdULLLDAAgsssEAr" ..
-        "IBnkwjyB5JJcZZ+/MCCZJZ7tkKtM2boQmiCRlg0hdPX+IwAfAzgGYJcW+R3AjwC+CSF8G9eZaVDDmuRhkt9xNKTMYV/3RTD+Q5IP" ..
-        "1cBNkk9JdknmenX1mbwT/C11vIyZA7UfkzxAckMNEyNHwcpInQNe1kyBZKbX9TGMj51w3eRgRkP/lAv7cWF1TnmZVSNDvfhEdNdr" ..
-        "XFg9kVEbsjqEyvSlYXtUp9pJeDKte1Rk1TUlZlULdKntqwB2biHfsDo7VZaXXRkyzDmyqgWGEKy/PwJwX+8nHQOgMh5Fsqc7AthP" ..
-        "Y3MAt9QQuR8Xuda9JbJmdRb4SvvypGOAXF9iFsF5ToQEc58KY94XQ7OyHA5oAHO9ITLtW2KY903R5aYJNcEJamyIVn6VZ3qtjwHs" ..
-        "h7NcLNunnXNyzShnywHsr9pkENtMvHtDV3ivA9imjx8D+Evy/hDCg0QdidRuHWuBUIPhz63ddUo7AeB9AO8C6KjxMTfVCb8C+BnA" ..
-        "DwC+DyH8FEWGREXjXWUk/ABGskPyU5I3NNFJwRKg7ogyN1RWJ8XVOtjP1XutSXIfyc9Iridy+zj7Sxnrs8J47bCusvcpV2h9uuTz" ..
-        "rX6W5P3I6KLWLQPvEINwnE3p0IrxJPeSvBIZnjK669YBlvd3C56nnOEdIZx7W3ECB8YfIXmvwPC8wKBRMMfkBY4Q7iNbcUKYwHgZ" ..
-        "5XMd3a/plLaZSKpkJvBKrQG4DUBG9XsA/tDpDzodvgngHQAidwXA2wWy4Dhly+ykzBamG+oe8Ei+RXJtyKGH9VvBvyQ/J/kBye1j" ..
-        "8GzXOl+oDIuIOBqMe011qm9gZF/4kv5edWEfh63ha5L7IxlSf1mvpeh69jyqs19lpTi8Dle9jnX2+3MjjJdDzTOR0WMp5Qzxs8wZ" ..
-        "d8g6zAnnvK51hH5Hd3bicDSFfiN5XOssVxGOyt0bX0S2csROsG73UHWstitw0PoXE61v5LKNtaLlXqqMfKBDT6ZwKFfcCKbTRa9z" ..
-        "lef8HZL/JDI5G4hOe0XrgHPC6YjbGiJXHXtpcyVRwEH4nU+0vilwyStYJ5wTLiWcYLqd97pvlTDogLQa9T3z+J8kdze1f+/OG3Yr" ..
-        "t49I0221ktmAg/BfSYS+efuClmlsd8lF5YUhY1LuxqPCRslGcNn7k5o1+h0dGWRkXX5ZPd3kGp3KeVl5/YAnOgbV2dswkQOov7KZ" ..
-        "8b99PQB3AdzRDYpat65ifuW8ozr0ts+iMqYzJ3ZAGHzpcTAqb2Q3QwgSfrL91VgECJdyPhUdIp1Mx4NlvizJhr1wA4js4e0x7qjY" ..
-        "6pDnTSBEOsTP96juhV+WZCUIZLVnhxexoF/QPmSV6WE67ijziU5WINgqvab3TLxb1982NimN80HCSOrfwxruGbISRNsShxbmkCdo" ..
-        "H0+cwQbT95VRlbMSBI8TEWCEG2gfGwX62YbL5P/NQfJllwX63dpVfdfKf300oh8HmeAhkrddtiX3h3yZNlCFfqEESdB5V9LP99z8" ..
-        "v2nv0CIa0Y/ps/2pOcPfin5hDBL/ze/Unc9Nu34LLIDpxH/tMrpfLx91NAAAAABJRU5ErkJggg==",
-    ["Online"] = "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAGgElEQVR4nO1bzY9URRCvnpm4fCjB1QghGyPgGkk0om5CPOiuwoWE" ..
-        "1RhOxIsnCRfCwQOJ+wdwIBy8kKAQEy8kHIwRd7mIUQ5wWBMMCW6IoCHLAYGFgKwfzMzP1GwVU1u+fvNmd2Z22TeVvPSb7npVv6ru" ..
-        "ru5X/YaoS13qUpdyTKHTCgGwTr1mNfEVQuBy6TgAMwYXRFelkYHCXxSHVNvtkNAuwQDYCAohVFz9E0T0DBE9RUQrpfo+Ed0ioj9C" ..
-        "CPeyyFm0DsAM4Ic9B+BpInqTiN4mogEiWk9EXFdyj5aJ6CYR/UZE40T0PRGdCSHctCOpXY6YNwEo8GV+bwPwJYAbSKYqgIpcfJ9E" ..
-        "N0TGtpieRUGQYSr37wI44wwpA3ggZTVisNZbXkssczhJ54IRgKBAAGwC8I0BXDEGz5XUISxLiXVsUifI1Fgw44Pc7wFwz/R2uQnj" ..
-        "sjrJymVdezyOThpfkLIE4HMHMmvPZqmLOUKJddeCacfiAsTjAJYDGBUgD5owQIfzNQAfyHXNtTWiquiEYFjekZEAmfPS82MC4N8U" ..
-        "I5OAc9tfAF41cl+TurQVIUmm6h4TTO2NCagPt6NzMB6m1w6KnB6+5P6g42nWCUctxnYYX5Ryd8R47V2mkwCmTL2WfN0FsFbXc3Ot" ..
-        "lTa7TGo5JTIRGSWKZbfF2krjCzL8+wFMJ0RujehMewEMmmXQ9/4RD9I490jCKNBlcFBkI0X/tGAMLQ2KqAM8ZQBYUsD7hO9YgiE6" ..
-        "OrbY/YPKl7otjtfKOCa8+xJkW0ynvINbZfz2BsZ/InzLAEw4Q7S8GAtUJsBejDzLMpcJ70gDJ2xvmRNQH/7n3FC3Co8b3n4DTIep" ..
-        "/j4UC1QmwB5yz1gZ/WYPcjyhQ3RqnGvJNEC994dcb+g9K5sEsNoYsDMCDLqXT+oZo2s45fmd6izROemCr8U4GNNlqZDRFx9pgsJi" ..
-        "ltfp/SGEO+b1drNp15JB/ENE513bLB9IeV54NSli216RsiQ69wsGK68qvxnz3An1fX4vgNtuOGqPXJB5WzAj4IQbwnYON5yTIs/H" ..
-        "EJV1woyAgvBecJgUI2PutbY0OwKKUvJQWs3pLJNAUY8flgQFy9FExXonW3kvM2+aE7hN5F12zxac7JpO4T3seGupN8H8lrOlKQco" ..
-        "vaMJS/nNJff230TEm5OiyOEeWUFEax4+Wedn+l14dcv6v0vbmNc9q7RGdKg+5j0pWEoOI19bqQGVUtq0RwdcFpfnGCs+G0K4anll" ..
-        "GjwpdX7YXZIeS0tpqZxLrl5lseyik3MVwFlJuSk2xTvgbMnmAICz07yK1BKYGyKjhbetPDpqOUDxeB8RrYiA7zP8MUDa1ueeVWLZ" ..
-        "73P0lzadencdn2LdwDZwolVt8gpDxAE8vziYPE9EEyYiL0z2pXlSrOycF0MIv6pNWadAkLI3xXgbF7LElRh/TH/M2dUM/Lo0Mvba" ..
-        "ShCTV2oARPP2SQ5IA5lEzfLPd++imFe2QtiSpVKDdj6xoUjPLeYpoHXWhqYcACmnJJAkxYHFPAVsEJwydU074Lqc2fFZnpI65Gsi" ..
-        "+jRhGfzCBCEFwTycBhvLuAzy6+zHCc7n8kMi8svgXiJ6z/Ar3RIbmnNAmNkDBFk/r4gDdJOhtCqEcHqW14BVRDTtAo8qnvT8MQLw" ..
-        "cgQ0y/4q4QB1xPEp1itpe4Cs7wLjbv7qM28AeFa2sY/JtpQPOG9Lu1f4gvD2xLbC2sa87lmVxbIrVidjYCwOm+Idd7bMaT6ddvM3" ..
-        "iKGcndkh29KqnAhPmyGnpM89J7xlLpMubWNe96zSddGh+ph3h2ApO4x8fdfIuEJKm87TH4jojns/V0V8JKYxQL3Mx9s2WivvRvO2" ..
-        "l0jmbXGje7bqZNd0Cm/tiMy9qRYF84/OluwOCDNxgAFzFB0VwRUXrF4iol2yxdR4MuFFScm9uq6GMCFVZerWpYyAX0xChHXuEgw2" ..
-        "+FUE6yhjFxsw343QZybqWsNY8AFOT8kQJJP1scORQfWYbFHScqh1m4XX5h+0/FnKsug8kLA86+c4tfT7vAl5Too2mRYfWZJpccr7" ..
-        "wcgcj8aG2nA0NpThaOx+W47GKO+Ho0q5Ph5nyv0HEov0E5lvO/aJjFKuP5JSyvVnckq5/lDSklvTh3PzqWwHP5be2q6PpQN19nP5" ..
-        "1+WoLe1zeU7B/dSpz+UDLdwfJvjE5nGp/lOyt4/+HyY85fYvM4/Kn6a61KUudYnyTP8Bhi0cgsEfcdMAAAAASUVORK5CYII=",
-    ["Player Props"] = "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAFtElEQVR4nO1aTYgcRRT+Xs+aDS45RA9xLyEgwcQkuGFjiCiB7CGX" ..
-        "XHdvhr0ZvBm8KXhTJBfFm4I3RVhQEDyJNxEFFVExh2w85EfYzSHxsHvYn5lPXu+rzdua7p7u2emZcXc+aGa6uuq9931d9bqquoER" ..
-        "RhhhhH0MGZRjkg0ALTtNRKSJ/QCSiR5ly/cMuEWw4c4vkvzOjouuvLGnhGA78fMkv2I7tOz8nhGCpETEz5D8jGTTCLdIbtqh/2nX" ..
-        "tM6ZSIiB5apuiY+58+MkPya55u62ko7hy9aszXFnZ2yohWA78aMkPyC50oF4kRArZuPo0ArBduJHSL5L8mFEKnTzMgjDI+Ch2TzS" ..
-        "VyFo4zhrHGaM8cMk3yK55ALfqEg8Swi1EbBkPg47v7mx7Sp/MOdZHZy6sgmSb5C800PinYS4Yz4nvBCd4q5CXlw3u2DHWCTCAZKv" ..
-        "kbxVI/FOQtyyGA5EsWXFXa4n8LGRUyR/c870/0m7dpXkH7sY470QwucIjeWqxXYyI+5TeT1Bsu48gHEAvwJ4HsCm1dMu9jeAJQAv" ..
-        "W72mXRvUhEXXErTYFD8AeAbAsxabXtMecBPANIA1rSQiWp4iFqChixLtOgB+NCMN5ywZEuKdhIhj1fKXROSnwDE0THIMTphBL1Di" ..
-        "Vm/D8xx+DMkgH8qVy3bC9EhyjMXkvbH71k6PphNlEGhZDCGe+wVxb3d7j6SiM8U8gFkAf1nXCkJkOqgJdMQbFsusxeZj7YikouNU" ..
-        "XRH5EsA5ANcALFoQYgmzTiEYJeVFi+GcxbQdY1kkXUWxNelYF5FPAJwFcB3AXcu4dQjhiY+ZL/V51mJY95Oz2gWQrSyarvNFZFVE" ..
-        "PgQwBeBtAMs9FCImvmw+ptSn+jbiXW+pJbsJzh6Z6WJIRB6JyHsAXgCgv4+cEFVzRBjjgbjaSm2rD/UVFkNGvGuRE+wSOqkQkU0n" ..
-        "xLKIpHcJgPaMVZcjytylQLxhbdPepTbVtiO+6Sc03SJBj5AhxF0RSccpgHScuolKEdL8Ym10jF9XW70mHpCgx4iE0ByxKCJppgbw" ..
-        "uRsOnkQ4b1odzerXtG1Y0vaaeECCmmBCaI4IyfJPEXkVwIx1bURCaNmM1tG6YVNUbdRBPGAMNUNE0kkJySfsDmtCezJctl9amSa3" ..
-        "dHIjIhvoAxL0Dy0TY9L8xkNAyyatTt+m1wn6j80ur9WCBPscCfY5ki7a7NgNHhZYTNIPAdbDvHsYhAgxWEw6gapNALFs/RHJOXs+" ..
-        "bz/n0WdE8wSNY05jK9jMqSSAZCwwxA6d4y+Q/J7kFX1sOSFqzynBjxHX3eErGovGZLGFOHc0yxMlyfGzUrCNFLahXgHwDclvSV4y" ..
-        "IVp1vdZ2M8rg55L61hgslrztuUB+pYwTseMgyZu2r77uXml7NKPyr203OdjaIYR7czPj2ntbipmMN0/x9wUXzFdeHL5cY6dxORj4" ..
-        "dVQaW7+nSf5e4uWHL9ffL0hOxUJUFSCD+JTZ9r6y3jbH5crhtOdWqidg63ec5Oskb5d4/eWF0DqfkjzhbI7bHSgUwOqMu3YnzNZG" ..
-        "CeL+tdltiz21VfklKXd230Mk3yR5r6QQAbplpU+NY87W5QIBLrt6x6ztao7tPOL3LNZDWVyqiiBRN3ya5DskH3QQIr5L/5K8Ye2n" ..
-        "CwSYtjo3rI0n3upA/IHF9lTPP69h+0cQkyTf7yLIf0guWLmvG84XrE5VcTWWydo/nmC7EN12007odnj15/MZtgtRJVEVfSe0WSHB" ..
-        "Ptd34jF28agqi1KPWAwa7H6ykodKk6yhAduFSKer0R0tEqIZ9Zh0mj30xGPEC6OwYCkQIiaeLrTy7P1vwPb1wBzJXwq6ul6bdfUH" ..
-        "stTuOfyExP7Pu8UW7f+8Wy/0bddJ0Ef473Nsjv6iXfpZRNIPmOJvePYkmHF3B9XVBQOCDYmQH3STo5+f2IwwwggjjDACRsB/09aD" ..
-        "qXf3jGQAAAAASUVORK5CYII=",
-    ["Visual"] = "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAE8UlEQVR4nO1az29VVRD+zqsUQRe2iRQT0sJCwdSEWoMbY6VsWJB0" ..
-        "Q9iwABaKJpjgP8KCxK0JGza404VuINGElULZgLJQUjbEaMQEgdD3Xj8z7YxvGM597Su8H+29X3Jy7z33nJlvZs6ve+4BKlSoUKFC" ..
-        "hQplReq1QpKi09JTrySllOS6eRxAsgZAkqC5moHqoCF9XEopLW04B3DFiJpG9CkDSL4G4HUAowC2afZjAH8D+DOl9E8oL3KSOoMD" ..
-        "7QCq4SmlpssbBzAD4CMA7wKYADDiomyQOvcBLACYB/ADgB9TSnedrKFuOeK5oeTsfpjkMZLfknzAPJZINjXJfQ4PVIbIGs7p6jtI" ..
-        "JiMkV5KfkLwZDGmQrDtjcwZbflPLSh2Pmyrb60r9Nr7m7g+R/CkY3WgT3bVgyckxiI5DOQ69Nn7INfdzjqBFusiYuouwdYGYn3Oa" ..
-        "lTOcs27R8y5B8iW97iF51RFsroH4WtFoI8/yRfcez6lTpPUYn1ISch8A+BrAGwAaACIBmf5ktLboPARwHcA1ALcB/AHgX333KoAx" ..
-        "AHsBvAdgGsArbnawadXDdN4DcCyldNW4de6GziN/hOQjF6lc9Aw3SH5OcqIDPRNa50aBzJgnXI54jt00fk77qjVHDxvFBb+TPOkJ" ..
-        "yT3JrbmBS/L0XSx/UmWZvjg+mD7hNNcVJ7Bl/GGST4KhkYjgS5Ijrv5wWCeIoXtJzmiS+63u/VCY90dUZk6Xd4xwO/xCncDWaH+A" ..
-        "5MMCAtYU75M86h0XIipT5VckfwtNuqF58m62Tf2jqsPrjE4Rjgc89+cxvqbX3STvFRhv3eFXkpOOuF8gTZH8PtQzWbmRXsruNyNU" ..
-        "lrXCSdXldUcnCNfd3ob1GJ+0X24jOV/gdSNwjeROM957n+Qpko8dQb8iNPgVYNMNbKeCLJO9U3XmnGAc55V7bV0rRraUXVxF0XWS" ..
-        "o4GoXU9kyq8FvuyJAtmjqjsn27he9Lasx/izKmixgOBtkjsCsWWPa1N9UtDMfbRj5H2ZpsqYtBYZdO1QDjknGOezHTmBLSXTKiQu" ..
-        "Ta35/kXyTU8o1L9cQCzX54veWd3LXnZwwlvKJc5MtvQWG6bXNB5QBy6S20n+kiFlQps2WodR2kjNFBhvzzKvnyH5vqYzbq4vqvNh" ..
-        "xtnWUmfdkjsGi2rL9lW/INky4HxBv7fnL7TcloL6F5RIPUPmiq4Lxkl+pmlc865knF5XWReiAzwH4bQK5/O5+jnyB4PiGIlLuT5l" ..
-        "ntVFzkIwxLrNHTX0NJ/FaX13JzRnuy7YYilG0bWES4ErQyAOeltj05f0MslbmSjY/V1dldVif3J9f1+btcKnJHe5/MUwwO7SMr6O" ..
-        "57DP6/K6NY0oxyL+t9TGZXvhvrBkH0++3KYAvK1fcnHAWARwPKUk+3Yps1trURnTuv69yfoZgKzXRVcdwBZNdc2b0zK+DhyfsaBr" ..
-        "5WGFS1Jux5Wrh/ER26bU1mX5/dlNGTSwxF3gf5R6EDSUehoUlH4hhLIvhfvwMWR7/oPzMWQo9edwFzZEHm24DZEXvCW2v8Mtse/a" ..
-        "bIm905MtsS5tis5uqE1RQ6m3xQ2l/jGymX+NpU4Ko+w/Rzfj7/FuHJBodPGARH0gDkgYSn1Epk+HpD4eqENSPTom9003j8kllPyg" ..
-        "ZEIXUNqjsjmU8rD0RjouX6FChQoVKlRAafEf/Zt+h6Cb+RcAAAAASUVORK5CYII=",
-    ["Combat"] = "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAFB0lEQVR4nOVbz48URRT+qnZWcD2hBziRjWEvEmKIG0IWNSEkSsIF" ..
-        "DpBw9wZHTv4BnJGzJ/4HA3ok6Aldf0Q4aIjx5AH0QEDd7enPvNn3dh+V6t5mnOkdpr6k0tPV1e9H1av3XlVNA4Uj7BVjksI76m0d" ..
-        "QiBKAcnYpW4uLYBkkNEmOQCwqtX3QwiVPcO8gjrKJI+SXOcO5PdR32buQDJo2U/yZ1V8Uwu1br+1w7yB5IJeT6rCYvJMfp/0bftA" ..
-        "RP94Q3RM/E/QOnnWK2LfDDPKp53QKyIKR0ThiCgcsQ8mGtYGXby7thn0FQoH0ySuSY1kd0MA/2pdm6Ojth26zpC6eloyhmkudFQZ" ..
-        "uX8LwEcAzgI4BeDthL91yiMAXwO4A+CrEMIT1xGvxoKJLpUluULyM5J/8OUh79wQGjnas57tLZG8TvJpku1J2jtsUXqobXyW+FRp" ..
-        "LXkeMwdure7kukryR6eAKFSPYQG1WydQaa56XrOo/AWSz1oUr50lVDriw6SubukIoX3B85wlsz/vhK8aFO+KXEfY+1J/3vPesyhA" ..
-        "Ujy9CHQcwDcA9qlH986qdvd/A7gL4B6AXwCMvDwAiRLi7N4H8CGA1zPv2n3QkLoWQlg3GdA3uLVuj+rwHjaMfOWu4tGPdKB7RNtW" ..
-        "u9B8qLzjnuwfcMf0xUMzcVhe0F9Jrrn3RGDJ9EaZoRa79yF0Td/NdYLxuu5l6VP5qBawTPK5OjI/Zy3UfUfykL6z2CWOK+1F/X1I" ..
-        "aXia5geGynvZrLEP3dPRv5kZfRP0EcmD43psF1kOKq20E4znTS/T1EGdbyQPkHyio1EnI7NB8oRXZExe1gknlKa3NOP7WGTxsk1E" ..
-        "Se7Mz7Ts0+vlzPxMR2WxhYf3BY3m66ZDztqM9+VEtlzp1jnsOJdI3kqSFBsRmZeH2+blyxyMOH9zWGl7i7Nk69a4ug2SBrJ0FYJS" ..
-        "/x6ApYZ8Qe4/0Ov28RYAmYd3Qwi/N8Vnlzu8qytE6Mrvh9w72jYqTckhPtblsvCKJgvJM5k9Rbt/DuDb1sMXNh9adIVZwqc6YoMW" ..
-        "53klsy1+xbdJ3httkCjtdBp0RfPhC/OHFj5Xz5WmVPWiCd3QwcfcOxtaDMdyAjpneDHhxcT5NpWq6fAlKo+oZiEp7TsAKmdiTSU3" ..
-        "LQR/JeZnMF7n9NkmgEUtm1p3Lmm73QcJ7RzvNlkXVCfR7bjqOuIx2xsMPSDqVUxIenEdwAN1juJo6pbS5HAONIySObcv9JmNvFlC" ..
-        "0Ge+LRJaRjvHu03WoeokuokvCMYjjqhvmYR4x38AXALw/RhTwIRaycVc9eYLIYSfAFxVoWwKyO+r8kzb5KKH0Fxp6IAuU0B0uqQ6" ..
-        "bkeC0HJ2v1sY/BzAsluyWmj6MoRwdlJhMHnnThIGjfdvAD75X2Gw1EQophXa07umwgBuqyWYdQQdGdnMuKa9nF2gWHLjU+GWTY0F" ..
-        "pXVNaQ8TnlJud0mFJ7JxwhcXQ4/ncjG0G4peDguK3xBB6Vti87QpGsZ9cULb4n9q/Zuv3Lb4vByMTARFH40Zij4cNRR9PN7yB4kb" ..
-        "s/wHiYApoOi/yHhojH7BZEmedubuTV9wOmkrSdJUd60G0yRu8Vkt4jXdl2uzutEqVOXaMAuaJiJ6gJpu1UUhbVP1Ze4RhSOicEQU" ..
-        "jrgHPJu+C2j6jmDuOuBZphNMeXk2n2DpH03N6mdzAT2j6A8nDUV/Omso+uNpzBD+A7V2sgaqTCV9AAAAAElFTkSuQmCC",
-    ["Vehicle"] = "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAFlklEQVR4nO1aTYhcRRD+amazigkGDAmrsOhiRJDAghLUQFCzRCMI" ..
-        "evAgiAdzikeNiBdREH9QIySg4kVEUBC8KQhuQjxFxZ9E4kWDGDFCzGYXEknU3dn5pGar3UrTb95782YmK3kfNNvvve6u6qrqquqa" ..
-        "BWrUqFGjRo0aNWrUqFGjRo1LDjIsQiQbRi/QpLUsvvy4tohkjV25AiCp6+vGKSLtims19a+ILP4vBECy6ZklOQ7gZgCTAK4HsB7A" ..
-        "ZRnT/wYwA+AYgG8BfCMip22dhgmikkAHBpIN07z2V5N8lORnJP9k75gh+QHJbbFFrCiQHHH9x0geizbSIrlgrZXTwrjFaI2PSW5a" ..
-        "UUIg2XRav4nkwWjT2toVLKBtawRhnCO5K6Z9MTYuQevGyJMkzxqTKe31svEYKoiAV4z2yNCFQGd+JLeQ/CKDyarwmveCUQErXgpC" ..
-        "GKaTa1r/SpJ7HIMLCa21K2x8JnqO1523/iOxUgZq7gqSD5D8yTGTMnfP9KKNK9KCE3yT5L0kv3RreCzaWI0wE8ZjJ0wO0tzHSb7v" ..
-        "mAimGGsnbP73RDQog6eM7osJofrn6b4fBTqJklxL8gmSp5z0U1r3AvmQ5KskT5A8TXKW5FzBNmtHQM38cePhhQwhBJq7ygpBum0+" ..
-        "5N+azAB4FsC19lkzvPi8tV0OfwLA0yKilrLOfe8FOm8NgD9ERDe+H8BUxEPnvgDgvGWax5eSxR6zRS5pXtsoyfciSaecnNf62yTX" ..
-        "+7S1nxkmyess1Ma5RX+OApeINC22fmKLzhdwct+T3O7WaUbCrNT8ptTUE8et0lFAgvHgdP5JbDx4X8VfJJ8jeXmYP8ikxAlhOqGE" ..
-        "4HzPmqWUiwpcdng3mNZTKay3hAMkbwlzSa4yy+lrZhZCsLVVJuSNJM+70Blb5f7SWSKXpbsnw8QCoUMkdxZYr5I1hOPY5ftDCSvw" ..
-        "z6/5faUwEj2rdvXdfeZZvfm07Xm3iLxuC18N4G4AtwGYsHG/ADgEYFpETgZBlC1kuDnK0xgA9S9bHJ1fARwA8DWAzY4/hQqtpbyS" ..
-        "/FlE3srlgcvmv9Fpvh1J9F0bcw3JNyxeZ0Hj+D5jvlSa6vzQmK2ha2VBfVAKwR/oUZ7MjUpcJro1cdaDADaTvIPkyeibv9+HPl0m" ..
-        "eE9RITg+dtjconRSaLkj2ygqgG0JAYTFXra7eFZOEGtgwc3thEjLLZoZbdTGbHfM59HJQ1jn/q5KYL4APBOpb1mFj8DAKZcVdlPE" ..
-        "Opdup26AZQssYeyntv4FVjCC4lBvHkrTKefoJRs7JHU+mh3uJfmOe+cR3u20sXG6nUcnC6EcfzvJq0Rkzqf5IyUEEITgESKF5uDf" ..
-        "2Tut/F5h38L4pj0/bC0PjDZalE4WzzpmrVWj52ytjgKq5Orh8nNUmRGRrdqMsR/sm7+MhOciTSrQSSFY7prsEfzPB0x1KXD4s6jt" ..
-        "jKacNq+TqVl/wr7FWVpZ9ItOKMZMxY6wkfGjhD/v3bR/RESOW5LRsuuq9jUZOlJQOxgCnXBMdG8XoOGJWdp62H6RCdlUMMt+Ic/8" ..
-        "+02nZXvRPR22PbbzssFJkkcT5pgyzYkSplnkOAyCztGsbFASQuiECEtKbrVIcReAZ6KwE/rqiB4UkR9t/o0APgKwKWP88wA+t37Q" ..
-        "ROjf2Wc6B80CvhKReR/+MgUQpOTLSVoPBPAbgNWJn66lQHgKP4WfAzAuImeQwCDpxHsqUxkatWe9lKSuyKloEb8Lc/Z1SYcHSaf3" ..
-        "2gTtEkFyQ48pqk+FN2RdSoZFp1chNHu4pGRdhpoXm05VIewoeU0d1nW4FJ2qQhgjuTenUDFrY6oWRAZGR1HaOfjSUkapqt8lsYHS" ..
-        "GUixclhF0X7QkZ44Wyas8wODPqlRLPbrX9uGRadGjRo1atSoUQOXEv4FZM15MuC2aWUAAAAASUVORK5CYII=",
-    ["Exploit"] = "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAEl0lEQVR4nO2bT4gcRRTGf6+ns1lN9KJRvKhBLyIheDNBQm7GHDwq" ..
-        "OYhoQE8SBT3owaMEDJiLhwSDx6BHwX/g0WBuEkQC/kHwEDGrF3VD4u7MJ2/3Vaw0PbMzO7O7PTv9QdM9U1Vv3vf61auqVzXQokWL" ..
-        "Fi1mFzZKZUleP11NhPwyM01WqlRIKpkSuK6u8zB1bQ1BXl6YWTc+d4C9wH3ADpqFJeA34JeKvr1BHmH9CtyCZtaL533Ai8AR4KEG" ..
-        "ks+N8DPwOfChmX1X5TKUARQNJN0JvAO8VCFdK6wBKCrGOAu8ZWZ/9TOCDSB/P/AJsD+KluMHGh8E4wWlmHUJeNrMfq0zgvWJ8ruA" ..
-        "b4BHgX+BOaYTSffvgQPAYnWUKCoNkoVOBvmlCnmFJ3iQ6TXs6oZuecCbCw7O5WRwK2o9QP+7/iPASvDIXD6Rb6rrV5HrmrqEY5+Z" ..
-        "Xc67Qpk1crL+5ctAJ6xZJe/WfBf4OtxrshOO9cPibT8BvBEBO+ls8VwGt1czrrdC0g5JP2oV3bj34vmapCdpOCQdCV27oXvO5Qfn" ..
-        "mNcvo1FyiQeAB6Msvf1u1DttZl9Kuj28o4kozewLSaeBN0PPMuOyNzj+dMuIoNUZk98PVSzmWI77QaYErmtF95zToZxzWWlbN99P" ..
-        "UfOApPm+/acZSLo9ln1mEMdyCKHJfU4xfVhz1CpHENbUt94PQ60Gy0kLnDYUzDjKEeq2XYAZ9QBFNH0d+HaKhsFTw6xfyiGEJiEX" ..
-        "zOwiUwCfCqfHSRggYXfMnvxaybn1eQMpKbEVSLrt3pAgaGY+nSQlHXPE3HpprRzcRiLp5ougTQtsWs0iOfZIek/SHZFXmIo0ejFB" ..
-        "WTdirX1B0n4z84VIJzPQtjeAAVc96xJGOO7u6Pm3tPJqIooJy/NkQy+Sqh9I8mtX9MtGdolig2SmJOXxSpdoXHcoNkiuZXlF31e4" ..
-        "KOkVLxh2z26zUDDjKDdIbr474zszz5vZJe8CWzE/2GwD9DLPOgecMLNFD4IeB/KKERPGGSFWRpkmGWApyC8G8XMpAVlHPpQfK8Oc" ..
-        "ydlyAwi4J3aVnguXT/vz3TqlJe0BngXuWsfv/Ql8ZGYL4xihZHLY6XsHwNtm9nedyzvSUCjp3thheniM3zwhyXeDrq53iC0YE5nl" ..
-        "F8zstSDvi6F+rt2JNseC/PXoBqNe16P9sZDX2VIPsNUF0MpyuGmRftPmAWY28DxOoBvuet63qID5eBGjXvPR/nzI65ejGMkDlmvq" ..
-        "JEJ+UmwiXSaC1u+x3fYMcPc6RP0BfJwHQc8HhI5Jz7qXsVxnAMX9SrahmNJJqeywmX0laaf/0LgIpReA98eUs6Jr6OSB94akw6k4" ..
-        "uxfB7UqlbKTtcT8ltv22xx0xbC1J+tSHl2xGl4aX2/zQlKRpOyBBxuWz4HhziLZZPyJTpBZB3sfoy8CZbDl7s8oUHZLKX9RycDkT" ..
-        "5Dv5MG0zdEzuceDawGNyFgU+mwOOxlJ2LrNkr0H9vg7J3ZPnzgWHo2b2j39RnadYrZRZPio74LD0C8BTM3FYepaOyw+Fmf3DRBUz" ..
-        "+5eZFi1atGjB9sR/2uhwph1cxKgAAAAASUVORK5CYII=",
-    ["Settings"] = "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAACL0lEQVR4nO2aYWobMRCF36hJA71EoT8TCIRcoGB6hdwpZwqFXqAk" ..
-        "BJKfhVwiblrXr4hIRMgbx86OpLU1H4gFaVbr0YxWeisDhmEYhmEYhtElotkZSd+fS/olgKWI+Ot+Q9K9p23yGcCXqA42i8jSOxiu" ..
-        "HwHMAJyG9lsA30XkT2KTZkhpxmUfN4gcycNwnZG84yq+bpba1uQtH2TNjeJHj+QBgHMAn5J74qg+iMgvkl8BXAHwtv+Sdm/7AcAC" ..
-        "wDcR+UHyC4DPbz1/BPHZjwB+isgi+rL1qJE8IXnN15mTvEwi/3fAJtbdBVt/Ty38bz9JfcqRAedj3ZEfQQDHIapD0Uo75ZqI5m1L" ..
-        "lIch++5DBj/5yjwT3MCNLhidBecXoSM3UJik/Lp0lszWVShx6nkfzoJPK/46dI7kFd1PAXlOFf/W/A3gAsDNmikwB3AZ5pmElMtZ" ..
-        "hLb7YDuvOAX8b78IvgyuBPJaanS9DEa63ghNYCs8KKySCG9CPSFGRTFUU1jJyAzQjFqJbCovhjQp8T4pJYY00V5RqoohTUoIq+Ji" ..
-        "SBNtYVVFDDnFoi2sTAxtguQV3U8B2U4MaRZtYVVUDO33MhjpeiP0zq3wmK3y9LbCmmwjcHZZDOWMiWp7OUyF0W79waSVGGLDT2aT" ..
-        "EkPzxidHzcWQa3hyNAkxxIYnRyaGNkHyiu6ngOiKoZYnR03FEHd6GYx0vRGawFZYg90UQzWRmg/r+o+UhmEYhmEYhoFJ8R9MeGTM" ..
-        "56ihwAAAAABJRU5ErkJggg==",
-}
-
-local B64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
-local B64_VALUE = {}
-for i = 1, #B64_ALPHABET do
-    B64_VALUE[B64_ALPHABET:sub(i, i)] = i - 1
-end
-
-function Menu.DecodeBase64(data)
-    data = data:gsub("%s+", "")
-    local out = {}
-    local i = 1
-    while i <= #data do
-        local c1 = B64_VALUE[data:sub(i, i)]
-        local c2 = B64_VALUE[data:sub(i + 1, i + 1)]
-        local c3 = B64_VALUE[data:sub(i + 2, i + 2)]
-        local c4 = B64_VALUE[data:sub(i + 3, i + 3)]
-        if c1 and c2 then
-            local v = c1 * 262144 + c2 * 4096 + (c3 or 0) * 64 + (c4 or 0)
-            out[#out + 1] = string.char(math.floor(v / 65536) % 256)
-            if c3 then out[#out + 1] = string.char(math.floor(v / 256) % 256) end
-            if c4 then out[#out + 1] = string.char(v % 256) end
-        end
-        i = i + 4
-    end
-    return table.concat(out)
-end
-
--- Called before the URL loader: a category whose embedded texture is already
--- in the cache is skipped by Menu.LoadIconTexture, so no HTTP request is made
--- for the nine base icons.
-function Menu.LoadEmbeddedIcons()
-    if not Susano or not Susano.LoadTextureFromBuffer then return end
-    for name, encoded in pairs(Menu.EmbeddedIcons) do
-        local current = Menu.IconTextures[name]
-        if not current or current == 0 then
-            local ok, tex = pcall(Susano.LoadTextureFromBuffer, Menu.DecodeBase64(encoded))
-            if ok and tex and tex ~= 0 then
-                Menu.IconTextures[name] = tex
-            end
-        end
-    end
-end
 
 -- Load a single icon texture from URL, store in Menu.IconTextures[name]
 function Menu.LoadIconTexture(name, url)
@@ -1229,14 +957,48 @@ end
 
 -- Load footer logo texture
 function Menu.LoadFooterLogo(url)
+    if not Susano or not Susano.LoadTextureFromBuffer then return end
+
+    -- Prefer the embedded transparent copy. The remote artwork is opaque black
+    -- and would leave a dark square on the menu-coloured footer. Decode inside
+    -- this function so the main chunk stays under Lua's 200-local limit.
+    if Menu.FooterLogoData and Menu.FooterLogoData ~= "" then
+        local alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+        local values = {}
+        for i = 1, #alphabet do values[alphabet:sub(i, i)] = i - 1 end
+        local data = Menu.FooterLogoData:gsub("%s+", "")
+        local out = {}
+        local i = 1
+        while i <= #data do
+            local c1 = values[data:sub(i, i)]
+            local c2 = values[data:sub(i + 1, i + 1)]
+            local c3 = values[data:sub(i + 2, i + 2)]
+            local c4 = values[data:sub(i + 3, i + 3)]
+            if c1 and c2 then
+                local v = c1 * 262144 + c2 * 4096 + (c3 or 0) * 64 + (c4 or 0)
+                out[#out + 1] = string.char(math.floor(v / 65536) % 256)
+                if c3 then out[#out + 1] = string.char(math.floor(v / 256) % 256) end
+                if c4 then out[#out + 1] = string.char(v % 256) end
+            end
+            i = i + 4
+        end
+        local ok, tex = pcall(Susano.LoadTextureFromBuffer, table.concat(out))
+        if ok and tex and tex ~= 0 then
+            Menu.FooterLogoTex = tex
+        end
+        -- The embedded copy is authoritative. Never fall back to the opaque
+        -- remote artwork: a missing logo is cleaner than a black tile.
+        return
+    end
+
     if not url or url == "" or url:find("PLACEHOLDER") then return end
-    if not Susano or not Susano.HttpGet or not Susano.LoadTextureFromBuffer then return end
+    if not Susano.HttpGet then return end
 
     CreateThread(function()
         local ok, result = pcall(function()
             local status, body = Susano.HttpGet(url)
             if status == 200 and body and #body > 100 then
-                local texId, w, h = Susano.LoadTextureFromBuffer(body)
+                local texId = Susano.LoadTextureFromBuffer(body)
                 if texId and texId ~= 0 then
                     Menu.FooterLogoTex = texId
                     print("[Footer] Logo loaded (tex=" .. tostring(texId) .. ")")
@@ -1246,16 +1008,10 @@ function Menu.LoadFooterLogo(url)
     end)
 end
 
--- Init: load all icon textures at startup
+-- Init: load the footer logo and the UI arrow/chevron textures
 function Menu.LoadAllIcons()
     if not Menu.Categories then return end
     CreateThread(function()
-        Menu.LoadEmbeddedIcons()
-        for _, cat in ipairs(Menu.Categories) do
-            if cat.iconUrl and cat.iconUrl ~= "" and not cat.iconUrl:find("PLACEHOLDER") then
-                Menu.LoadIconTexture(cat.name, cat.iconUrl)
-            end
-        end
         Menu.LoadFooterLogo(Menu.FooterLogoUrl)
         if Menu.ArrowUpUrl and Menu.ArrowUpUrl ~= "" then
             Menu.LoadIconTexture("_arrowUp", Menu.ArrowUpUrl)
@@ -2312,8 +2068,8 @@ local function WrapWithVehicleHooks(code)
 end
 
 Menu.Categories = {
-    { name = "Main Menu", icon = "P" },
-    { name = "Player", iconUrl = "https://i.imgur.com/CI38tSd.png", icon = "ÃƒÂ°Ã…Â¸Ã¢â‚¬ËœÃ‚Â¤", hasTabs = true, tabs = {
+    { name = "Main Menu" },
+    { name = "Player", hasTabs = true, tabs = {
         { name = "Self", items = {
             { name = "", isSeparator = true, separatorText = "Health" },
             { name = "Revive", type = "action" },
@@ -2337,7 +2093,7 @@ Menu.Categories = {
             { name = "Shoes", type = "selector", options = {}, selected = 1 }
         }}
     }},
-    { name = "Online", iconUrl = "https://i.imgur.com/9k1REcK.png", icon = "ÃƒÂ°Ã…Â¸Ã¢â‚¬ËœÃ‚Â¥", hasTabs = true, tabs = {
+    { name = "Online", hasTabs = true, tabs = {
         { name = "Player List", items = {
             { name = "Loading players...", type = "action" }
         }},
@@ -2418,7 +2174,7 @@ Menu.Categories = {
             { name = "Give", type = "selector", options = {"Vehicle", "Ramp", "Wall", "Wall 2"}, selected = 1 }
         }}
     }},
-    { name = "Visual", iconUrl = "https://i.imgur.com/iHvywcn.png", icon = "ÃƒÂ°Ã…Â¸Ã¢â‚¬ËœÃ‚Â", hasTabs = true, tabs = {
+    { name = "Visual", hasTabs = true, tabs = {
         { name = "World", items = {
             { name = "FPS Boost", type = "toggle", value = false },
             { name = "Time", type = "slider", value = 12.0, min = 0.0, max = 23.0 },
@@ -2432,7 +2188,7 @@ Menu.Categories = {
             { name = "FOV", type = "selector", options = {"Normal", "60", "70", "80", "90", "100", "110", "120"}, selected = 1 }
         }}
     }},
-    { name = "Combat", iconUrl = "https://i.imgur.com/zeRlEgV.png", icon = "ÃƒÂ°Ã…Â¸Ã¢â‚¬ÂÃ‚Â«", hasTabs = true, tabs = {
+    { name = "Combat", hasTabs = true, tabs = {
         { name = "General", items = {
             { name = "Attach Target (H)", type = "toggle", value = false, onClick = function(val) ToggleAttachTarget(val) end },
             { name = "", isSeparator = true, separatorText = "Weapon Mods" },
@@ -2468,7 +2224,7 @@ Menu.Categories = {
             { name = "weapon_hk_ump", type = "action" }
         }}
     }},
-    { name = "Vehicle", iconUrl = "https://i.imgur.com/DkzEgPb.png", icon = "ÃƒÂ°Ã…Â¸Ã…Â¡Ã¢â‚¬â€", hasTabs = true, tabs = {
+    { name = "Vehicle", hasTabs = true, tabs = {
         { name = "Performance", items = {
             { name = "", isSeparator = true, separatorText = "Warp" },
             { name = "FOV Warp", type = "toggle", value = false, onClick = function(val) Menu.FOVWarp = val end },
@@ -2647,7 +2403,7 @@ Menu.Categories = {
             end }
         }}
     }},
-    { name = "Exploit", iconUrl = "https://i.imgur.com/G4seAMg.png", icon = "Ã°Å¸â€™â‚¬", hasTabs = true, tabs = {
+    { name = "Exploit", hasTabs = true, tabs = {
         { name = "Exploits", items = {
             { name = "", isSeparator = true, separatorText = "Server" },
             { name = "Staff Mode", type = "toggle", value = false, dynasty = true},
@@ -2669,7 +2425,7 @@ Menu.Categories = {
             { name = "Bypass Putin", type = "action", dynasty = true },
         }}
     }},
-    { name = "Settings", iconUrl = "https://i.imgur.com/FQsvrIJ.png", icon = "ÃƒÂ¢Ã…Â¡Ã¢â€žÂ¢", hasTabs = true, tabs = {
+    { name = "Settings", hasTabs = true, tabs = {
         { name = "General", items = {
             { name = "Editor Mode", type = "toggle", value = false },
             { name = "Menu Size", type = "slider", value = 110.0, min = 50.0, max = 200.0, step = 1.0 },
@@ -34429,7 +34185,7 @@ end
 -- BOOT
 -- ---------------------------------------------------------------------------
 function UI.boot()
-    O.log("loader build 2026-11-07-r12 (smooth menu motion; crisp 64px icon set; moss-glass footer with page hairline + logo halo)")
+    O.log("loader build 2026-11-07-r13 (smooth menu motion; text-only category rows; Player label -> Self; flat footer matching the menu body; transparent embedded footer logo)")
     O.thread()
 
     -- Delete fallback poll. 40 ms is faster than a frame at 30 FPS and cheap
