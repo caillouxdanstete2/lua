@@ -23848,8 +23848,19 @@ local function resolveDelivery(cfg)
     end
 
     if method.safe then
-        -- A multi-part recipe built from the three server auto-whitelisted
-        -- effects. It never needs a dynamic ack.
+        -- A multi-part recipe. When the replicated config is unreadable, the
+        -- server may still be running the AI branch; strip assetHash so the
+        -- static branch cannot cancel. When the config is readable, dynamic
+        -- entries are requested for every part that is not statically safe.
+        if not ex then return method, canRewriteEvent() end
+        local parts = method.parts or { method }
+        for i = 1, #parts do
+            local part = parts[i]
+            if part and type(part.effect) == "string"
+                and not whitelisted(cfg, part.effect) then
+                return method, true
+            end
+        end
         return method, false
     end
 
@@ -23980,6 +23991,18 @@ local function dynamicConfirmed(hash)
     return type(alt) == "number" and now() - alt < DYN_TTL
 end
 
+local function ensureDynamicEffect(effect)
+    if type(effect) ~= "string" then return true end
+    local hash = GetHashKey(effect)
+    if dynamicConfirmed(hash) then return true end
+
+    local last = FL.dynamic[hash]
+    if type(last) == "number" and now() - last < DYN_TTL then return false end
+    FL.dynamic[hash] = now()
+    rawServerEvent("__WaveShield:CreateParticle", hash, 0, resourceName())
+    return false
+end
+
 local function ensureDynamic(method, cfg)
     if not method then return false end
     local ex = cfg and cfg.Explosions
@@ -23988,15 +24011,7 @@ local function ensureDynamic(method, cfg)
         -- assetHash, so the static whitelist branch cannot match either.
         return true
     end
-    if type(method.effect) ~= "string" then return false end
-    local hash = GetHashKey(method.effect)
-    if dynamicConfirmed(hash) then return true end
-
-    local last = FL.dynamic[hash]
-    if type(last) == "number" and now() - last < DYN_TTL then return false end
-    FL.dynamic[hash] = now()
-    rawServerEvent("__WaveShield:CreateParticle", hash, 0, resourceName())
-    return false
+    return ensureDynamicEffect(method.effect)
 end
 
 -- WaveShield's server acknowledges a dynamic particle entry with _ws:cb.
@@ -24032,7 +24047,7 @@ end
 local function ptfxLoaded(dict)
     if type(dict) ~= "string" or #dict == 0 then return false end
     local ok, value = pcall(HasNamedPtfxAssetLoaded, dict)
-    if ok and value == true then return true end
+    if ok and (value == true or value == 1 or value == 1.0) then return true end
     pcall(RequestNamedPtfxAsset, dict)
     return false
 end
@@ -24070,7 +24085,7 @@ local function emitParticle(method, coords)
                 local z = coords.z + (tonumber(part.oz) or OFFSET_Z)
                 local okay, didStart = pcall(StartNetworkedParticleFxNonLoopedAtCoord,
                     part.effect, x, y, z,
-                    0.0, 0.0, 0.0, scale, false, false, false, false)
+                    0.0, 0.0, 0.0, scale, false, false, false)
                 if okay and didStart ~= false then sent = sent + 1 end
             else
                 pending = true
@@ -24097,11 +24112,18 @@ Menu.__vgd_onOutbound = function(name, payload)
     if not ok or type(args) ~= "table" then return nil end
 
     local changed = false
+    local hashes = wire.hashes or { wire.hash }
+    local function matchesWire(value)
+        for i = 1, #hashes do
+            if hashes[i] ~= nil and hashMatches(value, hashes[i]) then return true end
+        end
+        return false
+    end
     local function walk(node, depth)
         if not changed and type(node) == "table" and depth <= 5 then
             local effectType = type(node.effectHash)
             if (effectType == "number" or effectType == "string")
-                and hashMatches(node.effectHash, wire.hash) then
+                and matchesWire(node.effectHash) then
                 node.assetHash = nil
                 changed = true
                 return
@@ -24305,19 +24327,33 @@ local function tickCore()
         emitted = pcall(AddExplosion, coords.x, coords.y, coords.z + OFFSET_Z,
             FLASH_TYPE, DAMAGE_SCALE, false, false, 0.0)
     elseif effective then
-        if needsWire then
-            if type(effective.effect) ~= "string" or not canRewriteEvent() then
-                FL.nextAt = now() + 120
-                return
+        local parts = effective.parts or { effective }
+        local wireHashes = {}
+        local dynamicPending = false
+        for i = 1, #parts do
+            local part = parts[i]
+            if part and type(part.effect) == "string" then
+                local hash = GetHashKey(part.effect)
+                wireHashes[#wireHashes + 1] = hash
+                if ex and ex.EnableParticlesAI
+                    and not whitelisted(cfg, part.effect) then
+                    if not ensureDynamicEffect(part.effect) then
+                        dynamicPending = true
+                    end
+                end
             end
-            if not ensureDynamic(effective, cfg) then
-                -- The server acknowledgement has not arrived yet, or the
-                -- request could not be sent. Do not call the native: a
-                -- non-whitelisted effect here is worse than no effect.
-                FL.nextAt = now() + 120
-                return
-            end
-            FL.wire = { hash = GetHashKey(effective.effect), expires = now() + WIRE_TTL }
+        end
+
+        if dynamicPending then
+            -- Dynamic acknowledgement is still outstanding. No native call:
+            -- an unlisted effect before the server has written the entry is
+            -- exactly the branch this path is avoiding.
+            FL.nextAt = now() + 120
+            return
+        end
+
+        if canRewriteEvent() and #wireHashes > 0 then
+            FL.wire = { hashes = wireHashes, expires = now() + WIRE_TTL }
         end
         emitted = emitParticle(effective, coords)
     else
@@ -32055,8 +32091,8 @@ end
 local function drawVehicleBadge(x, y, size, r, g, b)
     if size <= 0 then return end
 
-    -- Same Material car texture as the card, tinted with the list's red. One
-    -- draw call per row; the primitive car below is the upload-failure path.
+    -- Same Material car texture as the card, tinted with the caller's colour.
+    -- One draw call per row; the primitive car below is the upload-failure path.
     local texture = ICON_TEXTURES.vehicle
     if texture and Susano and type(Susano.DrawImage) == "function" then
         local ok = pcall(Susano.DrawImage, texture, x, y, size, size, r, g, b, 1.0, 0)
