@@ -2890,7 +2890,7 @@ if type(originalDrawCategories) == "function" then
                         -- Magnifier built from the same rounded primitives as
                         -- the rest of the list: ring, punched centre, diagonal
                         -- handle. No font glyph or texture dependency.
-                        local iconSize = math.max(7, math.floor(9 * scale))
+                        local iconSize = math.max(7, math.floor(8 * scale))
                         local iconX = x + math.floor(16 * scale)
                         local iconY = itemY + math.floor((itemHeight - iconSize) * 0.5)
                         local ring = math.max(2, math.floor(2 * scale))
@@ -2899,20 +2899,28 @@ if type(originalDrawCategories) == "function" then
                         if isSelected then bgR, bgG, bgB = 0.095, 0.095, 0.105 end
                         fill(iconX, iconY, iconSize, iconSize, textR, textG, textB, 1.0, iconSize / 2)
                         fill(iconX + ring, iconY + ring, inner, inner, bgR, bgG, bgB, 1.0, inner / 2)
-                        local handle = math.max(1.5, 1.7 * scale)
-                        for step = 0, 4 do
-                            local offset = step * 1.35 * scale
-                            fill(iconX + iconSize - 0.5 + offset,
-                                iconY + iconSize - 0.5 + offset,
+                        local handle = math.max(1.5, 1.5 * scale)
+                        for step = 0, 2 do
+                            local offset = step * 1.55 * scale
+                            fill(iconX + iconSize - 1 + offset,
+                                iconY + iconSize - 1 + offset,
                                 handle, handle, textR, textG, textB, 1.0, handle / 2)
                         end
-                        textX = x + math.floor(37 * scale)
+                        textX = x + math.floor(33 * scale)
                     end
 
                     Menu.DrawText(textX, textY, label, 19, textR, textG, textB, 1.0)
 
-                    local chevX = x + width - math.floor(34 * scale)
-                    Menu.DrawText(chevX, textY, ">>", 19, textR, textG, textB, 1.0)
+                    local chevSize = 19
+                    local chevTextW = 0
+                    if Susano and Susano.GetTextWidth then
+                        chevTextW = Susano.GetTextWidth(">", chevSize * scale) or 0
+                    end
+                    if chevTextW <= 0 then chevTextW = 8 * scale end
+                    local chevGap = math.max(1, math.floor(1.2 * scale))
+                    local chevX = x + width - math.floor(16 * scale) - chevTextW * 2 - chevGap
+                    Menu.DrawText(chevX, textY, ">", chevSize, textR, textG, textB, 1.0)
+                    Menu.DrawText(chevX + chevTextW + chevGap, textY, ">", chevSize, textR, textG, textB, 1.0)
                 end
             end
 
@@ -32906,7 +32914,6 @@ local function installLockPlayer()
         { name = "", isSeparator = true, separatorText = "Hold Left Ctrl to ram" },
         row,
         speedRow,
-        { name = "", isSeparator = true, separatorText = "Selected player first, then nearest living" },
     }
     return true
 end
@@ -35179,7 +35186,7 @@ end
 -- BOOT
 -- ---------------------------------------------------------------------------
 function UI.boot()
-    O.log("loader build 2026-11-07-r23 (banner wbYgWhZ + 3:1 header; flush tab strip; light-grey cell tab plate; dark selected category rectangle; uniform unselected categories; reference names Self/Online/Vehicle/Weapon/Destroyer/Misc/Settings/Search; Search main page with magnifier; double category chevrons; full-white section rules; Player Props folded into Online; 15px right-aligned slider readout; target-bound toggles reset on target change/unload; dark row plates; white toggle/scrollbar; footer centre mark removed; Delete/Backspace close)")
+    O.log("loader build 2026-11-07-r24 (banner wbYgWhZ + 3:1 header; flush tab strip; light-grey cell tab plate; dark selected category rectangle; uniform unselected categories; reference names Self/Online/Vehicle/Weapon/Destroyer/Misc/Settings/Search; Search main page with compact magnifier; tight double category chevrons; full-white section rules; Target keeps only the Ctrl hint; Player Props folded into Online; 15px right-aligned slider readout; target-bound toggles reset on target change/unload; dark row plates; white toggle/scrollbar; footer centre mark removed; Delete/Backspace close)")
     O.thread()
 
     -- Delete/Backspace fallback poll. 40 ms is faster than a frame at 30 FPS
