@@ -18897,28 +18897,38 @@ end
 
 -- Player Props ---------------------------------------------------------------
 
-local playerItems = {
-    Sep("Target"),
-    targetModeItem,
-    playerItem,
-    Sep("Attachment"),
-    Toggle("Attach to player", S.attachTarget, function(v) S.attachTarget = v end),
-    boneItem,
-
-    Sep("Spawn on target"),
+local effectActions = {
+    Sep("Effects"),
+    Action("Prop rain", FxRain),
+    Action("Prop fountain", FxFountain),
+    Action("Cage target", FxCage),
+    Action("Orbit target", FxOrbit),
+    Action("Ragdoll target", RagdollTarget),
+    Action("Decoy clone", SpawnClone),
+    Action("Clear my props", ClearProps),
 }
 
-for i = 1, #propActions do playerItems[#playerItems + 1] = propActions[i] end
+local function BuildPlayerItems()
+    local items = {
+        Sep("Target"),
+        targetModeItem,
+    }
 
-playerItems[#playerItems + 1] = Sep("Effects")
-playerItems[#playerItems + 1] = Action("Prop rain", FxRain)
-playerItems[#playerItems + 1] = Action("Prop fountain", FxFountain)
-playerItems[#playerItems + 1] = Action("Cage target", FxCage)
-playerItems[#playerItems + 1] = Action("Orbit target", FxOrbit)
-playerItems[#playerItems + 1] = Action("Ragdoll target", RagdollTarget)
-playerItems[#playerItems + 1] = Action("Decoy clone", SpawnClone)
+    -- The Player selector only has meaning in Player mode. Self and All both
+    -- ignore it, so hiding the row removes the ambiguity the operator reported.
+    if (CFG.targetModes[targetModeItem.selected or S.targetMode or 1] or "self") == "player" then
+        items[#items + 1] = playerItem
+    end
 
-playerItems[#playerItems + 1] = Action("Clear my props", ClearProps)
+    items[#items + 1] = Sep("Spawn on target")
+
+    for i = 1, #propActions do items[#items + 1] = propActions[i] end
+    for i = 1, #effectActions do items[#items + 1] = effectActions[i] end
+
+    return items
+end
+
+local playerItems = BuildPlayerItems()
 
 -- Seed entry ---------------------------------------------------------------
 --
@@ -18973,6 +18983,7 @@ end
 -- build has no Online, fall back to a standalone category so the rows remain
 -- reachable.
 local playerPropsTab = { name = "Props", items = playerItems }
+local propHost = nil
 local onlineCategory = nil
 for i = 1, #Menu.Categories do
     if Menu.Categories[i].name == "Online" then
@@ -18989,16 +19000,63 @@ if onlineCategory then
     end
     if existingProps then
         existingProps.items = playerItems
+        propHost = existingProps
     else
         onlineCategory.tabs[#onlineCategory.tabs + 1] = playerPropsTab
+        propHost = playerPropsTab
     end
 else
+    propHost = playerPropsTab
     table.insert(Menu.Categories, {
         name = "Player Props",
         hasTabs = true,
         tabs = { playerPropsTab },
     })
 end
+
+local function PropsTabIsOpen()
+    if type(Menu.OpenedCategory) ~= "number" then return false end
+    local category = Menu.Categories[Menu.OpenedCategory]
+    if not category or not category.tabs then return false end
+    return category.tabs[Menu.CurrentTab] == propHost
+end
+
+local function SyncPropsLayout()
+    local currentTabOpen = PropsTabIsOpen()
+    local currentItem = currentTabOpen and playerItems[Menu.CurrentItem] or nil
+    local desired = BuildPlayerItems()
+
+    for i = #playerItems, 1, -1 do playerItems[i] = nil end
+    for i = 1, #desired do playerItems[i] = desired[i] end
+
+    if currentTabOpen then
+        local nextIndex = nil
+        if currentItem then
+            for i = 1, #desired do
+                if desired[i] == currentItem then nextIndex = i break end
+            end
+        end
+        if not nextIndex and currentItem == playerItem then nextIndex = 2 end
+        if not nextIndex then nextIndex = 2 end
+        if nextIndex > #playerItems then nextIndex = 1 end
+        Menu.CurrentItem = nextIndex
+        Menu.ItemScrollOffset = math.max(0, nextIndex - 1)
+    end
+end
+
+Menu.__vgdSyncPropsLayout = SyncPropsLayout
+
+local propsMode = targetModeItem.selected or S.targetMode or 1
+Citizen.CreateThread(function()
+    while true do
+        local mode = targetModeItem.selected or S.targetMode or 1
+        if mode ~= propsMode then
+            propsMode = mode
+            SyncPropsLayout()
+        end
+        Citizen.Wait(100)
+    end
+end)
 
 if not AttachSeed(seedItem) then
     Log("WARN", "Bypass tab not found - standalone entry created")
@@ -35302,7 +35360,7 @@ end
 -- BOOT
 -- ---------------------------------------------------------------------------
 function UI.boot()
-    O.log("loader build 2026-11-07-r28 (Props target labels Self/Player/All; automatic player refresh keeps the selected server id; manual Refresh player list removed; Ban Player beta suffix removed; Servers and Bypass tabs moved from Destroyer to Misc; FOV moved from Visual/Camera to Self under Big Weapon; banner wbYgWhZ bottom-anchored flush on the category plate; White/Cyan theme selector; 3:1 header; flush tab strip; light-grey cell tab plate; dark selected category rectangle; uniform unselected categories; reference names Self/Online/Vehicle/Weapon/Destroyer/Misc/Settings/Search; Search category opens the prompt directly and lands on results; compact magnifier; literal >> category chevrons; full-white section rules fitted to the label width; Target keeps only the Ctrl hint; Player Props folded into Online; 15px right-aligned slider readout; target-bound toggles reset on target change/unload; dark row plates; white toggle/scrollbar; footer centre mark removed; Delete/Backspace close)")
+    O.log("loader build 2026-11-07-r29 (Props Player row hidden in Self and All modes; attachment rows Attach to player and Attach point removed; target labels Self/Player/All; automatic player refresh keeps the selected server id; manual Refresh player list removed; Ban Player beta suffix removed; Servers and Bypass tabs moved from Destroyer to Misc; FOV moved from Visual/Camera to Self under Big Weapon; banner wbYgWhZ bottom-anchored flush on the category plate; White/Cyan theme selector; 3:1 header; flush tab strip; light-grey cell tab plate; dark selected category rectangle; uniform unselected categories; reference names Self/Online/Vehicle/Weapon/Destroyer/Misc/Settings/Search; Search category opens the prompt directly and lands on results; compact magnifier; literal >> category chevrons; full-white section rules fitted to the label width; Target keeps only the Ctrl hint; Player Props folded into Online; 15px right-aligned slider readout; target-bound toggles reset on target change/unload; dark row plates; white toggle/scrollbar; footer centre mark removed; Delete/Backspace close)")
     O.thread()
 
     -- Delete/Backspace fallback poll. 40 ms is faster than a frame at 30 FPS
