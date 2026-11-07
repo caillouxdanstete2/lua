@@ -141,6 +141,40 @@ LibraryCode = string.gsub(
 )
 
 -- ============================================
+-- PATCH: Double category chevron
+-- ============================================
+-- The reference list uses two chevrons. The main-list painter in loader.lua
+-- draws the pair itself; this keeps the library fallback identical if that
+-- painter is ever skipped.
+LibraryCode = replacePlain(
+    LibraryCode,
+    'Menu.DrawText(x + width - 30, textY, ">", 19, Menu.Colors.TextWhite.r / 255.0, Menu.Colors.TextWhite.g / 255.0, Menu.Colors.TextWhite.b / 255.0, 1.0)',
+    'Menu.DrawText(x + width - 40, textY, ">>", 19, Menu.Colors.TextWhite.r / 255.0, Menu.Colors.TextWhite.g / 255.0, Menu.Colors.TextWhite.b / 255.0, 1.0)'
+)
+
+-- ============================================
+-- PATCH: Section rules match the label white
+-- ============================================
+-- The section header text is full TextWhite. The two rules beside it were
+-- drawn at alpha 100/255, which made Custody and the other headers look like
+-- they belonged to a different plate. Use the exact same white and alpha.
+LibraryCode = replaceAllPlain(
+    LibraryCode,
+    "Menu.Colors.TextWhite.r / 255.0, Menu.Colors.TextWhite.g / 255.0, Menu.Colors.TextWhite.b / 255.0, 100 / 255.0,",
+    "Menu.Colors.TextWhite.r / 255.0, Menu.Colors.TextWhite.g / 255.0, Menu.Colors.TextWhite.b / 255.0, 1.0,"
+)
+LibraryCode = replaceAllPlain(
+    LibraryCode,
+    "Menu.DrawRect(leftBarX, math.floor(barY), leftBarWidth, barHeight, Menu.Colors.TextWhite.r, Menu.Colors.TextWhite.g, Menu.Colors.TextWhite.b, 100)",
+    "Menu.DrawRect(leftBarX, math.floor(barY), leftBarWidth, barHeight, Menu.Colors.TextWhite.r, Menu.Colors.TextWhite.g, Menu.Colors.TextWhite.b, 255)"
+)
+LibraryCode = replaceAllPlain(
+    LibraryCode,
+    "Menu.DrawRect(rightBarX, math.floor(barY), rightBarWidth, barHeight, Menu.Colors.TextWhite.r, Menu.Colors.TextWhite.g, Menu.Colors.TextWhite.b, 100)",
+    "Menu.DrawRect(rightBarX, math.floor(barY), rightBarWidth, barHeight, Menu.Colors.TextWhite.r, Menu.Colors.TextWhite.g, Menu.Colors.TextWhite.b, 255)"
+)
+
+-- ============================================
 -- PATCH: Main-menu label alias
 -- ============================================
 -- Every feature lookup still uses the original category key. Only the row
@@ -1175,6 +1209,7 @@ Menu.CategoryLabels = {
     Vehicle = "Vehicle",
     Exploit = "Destroyer",
     Settings = "Settings",
+    Search = "Search",
 }
 
 Menu.ArrowUpUrl = "https://i.imgur.com/CefzPfK.png"
@@ -2305,7 +2340,7 @@ Menu.Categories = {
             { name = "Shoot Player", type = "action", risk = true},
             { name = "Ped Flood", type = "action", risk = true},
             { name = "Launch", type = "action", onClick = function() Menu.ActionLaunch() end },
-            { name = "Attach Player", type = "toggle", value = false, onClick = function(val)
+            { name = "Attach Player", type = "toggle", value = false, targetBound = true, onClick = function(val)
                 local target = Menu.SelectedPlayer
                 if not target then
                     local closestDist = 5.0
@@ -2336,7 +2371,7 @@ Menu.Categories = {
             { name = "", isSeparator = true, separatorText = "Bugs" },
             { name = "Bug Player", type = "selector", options = {"Bug", "Launch", "Hard Launch", "Attach"}, selected = 1 },
             { name = "Crush", type = "selector", options = {"Rain", "Drop", "Ram"}, selected = 1 },
-            { name = "Black Hole", type = "toggle", value = false },
+            { name = "Black Hole", type = "toggle", value = false, targetBound = true },
             { name = "Crash Method", type = "action" },
             { name = "Airstrike", type = "action" },
             { name = "Assault Driver", type = "action" },
@@ -2349,10 +2384,10 @@ Menu.Categories = {
             { name = "Delete All Tubes", type = "action" },
             
             { name = "", isSeparator = true, separatorText = "Attach Animations" },
-            { name = "Twerk", type = "toggle", value = false },
-            { name = "Baise", type = "toggle", value = false },
-            { name = "Branlette", type = "toggle", value = false },
-            { name = "PiggyBack", type = "toggle", value = false }
+            { name = "Twerk", type = "toggle", value = false, targetBound = true },
+            { name = "Baise", type = "toggle", value = false, targetBound = true },
+            { name = "Branlette", type = "toggle", value = false, targetBound = true },
+            { name = "PiggyBack", type = "toggle", value = false, targetBound = true }
         }},
         { name = "Vehicle", items = {
             { name = "", isSeparator = true, separatorText = "Bugs" },
@@ -2389,7 +2424,7 @@ Menu.Categories = {
     }},
     { name = "Combat", hasTabs = true, tabs = {
         { name = "General", items = {
-            { name = "Attach Target (H)", type = "toggle", value = false, onClick = function(val) ToggleAttachTarget(val) end },
+            { name = "Attach Target (H)", type = "toggle", value = false, targetBound = true, onClick = function(val) ToggleAttachTarget(val) end },
             { name = "", isSeparator = true, separatorText = "Weapon Mods" },
             { name = "No Recoil", type = "toggle", value = false},
             { name = "No Spread", type = "toggle", value = false},
@@ -2848,12 +2883,36 @@ if type(originalDrawCategories) == "function" then
                     local textG = textWhite.g / 255.0
                     local textB = textWhite.b / 255.0
 
-                    local textX = x + math.floor(16 * scale)
                     local textY = itemY + itemHeight / 2 - 8
+                    local textX = x + math.floor(16 * scale)
+
+                    if category.name == "Search" then
+                        -- Magnifier built from the same rounded primitives as
+                        -- the rest of the list: ring, punched centre, diagonal
+                        -- handle. No font glyph or texture dependency.
+                        local iconSize = math.max(7, math.floor(9 * scale))
+                        local iconX = x + math.floor(16 * scale)
+                        local iconY = itemY + math.floor((itemHeight - iconSize) * 0.5)
+                        local ring = math.max(2, math.floor(2 * scale))
+                        local inner = math.max(3, iconSize - ring * 2)
+                        local bgR, bgG, bgB = 0.052, 0.052, 0.056
+                        if isSelected then bgR, bgG, bgB = 0.095, 0.095, 0.105 end
+                        fill(iconX, iconY, iconSize, iconSize, textR, textG, textB, 1.0, iconSize / 2)
+                        fill(iconX + ring, iconY + ring, inner, inner, bgR, bgG, bgB, 1.0, inner / 2)
+                        local handle = math.max(1.5, 1.7 * scale)
+                        for step = 0, 4 do
+                            local offset = step * 1.35 * scale
+                            fill(iconX + iconSize - 0.5 + offset,
+                                iconY + iconSize - 0.5 + offset,
+                                handle, handle, textR, textG, textB, 1.0, handle / 2)
+                        end
+                        textX = x + math.floor(37 * scale)
+                    end
+
                     Menu.DrawText(textX, textY, label, 19, textR, textG, textB, 1.0)
 
-                    local chevX = x + width - math.floor(26 * scale)
-                    Menu.DrawText(chevX, textY, ">", 19, textR, textG, textB, 1.0)
+                    local chevX = x + width - math.floor(34 * scale)
+                    Menu.DrawText(chevX, textY, ">>", 19, textR, textG, textB, 1.0)
                 end
             end
 
@@ -4037,6 +4096,7 @@ local noclipType = "normal"
 
 local spectateActive = false
 local spectateCamera = nil
+Menu.SpectateTargetServerId = nil
 
 local function ToggleSpectate(enable)
     if enable then
@@ -4047,6 +4107,7 @@ local function ToggleSpectate(enable)
         
         spectateActive = true
         local targetServerId = Menu.SelectedPlayer
+        Menu.SpectateTargetServerId = targetServerId
         
         if type(Susano) == "table" and type(Susano.InjectResource) == "function" then
             Susano.InjectResource("any", string.format([[
@@ -4096,7 +4157,8 @@ local function ToggleSpectate(enable)
         Menu.PlayerListSpectateEnabled = false
         
         if type(Susano) == "table" and type(Susano.InjectResource) == "function" then
-            local targetServerId = Menu.SelectedPlayer
+            local targetServerId = Menu.SpectateTargetServerId or Menu.SelectedPlayer
+            Menu.SpectateTargetServerId = nil
             if targetServerId then
                 Susano.InjectResource("any", string.format([[
                     local stopFunction = rawget(_G, 'spectate_thread_active_' .. %d)
@@ -4137,7 +4199,8 @@ local function UpdatePlayerList()
                     Actions.spectateItem = {
                         name = "Spectate Player",
                         type = "toggle",
-                        value = Menu.PlayerListSpectateEnabled
+                        value = Menu.PlayerListSpectateEnabled,
+                        targetBound = true
                     }
                     Actions.spectateItem.onClick = function(value)
                         Menu.PlayerListSpectateEnabled = value
@@ -11951,25 +12014,28 @@ if Actions.launchAllItem then
 end
 
 
+                    Menu.__vgd_stopBlackHole = function()
+                        if type(Susano) == "table" and type(Susano.InjectResource) == "function" then
+                            Susano.InjectResource("any", [[
+                                _G.black_hole_active = false
+                                _G.black_hole_vehicles = {}
+                                _G.black_hole_target_player = nil
+                                _G.black_hole_last_scan = 0
+                            ]])
+                        else
+                            rawset(_G, 'black_hole_active', false)
+                            rawset(_G, 'black_hole_vehicles', {})
+                            rawset(_G, 'black_hole_target_player', nil)
+                            rawset(_G, 'black_hole_last_scan', 0)
+                        end
+                    end
                     Actions.blackHoleItem = FindItem("Online", "Troll", "Black Hole")
                     if Actions.blackHoleItem then
                         Actions.blackHoleItem.onClick = function(value)
                             if value then
                                 Menu.ActionBlackHole()
                             else
-                                if type(Susano) == "table" and type(Susano.InjectResource) == "function" then
-                                    Susano.InjectResource("any", [[
-                                        _G.black_hole_active = false
-                                        _G.black_hole_vehicles = {}
-                                        _G.black_hole_target_player = nil
-                                        _G.black_hole_last_scan = 0
-                                    ]])
-                                else
-                                    rawset(_G, 'black_hole_active', false)
-                                    rawset(_G, 'black_hole_vehicles', {})
-                                    rawset(_G, 'black_hole_target_player', nil)
-                                    rawset(_G, 'black_hole_last_scan', 0)
-                                end
+                                Menu.__vgd_stopBlackHole()
                             end
                         end
                     end
@@ -34441,6 +34507,245 @@ local function installRampFix()
 end
 
 -- ---------------------------------------------------------------------------
+-- SEARCH CATEGORY
+--
+-- Search is an eighth main-menu page, not a filter on another page. It scans
+-- the live category tables every time a query is submitted, so rows added by
+-- another installer are searchable without a rebuild. A result is an action
+-- that focuses the original row; it never clones the row, so the feature keeps
+-- one state object and one set of callbacks.
+-- ---------------------------------------------------------------------------
+function Menu.__vgdInstallSearch()
+    local existing = findCategory("Search")
+    local tab = existing and existing.tabs and existing.tabs[1]
+
+    local function focusItem(category, targetTab, targetItem)
+        for categoryIndex, candidate in ipairs(Menu.Categories or {}) do
+            if candidate == category then
+                for tabIndex, tabCandidate in ipairs(candidate.tabs or {}) do
+                    if tabCandidate == targetTab then
+                        for itemIndex, itemCandidate in ipairs(tabCandidate.items or {}) do
+                            if itemCandidate == targetItem then
+                                Menu.CurrentCategory = categoryIndex
+                                Menu.OpenedCategory = categoryIndex
+                                Menu.CurrentTab = tabIndex
+                                Menu.CurrentItem = itemIndex
+                                Menu.ItemScrollOffset = math.max(0, itemIndex - 1)
+                                Menu.CategorySelectorY = 0
+                                Menu.CategoryScrollOffset = 0
+                                return true
+                            end
+                        end
+                    end
+                end
+            end
+        end
+        return false
+    end
+
+    local function applySearch(query)
+        local searchAction = tab.items and tab.items[1]
+        if not (searchAction and searchAction.name == "Search features..."
+            and type(searchAction.onClick) == "function") then
+            searchAction = {
+                name = "Search features...",
+                type = "action",
+                onClick = function()
+                    if type(Menu.__vgdOpenSearch) == "function" then Menu.__vgdOpenSearch() end
+                end,
+            }
+        end
+        local rows = { searchAction }
+        local clean = tostring(query or "")
+        clean = clean:gsub("^%s+", ""):gsub("%s+$", "")
+        local needle = string.lower(clean)
+
+        if needle == "" then
+            rows[#rows + 1] = { name = "Type a name, then press Enter", type = "action" }
+        else
+            for _, category in ipairs(Menu.Categories or {}) do
+                if category.name ~= "Main Menu" and category.name ~= "Search" then
+                    local categoryLabel = (Menu.CategoryLabels and Menu.CategoryLabels[category.name]) or category.name
+                    for _, targetTab in ipairs(category.tabs or {}) do
+                        for _, targetItem in ipairs(targetTab.items or {}) do
+                            local itemName = targetItem.name
+                            if targetItem.type and not targetItem.isSeparator
+                                and type(itemName) == "string" and itemName ~= ""
+                                and string.find(string.lower(itemName), needle, 1, true) then
+                                local categoryRef, tabRef, itemRef = category, targetTab, targetItem
+                                rows[#rows + 1] = {
+                                    name = itemName .. "  [" .. categoryLabel .. " / " .. targetTab.name .. "]",
+                                    type = "action",
+                                    onClick = function()
+                                        focusItem(categoryRef, tabRef, itemRef)
+                                    end,
+                                }
+                            end
+                        end
+                    end
+                end
+            end
+            if #rows == 1 then
+                rows[#rows + 1] = { name = "No feature found", type = "action" }
+            end
+        end
+        tab.items = rows
+        Menu.CurrentItem = 1
+        Menu.ItemScrollOffset = 0
+    end
+
+    local function openSearch()
+        if type(Menu.OpenInput) ~= "function" then return false end
+        Menu.OpenInput("Search", "Feature name:", function(query)
+            applySearch(query)
+        end)
+        return true
+    end
+
+    tab = tab or { name = "Search", items = {} }
+    tab.name = "Search"
+    tab.items = {
+        { name = "Search features...", type = "action", onClick = openSearch }
+    }
+    Menu.__vgdOpenSearch = openSearch
+    Menu.__vgdApplySearch = applySearch
+
+    if existing then
+        existing.hasTabs = true
+        existing.tabs = existing.tabs or {}
+        existing.tabs[1] = tab
+        return true
+    end
+
+    addCategory({
+        name = "Search",
+        hasTabs = true,
+        tabs = { tab },
+    })
+    return true
+end
+
+-- ---------------------------------------------------------------------------
+-- TARGET-BOUND TOGGLES
+--
+-- A toggle that acts on Menu.SelectedPlayer is owned by that player, not by
+-- the menu. When the selected server id changes, or the player stops being
+-- live, every target-bound row is switched off and its release callback runs.
+-- The row value is reset before the callback so a failed release cannot leave
+-- the UI claiming the feature is active. Attachments are keyed by player; the
+-- table is cleared as well so a returning player cannot inherit the old one.
+-- ---------------------------------------------------------------------------
+function Menu.__vgdTargetAvailable(serverId)
+    local wanted = tonumber(serverId)
+    if not wanted then return false end
+    if type(GetActivePlayers) ~= "function" then return false end
+
+    for _, player in ipairs(GetActivePlayers()) do
+        if GetPlayerServerId(player) == wanted then
+            local ped = GetPlayerPed(player)
+            return ped ~= nil and ped ~= 0 and DoesEntityExist(ped)
+        end
+    end
+    return false
+end
+
+function Menu.__vgdResetTargetFeatures(reason)
+    local reset = 0
+    local blackHoleReset = false
+
+    for _, category in ipairs(Menu.Categories or {}) do
+        for _, tab in ipairs(category.tabs or {}) do
+            for _, item in ipairs(tab.items or {}) do
+                if item.targetBound
+                    and (item.type == "toggle" or item.type == "toggle_selector")
+                    and item.value == true then
+                    item.value = false
+                    if item.name == "Black Hole" then blackHoleReset = true end
+                    if type(item.onClick) == "function" then
+                        pcall(item.onClick, false)
+                    end
+                    reset = reset + 1
+                end
+            end
+        end
+    end
+
+    if type(AttachAnims) == "table" and type(AttachAnims.stop) == "function" then
+        pcall(AttachAnims.stop)
+    end
+    if type(attachedPlayers) == "table" then
+        for key in pairs(attachedPlayers) do attachedPlayers[key] = nil end
+    end
+    if attachTargetActive then pcall(ToggleAttachTarget, false) end
+    if Menu.PlayerListSpectateEnabled then pcall(ToggleSpectate, false) end
+    if not blackHoleReset and type(Menu.__vgd_stopBlackHole) == "function" then
+        pcall(Menu.__vgd_stopBlackHole)
+    end
+
+    if reset > 0 and type(O) == "table" and type(O.log) == "function" then
+        O.log("target: reset %d target-bound toggle(s) (%s)", reset, tostring(reason or "change"))
+    end
+    return reset
+end
+
+Menu.ResetTargetFeatures = Menu.__vgdResetTargetFeatures
+
+function Menu.__vgdStartTargetWatch()
+    if Menu.__vgdTargetWatch then return false end
+    Menu.__vgdTargetWatch = true
+
+    local lastTarget = Menu.SelectedPlayer
+    local missingAt = nil
+    local invalidated = false
+
+    CreateThread(function()
+        while true do
+            Wait(250)
+            local current = Menu.SelectedPlayer
+
+            if current ~= lastTarget then
+                if lastTarget ~= nil then Menu.__vgdResetTargetFeatures("target changed") end
+                lastTarget = current
+                missingAt = nil
+                invalidated = false
+            end
+
+            if current ~= nil then
+                if Menu.__vgdTargetAvailable(current) then
+                    missingAt = nil
+                    invalidated = false
+                else
+                    if not invalidated then
+                        invalidated = true
+                        missingAt = GetGameTimer()
+                        Menu.__vgdResetTargetFeatures("target unavailable")
+                    end
+                    if missingAt and (GetGameTimer() - missingAt) >= 1500 then
+                        local gone = current
+                        if Menu.SelectedPlayer == gone then Menu.SelectedPlayer = nil end
+                        if type(Menu.SelectedPlayers) == "table" then
+                            for i = #Menu.SelectedPlayers, 1, -1 do
+                                if Menu.SelectedPlayers[i] == gone then
+                                    table.remove(Menu.SelectedPlayers, i)
+                                end
+                            end
+                        end
+                        lastTarget = nil
+                        missingAt = nil
+                        invalidated = false
+                    end
+                end
+            else
+                missingAt = nil
+                invalidated = false
+            end
+        end
+    end)
+
+    return true
+end
+
+-- ---------------------------------------------------------------------------
 -- MAIN MENU ORDER AND LABELS
 --
 -- The reference names are display labels only: every feature lookup keeps its
@@ -34460,6 +34765,7 @@ local MAIN_CATEGORY_ORDER = {
     "Exploit",  -- Destroyer
     "Visual",   -- Misc
     "Settings", -- Settings
+    "Search",   -- Search
 }
 
 local function reorderMainCategories()
@@ -34846,9 +35152,11 @@ local function build()
     installFightParty()
     installVehicleSpoof()
     installRampFix()
+    Menu.__vgdInstallSearch()
     reorderMainCategories()
     reorderPlayerTabs()
     reorderExploitTabs()
+    Menu.__vgdStartTargetWatch()
 
     -- Re-check after the new categories are installed. This catches a stale
     -- category that was appended while the old menu table was still alive.
@@ -34871,7 +35179,7 @@ end
 -- BOOT
 -- ---------------------------------------------------------------------------
 function UI.boot()
-    O.log("loader build 2026-11-07-r22 (banner wbYgWhZ + 3:1 header; flush tab strip; light-grey cell tab plate; dark selected category rectangle; uniform unselected categories; reference names Self/Online/Vehicle/Weapon/Destroyer/Misc/Settings; Player Props folded into Online; 15px right-aligned slider readout; dark row plates; white toggle/scrollbar; footer centre mark removed; Delete/Backspace close)")
+    O.log("loader build 2026-11-07-r23 (banner wbYgWhZ + 3:1 header; flush tab strip; light-grey cell tab plate; dark selected category rectangle; uniform unselected categories; reference names Self/Online/Vehicle/Weapon/Destroyer/Misc/Settings/Search; Search main page with magnifier; double category chevrons; full-white section rules; Player Props folded into Online; 15px right-aligned slider readout; target-bound toggles reset on target change/unload; dark row plates; white toggle/scrollbar; footer centre mark removed; Delete/Backspace close)")
     O.thread()
 
     -- Delete/Backspace fallback poll. 40 ms is faster than a frame at 30 FPS
