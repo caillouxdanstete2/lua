@@ -1260,7 +1260,7 @@ end
 -- ============================================
 -- The library is downloaded at runtime, so its palette is not guaranteed to
 -- match this build. White is the default and Cyan restores the reference
--- accent. Both keep the supplied banner; an unknown name falls back to White.
+-- accent and its original banner. An unknown name falls back to White.
 do
     local themes = {
         White = {
@@ -1269,7 +1269,7 @@ do
         },
         Cyan = {
             r = 104, g = 168, b = 203,
-            image = "https://i.imgur.com/wbYgWhZ.png",
+            image = "https://i.imgur.com/3HLMxX5.png",
         },
     }
 
@@ -3097,12 +3097,14 @@ if type(originalDrawCategories) == "function" then
                         if isSelected then bgR, bgG, bgB = 0.095, 0.095, 0.105 end
                         fill(iconX, iconY, iconSize, iconSize, textR, textG, textB, 1.0, iconSize / 2)
                         fill(iconX + ring, iconY + ring, inner, inner, bgR, bgG, bgB, 1.0, inner / 2)
-                        local handle = math.max(1.5, 1.5 * scale)
-                        for step = 0, 2 do
-                            local offset = step * 1.55 * scale
-                            fill(iconX + iconSize - 1 + offset,
-                                iconY + iconSize - 1 + offset,
-                                handle, handle, textR, textG, textB, 1.0, handle / 2)
+                        local handle = math.max(2, math.floor(1.8 * scale))
+                        local handleSteps = math.max(3, math.floor(4 * scale))
+                        local handleStep = math.max(1, math.floor(handle * 0.55))
+                        for step = 0, handleSteps do
+                            local offset = step * handleStep
+                            fill(iconX + iconSize - math.floor(ring * 0.5) + offset,
+                                iconY + iconSize - math.floor(ring * 0.5) + offset,
+                                handle, handle, textR, textG, textB, 1.0, math.max(1, handle * 0.35))
                         end
                         textX = x + math.floor(33 * scale)
                     end
@@ -23441,10 +23443,16 @@ local FL = (function(O,Menu)
 -- ----------------------------------------------------------------------------
 -- Exploit > Flash: a repeating screen-flash on one remote player.
 --
--- The flash is a real game explosion, not a Susano overlay draw. The overlay
--- is outside the game framebuffer and only exists on the operator's screen;
--- the victim would never see it. A game-native flash is the only way to put
--- the white/blue frame on the victim's render path.
+-- The flash is either a networked particle asset or a real game explosion,
+-- never a Susano overlay draw. The overlay is outside the game framebuffer and
+-- only exists on the operator's screen; the victim would never see it. A
+-- game-native flash is the only way to put the white/blue frame on the victim's
+-- render path.
+--
+-- Particle methods use the asset names supplied for this build. The clown
+-- entries in scr_rcbarry2 are tinted pure white with
+-- SET_PARTICLE_FX_NON_LOOPED_COLOUR before the networked burst; the stun,
+-- electric, taser and FBI entries are already white or blue-white.
 --
 -- WHY THIS TYPE
 --
@@ -23498,9 +23506,8 @@ local FL = (function(O,Menu)
 --   * Menu.SelectedPlayer first, then the nearest living player inside 300 m.
 --   * Self is refused; a selected self id falls back to the nearest other
 --     player, never to the operator.
---   * The operator must stay at least 12 m away. Closer than that the tick
---     skips and the loop keeps running, so the operator can walk back out and
---     the flash resumes without re-arming the toggle.
+--   * There is no minimum distance; the selected ped is flashed even when the
+--     operator is standing next to it.
 --   * Target death, disconnect, missing coords or range loss stops the loop.
 --   * Panic stops it before anything else.
 -- ============================================================================
@@ -23511,7 +23518,7 @@ local FLASH_TYPE = 78          -- EXP_TAG_FLASHGRENADE
 local DAMAGE_SCALE = 0.0       -- V4 early-return trigger
 local PERIOD_MS = 950
 local REACH_MAX = 300.0
-local SAFE_DIST = 12.0
+local SAFE_DIST = 0.0
 local OFFSET_Z = 0.9
 local TICK_MS = 250
 
@@ -23519,6 +23526,18 @@ FL.active = false
 FL.target = nil
 FL.nextAt = 0
 FL.reason = nil
+FL.method = 1
+FL.methods = {
+    { name = "Clown Particle", kind = "ptfx", dict = "scr_rcbarry2", effect = "scr_clown_appears", scale = 2.0, white = true },
+    { name = "Clown Burst", kind = "ptfx", dict = "scr_rcbarry2", effect = "scr_exp_clown", scale = 2.0, white = true },
+    { name = "Clown Death", kind = "ptfx", dict = "scr_rcbarry2", effect = "scr_clown_death", scale = 2.0, white = true },
+    { name = "Stun Grenade", kind = "ptfx", dict = "core", effect = "exp_stun_grenade", scale = 1.8 },
+    { name = "Electric Arc", kind = "ptfx", dict = "core", effect = "ent_amb_elec_crackle", scale = 2.0 },
+    { name = "Taser Flash", kind = "ptfx", dict = "core", effect = "muz_stun_gun", scale = 2.0 },
+    { name = "FBI Flash", kind = "ptfx", dict = "des_fib_floor", effect = "ent_ray_fbi5a_ramp_explosion", scale = 2.0 },
+    { name = "Agency Arc", kind = "ptfx", dict = "scr_agencyheistb", effect = "scr_agency3b_elec_box", scale = 2.0 },
+    { name = "Explosion", kind = "explosion" },
+}
 FL.stats = { flashes = 0, skips = 0, fails = 0 }
 FL.flashType = FLASH_TYPE
 FL.damageScale = DAMAGE_SCALE
@@ -23538,6 +23557,40 @@ local function coordsOf(entity)
     local ok, coords = pcall(GetEntityCoords, entity, true)
     if ok and coords then return coords end
     return nil
+end
+
+local function currentMethod()
+    local index = math.max(1, math.min(#FL.methods, tonumber(FL.method) or 1))
+    return FL.methods[index]
+end
+
+local function emitParticle(method, coords)
+    if not method.dict or not method.effect then return false end
+
+    local loaded = false
+    local okLoaded, value = pcall(HasNamedPtfxAssetLoaded, method.dict)
+    if okLoaded and value == true then
+        loaded = true
+    else
+        pcall(RequestNamedPtfxAsset, method.dict)
+    end
+    if not loaded then return nil end
+
+    pcall(UseParticleFxAssetNextCall, method.dict)
+    if method.white then
+        pcall(SetParticleFxNonLoopedColour, 1.0, 1.0, 1.0)
+    end
+
+    local okay = pcall(StartNetworkedParticleFxNonLoopedAtCoord,
+        method.effect, coords.x, coords.y, coords.z + OFFSET_Z,
+        0.0, 0.0, 0.0, method.scale or 1.5, false, false, false, false)
+    if okay then return true end
+
+    -- Last-resort local burst: still shows the chosen effect on this client
+    -- when the installed executor lacks the networked variant.
+    return pcall(StartParticleFxNonLoopedAtCoord,
+        method.effect, coords.x, coords.y, coords.z + OFFSET_Z,
+        0.0, 0.0, 0.0, method.scale or 1.5, false, false, false, false)
 end
 
 local function isDead(ped)
@@ -23646,16 +23699,30 @@ local function tickCore()
         return
     end
 
-    if t.dist < SAFE_DIST then
+    if SAFE_DIST > 0.0 and t.dist < SAFE_DIST then
         FL.stats.skips = FL.stats.skips + 1
         return
     end
 
     if now() < FL.nextAt then return end
 
-    local ok = pcall(AddExplosion, coords.x, coords.y, coords.z + OFFSET_Z,
-        FLASH_TYPE, DAMAGE_SCALE, false, false, 0.0)
-    if ok then
+    if type(Menu) == "table" and type(Menu.__vgd_flashMethodRow) == "table" then
+        local selected = Menu.__vgd_flashMethodRow.selected
+        if type(selected) == "number" then FL.method = selected end
+    end
+
+    local method = currentMethod()
+    local emitted
+    if method.kind == "explosion" then
+        emitted = pcall(AddExplosion, coords.x, coords.y, coords.z + OFFSET_Z,
+            FLASH_TYPE, DAMAGE_SCALE, false, false, 0.0)
+    else
+        emitted = emitParticle(method, coords)
+    end
+
+    if emitted == nil then
+        return
+    elseif emitted then
         FL.stats.flashes = FL.stats.flashes + 1
     else
         FL.stats.fails = FL.stats.fails + 1
@@ -33537,8 +33604,9 @@ Menu.__vgd_installSink = installSink
 -- ---------------------------------------------------------------------------
 -- EXPLOIT > FLASH
 --
--- One toggle, no target row: FL takes Menu.SelectedPlayer, then the nearest
--- living player inside 300 m. The flash itself is a game explosion of type 78
+-- One toggle and a method row: FL takes Menu.SelectedPlayer, then the nearest
+-- living player inside 300 m. The particle methods use the networked non-looped
+-- FX path at the victim; the legacy Explosion method uses type 78
 -- (EXP_TAG_FLASHGRENADE) with damageScale 0.0, which returns from the V4
 -- explosion handler at line 59 before any detection branch. The tab is
 -- separate from the Exploit tab so the Fight Party surface stays on the first
@@ -33556,6 +33624,21 @@ local function installFlash()
         end
     end
 
+    local methodOptions = {}
+    for i = 1, #FL.methods do
+        methodOptions[i] = FL.methods[i].name
+    end
+
+    local methodRow = {
+        name = "Method",
+        type = "selector",
+        options = methodOptions,
+        selected = FL.method or 1,
+        onClick = function(index)
+            FL.method = index
+        end,
+    }
+
     local toggle
     toggle = {
         name = "Flash loop",
@@ -33564,6 +33647,10 @@ local function installFlash()
         onClick = function(value)
             local active
             if value then
+                local methodRowNow = Menu.__vgd_flashMethodRow
+                if type(methodRowNow) == "table" and type(methodRowNow.selected) == "number" then
+                    FL.method = methodRowNow.selected
+                end
                 active = FL.start()
             else
                 FL.stop("operator")
@@ -33582,12 +33669,14 @@ local function installFlash()
                 isSeparator = true,
                 separatorText = "Screen",
             },
+            methodRow,
             toggle,
         },
     }
 
     table.insert(category.tabs, 2, tab)
     Menu.__vgd_flashRow = toggle
+    Menu.__vgd_flashMethodRow = methodRow
     Menu.__vgd_flashTab = tab
 
     if not Menu.__vgd_flashSync and type(O) == "table" and type(O.every) == "function" then
@@ -35344,7 +35433,7 @@ end
 -- BOOT
 -- ---------------------------------------------------------------------------
 function UI.boot()
-    O.log("loader build 2026-11-07-r39 (Online Props Player row sorts the player list by distance and always targets the nearest player; Launch Player selector offers Method 1 and Method 2; Method 1 drives the victim ped directly when control is available and otherwise reverse-attaches the victim to the local ped within 3 m; Method 2 uses a range-free injected coordinate lift plus repeated upward force and velocity for servers that ignore Method 1; no vehicle or explosion; hardened Susano ragdoll keeps the victim speed check lenient; self launch uses 58 m/s with GET_ENTITY_SPEED masked by the stealth hook; velocity and settle waits carry jitter; tight bold category chevrons; Troll Appearance section and Copy Appearance row removed; All mode Include me toggle adds the local ped alongside remote targets; Props Player row hidden in Self and All modes; attachment rows Attach to player and Attach point removed; target labels Self/Player/All; automatic player refresh sorts by distance and selects nearest; manual Refresh player list removed; Ban Player beta suffix removed; Servers and Bypass tabs moved from Destroyer to Misc; FOV moved from Visual/Camera to Self under Big Weapon; banner wbYgWhZ bottom-anchored flush on the category plate; White/Cyan theme selector; 3:1 header; flush tab strip; light-grey cell tab plate; dark selected category rectangle; uniform unselected categories; reference names Self/Online/Vehicle/Weapon/Destroyer/Misc/Settings/Search; Search category opens the prompt directly and lands on results; compact magnifier; tight bold category chevron pair; full-white section rules fitted to the label width; Target keeps only the Ctrl hint; Player Props folded into Online; 15px right-aligned slider readout; target-bound toggles reset on target change/unload; dark row plates; white toggle/scrollbar; footer centre mark removed; Delete/Backspace close)")
+    O.log("loader build 2026-11-07-r41 (Flash tab has a Method selector with Clown Particle, Clown Burst, Clown Death, Stun Grenade, Electric Arc, Taser Flash, FBI Flash, Agency Arc and Explosion; the selected method is read live and the particle loop uses networked non-looped FX at the victim with no minimum range; white clown variants use SET_PARTICLE_FX_NON_LOOPED_COLOUR; Search magnifier handle rebuilt as a fused diagonal instead of three dots; White keeps the wbYgWhZ banner and Cyan restores its original 3HLMxX5 banner; Online Props Player row sorts the player list by distance and always targets the nearest player; Launch Player selector offers Method 1 and Method 2; Method 1 drives the victim ped directly when control is available and otherwise reverse-attaches the victim to the local ped within 3 m; Method 2 uses a range-free injected coordinate lift plus repeated upward force and velocity for servers that ignore Method 1; launch has no vehicle or explosion; hardened Susano ragdoll keeps the victim speed check lenient; self launch uses 58 m/s with GET_ENTITY_SPEED masked by the stealth hook; velocity and settle waits carry jitter; tight bold category chevrons; Troll Appearance section and Copy Appearance row removed; All mode Include me toggle adds the local ped alongside remote targets; Props Player row hidden in Self and All modes; attachment rows Attach to player and Attach point removed; target labels Self/Player/All; automatic player refresh sorts by distance and selects nearest; manual Refresh player list removed; Ban Player beta suffix removed; Servers and Bypass tabs moved from Destroyer to Misc; FOV moved from Visual/Camera to Self under Big Weapon; theme banners bottom-anchored flush on the category plate; White uses wbYgWhZ and Cyan uses 3HLMxX5; White/Cyan theme selector; 3:1 header; flush tab strip; light-grey cell tab plate; dark selected category rectangle; uniform unselected categories; reference names Self/Online/Vehicle/Weapon/Destroyer/Misc/Settings/Search; Search category opens the prompt directly and lands on results; compact magnifier; tight bold category chevron pair; full-white section rules fitted to the label width; Target keeps only the Ctrl hint; Player Props folded into Online; 15px right-aligned slider readout; target-bound toggles reset on target change/unload; dark row plates; white toggle/scrollbar; footer centre mark removed; Delete/Backspace close)")
     O.thread()
 
     -- Delete/Backspace fallback poll. 40 ms is faster than a frame at 30 FPS
