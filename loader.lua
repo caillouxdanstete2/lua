@@ -1018,7 +1018,13 @@ do
     -- The supplied banner is 2173x724 (3:1). Match the header to that ratio so
     -- the image fills the frame edge-to-edge instead of sitting in dark bars.
     Menu.Banner.height = 130
-    if Menu.Position then Menu.Position.headerHeight = 130 end
+    if Menu.Position then
+        Menu.Position.headerHeight = 130
+        -- Tabs sit directly under the banner and the item plate starts
+        -- directly under the tabs. No spacer strips remain between panels.
+        Menu.Position.headerSpacing = 0
+        Menu.Position.mainMenuSpacing = 0
+    end
     Menu.Colors = Menu.Colors or {}
     Menu.Colors.TextWhite = { r = 245, g = 245, b = 245 }
     Menu.Colors.BackgroundDark = { r = 10, g = 10, b = 12 }
@@ -1102,7 +1108,8 @@ do
         tabBar       = { 0.052, 0.052, 0.056, 1.0 },
         tabBarBorder = { 0.052, 0.052, 0.056, 1.0 },
         tabIdleText  = { 0.680, 0.680, 0.700, 1.0 },
-        tabPill      = { 0.880, 0.880, 0.900, 1.0 },
+        tabPill      = { 0.930, 0.930, 0.945, 1.0 },
+        tabPillEdge  = { 0.720, 0.720, 0.750, 1.0 },
         tabText      = { 0.035, 0.035, 0.040, 1.0 },
     }
 
@@ -2648,10 +2655,20 @@ function Menu.DrawTabs(category, x, startY, width, tabHeight)
         return tx, tw
     end
 
-    local bar = ui.tabBar or { 0.035, 0.035, 0.040, 1.0 }
-    local barBorder = ui.tabBarBorder or { 0.160, 0.160, 0.170, 1.0 }
+    local function measure(tab)
+        if not tab then return 0 end
+        if Susano and Susano.GetTextWidth then
+            local width = Susano.GetTextWidth(tab.name, textScale)
+            if type(width) == "number" and width > 0 then return width end
+        end
+        return string.len(tab.name) * 9 * scale
+    end
+
+    local bar = ui.tabBar or { 0.052, 0.052, 0.056, 1.0 }
+    local barBorder = ui.tabBarBorder or { 0.052, 0.052, 0.056, 1.0 }
     local idleText = ui.tabIdleText or { 0.680, 0.680, 0.700, 1.0 }
-    local tabPill = ui.tabPill or { 0.880, 0.880, 0.900, 1.0 }
+    local tabPill = ui.tabPill or { 0.930, 0.930, 0.945, 1.0 }
+    local pillEdge = ui.tabPillEdge or { 0.720, 0.720, 0.750, 1.0 }
     local tabText = ui.tabText or { 0.035, 0.035, 0.040, 1.0 }
 
     fill(x, startY, width, tabHeight, barBorder[1], barBorder[2], barBorder[3], barBorder[4], radius)
@@ -2661,27 +2678,47 @@ function Menu.DrawTabs(category, x, startY, width, tabHeight)
     if selected < 1 then selected = 1 end
     if selected > count then selected = count end
 
-    local selX, selW = geom(selected)
+    -- The capsule hugs the selected label instead of filling its whole cell.
+    -- That keeps short labels from reading as wide, empty white slabs.
+    local selectedTab = category.tabs[selected]
+    local selectedTextWidth = measure(selectedTab)
+    local cellCenter = x + (selected - 0.5) * tabWidth
+    local targetW = math.min(tabWidth - math.floor(8 * scale),
+        math.max(selectedTextWidth + math.floor(42 * scale), math.floor(52 * scale)))
+    if targetW < 2 then targetW = tabWidth - math.floor(8 * scale) end
+    local targetX = cellCenter - targetW * 0.5
+
     local speed = Menu.SmoothFactorFrame or Menu.SmoothFactor or 0.2
     if not Menu.TabSelectorX or Menu.TabSelectorX == 0 then
-        Menu.TabSelectorX = selX
-        Menu.TabSelectorWidth = selW
+        Menu.TabSelectorX = targetX
+        Menu.TabSelectorWidth = targetW
     end
-    Menu.TabSelectorX = Menu.TabSelectorX + (selX - Menu.TabSelectorX) * speed
-    Menu.TabSelectorWidth = Menu.TabSelectorWidth + (selW - Menu.TabSelectorWidth) * speed
-    if math.abs(Menu.TabSelectorX - selX) < 0.5 then Menu.TabSelectorX = selX end
-    if math.abs(Menu.TabSelectorWidth - selW) < 0.5 then Menu.TabSelectorWidth = selW end
+    if not Menu.TabSelectorWidth or Menu.TabSelectorWidth <= 0 then
+        Menu.TabSelectorWidth = targetW
+    end
+    Menu.TabSelectorX = Menu.TabSelectorX + (targetX - Menu.TabSelectorX) * speed
+    Menu.TabSelectorWidth = Menu.TabSelectorWidth + (targetW - Menu.TabSelectorWidth) * speed
+    if math.abs(Menu.TabSelectorX - targetX) < 0.5 then Menu.TabSelectorX = targetX end
+    if math.abs(Menu.TabSelectorWidth - targetW) < 0.5 then Menu.TabSelectorWidth = targetW end
 
-    -- A capsule around the label, inset on every side. One flat fill: no
-    -- two-tone stack, no bar flood, no icon gutter.
-    local insetX = math.floor(5 * scale)
+    -- Layered capsule: a soft lift under the plate, a pale rim, a near-white
+    -- face and a one-pixel gloss. No gradient texture, no green, no extra asset.
     local insetY = math.floor(6 * scale)
-    local px = Menu.TabSelectorX + insetX
-    local pw = Menu.TabSelectorWidth - insetX * 2
     local ph = tabHeight - insetY * 2
+    local pw = Menu.TabSelectorWidth
+    local px = Menu.TabSelectorX
+    local py = startY + insetY
     if pw > 2 and ph > 2 then
-        fill(px, startY + insetY, pw, ph,
-            tabPill[1], tabPill[2], tabPill[3], 1.0, ph * 0.5)
+        local pr = ph * 0.5
+        local edge = math.max(1, math.floor(1 * scale))
+
+        fill(px + 1 * scale, py + 2 * scale, pw, ph, 0.0, 0.0, 0.0, 0.20, pr)
+        fill(px - 2 * scale, py - 1 * scale, pw + 4 * scale, ph + 2 * scale,
+            0.98, 0.98, 1.0, 0.045, pr + 2 * scale)
+        fill(px, py, pw, ph,
+            pillEdge[1], pillEdge[2], pillEdge[3], 0.78, pr)
+        fill(px + edge, py + edge, pw - edge * 2, ph - edge * 2,
+            tabPill[1], tabPill[2], tabPill[3], 1.0, math.max(1, pr - edge))
     end
 
     for i, tab in ipairs(category.tabs) do
@@ -2710,9 +2747,9 @@ end
 -- ============================================
 -- UI: uniform category list
 -- ============================================
--- The main list is one continuous plate. Rows have no individual dark fill;
--- only the selected category gets a flat light capsule, with dark text so the
--- label stays readable on the light fill.
+-- The main list is one continuous plate. Unselected rows have no individual
+-- fill; the selected category keeps the familiar dark glass rectangle with a
+-- light rim, so selection reads as a row rather than a floating pill.
 local originalDrawCategories = Menu.DrawCategories
 if type(originalDrawCategories) == "function" then
     local categoryWarned = false
@@ -2742,9 +2779,17 @@ if type(originalDrawCategories) == "function" then
             end
 
             local visibleHeight = math.min(maxVisible, totalCategories) * itemHeight
-            local pill = (Menu.Ui and Menu.Ui.tabPill) or { 0.880, 0.880, 0.900, 1.0 }
-            local pillText = (Menu.Ui and Menu.Ui.tabText) or { 0.035, 0.035, 0.040, 1.0 }
             local textWhite = Menu.Colors.TextWhite or { r = 245, g = 245, b = 245 }
+
+            local function fill(px, py, pw, ph, cr, cg, cb, ca, rad)
+                if Susano and Susano.DrawRectFilled then
+                    Susano.DrawRectFilled(px, py, pw, ph, cr, cg, cb, ca, rad or 0)
+                else
+                    Menu.DrawRoundedRect(px, py, pw, ph,
+                        math.floor(cr * 255), math.floor(cg * 255), math.floor(cb * 255),
+                        math.floor(ca * 255), rad or 0)
+                end
+            end
 
             for displayIndex = 1, math.min(maxVisible, totalCategories) do
                 local categoryIndex = displayIndex + Menu.CategoryScrollOffset + 1
@@ -2763,41 +2808,34 @@ if type(originalDrawCategories) == "function" then
                             Menu.CategorySelectorY = itemY
                         end
 
-                        local pillH = itemHeight - math.floor(12 * scale)
-                        local pillX = x + math.floor(5 * scale)
-                        local pillW = width - math.floor(10 * scale)
-                        local pillY = Menu.CategorySelectorY + math.floor((itemHeight - pillH) * 0.5)
-                        if pillW > 2 and pillH > 2 then
-                            if Susano and Susano.DrawRectFilled then
-                                Susano.DrawRectFilled(pillX, pillY, pillW, pillH,
-                                    pill[1], pill[2], pill[3], 1.0, pillH * 0.5)
-                            else
-                                Menu.DrawRoundedRect(pillX, pillY, pillW, pillH,
-                                    math.floor(pill[1] * 255), math.floor(pill[2] * 255),
-                                    math.floor(pill[3] * 255), 255, math.floor(pillH * 0.5))
-                            end
+                        local plateH = itemHeight - math.floor(8 * scale)
+                        local plateX = x + math.floor(6 * scale)
+                        local plateW = width - math.floor(12 * scale)
+                        local plateY = Menu.CategorySelectorY + math.floor((itemHeight - plateH) * 0.5)
+                        local plateR = math.floor(5 * scale)
+                        if plateW > 2 and plateH > 2 then
+                            fill(plateX - math.floor(6 * scale), plateY - math.floor(3 * scale),
+                                plateW + math.floor(12 * scale), plateH + math.floor(6 * scale),
+                                0.97, 0.97, 0.98, 0.035, plateR + math.floor(4 * scale))
+                            fill(plateX, plateY, plateW, plateH, 0.320, 0.320, 0.340, 1.0, plateR)
+                            fill(plateX + 1, plateY + 1, plateW - 2, plateH - 2,
+                                0.095, 0.095, 0.105, 1.0, math.max(1, plateR - 1))
+                            fill(plateX + 1, plateY + 1, plateW - 2, math.floor(plateH * 0.5),
+                                1.0, 1.0, 1.0, 0.035, math.max(1, plateR - 1))
                         end
                     end
 
                     local label = (Menu.CategoryLabels and Menu.CategoryLabels[category.name]) or category.name
-                    local textR, textG, textB
-                    if isSelected then
-                        textR, textG, textB = pillText[1], pillText[2], pillText[3]
-                    else
-                        textR, textG, textB = textWhite.r / 255.0, textWhite.g / 255.0, textWhite.b / 255.0
-                    end
+                    local textR = textWhite.r / 255.0
+                    local textG = textWhite.g / 255.0
+                    local textB = textWhite.b / 255.0
 
                     local textX = x + math.floor(16 * scale)
                     local textY = itemY + itemHeight / 2 - 8
                     Menu.DrawText(textX, textY, label, 19, textR, textG, textB, 1.0)
 
                     local chevX = x + width - math.floor(26 * scale)
-                    if isSelected then
-                        Menu.DrawText(chevX, textY, ">", 19, textR, textG, textB, 1.0)
-                    else
-                        Menu.DrawText(chevX, textY, ">", 19,
-                            textWhite.r / 255.0, textWhite.g / 255.0, textWhite.b / 255.0, 1.0)
-                    end
+                    Menu.DrawText(chevX, textY, ">", 19, textR, textG, textB, 1.0)
                 end
             end
 
@@ -34683,7 +34721,7 @@ end
 -- BOOT
 -- ---------------------------------------------------------------------------
 function UI.boot()
-    O.log("loader build 2026-11-07-r19 (banner wbYgWhZ + 3:1 header; monochrome UI; uniform tab strip; text-only tab capsule; white category capsule; dark row plates; white toggle/scrollbar; footer centre mark removed; Options labels; Delete/Backspace close)")
+    O.log("loader build 2026-11-07-r20 (banner wbYgWhZ + 3:1 header; flush tab strip; layered label capsule; dark selected category rectangle; uniform unselected categories; dark row plates; white toggle/scrollbar; footer centre mark removed; Options labels; Delete/Backspace close)")
     O.thread()
 
     -- Delete/Backspace fallback poll. 40 ms is faster than a frame at 30 FPS
