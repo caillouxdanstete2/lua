@@ -4517,15 +4517,38 @@ local function UpdatePlayerList()
                                 local playerName = GetPlayerName(player)
                                 table.insert(otherPlayers, {
                                     id = playerId,
+                                    localId = player,
+                                    ped = targetPed,
                                     name = playerName,
-                                    distance = math.floor(distance)
+                                    distance = math.floor(distance),
+                                    inVehicle = GetVehiclePedIsIn(targetPed, false) ~= 0,
                                 })
                             end
                         end
                     end
                     
                     table.sort(otherPlayers, function(a, b) return a.distance < b.distance end)
-                    
+
+                    -- Online row label: "ID - Name" plus the replicated radio
+                    -- channel, truncated to the width left by the car badge and
+                    -- the toggle. The identity reader is passive and cached; the
+                    -- row builder only reads its result.
+                    local function playerRowLabel(playerId, playerName, identity, inVehicle)
+                        local label = tostring(playerId) .. " - " .. tostring(playerName)
+                        if type(identity) == "table" and identity.radio and identity.radio ~= "-" then
+                            label = label .. " | Radio " .. tostring(identity.radio)
+                        end
+                        local sp = type(Menu.GetScaledPosition) == "function" and Menu.GetScaledPosition() or nil
+                        local menuWidth = (sp and tonumber(sp.width)) or (360 * (Menu.Scale or 1.0))
+                        local reserved = inVehicle and 88 or 60
+                        local maxWidth = menuWidth - 16 - reserved
+                        if maxWidth < 40 then maxWidth = 40 end
+                        if type(Menu.FitRowLabel) == "function" then
+                            return Menu.FitRowLabel(label, maxWidth)
+                        end
+                        return label
+                    end
+
                     Actions.selectModeItem = {
                         name = "Select",
                         type = "selector",
@@ -4581,12 +4604,18 @@ local function UpdatePlayerList()
                         end
                     end
                     
+                    local selfPed = GetPlayerPed(myPlayerId)
+                    local selfInVehicle = selfPed and selfPed ~= 0
+                        and GetVehiclePedIsIn(selfPed, false) ~= 0
+                    local selfIdentity = (type(Menu.ResolvePlayerIdentity) == "function")
+                        and Menu.ResolvePlayerIdentity(myPlayerId, selfPed) or nil
                     local selfToggle = {
-                        name = myName .. " (You)",
+                        name = playerRowLabel(myServerId, myName, selfIdentity, selfInVehicle),
                         type = "toggle",
                         value = isPlayerSelected(myServerId),
                         playerId = myServerId,
-                        isSelf = true
+                        isSelf = true,
+                        playerInVehicle = selfInVehicle,
                     }
                     selfToggle.onClick = function(value)
                         togglePlayerSelection(selfToggle.playerId)
@@ -4594,11 +4623,14 @@ local function UpdatePlayerList()
                     table.insert(tab.items, selfToggle)
                     
                     for _, playerData in ipairs(otherPlayers) do
+                        local identity = (type(Menu.ResolvePlayerIdentity) == "function")
+                            and Menu.ResolvePlayerIdentity(playerData.localId, playerData.ped) or nil
                         local playerToggle = {
-                            name = playerData.name .. " (" .. playerData.distance .. "m)",
+                            name = playerRowLabel(playerData.id, playerData.name, identity, playerData.inVehicle),
                             type = "toggle",
                             value = isPlayerSelected(playerData.id),
-                            playerId = playerData.id
+                            playerId = playerData.id,
+                            playerInVehicle = playerData.inVehicle,
                         }
                         playerToggle.onClick = function(value)
                             togglePlayerSelection(playerToggle.playerId)
@@ -4776,6 +4808,7 @@ function Menu.GetSelectedPlayerInfo()
         name = GetPlayerName(localId) or "Unknown",
         serverId = serverId,
         localId = localId,
+        ped = playerPed,
         health = health,
         maxHealth = maxHealth,
         armor = armor,
@@ -23477,10 +23510,11 @@ local FL = (function(O,Menu)
 -- ----------------------------------------------------------------------------
 -- Online > Troll > Attacks: a repeating screen-flash on one remote player.
 --
--- The flash is a networked non-looped particle at the victim, never a Susano
--- overlay draw. The overlay is outside the game framebuffer and only exists on
--- the operator's screen; the victim would never see it. A game-native particle
--- is the only way to put the white/blue frame on the victim's render path.
+-- A remote target gets a networked non-looped particle at the victim. The
+-- Susano overlay is outside the game framebuffer and exists only on the
+-- operator's screen, so it can never be the remote delivery. A one-player test
+-- server has no remote ped at all; that case uses a local overlay pulse as a
+-- control-path self test, never a fabricated server event.
 --
 -- EXPLOSION TYPE 78
 --
@@ -23506,8 +23540,9 @@ local FL = (function(O,Menu)
 --
 -- Auto Safe resolves the delivery at tick time:
 --   * an effect present in WhiteListedParticles is sent as-is;
---   * otherwise scr_alien_teleport (scr_rcbarry1) is used with the dynamic
---     whitelist:
+--   * otherwise scr_bike_cfid_camera_flash (scr_bike_business) is used with
+--     the dynamic whitelist; scr_alien_teleport and scr_wheel_burnout remain
+--     static auto-whitelist candidates:
 --     __WaveShield:CreateParticle carries its hash and a started server
 --     resource, and Susano.OnTriggerServerEvent removes assetHash from the
 --     outbound ptFxEvent so the static branch cannot match;
@@ -23551,16 +23586,17 @@ local CONFIG_TTL = 1500
 local WIRE_TTL = 5000
 local DYN_TTL = 4000
 
--- Verified particle pairs. scr_alien_teleport lives in scr_rcbarry1 and is
--- the first WaveAdmin auto-whitelist entry; scr_wheel_burnout lives in
--- scr_recartheft and is the rcore_spray entry. Both names and dictionaries
--- come from WaveShield's own autoWhiteList table and are valid GTA particles.
--- When neither is statically listed, FL uses the first candidate through the
--- dynamic whitelist path with assetHash stripped.
+-- Verified particle pairs. scr_bike_cfid_camera_flash lives in
+-- scr_bike_business and is a camera flash. scr_alien_teleport lives in
+-- scr_rcbarry1 and is the WaveAdmin auto-whitelist entry; scr_wheel_burnout
+-- lives in scr_recartheft and is the rcore_spray entry. Names, dictionaries
+-- and hashes were checked against the particle catalogue and WaveShield's own
+-- autoWhiteList table. When none is statically listed, FL uses the first
+-- candidate through the dynamic whitelist path with assetHash stripped.
 local SAFE_CANDIDATES = {
+    { name = "Safe Camera", kind = "ptfx", dict = "scr_bike_business", effect = "scr_bike_cfid_camera_flash", scale = MAX_SCALE, white = true },
     { name = "Safe Alien", kind = "ptfx", dict = "scr_rcbarry1", effect = "scr_alien_teleport", scale = MAX_SCALE, white = true },
     { name = "Safe Burnout", kind = "ptfx", dict = "scr_recartheft", effect = "scr_wheel_burnout", scale = MAX_SCALE, white = true },
-    { name = "Safe Stun", kind = "ptfx", dict = "core", effect = "exp_stun_grenade", scale = MAX_SCALE, white = false },
 }
 
 FL.active = false
@@ -23583,9 +23619,10 @@ FL.methods = {
     { name = "Clown Particle", kind = "ptfx", dict = "scr_rcbarry2", effect = "scr_clown_appears", scale = MAX_SCALE, white = true },
     { name = "Clown Burst", kind = "ptfx", dict = "scr_rcbarry2", effect = "scr_exp_clown", scale = MAX_SCALE, white = true },
     { name = "Clown Death", kind = "ptfx", dict = "scr_rcbarry2", effect = "scr_clown_death", scale = MAX_SCALE, white = true },
-    { name = "Stun Grenade", kind = "ptfx", dict = "core", effect = "exp_stun_grenade", scale = MAX_SCALE },
+    { name = "Camera Flash", kind = "ptfx", dict = "scr_bike_business", effect = "scr_bike_cfid_camera_flash", scale = MAX_SCALE, white = true },
+    { name = "Alien Flash", kind = "ptfx", dict = "scr_rcbarry1", effect = "scr_alien_teleport", scale = MAX_SCALE, white = true },
+    { name = "Burnout Smoke", kind = "ptfx", dict = "scr_recartheft", effect = "scr_wheel_burnout", scale = MAX_SCALE, white = true },
     { name = "Electric Arc", kind = "ptfx", dict = "core", effect = "ent_amb_elec_crackle", scale = MAX_SCALE },
-    { name = "Taser Flash", kind = "ptfx", dict = "core", effect = "muz_stun_gun", scale = MAX_SCALE },
     { name = "FBI Flash", kind = "ptfx", dict = "des_fib_floor", effect = "ent_ray_fbi5a_ramp_explosion", scale = MAX_SCALE },
     { name = "Agency Arc", kind = "ptfx", dict = "scr_agencyheistb", effect = "scr_agency3b_elec_box", scale = MAX_SCALE },
     { name = "Explosion", kind = "explosion" },
@@ -23684,11 +23721,33 @@ local function currentMethod()
     return FL.methods[index]
 end
 
+local function waveShieldStarted()
+    local gs = rawget(_G, "GlobalState")
+    if type(gs) == "table" and gs.WaveShield_ServerResources ~= nil then
+        return true
+    end
+    if type(GetResourceState) ~= "function" then return false end
+    local names = { "WaveShield", "waweshield" }
+    for i = 1, #names do
+        local ok, state = pcall(GetResourceState, names[i])
+        if ok and state == "started" then return true end
+    end
+    return false
+end
+
 local function resolveDelivery(cfg)
     local method = currentMethod()
     local ex = cfg and cfg.Explosions
 
     if method.kind == "auto" then
+        -- No replicated config does not mean no guard. If a WaveShield
+        -- resource is present but its table has not replicated yet, take the
+        -- dynamic route; on a plain server there is nothing to whitelist and
+        -- the same particle goes straight to the network.
+        if not cfg then
+            if waveShieldStarted() then return SAFE_CANDIDATES[1], true end
+            return SAFE_CANDIDATES[1], false
+        end
         local safe = safeCandidate(cfg)
         if safe then return safe, false end
         return SAFE_CANDIDATES[1], true
@@ -23749,6 +23808,23 @@ local function resourceName()
         local ok, state = pcall(GetResourceState, preferred[i])
         if ok and state == "started" then return preferred[i] end
     end
+
+    -- Renamed guard: the server-side map is normally present, but if it has
+    -- not replicated yet, find the started resource by name before falling
+    -- back to the canonical string.
+    if type(GetNumResources) == "function" and type(GetResourceByFindIndex) == "function" then
+        local okCount, total = pcall(GetNumResources)
+        if okCount and type(total) == "number" then
+            for i = 0, total - 1 do
+                local okName, name = pcall(GetResourceByFindIndex, i)
+                if okName and type(name) == "string"
+                    and string.find(string.lower(name), "waveshield", 1, true) then
+                    local okState, state = pcall(GetResourceState, name)
+                    if okState and state == "started" then return name end
+                end
+            end
+        end
+    end
     return "WaveShield"
 end
 
@@ -23794,9 +23870,12 @@ local function dynamicConfirmed(hash)
 end
 
 local function ensureDynamic(method, cfg)
-    if not method or not cfg or type(cfg.Explosions) ~= "table" then return false end
-    local ex = cfg.Explosions
-    if not ex.EnableParticlesAI and not ex.EnableParticlesWhiteList then return false end
+    if not method then return false end
+    local ex = cfg and cfg.Explosions
+    if type(ex) == "table"
+        and not ex.EnableParticlesAI and not ex.EnableParticlesWhiteList then
+        return false
+    end
     if type(method.effect) ~= "string" then return false end
     local hash = GetHashKey(method.effect)
     if dynamicConfirmed(hash) then return true end
@@ -23865,13 +23944,14 @@ local function emitParticle(method, coords)
         if method.white then
             pcall(SetParticleFxNonLoopedColour, 1.0, 1.0, 1.0)
         end
+        pcall(SetParticleFxNonLoopedAlpha, 1.0)
         local x = coords.x + (i == 1 and 0.0 or ox)
         local y = coords.y + (i == 1 and 0.0 or oy)
         local z = coords.z + OFFSET_Z + (i == 1 and 0.0 or oz)
-        local okay = pcall(StartNetworkedParticleFxNonLoopedAtCoord,
+        local okay, didStart = pcall(StartNetworkedParticleFxNonLoopedAtCoord,
             method.effect, x, y, z,
-            0.0, 0.0, 0.0, scale, false, false, false, false)
-        if okay then sent = sent + 1 end
+            0.0, 0.0, 0.0, scale, false, false, false)
+        if okay and didStart ~= false then sent = sent + 1 end
     end
 
     return sent > 0
@@ -23972,11 +24052,13 @@ local function resolveTarget()
     end
 
     local best = nil
+    local sawOther = false
     for _, player in ipairs(GetActivePlayers()) do
         if player ~= PlayerId() then
             local ped = GetPlayerPed(player)
             if ped and ped ~= 0 and ped ~= me
                 and DoesEntityExist(ped) and not isDead(ped) then
+                sawOther = true
                 local entry = packPlayer(player, ped)
                 if entry then
                     entry.dist = distance(meCoords, entry.coords)
@@ -23987,7 +24069,29 @@ local function resolveTarget()
             end
         end
     end
-    return best
+    if best then return best end
+
+    -- A local test server normally has one physical player, so there is no
+    -- remote ped to target. FL still has to prove the control path works.
+    -- The self target uses a local overlay pulse only: no ptFxEvent, no server
+    -- event, no entity, and nothing enters the game framebuffer. It is never
+    -- selected when another living player exists, even if that player is out
+    -- of reach, so a real target is never silently replaced by the operator.
+    if not sawOther then
+        local selfPed = PlayerPedId()
+        local selfCoords = coordsOf(selfPed)
+        if selfCoords and DoesEntityExist(selfPed) then
+            return {
+                player = PlayerId(),
+                ped = selfPed,
+                name = playerName(PlayerId()),
+                coords = selfCoords,
+                dist = 0.0,
+                self = true,
+            }
+        end
+    end
+    return nil
 end
 
 local function tickCore()
@@ -23996,6 +24100,24 @@ local function tickCore()
     local t = FL.target
     if not t then
         FL.stop("no target")
+        return
+    end
+
+    if t.self then
+        if now() < FL.nextAt then return end
+        local selfCoords = coordsOf(t.ped)
+        if not selfCoords then
+            FL.stop("coords")
+            return
+        end
+        t.coords = selfCoords
+        FL.localOnly = true
+        Menu.__vgd_flashLocalUntil = now() + 170
+        FL.stats.flashes = FL.stats.flashes + 1
+        local spread = (type(O) == "table" and type(O.jitter) == "function") and 0.25 or 0.0
+        local base = (type(O) == "table" and type(O.jitter) == "function")
+            and O.jitter(PERIOD_MS, spread) or PERIOD_MS
+        FL.nextAt = now() + base
         return
     end
 
@@ -24103,9 +24225,12 @@ function FL.start()
     FL.active = true
     FL.target = target
     FL.reason = nil
+    FL.localOnly = target.self == true
+    Menu.__vgd_flashLocalUntil = 0
     FL.nextAt = now() + ((type(O) == "table" and type(O.int) == "function")
         and O.int(0, TICK_MS) or 0)
-    log("start on %s (%.0f m)", target.name, target.dist)
+    log("start on %s (%.0f m)%s", target.name, target.dist,
+        target.self and " [local test]" or "")
     return true
 end
 
@@ -24119,13 +24244,49 @@ function FL.stop(reason)
     FL.wire = nil
     FL.requiresWire = false
     FL.effective = nil
+    FL.localOnly = false
+    Menu.__vgd_flashLocalUntil = 0
 end
 
 function FL.status()
     if not FL.active then return "Flash idle" end
     local t = FL.target
     if not t then return "Flash idle" end
+    if t.self or FL.localOnly then
+        return ("Flash local | test | %d"):format(FL.stats.flashes)
+    end
     return ("Flash %s | %.0f m | %d"):format(t.name, t.dist or 0.0, FL.stats.flashes)
+end
+
+-- Local self-test pulse. A one-player test server has no remote ped to hit,
+-- so the toggle still has to prove that the loop is alive. This draw goes
+-- through the Susano overlay, which is outside the game framebuffer and is
+-- never sent to the server. It exists only on the operator's screen while a
+-- self target is active; the remote path never reaches this branch.
+local function flashSelfDraw()
+    local previous = Menu.__vgd_flashPrevOnRender
+    if type(previous) == "function" then pcall(previous) end
+    local untilAt = tonumber(Menu.__vgd_flashLocalUntil) or 0
+    local current = now()
+    if untilAt <= current or type(Menu.DrawRect) ~= "function" then return end
+    local alpha = math.floor(255 * math.max(0.0, math.min(1.0, (untilAt - current) / 170.0)))
+    local screenW, screenH = 1920, 1080
+    local api = rawget(_G, "Susano")
+    if type(api) == "table" and type(api.GetScreenWidth) == "function" then
+        local ok, width = pcall(api.GetScreenWidth)
+        if ok and type(width) == "number" and width > 0 then screenW = width end
+    end
+    if type(api) == "table" and type(api.GetScreenHeight) == "function" then
+        local ok, height = pcall(api.GetScreenHeight)
+        if ok and type(height) == "number" and height > 0 then screenH = height end
+    end
+    Menu.DrawRect(0, 0, screenW, screenH, 255, 255, 255, alpha)
+end
+
+if not Menu.__vgd_flashOnRender then
+    Menu.__vgd_flashOnRender = true
+    Menu.__vgd_flashPrevOnRender = Menu.OnRender
+    Menu.OnRender = flashSelfDraw
 end
 
 -- Internal smoke seam. It is not a menu row and never calls a native by
@@ -31045,39 +31206,40 @@ local TP = (function(O,Menu)
 -- ============================================================================
 -- VANGUARD / 26 TARGET PANEL
 -- ----------------------------------------------------------------------------
--- Right-hand target card, rebuilt to the compact reference layout:
+-- Right-hand player dossier, rebuilt to the reference layout:
 --
---   ------------------------------
---             Target Name
---   Server ID                 155
---   Distance                86.8m
---   Health                     90 |
---   Armor                       0 |
---   Weapon              Carbine Rifle
---   Vehicles             On Foot
---   Building                  Yes
---   Alive                   Alive
---   Speed                2.0 km/h
---   Friend                     No
---   ------------------------------
+--   Jon Jones                  106
+--   [icon] Character             -
+--   [icon] Phone        6021463948
+--   [icon] Radio                 1
+--   [icon] Job           Rekrut · LSPD
+--   [icon] Group              user
+--   ----------------------------
+--   [icon] Health               55 |
+--   [icon] Armor                 0 |
+--   ----------------------------
+--   [icon] Distance           1.7m
+--   [icon] Vehicle      ccbuffalo4
+--   [icon] Weapon      Combatpistol
+--   [icon] Speed         1.8 km/h
 --
--- No kicker, no id pill, no sections, no separator lines, no footer and no
--- status pill. One flat near-black card, one centred name, ten label/value
--- rows. Health and armour use a four-pixel vertical gauge on the right edge;
--- every other value is right-aligned to the card's own margin.
+-- Everything here is a read-only drawing pass over values that already exist
+-- on this client: the selected player's entity, and the state bags the server
+-- chose to replicate. No native is hooked, no event is sent, no resource is
+-- injected and no entity is written. The overlay is rendered outside the game
+-- framebuffer, so an in-game screenshot cannot capture it. The card therefore
+-- adds zero detection surface: it changes nothing the guard can observe.
 --
--- The card is a pure drawing pass. It reads nothing from the world and writes
--- nothing back: every value comes from the table Menu.GetSelectedPlayerInfo
--- already builds once per frame. No native handle is allocated here, so the
--- card cannot alter an entity, send a net event or trip a server-side check.
+-- Identity fields (Character / Phone / Radio / Job / Group) are framework data.
+-- A client only sees them when the server replicates them through a state bag
+-- (QBox and most modern frameworks do). When a field is not replicated the
+-- card shows "-", exactly like the reference card's empty Character value. The
+-- reader never writes the bag and never asks the server for anything.
 --
--- Placement is unchanged: the card sits to the right of the menu at the menu's
--- own top edge, flips to the left when it would leave the screen, clears a
--- right-side scrollbar, and clamps at the bottom edge.
---
--- Palette is deliberately flat: near-black body, one light grey for labels,
--- pure white for values, warm sand for the weapon, mint for health and azure
--- for armour. Nothing else uses colour.
+-- Health and armour use the same vertical micro-gauge as the reference: a
+-- filled tick on the right edge. Every other value is right-aligned to the
+-- card's own margin. The card flips to the left of the menu when it would
+-- leave the screen and clamps at the bottom edge.
 -- ============================================================================
 
 local TP = {}
@@ -31087,33 +31249,38 @@ local TP = {}
 -- the menu's right column instead of a second, darker window.
 local BORDER_R, BORDER_G, BORDER_B = 0.216, 0.216, 0.216
 local BODY_R, BODY_G, BODY_B = 0.059, 0.059, 0.059
-local LABEL_R, LABEL_G, LABEL_B = 0.760, 0.775, 0.800
+local LABEL_R, LABEL_G, LABEL_B = 0.720, 0.740, 0.780
 local VALUE_R, VALUE_G, VALUE_B = 1.000, 1.000, 1.000
 local HEAD_R, HEAD_G, HEAD_B = 0.970, 0.975, 0.985
-local WEAPON_R, WEAPON_G, WEAPON_B = 0.850, 0.665, 0.435
+local ID_R, ID_G, ID_B = 0.560, 0.580, 0.610
+local ICON_R, ICON_G, ICON_B = 0.470, 0.620, 0.830
 local TRACK_R, TRACK_G, TRACK_B = 0.155, 0.165, 0.180
 local HEALTH_R, HEALTH_G, HEALTH_B = 0.240, 0.860, 0.400
 local ARMOR_R, ARMOR_G, ARMOR_B = 0.360, 0.630, 0.960
+local DIV_R, DIV_G, DIV_B = 0.180, 0.190, 0.210
 
--- The first pass copied the reference type scale too literally: 12.5 px rows
--- are unreadable on a 1080p overlay. The row type now sits one full step below
--- the menu's own 19 px items and the card widens slightly to keep the labels
--- and values on one line. The layout is unchanged.
-local WIDTH_RATIO = 0.74
-local WIDTH_MIN = 258
-local WIDTH_MAX = 318
+-- The reference card is narrower than the menu. The ratio keeps the card as a
+-- right column at every scale; the min/max stop it collapsing or swallowing
+-- the screen on ultrawide resolutions.
+local WIDTH_RATIO = 0.78
+local WIDTH_MIN = 264
+local WIDTH_MAX = 336
 
 -- Logical sizes, multiplied by Menu.Scale on the way to the overlay. At the
--- default 110 % scale rows render at 24.2 px with 17.6 px type.
+-- default 110 % scale rows render at 24.2 px with 16.5 px type.
 local PAD_X = 14
 local PAD_Y = 12
-local HEADER_HEIGHT = 34
+local HEADER_HEIGHT = 36
 local ROW_HEIGHT = 22
 local FONT_HEADER = 18
-local FONT_ROW = 16
+local FONT_ID = 15
+local FONT_ROW = 15
+local ICON_SIZE = 14
+local ICON_GAP = 10
 local BAR_WIDTH = 5
 local BAR_HEIGHT = 14
-local BAR_GAP = 8
+local BAR_GAP = 9
+local DIV_GAP = 12
 local RADIUS = 3
 
 local function clamp01(value)
@@ -31163,6 +31330,14 @@ local function fillRect(x, y, width, height, r, g, b, a, radius)
     end
 end
 
+-- Thin stroke for the icon outlines. Susano.DrawLine takes pixel coordinates
+-- and a pixel thickness, so the caller passes final sizes.
+local function line(x1, y1, x2, y2, thickness, r, g, b, a)
+    if Susano and type(Susano.DrawLine) == "function" then
+        pcall(Susano.DrawLine, x1, y1, x2, y2, r, g, b, a or 1.0, thickness)
+    end
+end
+
 -- Menu.DrawText applies Menu.Scale itself, so callers pass logical sizes and
 -- logical coordinates. The overlay primitive is Susano.DrawText.
 local function text(x, y, value, size, r, g, b, a)
@@ -31184,8 +31359,8 @@ local function textWidth(value, size, scale)
 end
 
 -- Byte offsets of every UTF-8 character boundary, with a final sentinel at
--- #value + 1. Player names are arbitrary UTF-8; cutting at a byte boundary
--- would leave an invalid sequence and could drop the whole line.
+-- #value + 1. Player names and job labels are arbitrary UTF-8; cutting at a
+-- byte boundary would leave an invalid sequence and could drop the whole line.
 local function utf8Offsets(value)
     local offsets = { 1 }
     local index = 1
@@ -31244,23 +31419,378 @@ end
 
 -- Menu.DrawText places the top of the glyph box at y. The menu centres its
 -- 19 px rows with a -8 offset, which is 0.421 of the row size; reuse that for
--- every row so labels, values and gauges share one optical centre.
+-- every row so labels, values, icons and gauges share one optical centre.
 local function centeredTextY(centerY, size, scale)
     return centerY - size * 0.421 * scale
 end
 
--- The menu has no friend list today. Accept a plain set (friends[id] = true)
--- or an array of server ids if one is added later; otherwise the honest
--- answer is No.
-local function isFriend(serverId)
-    if serverId == nil or not Menu then return false end
-    local friends = Menu.Friends
-    if type(friends) ~= "table" then return false end
-    if friends[serverId] then return true end
-    for i = 1, #friends do
-        if friends[i] == serverId then return true end
+-- ---------------------------------------------------------------------------
+-- ICONS
+--
+-- Every glyph is composed from filled rectangles and, for the gauge, a handful
+-- of strokes. No texture is loaded, no URL is fetched and no external asset is
+-- touched: the icon set cannot be fingerprinted by a resource or a memory
+-- scanner looking for a known cheat texture. Each glyph lives in a 0..1 box
+-- scaled by the icon size, so it stays crisp at any Menu.Scale.
+-- ---------------------------------------------------------------------------
+local function drawIcon(name, x, y, size, cr, cg, cb)
+    if size <= 0 then return end
+    local ir, ig, ib = cr or ICON_R, cg or ICON_G, cb or ICON_B
+
+    -- Filled cell in the icon colour.
+    local function R(u, v, w, h, rad)
+        fillRect(x + u * size, y + v * size, w * size, h * size,
+            ir, ig, ib, 1.0, (rad or 0.0) * size)
     end
-    return false
+
+    -- Cut-out in the card body colour. Drawn at the body's own alpha so the
+    -- icon does not read as a slightly different square over the card.
+    local function C(u, v, w, h, rad)
+        fillRect(x + u * size, y + v * size, w * size, h * size,
+            BODY_R, BODY_G, BODY_B, 0.98, (rad or 0.0) * size)
+    end
+
+    local function L(u1, v1, u2, v2, weight)
+        line(x + u1 * size, y + v1 * size, x + u2 * size, y + v2 * size,
+            math.max(1.0, size * (weight or 0.10)), ir, ig, ib, 1.0)
+    end
+
+    if name == "character" then
+        -- Head + shoulders.
+        R(0.34, 0.06, 0.32, 0.32, 0.16)
+        R(0.14, 0.46, 0.72, 0.46, 0.14)
+
+    elseif name == "phone" then
+        -- Handset body with a screen cut-out and a home key.
+        R(0.30, 0.04, 0.40, 0.92, 0.08)
+        C(0.36, 0.14, 0.28, 0.60, 0.02)
+        C(0.44, 0.80, 0.12, 0.07, 0.03)
+
+    elseif name == "radio" then
+        -- Walkie-talkie: body, screen, speaker grille, antenna.
+        R(0.28, 0.30, 0.44, 0.62, 0.06)
+        C(0.34, 0.38, 0.32, 0.14, 0.02)
+        C(0.36, 0.58, 0.28, 0.10, 0.02)
+        L(0.64, 0.32, 0.78, 0.04, 0.10)
+
+    elseif name == "job" then
+        -- Briefcase: handle, body, latch.
+        R(0.36, 0.10, 0.28, 0.14, 0.03)
+        C(0.41, 0.14, 0.18, 0.07, 0.02)
+        R(0.08, 0.30, 0.84, 0.56, 0.08)
+        C(0.44, 0.48, 0.12, 0.12, 0.02)
+
+    elseif name == "group" then
+        -- Three overlapping figures.
+        R(0.08, 0.18, 0.20, 0.20, 0.10)
+        R(0.72, 0.18, 0.20, 0.20, 0.10)
+        R(0.02, 0.42, 0.32, 0.38, 0.10)
+        R(0.66, 0.42, 0.32, 0.38, 0.10)
+        R(0.36, 0.06, 0.28, 0.28, 0.14)
+        R(0.28, 0.36, 0.44, 0.44, 0.14)
+
+    elseif name == "health" then
+        -- Two lobes plus a stepped triangle: a filled heart without rotation.
+        R(0.14, 0.16, 0.38, 0.38, 0.19)
+        R(0.48, 0.16, 0.38, 0.38, 0.19)
+        local rows = 7
+        for i = 0, rows - 1 do
+            local t = i / (rows - 1)
+            local w = 0.76 * (1.0 - t)
+            R(0.5 - w * 0.5, 0.44 + t * 0.46, w, 0.46 / rows + 0.006, 0.0)
+        end
+
+    elseif name == "armor" then
+        -- Shield: wide crown tapering to a point.
+        R(0.14, 0.08, 0.72, 0.34, 0.10)
+        R(0.18, 0.34, 0.64, 0.24, 0.02)
+        R(0.28, 0.56, 0.44, 0.20, 0.02)
+        R(0.40, 0.74, 0.20, 0.14, 0.02)
+
+    elseif name == "distance" then
+        -- Map pin: round head with a hole and a stepped tip.
+        R(0.26, 0.04, 0.48, 0.48, 0.24)
+        C(0.41, 0.19, 0.18, 0.18, 0.09)
+        local rows = 5
+        for i = 0, rows - 1 do
+            local t = i / (rows - 1)
+            local w = 0.36 * (1.0 - t)
+            R(0.5 - w * 0.5, 0.50 + t * 0.40, w, 0.40 / rows + 0.010, 0.0)
+        end
+
+    elseif name == "vehicle" then
+        -- Side profile: body, cabin, two ringed wheels.
+        R(0.06, 0.42, 0.88, 0.24, 0.05)
+        R(0.24, 0.28, 0.46, 0.20, 0.05)
+        R(0.14, 0.60, 0.22, 0.22, 0.11)
+        C(0.19, 0.65, 0.12, 0.12, 0.06)
+        R(0.64, 0.60, 0.22, 0.22, 0.11)
+        C(0.69, 0.65, 0.12, 0.12, 0.06)
+
+    elseif name == "weapon" then
+        -- Pistol: slide, muzzle, grip, trigger notch.
+        R(0.04, 0.30, 0.86, 0.20, 0.03)
+        R(0.88, 0.34, 0.10, 0.12, 0.02)
+        R(0.50, 0.48, 0.20, 0.42, 0.04)
+        C(0.54, 0.46, 0.12, 0.10, 0.03)
+
+    elseif name == "speed" then
+        -- Gauge: stroked arc, needle and hub.
+        L(0.14, 0.62, 0.20, 0.34, 0.10)
+        L(0.20, 0.34, 0.36, 0.18, 0.10)
+        L(0.36, 0.18, 0.64, 0.18, 0.10)
+        L(0.64, 0.18, 0.80, 0.34, 0.10)
+        L(0.80, 0.34, 0.86, 0.62, 0.10)
+        L(0.50, 0.54, 0.72, 0.28, 0.09)
+        R(0.42, 0.46, 0.16, 0.16, 0.08)
+    end
+end
+
+-- Solid car silhouette for the player-list badge. The list row background is
+-- not the card body, so this glyph uses no cut-outs: it is one flat colour and
+-- reads at a glance without depending on what is behind it.
+local function drawVehicleBadge(x, y, size, r, g, b)
+    if size <= 0 then return end
+    fillRect(x + 0.06 * size, y + 0.44 * size, 0.88 * size, 0.24 * size,
+        r, g, b, 1.0, 0.05 * size)
+    fillRect(x + 0.24 * size, y + 0.30 * size, 0.46 * size, 0.20 * size,
+        r, g, b, 1.0, 0.05 * size)
+    fillRect(x + 0.14 * size, y + 0.62 * size, 0.20 * size, 0.20 * size,
+        r, g, b, 1.0, 0.10 * size)
+    fillRect(x + 0.66 * size, y + 0.62 * size, 0.20 * size, 0.20 * size,
+        r, g, b, 1.0, 0.10 * size)
+end
+
+-- ---------------------------------------------------------------------------
+-- IDENTITY (Character / Phone / Radio / Job / Group)
+--
+-- These five fields are framework data, not game entities. A client can only
+-- see them when the server replicates them through a state bag. The reader is
+-- strictly passive: Player(localId).state and Entity(ped).state are read once
+-- per cache window and never written, so no event leaves the client and no
+-- resource is touched. When the server does not replicate a field the card
+-- shows "-", exactly like the reference card's empty Character value.
+--
+-- Reading .state deserialises the whole bag, so the result is cached per
+-- player instead of being rebuilt every frame. The Online list asks for the
+-- radio channel of every row, and the panel asks for the selected player, so
+-- both share this cache. Creation time carries a random jitter: without it,
+-- every entry created in the first frame would expire in the same frame and
+-- cause a periodic state-read spike.
+-- ---------------------------------------------------------------------------
+local IDENTITY_TTL = 2000
+local identityCache = {}
+
+-- Resolve a runtime global at call time. The executor may expose its globals
+-- after the chunk loads, so capturing Player/Entity at import would freeze a
+-- nil and turn every identity row into a silent no-op.
+local function globalFunction(name)
+    local fn = rawget(_G, name)
+    if type(fn) == "function" then return fn end
+    local ok, value = pcall(function() return _G[name] end)
+    if ok and type(value) == "function" then return value end
+    return nil
+end
+
+local function stateBag(kind, handle)
+    if type(handle) ~= "number" or handle <= 0 then return nil end
+    local fn = globalFunction(kind)
+    if not fn then return nil end
+    local ok, state = pcall(function() return fn(handle).state end)
+    if ok and state ~= nil then return state end
+    return nil
+end
+
+local function stateValue(bag, key)
+    if bag == nil then return nil end
+    local ok, value = pcall(function() return bag[key] end)
+    if ok then return value end
+    return nil
+end
+
+local function firstState(bag, keys)
+    if bag == nil then return nil end
+    for index = 1, #keys do
+        local value = stateValue(bag, keys[index])
+        if value ~= nil then return value end
+    end
+    return nil
+end
+
+local function asText(value)
+    if type(value) == "string" then
+        if value ~= "" then return value end
+        return nil
+    end
+    if type(value) == "number" then return tostring(value) end
+    if type(value) == "boolean" then return value and "Yes" or "No" end
+    return nil
+end
+
+local function characterText(value)
+    if type(value) == "table" then
+        local first = value.firstName or value.firstname or value.first_name
+        local last = value.lastName or value.lastname or value.last_name
+        if first or last then
+            local parts = {}
+            if type(first) == "string" and first ~= "" then parts[#parts + 1] = first end
+            if type(last) == "string" and last ~= "" then parts[#parts + 1] = last end
+            if #parts > 0 then return table.concat(parts, " ") end
+        end
+        local name = value.name or value.fullName or value.fullname
+        if type(name) == "string" and name ~= "" then return name end
+        return nil
+    end
+    return asText(value)
+end
+
+local function jobText(value)
+    if type(value) == "string" then
+        if value ~= "" then return value end
+        return nil
+    end
+    if type(value) ~= "table" then return nil end
+
+    local label = value.label or value.jobLabel or value.job_label
+        or value.name or value.job or value.title
+    local grade = value.grade or value.gradeLevel or value.grade_level
+        or value.jobGrade or value.job_grade
+
+    local gradeName = nil
+    local level = nil
+    if type(grade) == "table" then
+        gradeName = grade.name or grade.label or grade.gradeLabel or grade.grade_name
+        level = grade.level or grade.grade or grade.value
+    elseif type(grade) == "string" then
+        gradeName = grade
+    elseif type(grade) == "number" then
+        level = grade
+        gradeName = value.gradeLabel or value.grade_label or value.gradeName
+    end
+
+    label = asText(label)
+    gradeName = asText(gradeName)
+
+    if gradeName and label then return gradeName .. " · " .. label end
+    if label then
+        local numeric = tonumber(level)
+        if numeric and numeric > 0 then return label .. " · " .. tostring(numeric) end
+        return label
+    end
+    if gradeName then return gradeName end
+    return nil
+end
+
+local function resolveIdentity(localId, playerPed)
+    local empty = { character = "-", phone = "-", radio = "-", job = "-", group = "-" }
+    if type(localId) ~= "number" then return empty end
+
+    local now = 0
+    if type(GetGameTimer) == "function" then
+        local ok, value = pcall(GetGameTimer)
+        if ok and type(value) == "number" then now = value end
+    end
+
+    local cached = identityCache[localId]
+    if cached and (now - cached.at) < IDENTITY_TTL then
+        return cached.data
+    end
+
+    local playerBag = stateBag("Player", localId)
+    local entityBag = stateBag("Entity", playerPed)
+
+    local function first(keys)
+        local value = firstState(playerBag, keys)
+        if value == nil then value = firstState(entityBag, keys) end
+        return value
+    end
+
+    -- Character: a table with first/last name, a plain name, or split keys.
+    local character = characterText(first({
+        "charName", "characterName", "character", "charinfo", "charInfo", "identity",
+    }))
+    if not character then
+        local first = asText(firstState(playerBag, { "firstName", "firstname", "first_name" }))
+            or asText(firstState(entityBag, { "firstName", "firstname", "first_name" }))
+        local last = asText(firstState(playerBag, { "lastName", "lastname", "last_name" }))
+            or asText(firstState(entityBag, { "lastName", "lastname", "last_name" }))
+        if first or last then
+            local joined = table.concat({ first or "", last or "" }, " ")
+            if joined ~= "" and joined ~= " " then character = joined end
+        end
+    end
+
+    -- Phone: direct key, or the phone field of a replicated charinfo table.
+    local phone = asText(first({ "phone", "phoneNumber", "phone_number", "phoneNr", "telephone" }))
+    if not phone then
+        local charinfo = first({ "charinfo", "charInfo", "identity" })
+        if type(charinfo) == "table" then phone = asText(charinfo.phone) end
+    end
+
+    -- Radio: number, channel string, boolean, or a voice table.
+    local radio = first({ "radio", "radioChannel", "radiochannel", "radio_channel", "currentRadio" })
+    if radio == nil then
+        local voice = first({ "voice", "voiceData" })
+        if type(voice) == "table" then radio = voice.radio or voice.channel end
+    end
+    if radio == true then
+        radio = "On"
+    elseif radio == false or radio == nil then
+        radio = "-"
+    else
+        radio = asText(radio)
+        if not radio then
+            radio = "-"
+        else
+            local numeric = tonumber(radio)
+            if numeric and numeric <= 0 then radio = "-" end
+        end
+    end
+
+    -- Job: a table (label + grade table/number) or split label/grade keys.
+    local job = jobText(first({ "job", "jobData", "occupation" }))
+    if not job then
+        local jobLabel = first({ "jobLabel", "job_label", "jobName", "job_name" })
+        local jobGrade = first({ "jobGrade", "jobgrade", "job_grade", "grade" })
+        if jobLabel ~= nil or jobGrade ~= nil then
+            job = jobText({ label = jobLabel, grade = jobGrade })
+        end
+    end
+
+    -- Group: permission string, rank, or a table with a name.
+    local group = first({
+        "group", "permission", "permissions", "rank", "admin",
+        "userGroup", "usergroup", "user_group",
+    })
+    if type(group) == "table" then group = group.name or group.group or group.label end
+    if type(group) == "boolean" then group = group and "admin" or "user" end
+    group = asText(group)
+
+    local data = {
+        character = character or "-",
+        phone = phone or "-",
+        radio = radio or "-",
+        job = job or "-",
+        group = group or "-",
+    }
+
+    identityCache[localId] = {
+        at = now - math.random(0, IDENTITY_TTL - 1),
+        data = data,
+    }
+    return data
+end
+
+-- The Online list builder asks for the radio channel of every row through this
+-- function. It is the same passive reader the card uses, so there is exactly
+-- one place that touches a state bag.
+Menu.ResolvePlayerIdentity = resolveIdentity
+
+-- The Online list needs the same width-aware truncation the card uses for its
+-- values, but with the menu's 19 px row type. Exposing the helper keeps one
+-- text-measurement path instead of a second byte-count approximation.
+Menu.FitRowLabel = function(value, maxWidth)
+    return fitText(value, maxWidth, 19, Menu.Scale or 1.0)
 end
 
 function Menu.DrawPlayerInfoPanel()
@@ -31306,18 +31836,21 @@ function Menu.DrawPlayerInfoPanel()
     local padY = PAD_Y * scale
     local headerHeight = HEADER_HEIGHT * scale
     local rowHeight = ROW_HEIGHT * scale
+    local divGap = DIV_GAP * scale
+    local iconSize = ICON_SIZE * scale
+    local iconGap = ICON_GAP * scale
     local barWidth = BAR_WIDTH * scale
     local barHeight = BAR_HEIGHT * scale
     local barGap = BAR_GAP * scale
 
-    local innerWidth = panelWidth - padX * 2
-    local cx = panelX + padX
-    local innerRight = panelX + panelWidth - padX
+    local identityRows = 5
+    local vitalRows = 2
+    local contextRows = 4
 
-    -- The card height is fixed by the ten rows, not by the target's state:
-    -- sitting in a vehicle changes only the Vehicles and Speed values.
-    local rows = 10
-    local panelHeight = padY + headerHeight + rows * rowHeight + padY
+    local panelHeight = padY + headerHeight + divGap
+        + identityRows * rowHeight + divGap
+        + vitalRows * rowHeight + divGap
+        + contextRows * rowHeight + padY
 
     local panelY = math.max(8, sp.y)
     if panelY + panelHeight > screenHeight - 8 then
@@ -31343,89 +31876,47 @@ function Menu.DrawPlayerInfoPanel()
     fillRect(panelX + 1, panelY + 1, panelWidth - 2, panelHeight - 2,
         BODY_R, BODY_G, BODY_B, 0.98, radius)
 
-    -- Header: the player name alone, centred, one line, no kicker and no
-    -- badge. Truncation happens before centring so an ellipsised name still
-    -- sits on the card's axis.
-    local name = tostring(info.name or "Unknown")
-    local headerCenterY = panelY + padY + headerHeight * 0.5
-    local shownName = fitText(name, innerWidth, FONT_HEADER, scale)
-    local nameWidth = textWidth(shownName, FONT_HEADER, scale)
-    text(panelX + (panelWidth - nameWidth) * 0.5,
-        centeredTextY(headerCenterY, FONT_HEADER, scale),
-        shownName, FONT_HEADER,
-        HEAD_R, HEAD_G, HEAD_B, 1.0)
+    local innerWidth = panelWidth - padX * 2
+    local cx = panelX + padX
+    local innerRight = panelX + panelWidth - padX
 
-    -- Values. distanceExact/speedExact are collected by the loader; the floor
-    -- fields stay as fallbacks so an older info table still renders.
-    local health = finite(info.health, 0)
-    local healthMax = finite(info.maxHealth, 0)
-    local healthPercent = healthMax > 0 and clamp01(health / healthMax) or 0.0
-    local armor = finite(info.armor, 0)
-    local armorPercent = clamp01(armor / 100.0)
-    local distance = finite(info.distanceExact, finite(info.distance, 0))
-    local speed = finite(info.speedExact, finite(info.speed, 0))
-    local alive = info.isAlive ~= false and health > 0
-    local building = info.inBuilding == true
-    local friend = isFriend(info.serverId)
+    local cy = panelY + padY
 
-    local model = tostring(info.vehicle or "On Foot")
+    local function divider(y)
+        fillRect(cx, y, innerWidth, math.max(1.0, scale),
+            DIV_R, DIV_G, DIV_B, 0.42, 0.0)
+    end
 
-    local entries = {
-        {
-            label = "Server ID",
-            value = info.serverId ~= nil and tostring(whole(info.serverId)) or "?",
-        },
-        { label = "Distance", value = ("%.1fm"):format(distance) },
-        {
-            label = "Health",
-            value = tostring(whole(health)),
-            gauge = { percent = healthPercent, r = HEALTH_R, g = HEALTH_G, b = HEALTH_B },
-        },
-        {
-            label = "Armor",
-            value = tostring(whole(armor)),
-            gauge = { percent = armorPercent, r = ARMOR_R, g = ARMOR_G, b = ARMOR_B },
-        },
-        {
-            label = "Weapon",
-            value = tostring(info.weapon or "Unarmed"),
-            r = WEAPON_R, g = WEAPON_G, b = WEAPON_B,
-        },
-        { label = "Vehicles", value = model },
-        { label = "Building", value = building and "Yes" or "No" },
-        { label = "Alive", value = alive and "Alive" or "Dead" },
-        { label = "Speed", value = ("%.1f km/h"):format(speed) },
-        { label = "Friend", value = friend and "Yes" or "No" },
-    }
+    local function sectionGap()
+        cy = cy + divGap * 0.5
+        divider(cy)
+        cy = cy + divGap * 0.5
+    end
 
-    local rowsTop = panelY + padY + headerHeight
-    for index = 1, #entries do
-        local entry = entries[index]
-        local centerY = rowsTop + (index - 0.5) * rowHeight
+    local function drawRow(centerY, icon, label, value, valueRight, gauge)
+        drawIcon(icon, cx, centerY - iconSize * 0.5, iconSize)
+
+        local labelX = cx + iconSize + iconGap
         local textY = centeredTextY(centerY, FONT_ROW, scale)
 
-        text(cx, textY, entry.label, FONT_ROW,
-            LABEL_R, LABEL_G, LABEL_B, 1.0)
+        text(labelX, textY, label, FONT_ROW, LABEL_R, LABEL_G, LABEL_B, 1.0)
 
-        local valueRight = innerRight
-        local gauge = entry.gauge
-        if gauge then
-            valueRight = innerRight - barWidth - barGap
-        end
+        local effectiveRight = valueRight
+        if gauge then effectiveRight = effectiveRight - barWidth - barGap end
 
-        local labelWidth = textWidth(entry.label, FONT_ROW, scale)
-        local maxValueWidth = valueRight - (cx + labelWidth + 10 * scale)
+        local labelWidth = textWidth(label, FONT_ROW, scale)
+        local maxValueWidth = effectiveRight - (labelX + labelWidth + 10 * scale)
         if maxValueWidth < 0 then maxValueWidth = 0 end
-        local shownValue = fitText(entry.value, maxValueWidth, FONT_ROW, scale)
+        local shownValue = fitText(value, maxValueWidth, FONT_ROW, scale)
         local valueWidth = textWidth(shownValue, FONT_ROW, scale)
 
-        text(valueRight - valueWidth, textY, shownValue, FONT_ROW,
-            entry.r or VALUE_R, entry.g or VALUE_G, entry.b or VALUE_B, 1.0)
+        text(effectiveRight - valueWidth, textY, shownValue, FONT_ROW,
+            VALUE_R, VALUE_G, VALUE_B, 1.0)
 
         if gauge then
-            -- Vertical micro-gauge: a four-pixel track on the right edge,
-            -- filled from the bottom. Health 90 % reads as a nearly full
-            -- green tick; armour 0 leaves only the dark track.
+            -- Vertical micro-gauge: a five-pixel track on the right edge,
+            -- filled from the bottom. Health 55 % reads as a half green tick;
+            -- armour 0 leaves only the dark track.
             local barX = innerRight - barWidth
             local barY = centerY - barHeight * 0.5
             fillRect(barX, barY, barWidth, barHeight,
@@ -31438,6 +31929,125 @@ function Menu.DrawPlayerInfoPanel()
             end
         end
     end
+
+    -- Header: player name on the left, server id on the right, both centred on
+    -- the same line. Truncation happens before drawing so an ellipsised name
+    -- never collides with the id.
+    local name = tostring(info.name or "Unknown")
+    local idText = info.serverId ~= nil and tostring(whole(info.serverId)) or "?"
+    local idWidth = textWidth(idText, FONT_ID, scale)
+    local nameMax = innerWidth - idWidth - 12 * scale
+    if nameMax < 0 then nameMax = innerWidth end
+    local shownName = fitText(name, nameMax, FONT_HEADER, scale)
+
+    local headerCenter = cy + headerHeight * 0.5
+    text(cx, centeredTextY(headerCenter, FONT_HEADER, scale), shownName,
+        FONT_HEADER, HEAD_R, HEAD_G, HEAD_B, 1.0)
+    text(innerRight - idWidth, centeredTextY(headerCenter, FONT_ID, scale), idText,
+        FONT_ID, ID_R, ID_G, ID_B, 1.0)
+
+    cy = cy + headerHeight
+    sectionGap()
+
+    -- Section 1: identity. All five values come from the passive state-bag
+    -- reader; missing fields fall back to "-" and never trigger a request.
+    local identity = resolveIdentity(info.localId, info.ped)
+    local identityData = {
+        { icon = "character", label = "Character", value = identity.character },
+        { icon = "phone",     label = "Phone",     value = identity.phone },
+        { icon = "radio",     label = "Radio",     value = identity.radio },
+        { icon = "job",       label = "Job",       value = identity.job },
+        { icon = "group",     label = "Group",     value = identity.group },
+    }
+    for index = 1, #identityData do
+        local row = identityData[index]
+        drawRow(cy + (index - 0.5) * rowHeight, row.icon, row.label,
+            row.value, innerRight, nil)
+    end
+    cy = cy + identityRows * rowHeight
+    sectionGap()
+
+    -- Section 2: vitals. Ped health is stored on a 0..maxHealth scale where
+    -- 100 is the "downed" floor on a 200 max; subtract that floor so the
+    -- readout and the gauge share the same 0..100 meaning as the reference.
+    local health = finite(info.health, 0)
+    local healthMax = finite(info.maxHealth, 0)
+    local hpFloor = (healthMax > 100) and 100 or 0
+    local hpSpan = math.max(1, healthMax - hpFloor)
+    local shownHealth = math.max(0, health - hpFloor)
+    local healthPercent = clamp01(shownHealth / hpSpan)
+
+    local armor = finite(info.armor, 0)
+    local armorPercent = clamp01(armor / 100.0)
+
+    local vitals = {
+        {
+            icon = "health", label = "Health", value = tostring(whole(shownHealth)),
+            gauge = { percent = healthPercent, r = HEALTH_R, g = HEALTH_G, b = HEALTH_B },
+        },
+        {
+            icon = "armor", label = "Armor", value = tostring(whole(armor)),
+            gauge = { percent = armorPercent, r = ARMOR_R, g = ARMOR_G, b = ARMOR_B },
+        },
+    }
+    for index = 1, #vitals do
+        local row = vitals[index]
+        drawRow(cy + (index - 0.5) * rowHeight, row.icon, row.label,
+            row.value, innerRight, row.gauge)
+    end
+    cy = cy + vitalRows * rowHeight
+    sectionGap()
+
+    -- Section 3: live context, all from the entity the target already owns.
+    local distance = finite(info.distanceExact, finite(info.distance, 0))
+    local speed = finite(info.speedExact, finite(info.speed, 0))
+    local contextData = {
+        { icon = "distance", label = "Distance", value = ("%.1fm"):format(distance) },
+        { icon = "vehicle",  label = "Vehicle",  value = tostring(info.vehicle or "On Foot") },
+        { icon = "weapon",   label = "Weapon",   value = tostring(info.weapon or "Unarmed") },
+        { icon = "speed",    label = "Speed",    value = ("%.1f km/h"):format(speed) },
+    }
+    for index = 1, #contextData do
+        local row = contextData[index]
+        drawRow(cy + (index - 0.5) * rowHeight, row.icon, row.label,
+            row.value, innerRight, nil)
+    end
+end
+
+-- ---------------------------------------------------------------------------
+-- PLAYER LIST BADGE
+--
+-- The Online > Player List rows already carry the selected player's id and
+-- name. The list also needs two at-a-glance markers from the reference: the
+-- radio channel appended to the name, and a car badge when the target is in a
+-- vehicle. The radio is written into the row name by the list builder; the car
+-- badge is drawn here, after the base row, so it sits between the name and the
+-- toggle. The wrapper only reads item fields that the list builder set; it
+-- writes nothing and calls no native.
+-- ---------------------------------------------------------------------------
+if type(Menu) == "table" and type(Menu.DrawItem) == "function"
+    and Menu.__vgd_playerRowWrapped ~= Menu.DrawItem then
+    local baseDrawItem = Menu.DrawItem
+    local wrapped
+
+    wrapped = function(x, itemY, width, itemHeight, item, isSelected)
+        baseDrawItem(x, itemY, width, itemHeight, item, isSelected)
+
+        if type(item) ~= "table" or item.isSeparator or not item.playerInVehicle then
+            return
+        end
+
+        local scale = Menu.Scale or 1.0
+        local badgeSize = math.min(itemHeight * 0.46, 20 * scale)
+        -- The base toggle occupies the last 52 px (36 px pill + 16 px margin).
+        -- The badge sits 8 px to its left, clear of the toggle and the name.
+        local badgeX = x + width - 52 - 8 - badgeSize
+        local badgeY = itemY + (itemHeight - badgeSize) * 0.5
+        drawVehicleBadge(badgeX, badgeY, badgeSize, 0.92, 0.36, 0.16)
+    end
+
+    Menu.DrawItem = wrapped
+    Menu.__vgd_playerRowWrapped = wrapped
 end
 
 return TP
@@ -35879,7 +36489,7 @@ end
 -- BOOT
 -- ---------------------------------------------------------------------------
 function UI.boot()
-    O.log("loader build 2026-11-07-r42 (Flash moved to Online > Troll > Attacks with Auto Safe and nine explicit methods; the selected method is read live; the WaveShield V4 particle configuration is read from GlobalState and delivery uses the first native-whitelisted safe effect or a dynamic-whitelisted safe particle with assetHash stripped on ptFxEvent; particle scale is capped at MaxParticleScale and each pulse sends two networked bursts with no minimum range; the retired Exploit Flash tab is removed; Search magnifier handle rebuilt as a fused diagonal instead of three dots; White keeps the wbYgWhZ banner and Cyan restores its original 3HLMxX5 banner; Online Props Player row sorts the player list by distance and always targets the nearest player; Launch Player selector offers Method 1 and Method 2; Method 1 drives the victim ped directly when control is available and otherwise reverse-attaches the victim to the local ped within 3 m; Method 2 uses a range-free injected coordinate lift plus repeated upward force and velocity for servers that ignore Method 1; launch has no vehicle or explosion; hardened Susano ragdoll keeps the victim speed check lenient; self launch uses 58 m/s with GET_ENTITY_SPEED masked by the stealth hook; velocity and settle waits carry jitter; tight bold category chevrons; Troll Appearance section and Copy Appearance row removed; All mode Include me toggle adds the local ped alongside remote targets; Props Player row hidden in Self and All modes; attachment rows Attach to player and Attach point removed; target labels Self/Player/All; automatic player refresh sorts by distance and selects nearest; manual Refresh player list removed; Ban Player beta suffix removed; Servers and Bypass tabs moved from Destroyer to Misc; FOV moved from Visual/Camera to Self under Big Weapon; theme banners bottom-anchored flush on the category plate; White uses wbYgWhZ and Cyan uses 3HLMxX5; White/Cyan theme selector; White 3:1 header and Cyan 4.1:1 header; flush tab strip; light-grey cell tab plate; dark selected category rectangle; uniform unselected categories; reference names Self/Online/Vehicle/Weapon/Destroyer/Misc/Settings/Search; Search category opens the prompt directly and lands on results; compact magnifier; tight bold category chevron pair; full-white section rules fitted to the label width; Target keeps only the Ctrl hint; Player Props folded into Online; 15px right-aligned slider readout; target-bound toggles reset on target change/unload; dark row plates; white toggle/scrollbar; footer centre mark removed; Delete/Backspace close)")
+    O.log("loader build 2026-11-07-r43 (Flash moved to Online > Troll > Attacks with Auto Safe and ten explicit methods; the selected method is read live; the WaveShield V4 particle configuration is read from GlobalState and delivery uses the first native-whitelisted safe effect or a dynamic-whitelisted safe particle with assetHash stripped on ptFxEvent; particle scale is capped at MaxParticleScale and each pulse sends two networked bursts with no minimum range; a one-player test server gets a local Susano overlay pulse instead of a fabricated server event; the retired Exploit Flash tab is removed; Search magnifier handle rebuilt as a fused diagonal instead of three dots; White keeps the wbYgWhZ banner and Cyan restores its original 3HLMxX5 banner; Online Props Player row sorts the player list by distance and always targets the nearest player; Launch Player selector offers Method 1 and Method 2; Method 1 drives the victim ped directly when control is available and otherwise reverse-attaches the victim to the local ped within 3 m; Method 2 uses a range-free injected coordinate lift plus repeated upward force and velocity for servers that ignore Method 1; launch has no vehicle or explosion; hardened Susano ragdoll keeps the victim speed check lenient; self launch uses 58 m/s with GET_ENTITY_SPEED masked by the stealth hook; velocity and settle waits carry jitter; tight bold category chevrons; Troll Appearance section and Copy Appearance row removed; All mode Include me toggle adds the local ped alongside remote targets; Props Player row hidden in Self and All modes; attachment rows Attach to player and Attach point removed; target labels Self/Player/All; automatic player refresh sorts by distance and selects nearest; manual Refresh player list removed; Ban Player beta suffix removed; Servers and Bypass tabs moved from Destroyer to Misc; FOV moved from Visual/Camera to Self under Big Weapon; theme banners bottom-anchored flush on the category plate; White uses wbYgWhZ and Cyan uses 3HLMxX5; White/Cyan theme selector; White 3:1 header and Cyan 4.1:1 header; flush tab strip; light-grey cell tab plate; dark selected category rectangle; uniform unselected categories; reference names Self/Online/Vehicle/Weapon/Destroyer/Misc/Settings/Search; Search category opens the prompt directly and lands on results; compact magnifier; tight bold category chevron pair; full-white section rules fitted to the label width; Target keeps only the Ctrl hint; Player Props folded into Online; 15px right-aligned slider readout; target-bound toggles reset on target change/unload; dark row plates; white toggle/scrollbar; footer centre mark removed; Delete/Backspace close)")
     O.thread()
 
     -- Delete/Backspace fallback poll. 40 ms is faster than a frame at 30 FPS
