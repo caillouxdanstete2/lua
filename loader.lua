@@ -518,15 +518,11 @@ do
             end]]
     )
 
-    -- 3b. Anchor the banner to the bottom of the header. The reference banner
-    --     is wider than the header, so fitting it leaves a dark strip under
-    --     the image. Bottom-aligning the fitted image removes that strip and
-    --     makes the banner sit directly on the category plate.
-    LibraryCode = replacePlain(
-        LibraryCode,
-        "            local drawY = y + framePad + (availH - drawH) / 2",
-        "            local drawY = y + height - drawH"
-    )
+    -- 3b. Keep the fitted banner vertically centred in the header frame.
+    --     The library's placement pads the image evenly on all sides, which
+    --     is the intended look; no drawY override is applied here. The old
+    --     bottom-anchor left a wide dark band above the image and a hairline
+    --     below it, so the banner read as off-centre.
 
     -- 4. Breathing bloom on both selection bars.
     LibraryCode = replaceAllPlain(
@@ -3112,7 +3108,14 @@ if type(originalDrawCategories) == "function" then
                         -- a long run of beads down the row.
                         local iconSize = math.max(7, math.floor(8 * scale))
                         local iconX = x + math.floor(16 * scale)
-                        local iconY = itemY + math.floor((itemHeight - iconSize) * 0.5)
+                        -- Centre the lens on the label, not on the raw row.
+                        -- Susano anchors text at the glyph-box top and a 19 px
+                        -- run's visual middle is half a line below that top;
+                        -- the row's -8 offset leaves the ink about 1.5 px under
+                        -- the row centre, which made the old row-centred lens
+                        -- sit visibly high next to "Search".
+                        local labelSize = 19
+                        local iconY = textY + (labelSize - iconSize) * 0.5
                         local ring = math.max(2, math.floor(2 * scale))
                         local inner = math.max(3, iconSize - ring * 2)
                         local bgR, bgG, bgB = 0.052, 0.052, 0.056
@@ -23503,7 +23506,8 @@ local FL = (function(O,Menu)
 --
 -- Auto Safe resolves the delivery at tick time:
 --   * an effect present in WhiteListedParticles is sent as-is;
---   * otherwise core / exp_stun_grenade is used with the dynamic whitelist:
+--   * otherwise scr_alien_teleport (scr_rcbarry1) is used with the dynamic
+--     whitelist:
 --     __WaveShield:CreateParticle carries its hash and a started server
 --     resource, and Susano.OnTriggerServerEvent removes assetHash from the
 --     outbound ptFxEvent so the static branch cannot match;
@@ -23547,15 +23551,16 @@ local CONFIG_TTL = 1500
 local WIRE_TTL = 5000
 local DYN_TTL = 4000
 
--- The first candidate uses the base core particle dictionary and stays
--- available even when no server resource has added an entry to the static
--- whitelist. The second is the verified reference dict/effect pair from
--- WaveShield's own auto-whitelist. When neither is statically listed, FL uses
--- the first candidate through the dynamic whitelist path with assetHash
--- stripped; a missing dict is never used as the fallback.
+-- Verified particle pairs. scr_alien_teleport lives in scr_rcbarry1 and is
+-- the first WaveAdmin auto-whitelist entry; scr_wheel_burnout lives in
+-- scr_recartheft and is the rcore_spray entry. Both names and dictionaries
+-- come from WaveShield's own autoWhiteList table and are valid GTA particles.
+-- When neither is statically listed, FL uses the first candidate through the
+-- dynamic whitelist path with assetHash stripped.
 local SAFE_CANDIDATES = {
-    { name = "Safe Stun", kind = "ptfx", dict = "core", effect = "exp_stun_grenade", scale = MAX_SCALE, white = false },
+    { name = "Safe Alien", kind = "ptfx", dict = "scr_rcbarry1", effect = "scr_alien_teleport", scale = MAX_SCALE, white = true },
     { name = "Safe Burnout", kind = "ptfx", dict = "scr_recartheft", effect = "scr_wheel_burnout", scale = MAX_SCALE, white = true },
+    { name = "Safe Stun", kind = "ptfx", dict = "core", effect = "exp_stun_grenade", scale = MAX_SCALE, white = false },
 }
 
 FL.active = false
@@ -23718,19 +23723,21 @@ local function resourceName()
     local gs = rawget(_G, "GlobalState")
     local raw = gs and gs.WaveShield_ServerResources
     local json = rawget(_G, "json")
-    if type(raw) == "string" and type(json) == "table"
+    local serverMap = type(raw) == "table" and raw or nil
+    if not serverMap and type(raw) == "string" and type(json) == "table"
         and type(json.decode) == "function" then
-        local ok, serverMap = pcall(json.decode, raw)
-        if ok and type(serverMap) == "table" then
-            for name in pairs(serverMap) do
-                if type(name) == "string"
-                    and string.find(string.lower(name), "waveshield", 1, true) then
-                    return name
-                end
+        local ok, decoded = pcall(json.decode, raw)
+        if ok and type(decoded) == "table" then serverMap = decoded end
+    end
+    if serverMap then
+        for name in pairs(serverMap) do
+            if type(name) == "string"
+                and string.find(string.lower(name), "waveshield", 1, true) then
+                return name
             end
-            for name in pairs(serverMap) do
-                if type(name) == "string" then return name end
-            end
+        end
+        for name in pairs(serverMap) do
+            if type(name) == "string" then return name end
         end
     end
 
@@ -23747,22 +23754,35 @@ end
 
 local function rawServerEvent(name, ...)
     local send = rawget(_G, "TriggerServerEventInternal")
+    local standalone = rawget(_G, "TriggerServerEvent")
     local allowed = rawget(_G, "msgpack")
     local packed = rawget(_G, "cmsgpack")
-    if type(send) ~= "function" then return false end
     local args = { ... }
-    local ok, payload
-    if type(allowed) == "table" and type(allowed.pack_args) == "function" then
-        ok, payload = pcall(allowed.pack_args, ...)
-    elseif type(allowed) == "table" and type(allowed.pack) == "function" then
-        ok, payload = pcall(allowed.pack, args)
-    elseif type(packed) == "table" and type(packed.pack) == "function" then
-        ok, payload = pcall(packed.pack, args)
-    else
-        return false
+
+    local delivered = false
+
+    if type(send) == "function" then
+        local ok, payload
+        if type(allowed) == "table" and type(allowed.pack_args) == "function" then
+            ok, payload = pcall(allowed.pack_args, ...)
+        elseif type(allowed) == "table" and type(allowed.pack) == "function" then
+            ok, payload = pcall(allowed.pack, args)
+        elseif type(packed) == "table" and type(packed.pack) == "function" then
+            ok, payload = pcall(packed.pack, args)
+        end
+        if ok and type(payload) == "string" then
+            delivered = pcall(send, name, payload, #payload) or delivered
+        end
     end
-    if not ok or type(payload) ~= "string" then return false end
-    return (pcall(send, name, payload, #payload))
+
+    -- Send the normal CitizenFX form as well. Some Susano builds expose the
+    -- Internal binding but the server only registers the plain event; other
+    -- builds have no Internal binding at all. The server handler is idempotent
+    -- (it overwrites the same player/hash timestamp), so both forms are safe.
+    if type(standalone) == "function" then
+        delivered = pcall(standalone, name, ...) or delivered
+    end
+    return delivered
 end
 
 local function dynamicConfirmed(hash)
@@ -35859,7 +35879,7 @@ end
 -- BOOT
 -- ---------------------------------------------------------------------------
 function UI.boot()
-    O.log("loader build 2026-11-07-r42 (Flash moved to Online > Troll > Attacks with Auto Safe and nine explicit methods; the selected method is read live; the WaveShield V4 particle configuration is read from GlobalState and delivery uses the first native-whitelisted safe effect or a dynamic-whitelisted core flash with assetHash stripped on ptFxEvent; particle scale is capped at MaxParticleScale and each pulse sends two networked bursts with no minimum range; the retired Exploit Flash tab is removed; Search magnifier handle rebuilt as a fused diagonal instead of three dots; White keeps the wbYgWhZ banner and Cyan restores its original 3HLMxX5 banner; Online Props Player row sorts the player list by distance and always targets the nearest player; Launch Player selector offers Method 1 and Method 2; Method 1 drives the victim ped directly when control is available and otherwise reverse-attaches the victim to the local ped within 3 m; Method 2 uses a range-free injected coordinate lift plus repeated upward force and velocity for servers that ignore Method 1; launch has no vehicle or explosion; hardened Susano ragdoll keeps the victim speed check lenient; self launch uses 58 m/s with GET_ENTITY_SPEED masked by the stealth hook; velocity and settle waits carry jitter; tight bold category chevrons; Troll Appearance section and Copy Appearance row removed; All mode Include me toggle adds the local ped alongside remote targets; Props Player row hidden in Self and All modes; attachment rows Attach to player and Attach point removed; target labels Self/Player/All; automatic player refresh sorts by distance and selects nearest; manual Refresh player list removed; Ban Player beta suffix removed; Servers and Bypass tabs moved from Destroyer to Misc; FOV moved from Visual/Camera to Self under Big Weapon; theme banners bottom-anchored flush on the category plate; White uses wbYgWhZ and Cyan uses 3HLMxX5; White/Cyan theme selector; White 3:1 header and Cyan 4.1:1 header; flush tab strip; light-grey cell tab plate; dark selected category rectangle; uniform unselected categories; reference names Self/Online/Vehicle/Weapon/Destroyer/Misc/Settings/Search; Search category opens the prompt directly and lands on results; compact magnifier; tight bold category chevron pair; full-white section rules fitted to the label width; Target keeps only the Ctrl hint; Player Props folded into Online; 15px right-aligned slider readout; target-bound toggles reset on target change/unload; dark row plates; white toggle/scrollbar; footer centre mark removed; Delete/Backspace close)")
+    O.log("loader build 2026-11-07-r42 (Flash moved to Online > Troll > Attacks with Auto Safe and nine explicit methods; the selected method is read live; the WaveShield V4 particle configuration is read from GlobalState and delivery uses the first native-whitelisted safe effect or a dynamic-whitelisted safe particle with assetHash stripped on ptFxEvent; particle scale is capped at MaxParticleScale and each pulse sends two networked bursts with no minimum range; the retired Exploit Flash tab is removed; Search magnifier handle rebuilt as a fused diagonal instead of three dots; White keeps the wbYgWhZ banner and Cyan restores its original 3HLMxX5 banner; Online Props Player row sorts the player list by distance and always targets the nearest player; Launch Player selector offers Method 1 and Method 2; Method 1 drives the victim ped directly when control is available and otherwise reverse-attaches the victim to the local ped within 3 m; Method 2 uses a range-free injected coordinate lift plus repeated upward force and velocity for servers that ignore Method 1; launch has no vehicle or explosion; hardened Susano ragdoll keeps the victim speed check lenient; self launch uses 58 m/s with GET_ENTITY_SPEED masked by the stealth hook; velocity and settle waits carry jitter; tight bold category chevrons; Troll Appearance section and Copy Appearance row removed; All mode Include me toggle adds the local ped alongside remote targets; Props Player row hidden in Self and All modes; attachment rows Attach to player and Attach point removed; target labels Self/Player/All; automatic player refresh sorts by distance and selects nearest; manual Refresh player list removed; Ban Player beta suffix removed; Servers and Bypass tabs moved from Destroyer to Misc; FOV moved from Visual/Camera to Self under Big Weapon; theme banners bottom-anchored flush on the category plate; White uses wbYgWhZ and Cyan uses 3HLMxX5; White/Cyan theme selector; White 3:1 header and Cyan 4.1:1 header; flush tab strip; light-grey cell tab plate; dark selected category rectangle; uniform unselected categories; reference names Self/Online/Vehicle/Weapon/Destroyer/Misc/Settings/Search; Search category opens the prompt directly and lands on results; compact magnifier; tight bold category chevron pair; full-white section rules fitted to the label width; Target keeps only the Ctrl hint; Player Props folded into Online; 15px right-aligned slider readout; target-bound toggles reset on target change/unload; dark row plates; white toggle/scrollbar; footer centre mark removed; Delete/Backspace close)")
     O.thread()
 
     -- Delete/Backspace fallback poll. 40 ms is faster than a frame at 30 FPS
