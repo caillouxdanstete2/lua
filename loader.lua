@@ -2417,9 +2417,6 @@ Menu.Categories = {
             { name = "Loading players...", type = "action" }
         }},
         { name = "Troll", items = {
-            { name = "", isSeparator = true, separatorText = "Appearance" },
-            { name = "Copy Appearance", type = "action" },
-            
             { name = "", isSeparator = true, separatorText = "Attacks" },
             { name = "Ban Player", type = "toggle", value = false, risk = true},
             { name = "Shoot Player", type = "action", risk = true},
@@ -2993,15 +2990,26 @@ if type(originalDrawCategories) == "function" then
 
                     Menu.DrawText(textX, textY, label, 19, textR, textG, textB, 1.0)
 
+                    -- Two separate glyphs with a controlled step. Letting the
+                    -- font lay out ">>" leaves a wide gap between the pair; the
+                    -- step here tightens it and the second pass at one pixel
+                    -- gives the mark a bolder weight without changing font.
                     local chevSize = 19
-                    local chevText = ">>"
-                    local chevWidth = 0
+                    local chevGlyph = ">"
+                    local chevGlyphWidth = 0
                     if Susano and Susano.GetTextWidth then
-                        chevWidth = Susano.GetTextWidth(chevText, chevSize * scale) or 0
+                        chevGlyphWidth = Susano.GetTextWidth(chevGlyph, chevSize * scale) or 0
                     end
-                    if chevWidth <= 0 then chevWidth = 16 * scale end
+                    if chevGlyphWidth <= 0 then chevGlyphWidth = 8 * scale end
+                    local chevStep = math.floor(chevGlyphWidth * 0.58)
+                    local chevWidth = chevGlyphWidth + chevStep
                     local chevX = x + width - math.floor(16 * scale) - chevWidth
-                    Menu.DrawText(chevX, textY, chevText, chevSize, textR, textG, textB, 1.0)
+                    local chevBold = math.max(1, math.floor(1 * scale))
+                    for chevIndex = 0, 1 do
+                        local cx = chevX + chevIndex * chevStep
+                        Menu.DrawText(cx, textY, chevGlyph, chevSize, textR, textG, textB, 1.0)
+                        Menu.DrawText(cx + chevBold, textY, chevGlyph, chevSize, textR, textG, textB, 1.0)
+                    end
                 end
             end
 
@@ -11995,13 +12003,6 @@ end
                     end
                 end)
         ]], targetServerId))
-    end
-end
-
-Actions.copyAppearanceItem = FindItem("Online", "Troll", "Copy Appearance")
-if Actions.copyAppearanceItem then
-    Actions.copyAppearanceItem.onClick = function()
-        Menu.ActionCopyAppearance()
     end
 end
 
@@ -35384,7 +35385,7 @@ end
 -- BOOT
 -- ---------------------------------------------------------------------------
 function UI.boot()
-    O.log("loader build 2026-11-07-r30 (All mode Include me toggle adds the local ped alongside remote targets; Props Player row hidden in Self and All modes; attachment rows Attach to player and Attach point removed; target labels Self/Player/All; automatic player refresh keeps the selected server id; manual Refresh player list removed; Ban Player beta suffix removed; Servers and Bypass tabs moved from Destroyer to Misc; FOV moved from Visual/Camera to Self under Big Weapon; banner wbYgWhZ bottom-anchored flush on the category plate; White/Cyan theme selector; 3:1 header; flush tab strip; light-grey cell tab plate; dark selected category rectangle; uniform unselected categories; reference names Self/Online/Vehicle/Weapon/Destroyer/Misc/Settings/Search; Search category opens the prompt directly and lands on results; compact magnifier; literal >> category chevrons; full-white section rules fitted to the label width; Target keeps only the Ctrl hint; Player Props folded into Online; 15px right-aligned slider readout; target-bound toggles reset on target change/unload; dark row plates; white toggle/scrollbar; footer centre mark removed; Delete/Backspace close)")
+    O.log("loader build 2026-11-07-r31 (Tight bold category chevrons; Troll Appearance section and Copy Appearance row removed; All mode Include me toggle adds the local ped alongside remote targets; Props Player row hidden in Self and All modes; attachment rows Attach to player and Attach point removed; target labels Self/Player/All; automatic player refresh keeps the selected server id; manual Refresh player list removed; Ban Player beta suffix removed; Servers and Bypass tabs moved from Destroyer to Misc; FOV moved from Visual/Camera to Self under Big Weapon; banner wbYgWhZ bottom-anchored flush on the category plate; White/Cyan theme selector; 3:1 header; flush tab strip; light-grey cell tab plate; dark selected category rectangle; uniform unselected categories; reference names Self/Online/Vehicle/Weapon/Destroyer/Misc/Settings/Search; Search category opens the prompt directly and lands on results; compact magnifier; tight bold category chevron pair; full-white section rules fitted to the label width; Target keeps only the Ctrl hint; Player Props folded into Online; 15px right-aligned slider readout; target-bound toggles reset on target change/unload; dark row plates; white toggle/scrollbar; footer centre mark removed; Delete/Backspace close)")
     O.thread()
 
     -- Delete/Backspace fallback poll. 40 ms is faster than a frame at 30 FPS
