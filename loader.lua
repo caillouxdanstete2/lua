@@ -143,8 +143,9 @@ LibraryCode = string.gsub(
 -- ============================================
 -- PATCH: Main-menu label alias
 -- ============================================
--- Every feature lookup still uses the original "Player" category key. Only the
--- row label shown in the main menu changes to "Self".
+-- Every feature lookup still uses the original category key. Only the row
+-- labels shown in the main menu are decorated: "Self Options", "Online
+-- Options", "Player Props Options", and so on. Internal names never change.
 LibraryCode = replacePlain(
     LibraryCode,
     "            Menu.DrawText(textX, textY, category.name, 19, Menu.Colors.TextWhite.r / 255.0, Menu.Colors.TextWhite.g / 255.0, Menu.Colors.TextWhite.b / 255.0, 1.0)",
@@ -874,7 +875,16 @@ end
 Menu.IconTextures = {}
 Menu.FooterLogoTex = nil
 Menu.FooterText = "" -- <<< CHANGE THIS to your menu name
-Menu.CategoryLabels = { Player = "Self" }
+Menu.CategoryLabels = {
+    Player = "Self Options",
+    Online = "Online Options",
+    ["Player Props"] = "Player Props Options",
+    Visual = "Visual Options",
+    Combat = "Combat Options",
+    Vehicle = "Vehicle Options",
+    Exploit = "Exploit Options",
+    Settings = "Settings Options",
+}
 
 -- Footer logo URL (small square image, ideally 64x64 or 128x128 PNG)
 Menu.FooterLogoUrl = "https://i.imgur.com/jY5oSqw.png" -- <<< REPLACE with your logo URL
@@ -34316,7 +34326,7 @@ end
 -- BOOT
 -- ---------------------------------------------------------------------------
 function UI.boot()
-    O.log("loader build 2026-11-07-r15 (Delete/Backspace close; Exploit Servers + Voice tabs; Menu Staff seed after Dynasty Revive; stable tab order)")
+    O.log("loader build 2026-11-07-r16 (main-menu Options labels; Delete/Backspace close; Exploit Servers + Voice tabs; Menu Staff seed after Dynasty Revive)")
     O.thread()
 
     -- Delete/Backspace fallback poll. 40 ms is faster than a frame at 30 FPS
