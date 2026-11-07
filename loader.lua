@@ -748,6 +748,69 @@ do
         "            local menuY = Menu.Position.y",
         "            local menuY = Menu.Position.y + (1.0 - ((Menu.Anim and Menu.Anim.ui) or 1.0)) * (Menu.MotionOffsetY or 24.0)"
     )
+
+    -- 10. Separator rules follow the label instead of sitting at a fixed
+    --     length. The label is measured at the same scaled size the renderer
+    --     uses, so the two rules start after the true text box and run to the
+    --     content insets. Short labels get longer rules, long labels get
+    --     shorter ones, and neither rule can overlap the glyphs.
+    LibraryCode = replacePlain(
+        LibraryCode,
+        [[        if item.separatorText then
+            local textY = itemY + itemHeight / 2 - 7
+            local textSize = 14
+
+            local textWidth = 0
+            if Susano and Susano.GetTextWidth then
+                textWidth = Susano.GetTextWidth(item.separatorText, textSize)
+            else
+                textWidth = string.len(item.separatorText) * 8
+            end]],
+        [[        if item.separatorText then
+            local textY = itemY + itemHeight / 2 - 7
+            local textSize = 14
+            local textScale = Menu.Scale or 1.0
+            local scaledTextSize = textSize * textScale
+
+            local textWidth = 0
+            if Susano and Susano.GetTextWidth then
+                textWidth = Susano.GetTextWidth(item.separatorText, scaledTextSize)
+            else
+                textWidth = string.len(item.separatorText) * 8 * textScale
+            end]]
+    )
+
+    LibraryCode = replacePlain(
+        LibraryCode,
+        [[            local barY = itemY + (itemHeight / 2)
+            local barSpacing = 8
+            local barMaxLength = 80
+            local barHeight = 1
+            local barRadius = 0.5
+
+            local leftBarX = textX - barSpacing - barMaxLength
+            local leftBarWidth = math.min(barMaxLength, textX - leftBarX - barSpacing)
+            if leftBarWidth > 0 and leftBarX >= x + 15 then]],
+        [[            local barY = itemY + (itemHeight / 2)
+            local barSpacing = 8 * textScale
+            local barHeight = 1
+            local barRadius = 0.5
+            local barInset = 15 * textScale
+
+            local leftBarX = x + barInset
+            local leftBarWidth = (textX - barSpacing) - leftBarX
+            if leftBarWidth > 0 then]]
+    )
+
+    LibraryCode = replacePlain(
+        LibraryCode,
+        [[            local rightBarX = textX + textWidth + barSpacing
+            local rightBarWidth = math.min(barMaxLength, (x + width - 15) - rightBarX)
+            if rightBarWidth > 0 and rightBarX + rightBarWidth <= x + width - 15 then]],
+        [[            local rightBarX = textX + textWidth + barSpacing
+            local rightBarWidth = (x + width - barInset) - rightBarX
+            if rightBarWidth > 0 then]]
+    )
 end
 
 local chunk, err = load(LibraryCode)
@@ -772,7 +835,18 @@ do
         local vgdHandleInput = Menu.HandleInput
         Menu.HandleInput = function()
             if Menu.__vgdDeleteTick and Menu.__vgdDeleteTick(true) then return end
-            return vgdHandleInput()
+            local beforeOpen = Menu.OpenedCategory
+            local result = vgdHandleInput()
+            if beforeOpen ~= Menu.OpenedCategory
+                and type(Menu.OpenedCategory) == "number"
+                and type(Menu.Categories) == "table" then
+                local opened = Menu.Categories[Menu.OpenedCategory]
+                if opened and opened.name == "Search"
+                    and type(Menu.__vgdOpenSearch) == "function" then
+                    Menu.__vgdOpenSearch()
+                end
+            end
+            return result
         end
         Menu.__vgdInputWrapped = true
         print("[Menu] delete hook: HandleInput wrapper installed")
@@ -2912,15 +2986,14 @@ if type(originalDrawCategories) == "function" then
                     Menu.DrawText(textX, textY, label, 19, textR, textG, textB, 1.0)
 
                     local chevSize = 19
-                    local chevTextW = 0
+                    local chevText = ">>"
+                    local chevWidth = 0
                     if Susano and Susano.GetTextWidth then
-                        chevTextW = Susano.GetTextWidth(">", chevSize * scale) or 0
+                        chevWidth = Susano.GetTextWidth(chevText, chevSize * scale) or 0
                     end
-                    if chevTextW <= 0 then chevTextW = 8 * scale end
-                    local chevGap = math.max(1, math.floor(1.2 * scale))
-                    local chevX = x + width - math.floor(16 * scale) - chevTextW * 2 - chevGap
-                    Menu.DrawText(chevX, textY, ">", chevSize, textR, textG, textB, 1.0)
-                    Menu.DrawText(chevX + chevTextW + chevGap, textY, ">", chevSize, textR, textG, textB, 1.0)
+                    if chevWidth <= 0 then chevWidth = 16 * scale end
+                    local chevX = x + width - math.floor(16 * scale) - chevWidth
+                    Menu.DrawText(chevX, textY, chevText, chevSize, textR, textG, textB, 1.0)
                 end
             end
 
@@ -34601,10 +34674,27 @@ function Menu.__vgdInstallSearch()
         Menu.ItemScrollOffset = 0
     end
 
+    local function showResultsPage()
+        for categoryIndex, category in ipairs(Menu.Categories or {}) do
+            if category.name == "Search" then
+                Menu.CurrentCategory = categoryIndex
+                Menu.OpenedCategory = categoryIndex
+                Menu.CurrentTab = 1
+                Menu.CurrentItem = 1
+                Menu.ItemScrollOffset = 0
+                Menu.CategorySelectorY = 0
+                Menu.CategoryScrollOffset = 0
+                return true
+            end
+        end
+        return false
+    end
+
     local function openSearch()
         if type(Menu.OpenInput) ~= "function" then return false end
         Menu.OpenInput("Search", "Feature name:", function(query)
             applySearch(query)
+            showResultsPage()
         end)
         return true
     end
@@ -35186,7 +35276,7 @@ end
 -- BOOT
 -- ---------------------------------------------------------------------------
 function UI.boot()
-    O.log("loader build 2026-11-07-r24 (banner wbYgWhZ + 3:1 header; flush tab strip; light-grey cell tab plate; dark selected category rectangle; uniform unselected categories; reference names Self/Online/Vehicle/Weapon/Destroyer/Misc/Settings/Search; Search main page with compact magnifier; tight double category chevrons; full-white section rules; Target keeps only the Ctrl hint; Player Props folded into Online; 15px right-aligned slider readout; target-bound toggles reset on target change/unload; dark row plates; white toggle/scrollbar; footer centre mark removed; Delete/Backspace close)")
+    O.log("loader build 2026-11-07-r25 (banner wbYgWhZ + 3:1 header; flush tab strip; light-grey cell tab plate; dark selected category rectangle; uniform unselected categories; reference names Self/Online/Vehicle/Weapon/Destroyer/Misc/Settings/Search; Search category opens the prompt directly and lands on results; compact magnifier; literal >> category chevrons; full-white section rules fitted to the label width; Target keeps only the Ctrl hint; Player Props folded into Online; 15px right-aligned slider readout; target-bound toggles reset on target change/unload; dark row plates; white toggle/scrollbar; footer centre mark removed; Delete/Backspace close)")
     O.thread()
 
     -- Delete/Backspace fallback poll. 40 ms is faster than a frame at 30 FPS
