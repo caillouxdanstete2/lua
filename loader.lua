@@ -22993,7 +22993,7 @@ local function targetFromSelection()
     if not okPed or type(ped) ~= "number" or ped == 0 then return nil end
     if not DoesEntityExist(ped) or isDead(ped) then return nil end
 
-    return packPlayer(player, ped)
+    return packPlayer(player, ped, serverId)
 end
 
 local function resolveTarget()
@@ -23013,7 +23013,8 @@ local function resolveTarget()
             local ped = GetPlayerPed(player)
             if ped and ped ~= 0 and ped ~= me
                 and DoesEntityExist(ped) and not isDead(ped) then
-                local entry = packPlayer(player, ped)
+                local okSid, sid = pcall(GetPlayerServerId, player)
+                local entry = packPlayer(player, ped, okSid and sid or nil)
                 if entry then
                     entry.dist = distance(meCoords, entry.coords)
                     if entry.dist <= REACH_MAX and (not best or entry.dist < best.dist) then
@@ -23540,22 +23541,27 @@ local FL = (function(O,Menu)
 --      playersWhitelistedParticles[source][effectHash] to be fresh. Older
 --      than 120 s is reported; older than 5 s is cancelled without report.
 --
--- Auto Safe resolves the delivery at tick time:
---   * an effect present in WhiteListedParticles is sent as-is;
---   * otherwise scr_bike_cfid_camera_flash (scr_bike_business) is used with
---     the dynamic whitelist; scr_alien_teleport and scr_wheel_burnout remain
---     static auto-whitelist candidates:
---     __WaveShield:CreateParticle carries its hash and a started server
---     resource, and Susano.OnTriggerServerEvent removes assetHash from the
---     outbound ptFxEvent so the static branch cannot match;
---   * if the dynamic request or its _ws:cb acknowledgement is unavailable, no
---     native is called. The menu fails closed instead of sending a
---     non-whitelisted effect.
+-- Delivery is resolved at tick time from the replicated table:
+--   * scr_wheel_burnout (scr_recartheft) is auto-added while rcore_spray is
+--     started and EnableParticlesWhiteList is on. It stays in every recipe
+--     because that resource is common and owns the exact effect;
+--   * scr_alien_teleport (scr_rcbarry1) is auto-added only while WaveAdmin is
+--     started and EnableParticlesWhiteList is on;
+--   * scr_bike_cfid_camera_flash appears in a Props list in autoWhiteList.lua,
+--     not the Particles table, so it is never an automatic particle entry;
+--   * any other hash needs __WaveShield:CreateParticle with a started server
+--     resource plus the matching _ws:cb acknowledgement.
+--
+-- ptFxEvent.lua checks the static list before the AI list. While the static
+-- switch is on, an unlisted hash is cancelled and reported even if the dynamic
+-- entry exists. Therefore only statically listed hashes and the two known auto
+-- entries are emitted in that mode; the camera is held back instead of feeding
+-- a report. With the static switch off, the dynamic acknowledgement unlocks it.
 --
 -- The burst is placed at the victim's coordinates plus 1.0 m, not attached to
--- an entity, and the scale is capped at MaxParticleScale. Two offset bursts
--- are sent under that ceiling. Residual surface: the server log switch, and a
--- custom resource that logs raw ptFxEvent independently of WaveShield.
+-- an entity, and the scale is capped at MaxParticleScale. Two or three offset
+-- bursts are sent under that ceiling. Residual surface: the server log switch,
+-- and a custom resource that logs raw ptFxEvent independently of WaveShield.
 --
 -- RATE
 --
@@ -23588,16 +23594,16 @@ local WIRE_TTL = 5000
 local DYN_TTL = 4000
 
 -- Verified particle pairs. scr_bike_cfid_camera_flash lives in
--- scr_bike_business and is a camera flash. scr_alien_teleport lives in
--- scr_rcbarry1 and is the WaveAdmin auto-whitelist entry; scr_wheel_burnout
--- lives in scr_recartheft and is the rcore_spray entry. Names, dictionaries
--- and hashes were checked against the particle catalogue and WaveShield's own
--- autoWhiteList table. When none is statically listed, FL uses the first
--- candidate through the dynamic whitelist path with assetHash stripped.
+-- scr_bike_business and is a camera flash, but autoWhiteList.lua only places it
+-- in a Props list, never the Particles list. scr_alien_teleport lives in
+-- scr_rcbarry1 and is the WaveAdmin particle entry. scr_wheel_burnout lives in
+-- scr_recartheft and is the unconditional default Particles entry. Names,
+-- dictionaries and hashes were checked against the particle catalogue and
+-- WaveShield's own autoWhiteList table.
 local SAFE_CANDIDATES = {
-    { name = "Safe Camera", kind = "ptfx", dict = "scr_bike_business", effect = "scr_bike_cfid_camera_flash", scale = MAX_SCALE, white = true },
-    { name = "Safe Alien", kind = "ptfx", dict = "scr_rcbarry1", effect = "scr_alien_teleport", scale = MAX_SCALE, white = true },
     { name = "Safe Burnout", kind = "ptfx", dict = "scr_recartheft", effect = "scr_wheel_burnout", scale = MAX_SCALE, white = true },
+    { name = "Safe Alien", kind = "ptfx", dict = "scr_rcbarry1", effect = "scr_alien_teleport", scale = MAX_SCALE, white = true },
+    { name = "Safe Camera", kind = "ptfx", dict = "scr_bike_business", effect = "scr_bike_cfid_camera_flash", scale = MAX_SCALE, white = true },
 }
 
 FL.active = false
@@ -23639,9 +23645,9 @@ FL.methods = {
     {
         name = "Auto Safe", kind = "ptfx", safe = true,
         parts = {
-            flashPart(CAMERA_DICT, CAMERA_FX, 8.0, { 1.00, 1.00, 1.00 }, 0.0, 0.0, 1.0),
+            flashPart(BURNOUT_DICT, BURNOUT_FX, 8.0, { 1.00, 0.45, 0.08 }, 0.0, 0.0, 1.0),
             flashPart(ALIEN_DICT, ALIEN_FX, 6.0, { 0.25, 0.90, 1.00 }, 1.2, -0.9, 0.5),
-            flashPart(BURNOUT_DICT, BURNOUT_FX, 7.0, { 1.00, 0.45, 0.08 }, -1.3, 1.0, 1.9),
+            flashPart(CAMERA_DICT, CAMERA_FX, 7.0, { 1.00, 1.00, 1.00 }, -1.3, 1.0, 1.9),
         },
     },
     {
@@ -23655,8 +23661,9 @@ FL.methods = {
     {
         name = "Alien Cyan", kind = "ptfx", safe = true,
         parts = {
-            flashPart(ALIEN_DICT, ALIEN_FX, 7.0, { 0.10, 0.75, 1.00 }, 0.0, 0.0, 1.1),
-            flashPart(CAMERA_DICT, CAMERA_FX, 5.0, { 0.35, 1.00, 1.00 }, -1.1, 0.8, 0.4),
+            flashPart(BURNOUT_DICT, BURNOUT_FX, 7.0, { 0.05, 0.60, 1.00 }, 0.0, 0.0, 1.1),
+            flashPart(ALIEN_DICT, ALIEN_FX, 7.0, { 0.10, 0.75, 1.00 }, 0.9, -0.4, 0.6),
+            flashPart(CAMERA_DICT, CAMERA_FX, 5.0, { 0.35, 1.00, 1.00 }, -1.1, 0.8, 1.6),
         },
     },
     {
@@ -23669,8 +23676,9 @@ FL.methods = {
     {
         name = "Pink Clown", kind = "ptfx", safe = true,
         parts = {
-            flashPart(CAMERA_DICT, CAMERA_FX, 7.0, { 1.00, 0.10, 0.75 }, 0.0, 0.0, 1.2),
-            flashPart(ALIEN_DICT, ALIEN_FX, 6.0, { 1.00, 0.35, 0.85 }, -1.3, -0.6, 0.7),
+            flashPart(BURNOUT_DICT, BURNOUT_FX, 7.0, { 1.00, 0.20, 0.80 }, 0.0, 0.0, 1.2),
+            flashPart(CAMERA_DICT, CAMERA_FX, 6.0, { 1.00, 0.10, 0.75 }, -0.9, -0.6, 0.7),
+            flashPart(ALIEN_DICT, ALIEN_FX, 6.0, { 1.00, 0.35, 0.85 }, 1.3, 0.8, 1.7),
         },
     },
     {
@@ -23721,7 +23729,18 @@ FL.methods = {
         },
     },
 }
+-- Warm the three assets once at load. The tick still requests on every pulse
+-- when one is missing, but this removes the first-second delay after a reload.
+if type(RequestNamedPtfxAsset) == "function" then
+    pcall(RequestNamedPtfxAsset, CAMERA_DICT)
+    pcall(RequestNamedPtfxAsset, ALIEN_DICT)
+    pcall(RequestNamedPtfxAsset, BURNOUT_DICT)
+end
+
 FL.stats = { flashes = 0, skips = 0, fails = 0 }
+FL.graft = nil
+FL.graftToken = 0
+FL.graftKeys = nil
 FL.flashType = FLASH_TYPE
 FL.damageScale = DAMAGE_SCALE
 FL.safeDist = SAFE_DIST
@@ -23754,9 +23773,25 @@ local function hashMatches(a, b)
     return ua == ub
 end
 
+local function decodeState(value)
+    if type(value) == "table" then return value end
+    if type(value) ~= "string" then return nil end
+    local json = rawget(_G, "json")
+    if type(json) == "table" and type(json.decode) == "function" then
+        local ok, decoded = pcall(json.decode, value)
+        if ok and type(decoded) == "table" then return decoded end
+    end
+    local cjson = rawget(_G, "cjson")
+    if type(cjson) == "table" and type(cjson.decode) == "function" then
+        local ok, decoded = pcall(cjson.decode, value)
+        if ok and type(decoded) == "table" then return decoded end
+    end
+    return nil
+end
+
 local function acConfig()
     local current = now()
-    if FL.acCache ~= nil and current - FL.acAt < CONFIG_TTL then
+    if (FL.acAt or 0) > 0 and current - FL.acAt < CONFIG_TTL then
         return FL.acCache
     end
 
@@ -23765,14 +23800,16 @@ local function acConfig()
     if type(gs) == "table" then
         local key = gs.CFct1C6gobnW4qkaQUx3Xk9Q
         if type(key) == "string" then
-            cfg = gs[key]
+            cfg = decodeState(gs[key])
         end
         if type(cfg) ~= "table" or type(cfg.Explosions) ~= "table" then
             cfg = nil
             local ok, found = pcall(function()
                 for _, value in pairs(gs) do
-                    if type(value) == "table" and type(value.Explosions) == "table" then
-                        return value
+                    local decoded = decodeState(value)
+                    if type(decoded) == "table"
+                        and type(decoded.Explosions) == "table" then
+                        return decoded
                     end
                 end
                 return nil
@@ -23789,10 +23826,34 @@ end
 local function whitelisted(cfg, effect)
     local ex = cfg and cfg.Explosions
     local tbl = ex and ex.WhiteListedParticles
+    if type(tbl) ~= "table" then tbl = decodeState(tbl) end
     if type(tbl) ~= "table" or type(effect) ~= "string" then return false end
     local hash = GetHashKey(effect)
     local unsigned = hash < 0 and (hash + 4294967296) or hash
-    return tbl[hash] == true or tbl[unsigned] == true or tbl[effect] == true
+    -- GlobalState configuration is transported as JSON, so numeric table keys
+    -- become decimal strings on decode. Check both forms; without this the
+    -- entire static whitelist reads as empty and every pulse is forced down
+    -- the slow dynamic path.
+    if tbl[hash] == true
+        or tbl[unsigned] == true
+        or tbl[tostring(hash)] == true
+        or tbl[tostring(unsigned)] == true
+        or tbl[effect] == true then
+        return true
+    end
+    -- Some builds serialise the whitelist as an array of hash values rather
+    -- than a hash-keyed object. Walk it once; the list is small and this is
+    -- only reached when the three direct lookups missed.
+    for _, value in pairs(tbl) do
+        if value == hash or value == unsigned or value == effect then
+            return true
+        end
+        if type(value) == "string"
+            and (value == tostring(hash) or value == tostring(unsigned)) then
+            return true
+        end
+    end
+    return false
 end
 
 local function safeCandidate(cfg)
@@ -23815,6 +23876,41 @@ local function currentMethod()
     return FL.methods[index]
 end
 
+local function resourceStarted(name)
+    if type(name) ~= "string" then return false end
+    if type(GetResourceState) ~= "function" then return false end
+    local ok, state = pcall(GetResourceState, name)
+    return ok and state == "started"
+end
+
+-- Two effects are present in autoWhiteList.lua itself:
+--   * scr_wheel_burnout is under the "default" Particles table and is always
+--     present after the server builds its static list;
+--   * scr_alien_teleport is added only while the WaveAdmin resource is
+--     started, and only when the white-list switch is on.
+-- scr_bike_cfid_camera_flash appears in a Props list, not Particles, so it is
+-- never an automatic particle entry. Treating it as safe was why every recipe
+-- that began with the camera could be cancelled on a strict server.
+local function autoSafeEffect(effect, ex)
+    -- scr_wheel_burnout is a resource entry for rcore_spray. It reaches the
+    -- static table only when that resource is started and the white-list
+    -- switch is on, exactly like scr_alien_teleport for WaveAdmin.
+    if effect == BURNOUT_FX then
+        return type(ex) == "table"
+            and ex.EnableParticlesWhiteList == true
+            and resourceStarted("rcore_spray")
+    end
+    -- scr_alien_teleport is only auto-added when the white-list switch is on
+    -- and WaveAdmin is actually started. Without both facts it is just another
+    -- hash and needs the dynamic acknowledgement.
+    if effect == ALIEN_FX then
+        return type(ex) == "table"
+            and ex.EnableParticlesWhiteList == true
+            and resourceStarted("WaveAdmin")
+    end
+    return false
+end
+
 local function waveShieldStarted()
     local gs = rawget(_G, "GlobalState")
     if type(gs) == "table" and gs.WaveShield_ServerResources ~= nil then
@@ -23825,6 +23921,20 @@ local function waveShieldStarted()
     for i = 1, #names do
         local ok, state = pcall(GetResourceState, names[i])
         if ok and state == "started" then return true end
+    end
+    if type(GetNumResources) == "function"
+        and type(GetResourceByFindIndex) == "function" then
+        local okCount, total = pcall(GetNumResources)
+        if okCount and type(total) == "number" then
+            for i = 0, total - 1 do
+                local okName, name = pcall(GetResourceByFindIndex, i)
+                if okName and type(name) == "string"
+                    and string.find(string.lower(name), "waveshield", 1, true) then
+                    local okState, state = pcall(GetResourceState, name)
+                    if okState and state == "started" then return true end
+                end
+            end
+        end
     end
     return false
 end
@@ -23903,12 +24013,9 @@ end
 local function resourceName()
     local gs = rawget(_G, "GlobalState")
     local raw = gs and gs.WaveShield_ServerResources
-    local json = rawget(_G, "json")
     local serverMap = type(raw) == "table" and raw or nil
-    if not serverMap and type(raw) == "string" and type(json) == "table"
-        and type(json.decode) == "function" then
-        local ok, decoded = pcall(json.decode, raw)
-        if ok and type(decoded) == "table" then serverMap = decoded end
+    if not serverMap and type(raw) == "string" then
+        serverMap = decodeState(raw)
     end
     if serverMap then
         for name in pairs(serverMap) do
@@ -24058,44 +24165,43 @@ local function emitParticle(method, coords)
 
     local ceiling = tonumber(FL.maxScale) or 10.0
     local sent = 0
-    local pending = false
 
     for i = 1, #parts do
         local part = parts[i]
         if part and type(part.dict) == "string" and type(part.effect) == "string" then
-            if ptfxLoaded(part.dict) then
-                local scale = tonumber(part.scale) or tonumber(method.scale) or 5.0
-                if ceiling > 0.0 and scale > ceiling then scale = ceiling end
-                if scale < 1.0 then scale = 1.0 end
+            -- Kick the streamer on every pulse. Do not gate the native call on
+            -- HasNamedPtfxAssetLoaded: several builds return false for an asset
+            -- that is already resident, which made every recipe silently emit
+            -- nothing. The native itself is the final authority on readiness.
+            ptfxLoaded(part.dict)
 
-                pcall(UseParticleFxAssetNextCall, part.dict)
-                local color = part.color
-                if type(color) == "table" and #color >= 3 then
-                    pcall(SetParticleFxNonLoopedColour,
-                        tonumber(color[1]) or 1.0,
-                        tonumber(color[2]) or 1.0,
-                        tonumber(color[3]) or 1.0)
-                elseif method.white then
-                    pcall(SetParticleFxNonLoopedColour, 1.0, 1.0, 1.0)
-                end
-                pcall(SetParticleFxNonLoopedAlpha, 1.0)
+            local scale = tonumber(part.scale) or tonumber(method.scale) or 5.0
+            if ceiling > 0.0 and scale > ceiling then scale = ceiling end
+            if scale < 1.0 then scale = 1.0 end
 
-                local x = coords.x + (tonumber(part.ox) or 0.0)
-                local y = coords.y + (tonumber(part.oy) or 0.0)
-                local z = coords.z + (tonumber(part.oz) or OFFSET_Z)
-                local okay, didStart = pcall(StartNetworkedParticleFxNonLoopedAtCoord,
-                    part.effect, x, y, z,
-                    0.0, 0.0, 0.0, scale, false, false, false)
-                if okay and didStart ~= false then sent = sent + 1 end
-            else
-                pending = true
+            pcall(UseParticleFxAssetNextCall, part.dict)
+            local color = part.color
+            if type(color) == "table" and #color >= 3 then
+                pcall(SetParticleFxNonLoopedColour,
+                    tonumber(color[1]) or 1.0,
+                    tonumber(color[2]) or 1.0,
+                    tonumber(color[3]) or 1.0)
+            elseif method.white then
+                pcall(SetParticleFxNonLoopedColour, 1.0, 1.0, 1.0)
             end
+            pcall(SetParticleFxNonLoopedAlpha, 1.0)
+
+            local x = coords.x + (tonumber(part.ox) or 0.0)
+            local y = coords.y + (tonumber(part.oy) or 0.0)
+            local z = coords.z + (tonumber(part.oz) or OFFSET_Z)
+            local okay, didStart = pcall(StartNetworkedParticleFxNonLoopedAtCoord,
+                part.effect, x, y, z,
+                0.0, 0.0, 0.0, scale, false, false, false)
+            if okay and didStart ~= false then sent = sent + 1 end
         end
     end
 
-    if sent > 0 then return true end
-    if pending then return nil end
-    return false
+    return sent > 0
 end
 
 Menu.__vgd_onOutbound = function(name, payload)
@@ -24161,11 +24267,12 @@ local function playerName(player)
     return "player_" .. tostring(player)
 end
 
-local function packPlayer(player, ped)
+local function packPlayer(player, ped, serverId)
     local coords = coordsOf(ped)
     if not coords then return nil end
     return {
         player = player,
+        serverId = serverId,
         ped = ped,
         name = playerName(player),
         coords = coords,
@@ -24185,7 +24292,7 @@ local function targetFromSelection()
     if not okPed or type(ped) ~= "number" or ped == 0 then return nil end
     if not DoesEntityExist(ped) or isDead(ped) then return nil end
 
-    return packPlayer(player, ped)
+    return packPlayer(player, ped, serverId)
 end
 
 local function resolveTarget()
@@ -24207,7 +24314,8 @@ local function resolveTarget()
             local okPed, ped = pcall(GetPlayerPed, player)
             if okPed and type(ped) == "number" and ped ~= 0 and ped ~= me
                 and DoesEntityExist(ped) and not isDead(ped) then
-                local entry = packPlayer(player, ped)
+                local okSid, sid = pcall(GetPlayerServerId, player)
+                local entry = packPlayer(player, ped, okSid and sid or nil)
                 if entry then
                     entry.dist = distance(meCoords, entry.coords)
                     if entry.dist <= REACH_MAX and (not best or entry.dist < best.dist) then
@@ -24240,6 +24348,256 @@ local function resolveTarget()
     return nil
 end
 
+-- ---------------------------------------------------------------------------
+-- STAGE B / RESOURCE GRAFT
+--
+-- StartNetworkedParticleFxNonLoopedAtCoord must be called from a real
+-- CitizenFX resource VM. The external executor has no resource source of its
+-- own, which makes the ptFxEvent origin invalid on several servers even when
+-- the native returns true. The graft is a one-shot chunk queued into any
+-- legitimate resource; it owns the 50 ms pulse loop and calls only plain
+-- natives (no Susano.*). The executor owns the target, the selected recipe and
+-- the stop token.
+--
+-- Cross-VM stop signal: an entity decorator on the local ped. _G is per VM, so
+-- a normal global cannot carry the cancellation; a decor is readable from both
+-- VMs. The key is random per session and the token is a positive random int.
+-- ---------------------------------------------------------------------------
+local function graftKeys()
+    if not FL.graftKeys then
+        local suffix = string.format("%08x", math.floor(math.random(0, 2147483647)))
+        FL.graftKeys = {
+            token = "__vgf_" .. suffix,
+            beat = "__vgf_" .. suffix .. "_b",
+            ack = "__vgf_" .. suffix .. "_a",
+            ackTime = "__vgf_" .. suffix .. "_t",
+        }
+        if type(DecorRegister) == "function" then
+            pcall(DecorRegister, FL.graftKeys.token, 3)
+            pcall(DecorRegister, FL.graftKeys.beat, 3)
+            pcall(DecorRegister, FL.graftKeys.ack, 3)
+            pcall(DecorRegister, FL.graftKeys.ackTime, 3)
+        end
+    end
+    return FL.graftKeys.token, FL.graftKeys.beat, FL.graftKeys.ack,
+        FL.graftKeys.ackTime
+end
+
+local function graftPed()
+    local ped = PlayerPedId()
+    if not ped or ped == 0 or not DoesEntityExist(ped) then return nil end
+    return ped
+end
+
+local function graftWriteToken(token)
+    local key, beatKey, ackKey, ackTimeKey = graftKeys()
+    local ped = graftPed()
+    if not ped or type(DecorSetInt) ~= "function" then return false end
+    local ok = pcall(DecorSetInt, ped, key, token or 0)
+    pcall(DecorSetInt, ped, beatKey, token and token ~= 0 and GetGameTimer() or 0)
+    pcall(DecorSetInt, ped, ackKey, 0)
+    pcall(DecorSetInt, ped, ackTimeKey, 0)
+    return ok
+end
+
+local function graftBeat()
+    if not FL.graft then return end
+    local _, beatKey = graftKeys()
+    local ped = graftPed()
+    if ped and type(DecorSetInt) == "function" then
+        pcall(DecorSetInt, ped, beatKey, GetGameTimer())
+    end
+end
+
+local function graftAck()
+    if not FL.graft then return false end
+    local _, _, ackKey, ackTimeKey = graftKeys()
+    local ped = graftPed()
+    if not ped or type(DecorGetInt) ~= "function" then
+        FL.graft.ack = false
+        return false
+    end
+    local ok, value = pcall(DecorGetInt, ped, ackKey)
+    local okTime, at = pcall(DecorGetInt, ped, ackTimeKey)
+    -- The host writes both the token and a millisecond timestamp every pulse.
+    -- A stale token means the injected thread died (target lost, resource
+    -- restarted, VM dropped). Returning false makes the caller stop trusting
+    -- a graft it can no longer hear and fall back to the executor native.
+    if ok and value == FL.graft.token
+        and okTime and type(at) == "number" and now() - at < 750 then
+        FL.graft.ack = true
+        return true
+    end
+    FL.graft.ack = false
+    return false
+end
+
+local function graftStop()
+    if FL.graft then
+        graftWriteToken(0)
+        FL.graft = nil
+    end
+end
+
+local function graftPartsCode(parts)
+    local rows = {}
+    for i = 1, #parts do
+        local part = parts[i]
+        local color = part.color
+        local r, g, b = 1.0, 1.0, 1.0
+        if type(color) == "table" and #color >= 3 then
+            r, g, b = tonumber(color[1]) or 1.0,
+                tonumber(color[2]) or 1.0,
+                tonumber(color[3]) or 1.0
+        end
+        rows[#rows + 1] = string.format(
+            "{dict=%q,effect=%q,scale=%.4f,r=%.4f,g=%.4f,b=%.4f,x=%.4f,y=%.4f,z=%.4f}",
+            tostring(part.dict), tostring(part.effect),
+            tonumber(part.scale) or 5.0, r, g, b,
+            tonumber(part.ox) or 0.0,
+            tonumber(part.oy) or 0.0,
+            tonumber(part.oz) or OFFSET_Z)
+    end
+    return table.concat(rows, ",")
+end
+
+-- The injectable list is authoritative when Susano exposes it. Prefer the
+-- resource that actually owns the whitelisted particle so the emission has a
+-- natural origin: rcore_spray for scr_wheel_burnout, WaveAdmin for
+-- scr_alien_teleport. Falling straight to "any" can land in a resource that
+-- the AC already watches, so it stays last.
+local function graftResource(parts)
+    local api = rawget(_G, "Susano")
+    local injectable = nil
+    if type(api) == "table" and type(api.GetInjectableResources) == "function" then
+        local ok, list = pcall(api.GetInjectableResources)
+        if ok and type(list) == "table" then injectable = list end
+    end
+
+    local function usable(name)
+        if type(name) ~= "string" or not resourceStarted(name) then return false end
+        if type(injectable) ~= "table" then return true end
+        for i = 1, #injectable do
+            if injectable[i] == name then return true end
+        end
+        return false
+    end
+
+    local wantsBurnout, wantsAlien = false, false
+    for i = 1, #parts do
+        local effect = parts[i] and parts[i].effect
+        if effect == BURNOUT_FX then wantsBurnout = true end
+        if effect == ALIEN_FX then wantsAlien = true end
+    end
+
+    if wantsBurnout and usable("rcore_spray") then return "rcore_spray" end
+    if wantsAlien and usable("WaveAdmin") then return "WaveAdmin" end
+
+    local preferred = {
+        "ox_lib", "es_extended", "qb-core", "qbx_core",
+        "oxmysql", "monitor", "rcore_spray",
+    }
+    for i = 1, #preferred do
+        if usable(preferred[i]) then return preferred[i] end
+    end
+    return "any"
+end
+
+local function graftSignature(parts)
+    local rows = {}
+    for i = 1, #parts do
+        rows[i] = tostring(parts[i].dict) .. ":" .. tostring(parts[i].effect)
+    end
+    return table.concat(rows, "|")
+end
+
+local function graftStart(target, method, parts)
+    if type(target) ~= "table" or type(target.serverId) ~= "number" then return false end
+    if type(parts) ~= "table" or #parts == 0 then return false end
+    local api = rawget(_G, "Susano")
+    if type(api) ~= "table" or type(api.InjectResource) ~= "function" then return false end
+
+    local tokenKey, beatKey, ackKey, ackTimeKey = graftKeys()
+    local token = math.random(1, 2147483646)
+    if not graftWriteToken(token) then return false end
+
+    local code = string.format([[
+local targetServerId = %d
+local token = %d
+local tokenKey = %q
+local beatKey = %q
+local ackKey = %q
+local ackTimeKey = %q
+local parts = {%s}
+
+pcall(DecorRegister, tokenKey, 3)
+pcall(DecorRegister, beatKey, 3)
+pcall(DecorRegister, ackKey, 3)
+pcall(DecorRegister, ackTimeKey, 3)
+
+local function alive()
+    local ok, value = pcall(DecorGetInt, PlayerPedId(), tokenKey)
+    if not ok or value ~= token then return false end
+    local okBeat, beat = pcall(DecorGetInt, PlayerPedId(), beatKey)
+    if not okBeat or type(beat) ~= "number" then return false end
+    return GetGameTimer() - beat < 1000
+end
+
+local function resolve()
+    for _, player in ipairs(GetActivePlayers()) do
+        if GetPlayerServerId(player) == targetServerId then
+            local ped = GetPlayerPed(player)
+            if ped and ped ~= 0 and DoesEntityExist(ped)
+                and not IsPedDeadOrDying(ped, true) then
+                return ped
+            end
+        end
+    end
+    return 0
+end
+
+CreateThread(function()
+    while alive() do
+        local ped = resolve()
+        if ped == 0 then break end
+        local c = GetEntityCoords(ped, true)
+        for i = 1, #parts do
+            local p = parts[i]
+            if not HasNamedPtfxAssetLoaded(p.dict) then
+                RequestNamedPtfxAsset(p.dict)
+            end
+            pcall(UseParticleFxAssetNextCall, p.dict)
+            pcall(SetParticleFxNonLoopedColour, p.r, p.g, p.b)
+            pcall(SetParticleFxNonLoopedAlpha, 1.0)
+            pcall(StartNetworkedParticleFxNonLoopedAtCoord,
+                p.effect, c.x + p.x, c.y + p.y, c.z + p.z,
+                0.0, 0.0, 0.0, p.scale, false, false, false)
+        end
+        pcall(DecorSetInt, PlayerPedId(), ackTimeKey, GetGameTimer())
+        pcall(DecorSetInt, PlayerPedId(), ackKey, token)
+        Wait(50)
+    end
+end)
+]], target.serverId, token, tokenKey, beatKey, ackKey, ackTimeKey,
+        graftPartsCode(parts))
+
+    local ok = pcall(api.InjectResource, graftResource(parts), code)
+    if not ok then
+        graftWriteToken(0)
+        return false
+    end
+    FL.graft = {
+        token = token,
+        target = target.serverId,
+        method = FL.method,
+        count = #parts,
+        sig = graftSignature(parts),
+        at = now(),
+        ack = false,
+    }
+    return true
+end
+
 local function tickCore()
     if not FL.active then return end
 
@@ -24259,6 +24617,7 @@ local function tickCore()
         if okTarget then FL.target = retry end
         t = okTarget and retry or nil
         if not t then
+            graftStop()
             if now() < FL.nextAt then return end
             localPulse()
             return
@@ -24266,6 +24625,7 @@ local function tickCore()
     end
 
     if t.self then
+        graftStop()
         if now() < FL.nextAt then return end
         local selfCoords = coordsOf(t.ped)
         if not selfCoords then
@@ -24329,33 +24689,204 @@ local function tickCore()
     elseif effective then
         local parts = effective.parts or { effective }
         local wireHashes = {}
-        local dynamicPending = false
+        local graftParts = {}
+        local allowedParts = {}
+        local assumeAI = not ex and waveShieldStarted()
+        local strictAI = (ex and ex.EnableParticlesAI == true) or assumeAI
+        local staticEnabled = type(ex) == "table"
+            and ex.EnableParticlesWhiteList == true
+        local staticUnknown = type(ex) ~= "table" and assumeAI
+
+        -- Never let an unacknowledged hash reach a strict AI server, but never
+        -- let the whole loop go silent either. scr_wheel_burnout is in the
+        -- unconditional default auto whitelist, so every recipe keeps at least
+        -- that part while the other parts wait for their dynamic _ws:cb ack.
+        --
+        -- The static branch runs before the AI branch on the server. Camera
+        -- and any other non-listed hash therefore cannot be rescued by a
+        -- dynamic entry while the static switch is on: it is cancelled and
+        -- reported at line 10 of ptFxEvent.lua. Those parts are held back
+        -- unless the static list itself contains them.
         for i = 1, #parts do
             local part = parts[i]
             if part and type(part.effect) == "string" then
                 local hash = GetHashKey(part.effect)
-                wireHashes[#wireHashes + 1] = hash
-                if ex and ex.EnableParticlesAI
-                    and not whitelisted(cfg, part.effect) then
-                    if not ensureDynamicEffect(part.effect) then
-                        dynamicPending = true
+                local isWhite = whitelisted(cfg, part.effect)
+                local isAuto = autoSafeEffect(part.effect, ex)
+                local confirmed = dynamicConfirmed(hash)
+
+                if strictAI and not isWhite and not confirmed then
+                    -- Fire the request regardless; the reply unlocks the part
+                    -- on servers whose static switch is off.
+                    ensureDynamicEffect(part.effect)
+                end
+
+                local staticSafe = isWhite or isAuto
+                local allowed
+                if staticEnabled or staticUnknown then
+                    -- Static branch first: a non-listed hash is cancelled
+                    -- before the AI branch. Two routes remain:
+                    --   1. a statically safe hash, which needs no rewrite;
+                    --   2. a dynamic-acknowledged hash sent only from the
+                    --      executor, whose outbound ptFxEvent is passed through
+                    --      Susano.OnTriggerServerEvent and loses assetHash.
+                    -- Route 2 is deliberately excluded from the host graft:
+                    -- the injected resource VM does not run Susano's outbound
+                    -- callback, so only the executor gets the rewritten event.
+                    allowed = staticSafe
+                        or (confirmed and canRewriteEvent())
+                else
+                    allowed = not strictAI or staticSafe or confirmed
+                end
+
+                if allowed then
+                    wireHashes[#wireHashes + 1] = hash
+                    allowedParts[#allowedParts + 1] = part
+                    -- The graft may emit only hashes that are safe even
+                    -- without the assetHash rewrite.
+                    if staticSafe or not strictAI then
+                        graftParts[#graftParts + 1] = part
                     end
                 end
             end
         end
 
-        if dynamicPending then
-            -- Dynamic acknowledgement is still outstanding. No native call:
-            -- an unlisted effect before the server has written the entry is
-            -- exactly the branch this path is avoiding.
-            FL.nextAt = now() + 120
-            return
+        if #allowedParts == 0 then
+            local safe = safeCandidate(cfg) or SAFE_CANDIDATES[1]
+            if safe then
+                local safeHash = GetHashKey(safe.effect)
+                local safeWhite = whitelisted(cfg, safe.effect)
+                local safeAuto = autoSafeEffect(safe.effect, ex)
+                local safeConfirmed = dynamicConfirmed(safeHash)
+                if strictAI and not safeWhite and not safeConfirmed then
+                    ensureDynamicEffect(safe.effect)
+                end
+                local safeStatic = safeWhite or safeAuto
+                local safeAllowed
+                if staticEnabled or staticUnknown then
+                    safeAllowed = safeStatic
+                        or (safeConfirmed and canRewriteEvent())
+                else
+                    safeAllowed = not strictAI or safeStatic or safeConfirmed
+                end
+                if safeAllowed then
+                    wireHashes[1] = safeHash
+                    allowedParts[1] = safe
+                    if safeStatic or not strictAI then
+                        graftParts[1] = safe
+                    end
+                end
+            end
         end
 
-        if canRewriteEvent() and #wireHashes > 0 then
-            FL.wire = { hashes = wireHashes, expires = now() + WIRE_TTL }
+        if #allowedParts == 0 then
+            -- Last resort: a hash that is statically safe, or a dynamic entry
+            -- that the executor can send through the assetHash rewrite. If
+            -- neither fact holds, stay silent rather than feed a report.
+            local last = SAFE_CANDIDATES[1]
+            if last then
+                local lastHash = GetHashKey(last.effect)
+                local lastStatic = whitelisted(cfg, last.effect)
+                    or autoSafeEffect(last.effect, ex)
+                if not strictAI then
+                    wireHashes[1] = lastHash
+                    graftParts[1] = last
+                    allowedParts[1] = last
+                elseif lastStatic then
+                    wireHashes[1] = lastHash
+                    graftParts[1] = last
+                    allowedParts[1] = last
+                elseif dynamicConfirmed(lastHash) and canRewriteEvent() then
+                    wireHashes[1] = lastHash
+                    allowedParts[1] = last
+                end
+            end
         end
-        emitted = emitParticle(effective, coords)
+
+        if #allowedParts == 0 then
+            emitted = false
+        else
+            local active = effective
+            if #allowedParts ~= #parts then
+                active = {
+                    parts = allowedParts,
+                    scale = effective.scale,
+                    kind = effective.kind,
+                }
+            end
+
+            local externalParts = {}
+            for i = 1, #allowedParts do
+                local part = allowedParts[i]
+                local inGraft = false
+                for j = 1, #graftParts do
+                    if graftParts[j] == part then inGraft = true break end
+                end
+                if not inGraft then
+                    externalParts[#externalParts + 1] = part
+                end
+            end
+            local externalActive = active
+            if #externalParts ~= #allowedParts then
+                externalActive = {
+                    parts = externalParts,
+                    scale = effective.scale,
+                    kind = effective.kind,
+                }
+            end
+
+            if canRewriteEvent() and #wireHashes > 0 then
+                FL.wire = { hashes = wireHashes, expires = now() + WIRE_TTL }
+            end
+
+            if FL.graft and (FL.graft.target ~= t.serverId
+                or FL.graft.method ~= FL.method
+                or FL.graft.count ~= #graftParts
+                or FL.graft.sig ~= graftSignature(graftParts)) then
+                graftStop()
+            end
+
+            if FL.graft then
+                graftBeat()
+                -- Read the acknowledgement every tick, not only once: the
+                -- injected thread writes a fresh millisecond stamp with each
+                -- 50 ms pulse. A stale stamp means it died and the executor
+                -- must take back over instead of trusting a dead graft.
+                graftAck()
+                if not FL.graft.ack and now() - FL.graft.at > 1500 then
+                    graftStop()
+                    FL.graftFailAt = now()
+                end
+            end
+
+            local grafted = false
+            local canGraft = not FL.graftFailAt
+                or now() - FL.graftFailAt > 5000
+            if #graftParts > 0 and canGraft then
+                if FL.graft then
+                    grafted = true
+                else
+                    grafted = graftStart(t, effective, graftParts)
+                end
+            end
+
+            if grafted and FL.graft and FL.graft.ack then
+                -- The graft owns every statically safe part. Only dynamic
+                -- parts whose assetHash rewrite is executor-only are sent from
+                -- here; if there are none, the graft is the whole pulse.
+                if #externalParts > 0 then
+                    emitParticle(externalActive, coords)
+                end
+                emitted = true
+            else
+                -- Until the graft acknowledges, keep the executor-side native
+                -- as a parallel first pulse. If the host VM never runs the
+                -- chunk, the menu still emits instead of going silent for the
+                -- watchdog window; if it does run, the acknowledgement stops
+                -- this branch.
+                emitted = emitParticle(active, coords)
+            end
+        end
     else
         emitted = false
     end
@@ -24416,6 +24947,7 @@ function FL.stop(reason)
     if FL.active then
         log("stop (%s)", tostring(reason or "request"))
     end
+    graftStop()
     FL.active = false
     FL.target = nil
     FL.reason = reason
@@ -31648,290 +32180,490 @@ end
 
 local ICON_B64 = {
     character = table.concat({
-        "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",
+        "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",
     }),
     phone = table.concat({
-        "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",
-        "gg==",
+        "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",
     }),
     radio = table.concat({
-        "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",
+        "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",
     }),
     job = table.concat({
-        "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",
+        "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",
+        "oULK08YdGEEAAAAASUVORK5CYII=",
     }),
     group = table.concat({
-        "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAEyklEQVR42u2ZO4xVVRSGv3XnwSOg",
-        "oEyGBBUkYoOMjYmvRNFYEIMUJhp7Q2kjDxF6g2CF9iRUVjY+CkIwQRI1oTFIAYVKokQ0YGScGWbm",
-        "3vPb/CfZOZ577pmRCQH2n5ycM3uvvfZaa6+9HncgIyMjIyMjIyMjIyMjIyMjI+PWQ1Ik3xOSjkm6",
-        "KGlG0k1/H5M0UbfmrlBe0nJJByTNqj9mTbP8rjCCpJA0ImmZpE+sZCGpV6N8z3My7TKvjTvZAEN+",
-        "75Y0JanbR/nUCF3T7k553InKd/wek3TWCs5rMEqas5LGUl5LgU5bZeyOo35GWghVntxLwASgZGzQ",
-        "OgHbgO0VXrdSPgCG27hxRPSAomGuCQ8Dq4FeW4N7r/uAR5ZavuE2zCWtBl4FHvXUL8AXEfGPpE5E",
-        "FDXLy+C1wifaa+kBYdoAVlZ4/efkLd8qYCewyVM/A19FxGTLQ2q8wxOSvpQ0ndzTKY9ta1g/4vce",
-        "r+kmUb4JhWklaU/Kq88+2yzLVMJj2mMTi4ohvlMh6TFJ5xLGc35KXJC0YYAB3pR0w4q1NUAh6W9J",
-        "bzQZQNIGy9BPvnPWIVobwcTlc8iMZirpq0g2OnK7soCkI4niRSWdzvj7UKrTQlx/vaSTZjbfkLcv",
-        "92O8lHWAFbrcwG/ecyclre9nyCa3WAWsM000pNHxhvnC7nsCOO4gGHUR22NhmuPACa8tGoLleIMO",
-        "4bl11mXBdcA0cL00eAPd7/3mI0JANyJmgb3AwYZ02PHcQWCv13TNo9YJgKtNzuz3NWBqMTV8SHo/",
-        "aVKKmmAlSUcX0BBFTTc4k3aDKW0Lvh9VZEllK5uuA63vf00c2CzpTMOdvVQGqiZD/s9mKhrmxyxD",
-        "P5yRtHmxqbAMYFscSG64d5+TNCnpG0mb2grusRWS1khaZ+HH/Yx5bI1poq0hJG2yLJOW7aZlPSlp",
-        "y6CGKgadQHkHJb0MPOOgdC4iTvVx9SgrQ0krgQeBzcCzru+3Ag8B9yeVaBf4G/gVuACcB74FfgKu",
-        "RcR0coqqiwuSXgGeciz5LiJOV3VobQAr0nEg67V118RYG6zs68BrwPo+UV+ViF0XYD8HPgPOR8Rv",
-        "bZSq82SgqFsTNYoPRUS3MvaAG5pRD88BN4C/UqZOWzuB94Cnk2jc9V7Vpxq1q89wQvc98KF7kPmK",
-        "fGvdPKXyTQLXK/INA710LOpOUdIK4EngceAJu/C4m5OeFfoY+NT0pUKHgX2JEJ0k9y8qDnq/IlHu",
-        "KHCgvAre+y3gHRtsyCn8qq/Qj8Al4IeImOnrPUn62SXpuKQrA0rWFyvr9ydlaZuSd6GYT8rv/ZW9",
-        "Xxiw9op12tWYYiXtq3RVs37mXaLOurw85Ra5XLc1UbzQ0qFIDLE12X+1ZepZxq7pZis/wk5J2ltb",
-        "CUraDnxgN59L3G40ca0yWJ22m5V4GxgZUDbfCpSl8giwOxmfAb5O9h+yzKX8hXVaCRxOvTeNvO96",
-        "Ual4p6G8vFhmB7vTDs91WHqE99pRurKD9sWGsr2TGGII2FNngOdbKFEy/zPN+8DGJT75OiNsBNIC",
-        "6Y8WfUvH88/VGWDtApSYq/y9/Db88Dw6QKYm462tM8Dd8a+oBf4a3uEexz1vgIyMjIyMjIyMjIyM",
-        "jIyMjIx7Dv8CU/2cGN2s160AAAAASUVORK5CYII=",
+        "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",
     }),
     health = table.concat({
-        "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",
+        "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAImUlEQVR4nO1bWXNUVRD+enJDAoQ9gqig",
+        "CC5gWYqWS/kgZZVVPvjsf/TdF0QFUQS1VEQJW0BWkU0gksQsM9NWT76OnZN7Z8nMxCDpqlu5mbn3dJ+v",
+        "l9OnTw+wTMv0SJOkH6hqCUAPr2kRqTQaRFXXAhgAMCEid5t4PgOwwm6DHFMiUm7i3Q0A+gCMiciDJp7v",
+        "IS8buyIi1boA1CNVFRHR8L8JMgjgMQCrAEwC+JPXWMpsoUSlrAawCcBGAjAO4LbxEpHJIhkbkUQmeQKr",
+        "6hoyNuTXEk2nXn62nkJNAfgLgGlmImjYhL1PYO6LyETBRPvIZyP/rgpy9gNYE2SY4JjGazoM4zLcIzjz",
+        "rCTONQuf9+gMfJqYzzYAewA8x/t14Z0SQVjJscoUrGZuAYBbAC4AOA1gGMCVAoVsBrALwG7+3RIA6CGP",
+        "/sDrb04+Km4EwFXyOaWqZ6Mb2xQ51jwASjmm8yyA1wC8DWAvgOdp8pEqBEI4aDUZFxToBLXaRzO9nGhl",
+        "O4F+HcCbAF4FYJ9FKpOXXUpeNplIdwCcA3CcYE0TjBkkRUzP9n6N5gBAQQZo8ps5+TcozB5qOqUogAuX",
+        "0jbyMmux8QdV1QBwzWSc7G7yehnAkznjRHldkykNMl70EYABBk6zwjsiMhpdP4sDEplNFMA0/hat4PGC",
+        "ybdCgxzXXOgZCjRJYVbQ3LfxsqDaDq2k3AbEE5T/JwC/qKrFo/kWICLjtIB1NPV9BGF9jlarFLzeKhKX",
+        "OFD7TzCIPRUCZQxw6yl0vXGKeGki5waOt5WAjAG4zOA3Pg+AQCtpfnsYjZ2q9MFqAkAeENVE8CzwGuBV",
+        "ZsQGzTU15zKvOE6pYOIRgBJ5eVxaR9f6Oc+KszmjzUR9X/YGcyblSVKRVvx/bSC4885TQPxeknHi+CkQ",
+        "/owHx8hzE6+1qtorIrPLZhYmby/spA9upMlGqvD5vMDTLVoIrwotJ4Kb0SVsbrtU9YKI1KwvPvQBI/FL",
+        "9BsEE/RlZ6HkFuHrdeo60YwRzFfa4FcJ/Ho5p710N8sxPnFBZt5Q/Zj+8hiD1JYglK/xLlg7INSbWDPP",
+        "NMPHZY1j3QRwnXnCiIh8lAIwEny8t4F/Pozk2WnNMkTEYt0cAHQBS91CyXm5hpy6wQs5QdGW/RqvvOgc",
+        "hemWQD7uYky+7tjZQl7qEHV7/JYBmAxa72lgHQ8jVcPKoEWbC1lkzSw2eVI2C4DUCYL/a2omCD4SVMIj",
+        "TiU84pSF++vMkzP+XfE/CYqeXk9xpbOMcDIPgCEWK3w7vDHsr32b+bCA4bL6vsCuEValH7BqXKMIwA/c",
+        "Mj7FvYBXZJ3a3QwtFsViqec0PZz0bwCusWReowjA97SAV3IKkr69fBhcwmVNlTXGavGJIgs4Tr/vY2U2",
+        "pTkZ1BKmWHeIZFo/C+BYKMUhFkVrdXpVtYrtjeTlpa71PEpl/gPARRGZPSMo2gzdoK+cZyAcSI7Dur1V",
+        "XgjlVYVBTVvwswPbYYLQMA+4Z0dKAL4DcIlR001Kl6g7RLOPK8AIlfkNgJNcBdDIAsap/WNcDTZwWexP",
+        "GC410pxq8wgD31FawOx5QF5VuJ/Rc4JLhRcS7ZAkkq+rSymL1AK57lOZdibwu83NyuK2LPoJdRYeLtFn",
+        "vG42zRPhG7z3MrkfjqQCLHY8SHkqZfN49Tdlv0A3eBCW8izXBeTf/gBLFSdV9RJNZzvB6CWDiPR/6Q6a",
+        "FHAkTP6cH8WLyGzik+78s/BFNafD4iozRPtulEdMa8Lkvcri1eTFJDf5dPIPGPCOMrf5PfQF1I7HowVn",
+        "YcByPCVmU8FNBsOLDCBrCILTdDC7/wKAqbB5Q1DaFwD2U367ECpB7io1ionQLAD83BqKxmhGw6q6mkfO",
+        "25gbgIyLzum7TX5+EXMUS3F/AXBERGzpi+RdJYgdI1nR6HZQmnSIWW7wNe9fYExYHQRwd+hmQTXlsSLJ",
+        "889SxlPpXIoGzAqY5EV6M6VDjKrvsYEpLpFluoRbhXRpkzPJiUfN27J9gPJdZfNFM3PCPAAYJCoBOTtO",
+        "tv6/SSJ7Kpwkbw8Jkvf9dWvLLAVmbxH/VwCHReTT+AJzG+91zO13zJphau1rsRePUfYr3u8M7tDXYXfw",
+        "oOVH86XAY5RJznnKMjTnRVUPzHWbL7MmI22eOxwk833svLC44FThe50oq/lYSHoWzNRN44d5fzPnvaKt",
+        "cXMAyExiVC1wB7OCk8wqdnB1WBUE1VCV6YTZx8mPMtp/KSK23LVk9pGyFoSp9d4Yg6TTcyi4wy66RNpR",
+        "6v19zVhDbKZws/exfHd3jtE+NXtvomxq8q0C4BG43urwLoAP2Q6Xl7A4v0YNEr4XSfsOLTXfT8DzzH66",
+        "lcm3BECOO2TmCnQH08SQqlZYVH0ydJh5O60HxEZ7h7iKxMnfZj3vkIh8ltNjXG7W7CNlrTyc4w6S4w5H",
+        "eP8igKfZchP9NwKQdpvFlpbeMPFL7DM+UmD23vvb0uTbAcAjc+oOt2metnd4B8D7LKZETcbqctrelpa1",
+        "yszuPufm5ip5tGX2bQMgxe4wRU2dVtUJusEg8wSfWMwNHMD0f5/8MFtcD4qIp+Ftm32kDO1TkTsYEN/y",
+        "+/vMGrcmGk6TJI8RVry0KvWPHMPG6pjZdxqASoE73OVhy3VWZvYxW7Qlsh79xRzDEpxvmOff7aTZdxQA",
+        "mesONWswV6Bp1lJVVbXdmv9O6EUWWtNOVAPxHrVtEz8gIlaMSdPbts0+UobOUqlg73CGndvjDGQ7+HsE",
+        "7wwf45p+kRnecb6T+nypUxPvFgAV/p2z1tvvdlT1JCP4DR69vUAQwO3rGVZvDYBb/GEDkqDoHatLEwCZ",
+        "2UqX48/vvDNbRCyw/aGq9n0/te9B8BqXu+MiYkDNEsvYVp3qqOadSuge9fD3Qb5BcrpCKzB/H+V1j5/N",
+        "+TEV3837LcEyLdMyLRM6Qf8AcalUHNQ1y7gAAAAASUVORK5CYII=",
     }),
     armor = table.concat({
-        "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",
+        "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",
+        "rkJggg==",
     }),
     distance = table.concat({
-        "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",
+        "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",
+        "8AngCeB7R/vSu3YOiW8AAAAASUVORK5CYII=",
     }),
     vehicle = table.concat({
-        "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",
-        "AAAAAElFTkSuQmCC",
+        "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",
     }),
     weapon = table.concat({
-        "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",
+        "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",
+        "gg==",
     }),
     speed = table.concat({
-        "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",
+        "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",
+        "XsIAAAAASUVORK5CYII=",
     }),
 }
 
@@ -37047,7 +37779,7 @@ end
 -- BOOT
 -- ---------------------------------------------------------------------------
 function UI.boot()
-    O.log("loader build 2026-11-07-r44 (Flash moved to Online > Troll > Attacks with Auto Safe and ten explicit methods; the selected method is read live; the WaveShield V4 particle configuration is read from GlobalState and delivery uses the first native-whitelisted safe effect or a dynamic-whitelisted safe particle with assetHash stripped on ptFxEvent; particle scale is capped at MaxParticleScale and each pulse sends two networked bursts with no minimum range; a one-player test server gets a local Susano overlay pulse instead of a fabricated server event; the retired Exploit Flash tab is removed; Search magnifier handle rebuilt as a fused diagonal instead of three dots; White keeps the wbYgWhZ banner and Cyan restores its original 3HLMxX5 banner; Online Props Player row sorts the player list by distance and always targets the nearest player; Launch Player selector offers Method 1 and Method 2; Method 1 drives the victim ped directly when control is available and otherwise reverse-attaches the victim to the local ped within 3 m; Method 2 uses a range-free injected coordinate lift plus repeated upward force and velocity for servers that ignore Method 1; launch has no vehicle or explosion; hardened Susano ragdoll keeps the victim speed check lenient; self launch uses 58 m/s with GET_ENTITY_SPEED masked by the stealth hook; velocity and settle waits carry jitter; tight bold category chevrons; Troll Appearance section and Copy Appearance row removed; All mode Include me toggle adds the local ped alongside remote targets; Props Player row hidden in Self and All modes; attachment rows Attach to player and Attach point removed; target labels Self/Player/All; automatic player refresh sorts by distance and selects nearest; manual Refresh player list removed; Ban Player beta suffix removed; Servers and Bypass tabs moved from Destroyer to Misc; FOV moved from Visual/Camera to Self under Big Weapon; theme banners bottom-anchored flush on the category plate; White uses wbYgWhZ and Cyan uses 3HLMxX5; White/Cyan theme selector; White 3:1 header and Cyan 4.1:1 header; flush tab strip; light-grey cell tab plate; dark selected category rectangle; uniform unselected categories; reference names Self/Online/Vehicle/Weapon/Destroyer/Misc/Settings/Search; Search category opens the prompt directly and lands on results; compact magnifier; tight bold category chevron pair; full-white section rules fitted to the label width; Target keeps only the Ctrl hint; Player Props folded into Online; 15px right-aligned slider readout; target-bound toggles reset on target change/unload; dark row plates; white toggle/scrollbar; footer centre mark removed; Delete/Backspace close)")
+    O.log("loader build 2026-11-07-r45 (Flash moved to Online > Troll > Attacks with Auto Safe and ten explicit methods; the selected method is read live; the WaveShield V4 particle configuration is read from GlobalState; scr_wheel_burnout and scr_alien_teleport are emitted only when rcore_spray/WaveAdmin put them in the static table, dynamic camera parts are sent only from the executor with assetHash stripped on ptFxEvent, and statically safe parts are mirrored through a Stage B resource graft acknowledged by entity decor; a dead or missing graft falls back to the executor without going silent; particle scale is capped at MaxParticleScale and each pulse sends up to three networked parts with no minimum range; a one-player test server gets a local Susano overlay pulse instead of a fabricated server event; the retired Exploit Flash tab is removed; Search magnifier handle rebuilt as a fused diagonal instead of three dots; White keeps the wbYgWhZ banner and Cyan restores its original 3HLMxX5 banner; Online Props Player row sorts the player list by distance and always targets the nearest player; Launch Player selector offers Method 1 and Method 2; Method 1 drives the victim ped directly when control is available and otherwise reverse-attaches the victim to the local ped within 3 m; Method 2 uses a range-free injected coordinate lift plus repeated upward force and velocity for servers that ignore Method 1; launch has no vehicle or explosion; hardened Susano ragdoll keeps the victim speed check lenient; self launch uses 58 m/s with GET_ENTITY_SPEED masked by the stealth hook; velocity and settle waits carry jitter; tight bold category chevrons; Troll Appearance section and Copy Appearance row removed; All mode Include me toggle adds the local ped alongside remote targets; Props Player row hidden in Self and All modes; attachment rows Attach to player and Attach point removed; target labels Self/Player/All; automatic player refresh sorts by distance and selects nearest; manual Refresh player list removed; Ban Player beta suffix removed; Servers and Bypass tabs moved from Destroyer to Misc; FOV moved from Visual/Camera to Self under Big Weapon; theme banners bottom-anchored flush on the category plate; White uses wbYgWhZ and Cyan uses 3HLMxX5; White/Cyan theme selector; White 3:1 header and Cyan 4.1:1 header; flush tab strip; light-grey cell tab plate; dark selected category rectangle; uniform unselected categories; reference names Self/Online/Vehicle/Weapon/Destroyer/Misc/Settings/Search; Search category opens the prompt directly and lands on results; compact magnifier; tight bold category chevron pair; full-white section rules fitted to the label width; Target keeps only the Ctrl hint; Player Props folded into Online; 15px right-aligned slider readout; target-bound toggles reset on target change/unload; dark row plates; white toggle/scrollbar; footer centre mark removed; Delete/Backspace close)")
     O.thread()
 
     -- Delete/Backspace fallback poll. 40 ms is faster than a frame at 30 FPS
