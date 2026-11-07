@@ -518,6 +518,16 @@ do
             end]]
     )
 
+    -- 3b. Anchor the banner to the bottom of the header. The reference banner
+    --     is wider than the header, so fitting it leaves a dark strip under
+    --     the image. Bottom-aligning the fitted image removes that strip and
+    --     makes the banner sit directly on the category plate.
+    LibraryCode = replacePlain(
+        LibraryCode,
+        "            local drawY = y + framePad + (availH - drawH) / 2",
+        "            local drawY = y + height - drawH"
+    )
+
     -- 4. Breathing bloom on both selection bars.
     LibraryCode = replaceAllPlain(
         LibraryCode,
@@ -1133,16 +1143,16 @@ end
 -- VANGUARD THEME PATCH
 -- ============================================
 -- The library is downloaded at runtime, so its palette is not guaranteed to
--- match this build. Both themes are monochrome: White (default) and Graphite.
--- Neither theme owns a green accent; an unknown name falls back to White.
+-- match this build. White is the default and Cyan restores the reference
+-- accent. Both keep the supplied banner; an unknown name falls back to White.
 do
     local themes = {
         White = {
             r = 255, g = 255, b = 255,
             image = "https://i.imgur.com/wbYgWhZ.png",
         },
-        Graphite = {
-            r = 160, g = 160, b = 164,
+        Cyan = {
+            r = 104, g = 168, b = 203,
             image = "https://i.imgur.com/wbYgWhZ.png",
         },
     }
@@ -2388,6 +2398,7 @@ Menu.Categories = {
             { name = "Throw Vehicle", type = "toggle", value = false },
             { name = "Tiny Player", type = "toggle", value = false },
             { name = "Big Weapon", type = "toggle", value = false },
+            { name = "FOV", type = "selector", options = {"Normal", "60", "70", "80", "90", "100", "110", "120"}, selected = 1 },
         }},
         { name = "Wardrobe", items = {
             { name = "Random Outfit", type = "action" },
@@ -2492,8 +2503,17 @@ Menu.Categories = {
             { name = "Blackout", type = "toggle", value = false },
             { name = "Delete All Props", type = "action" }
         }},
-        { name = "Camera", items = {
-            { name = "FOV", type = "selector", options = {"Normal", "60", "70", "80", "90", "100", "110", "120"}, selected = 1 }
+        { name = "Servers", items = {
+            { name = "", isSeparator = true, separatorText = "Dynasty" },
+            { name = "Staff Mode", type = "toggle", value = false, dynasty = true },
+            { name = "Disable Weapon Damage", type = "toggle", value = false, dynasty = true },
+            { name = "Revive", type = "action", dynasty = true },
+            { name = "", isSeparator = true, separatorText = "Seed" },
+            { name = "Menu Staff", type = "action", seed = true },
+        }},
+        { name = "Bypass", items = {
+            { name = "", isSeparator = true, separatorText = "Anti-Cheat" },
+            { name = "Bypass Putin", type = "action", dynasty = true },
         }}
     }},
     { name = "Combat", hasTabs = true, tabs = {
@@ -2722,18 +2742,6 @@ Menu.Categories = {
                 "Grove Street",
                 "Legion Square"
             }, selected = 1 },
-        }},
-        { name = "Servers", items = {
-            { name = "", isSeparator = true, separatorText = "Dynasty" },
-            { name = "Staff Mode", type = "toggle", value = false, dynasty = true },
-            { name = "Disable Weapon Damage", type = "toggle", value = false, dynasty = true },
-            { name = "Revive", type = "action", dynasty = true },
-            { name = "", isSeparator = true, separatorText = "Seed" },
-            { name = "Menu Staff", type = "action", seed = true },
-        }},
-        { name = "Bypass", items = {
-            { name = "", isSeparator = true, separatorText = "Anti-Cheat" },
-            { name = "Bypass Putin", type = "action", dynasty = true },
         }}
     }},
     { name = "Settings", hasTabs = true, tabs = {
@@ -2741,7 +2749,7 @@ Menu.Categories = {
             { name = "Editor Mode", type = "toggle", value = false },
             { name = "Menu Size", type = "slider", value = 110.0, min = 50.0, max = 200.0, step = 1.0 },
             { name = "", isSeparator = true, separatorText = "Design" },
-            { name = "Menu Theme", type = "selector", options = {"White", "Graphite"}, selected = 1 },
+            { name = "Menu Theme", type = "selector", options = {"White", "Cyan"}, selected = 1 },
             { name = "Flocon", type = "toggle", value = true },
             { name = "Scroll Bar Position", type = "selector", options = {"Left", "Right"}, selected = 1 }
         }}
@@ -5071,7 +5079,7 @@ local FOV_IDLE_DELAY = 400
 local FOV_POINTER_FIELDS = { 0x10, 0x50, 0x230 }
 local FOV_META_FIELDS = { 0x20, 0x24, 0x28, 0x2C, 0x30, 0x34, 0x22C, 0x23C }
 
-local fovItem = FindItem("Visual", "Camera", "FOV")
+local fovItem = FindItem("Player", "Self", "FOV")
 local fovMode = "idle"
 local fovTargets = {}
 local fovCameras = {}
@@ -5413,7 +5421,7 @@ end
 
 local function FovDesired()
     if not fovItem then
-        fovItem = FindItem("Visual", "Camera", "FOV")
+        fovItem = FindItem("Player", "Self", "FOV")
     end
     if fovItem and type(fovItem.selected) == "number" then
         return FOV_VALUES[fovItem.selected]
@@ -15716,7 +15724,7 @@ CreateThread(function()
         end
     end
     
-    Actions.testItem = FindItem("Exploit", "Bypass", "Bypass Putin")
+    Actions.testItem = FindItem("Visual", "Bypass", "Bypass Putin")
     if Actions.testItem then
         Actions.testItem.onClick = function()
             local targetResource = "Putin"
@@ -16016,7 +16024,7 @@ do
 end
 
 
-    Actions.staffModeItem = FindItem("Exploit", "Servers", "Staff Mode")
+    Actions.staffModeItem = FindItem("Visual", "Servers", "Staff Mode")
     if Actions.staffModeItem then
         Actions.staffModeItem.onClick = function(value)
             Menu.StaffModeEnabled = value
@@ -16099,7 +16107,7 @@ end
         end
     end
 
-    Actions.disableWeaponDamageItem = FindItem("Exploit", "Servers", "Disable Weapon Damage")
+    Actions.disableWeaponDamageItem = FindItem("Visual", "Servers", "Disable Weapon Damage")
     if Actions.disableWeaponDamageItem then
         Actions.disableWeaponDamageItem.onClick = function(value)
             Menu.DisableWeaponDamage = value
@@ -16123,7 +16131,7 @@ end
         end
     end
 
-    Actions.menuStaffItem = FindItem("Exploit", "Servers", "Menu Staff")
+    Actions.menuStaffItem = FindItem("Visual", "Servers", "Menu Staff")
     if Actions.menuStaffItem then
         Actions.menuStaffItem.onClick = function()
             local targetResource = "Putin"
@@ -16163,7 +16171,7 @@ end
         end
     end
 
-    Actions.reviveItem = FindItem("Exploit", "Servers", "Revive")
+    Actions.reviveItem = FindItem("Visual", "Servers", "Revive")
     if Actions.reviveItem then
         Actions.reviveItem.onClick = function()
             if Menu and Menu.OpenInput then
@@ -32482,7 +32490,7 @@ Menu.__vgd_watchDelete = deleteTick
 -- entry applies a global profile to another vendor's resource.
 -- ---------------------------------------------------------------------------
 local function installBypassProfiles()
-    local tab = findTab("Exploit", "Bypass")
+    local tab = findTab("Visual", "Bypass")
     if not tab then return false end
 
     -- Replace the whole tab. This also removes old combined entries left
@@ -32676,12 +32684,12 @@ local function installSeed()
 
     -- Keep the historical Exploit tab as a fallback for a stripped build or a
     -- stale menu table; the normal path is the dedicated Servers tab.
-    tab = findTab("Exploit", "Servers") or tab
+    tab = findTab("Visual", "Servers") or tab
     tab.items = tab.items or {}
 
-    local seed = findItem("Exploit", "Servers", "Menu Staff")
+    local seed = findItem("Visual", "Servers", "Menu Staff")
     if not seed then
-        seed = findItem("Exploit", "Servers", "Menu Staff [SEED]")
+        seed = findItem("Visual", "Servers", "Menu Staff [SEED]")
     end
     if not seed then
         seed = findItem("Exploit", "Exploit", "Menu Staff")
@@ -35276,7 +35284,7 @@ end
 -- BOOT
 -- ---------------------------------------------------------------------------
 function UI.boot()
-    O.log("loader build 2026-11-07-r25 (banner wbYgWhZ + 3:1 header; flush tab strip; light-grey cell tab plate; dark selected category rectangle; uniform unselected categories; reference names Self/Online/Vehicle/Weapon/Destroyer/Misc/Settings/Search; Search category opens the prompt directly and lands on results; compact magnifier; literal >> category chevrons; full-white section rules fitted to the label width; Target keeps only the Ctrl hint; Player Props folded into Online; 15px right-aligned slider readout; target-bound toggles reset on target change/unload; dark row plates; white toggle/scrollbar; footer centre mark removed; Delete/Backspace close)")
+    O.log("loader build 2026-11-07-r27 (Servers and Bypass tabs moved from Destroyer to Misc; FOV moved from Visual/Camera to Self under Big Weapon; banner wbYgWhZ bottom-anchored flush on the category plate; White/Cyan theme selector; 3:1 header; flush tab strip; light-grey cell tab plate; dark selected category rectangle; uniform unselected categories; reference names Self/Online/Vehicle/Weapon/Destroyer/Misc/Settings/Search; Search category opens the prompt directly and lands on results; compact magnifier; literal >> category chevrons; full-white section rules fitted to the label width; Target keeps only the Ctrl hint; Player Props folded into Online; 15px right-aligned slider readout; target-bound toggles reset on target change/unload; dark row plates; white toggle/scrollbar; footer centre mark removed; Delete/Backspace close)")
     O.thread()
 
     -- Delete/Backspace fallback poll. 40 ms is faster than a frame at 30 FPS
