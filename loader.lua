@@ -32010,94 +32010,16 @@ end
 -- upload, the card still draws the same layout with vector glyphs instead of
 -- dropping the icon row.
 -- ---------------------------------------------------------------------------
-local B64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
-local B64_VALUE = {}
-for index = 1, #B64_ALPHABET do
-    B64_VALUE[B64_ALPHABET:sub(index, index)] = index - 1
-end
-
-local function decodeBase64(value)
-    local out = {}
-    local index = 1
-    while index <= #value do
-        local c1 = value:sub(index, index)
-        local c2 = value:sub(index + 1, index + 1)
-        local c3 = value:sub(index + 2, index + 2)
-        local c4 = value:sub(index + 3, index + 3)
-        local n = (B64_VALUE[c1] or 0) * 262144
-            + (B64_VALUE[c2] or 0) * 4096
-            + (B64_VALUE[c3] or 0) * 64
-            + (B64_VALUE[c4] or 0)
-        out[#out + 1] = string.char(math.floor(n / 65536) % 256)
-        if c3 ~= "=" then
-            out[#out + 1] = string.char(math.floor(n / 256) % 256)
-        end
-        if c4 ~= "=" then
-            out[#out + 1] = string.char(n % 256)
-        end
-        index = index + 4
-    end
-    return table.concat(out)
-end
-
-local ICON_B64 = {
-    character = "iVBORw0KGgoAAAANSUhEUgAAAEAAAABABAMAAABYR2ztAAAAMFBMVEX///////////////////////////////////////////////////////////////9Or7hAAAAAEHRSTlMAJEltkrbb////////////J6IGdAAAAXNJREFUeNrtlL1SwzAQhPeMi9Ddioou+Fl4bN6BjtIpQ5UTnStEkcg62QoeJszQoEq2P+/9rHTArUvc/uF5DwD4fHktL7stBQcIdbGpASHzlo4oAIf5rQwzi94DOUSgHVaAuMhMqnEdQn2+qxyqzP1jBpS+Ze5xVsCGArjRya0cRFcu6qrVVZKNVicPxCWQrA6QksWFgsXovheJDMx/XHBbehHrHGBpreDNKjG6ZhGArcqMm4fWZ+mq7lzlVr6Xmu9cq3eyu4iNx7g+tOmEkHeHEq4oTPFeHs/AOLYA4EMF0zRNx7d3NO4FkGxUADjZldsNnk+JGX5zuRBsWeGSFFHOXqdGo8A8FpJaS4F8uowQE3B2t893gMJ8p5kSRYAUM6BBIXQjCIMR6ZAVRAYFRNUNEwk4+98D0MCnungiACdGA3oQTryiGAHrQeG+3cQAjdZjqMZiNQIgYexBXhseBA09yKtGEUAHfuclfzTt/4E/Bm5fX3DdcbiY1wucAAAAAElFTkSuQmCC",
-    phone = "iVBORw0KGgoAAAANSUhEUgAAAEAAAABABAMAAABYR2ztAAAAMFBMVEX///////////////////////////////////////////////////////////////9Or7hAAAAAEHRSTlMAJEltkrbb////////////J6IGdAAAAeBJREFUeNq9lLtyGzEMRQ8kzYRME2JdSa60qZL8/2/4E7SuklQLdqIrpqD2IZlczyQzYQWNzl4A5AXgX48AogHIFmvADkSDBgmiVYU9aKeIE++uqQIcEDmXb8cQqwBdFwAI42sd0HMJs9YkdqtYpd6FTR1LqANMwqpsp5AQakCe49BQiOtrrwEriQ9qgL8EltTxA4XRtovMZnH7Ju21oVA+zOOYG49VctsQG0XmoZRQrZEDYBGyDa8tV5OBaJbbNxkhj0NsAxmIuf0W2Qy08RZ7APE+JNtKEW/z2QLM6mZZFAxkSwGLTWJf7OqDb1RZANzuSLbUBmKn6n5uWC5fQFediuptEG8KfD4qzIYQ7VUhrYA3r35yBnT9194fuaYFwKn6T0MpU07P37ySUlwAQb1zseyx7vTdgXtzxEUhiSrk34CcfngHglyvaR6cbBal1wBoV/rRcyienIkg/SC3P0ozsqQgJTrnksc/9W4exrgAJC9H8d7t+uMs+isuKcg2mmqg09Z0m71E5GHXrYFifb03192GsfHCo78Pd7+yXR7d+7CjxpfL9hIbLzZUHbXaxw6Sv8Xj3T1MhWbRlcPfAXkwnroJsPcA2ZDxyxRWAMAuViSGWN/w5a60DO3GUeW/nD/dHbaZkeEf2wAAAABJRU5ErkJggg==",
-    radio = "iVBORw0KGgoAAAANSUhEUgAAAEAAAABABAMAAABYR2ztAAAAMFBMVEX///////////////////////////////////////////////////////////////9Or7hAAAAAEHRSTlMAJEltkrbb////////////J6IGdAAAAolJREFUeNrNlEGOHDcMRR8rtchuSF3Ao54LBIZXvv82yQXs0uQAEYls7I2bXkhVrp5uBEiAANGiBEi/Pj+pT8J/vn4C5MPHn798fXMhLx+qf4UFEJEHv4qqMgCo1XuAmTABamZ6R2BmNgBSBH0QAjWFBaxqtsBu+MkeUmwwVO2/hZyjiGl+blImg9Eb5Zah0hs2GciG1XpCWClKD3Sm6U65nEKI2eWC+0hTlB5Sqt0gStV8RZQFs3Qw8LjNgx5mLFwMDxFy1g9ID1TTkQsrVdNBR0grTzh4IODxrrBiegVT3wKxakhvZHe1VxBjxQApXFvAy7Phzx752X4xAGWdkvRTA7k8g11/DbqL6V8gLEAiSgIjUTHgeJsFIMTG++108xs7ANU9d4BpMMuDYa4Jm7ucQvzdegS4qfkw7TiKeREJkH6YVsCZTwBkBoDDYXsyECZsbMqA7Ro8blujWPquwYHsLO/Ppr080wJIliHNw+oZsDM4C1uIQYwnONqOBNN0FpqP4t8A5kHfWOgulV3STbVM3VnIYNHszQMDdzDSewupQ8MI2Td3Mc3eQkzdt4YZGayQSP29y9XFtDdMTf/YnhpFCVjAG6XSPaySvQXF0jul4g4L9BblvaZjhruPPeSlZh8MuYVUJRAlI+cuRbMPBvyhU3QYYwXwpz/j7X1u+s05AO2Br/qVCch+9QAZ/eluokH2LeMA9JzleoVrM7MAT+IIMcfKGAERZh7786wnF2mKCaJI3Y7T9Tz6sBdAENO4B2BQCuce/Ned9c8A61nCGJ1IxV7vAGKafQtALvb0I431x/jW6wRgahZvNYjhLfYeLnon0myXwDDVHcPRzwxTPUgzQEGYY/v/s74DQAI4gA/sHQsAAAAASUVORK5CYII=",
-    job = "iVBORw0KGgoAAAANSUhEUgAAAEAAAABABAMAAABYR2ztAAAAMFBMVEX///////////////////////////////////////////////////////////////9Or7hAAAAAEHRSTlMAJEltkrbb////////////J6IGdAAAAtBJREFUeNqtlDFz3DYUhL/HS0G6AqDq1EQgC4/tStJvyd/NL4jkylIaAVdFbgRg0ogpQqQACZInTRqbM3czAJfv4S12F370Obyz1/z28XFdvAPQOzSA7LbEqs3qFwDza07rlunlrIL0/aaE9FalPUDrvl+rGguZutGAGCu9XQtoQIarChDdK4xW9QQKMNpUHg6fLxW0r9/L+9tPwNj0KqalglX1Q5AeoL9WxtYWogCx8yA5xojoysYBOR4BpH0ega4N/s/LFmiJYwFo0wKiXAJe47NLgwKk/SsBDZOPpXtpEeNyF1qrwkNwCbbc3cznHXQBZB9BkSuVC6C3M9XBJwCzcLVUE6VmwfzTHQFy4artunY+z2ksegi+tgSiq8qxs2BycM6DncmrchAzC4Zwx4Xl4sYDyE2tIAsgO/4GsVcnYHP1eiPacJ9oegWmh+AJLu5VnR0wXJXf5Al3J8g7wAkxhsZo8C4G51L2O+PIB8XYXV4qnh6+K5fkGPzzFpAbi3R91+Y/nsc4jmM3PY7zFIWgkJTWQIyJCDm+xL03pe1aYHrwY9l4HffeDPd14FIynZk3x1RE+ca8u8d95X8B+cXv1nUKUUUy0SMK4lvALQhMdwkGNf3+BmAGlRREl5Dh6mWZpJ5BW4WCGBLSK7RVZ4CLIoKXr0XVMpwBloAIviTIGhjNJjUggxRby+ruAlgjaLA1idYp9JIOq3/MVKKsYZMeoJF9Fs2A63fyVm4qQIyu90mO1TV6CfPhi1qE+5hEuhku+TWVnKyk5Ke4vc2LYn8xldbo0/w3z6ahKXYCYHIJILg11qHhcH2myanepNyWKF4auPlFWJrszAv1dPkpvafJ7E5Vt34LmMoqB7/BFrbCEzT8W1rn+03dUKSf76FZDr0Otx+4mQvWk68TlaYHYPxwzA97AMgxf3uczRviHJUbf7kErphXIG2ctCCKQPkJz3+40iSK94cETAAAAABJRU5ErkJggg==",
-    group = "iVBORw0KGgoAAAANSUhEUgAAAEAAAABABAMAAABYR2ztAAAAMFBMVEX///////////////////////////////////////////////////////////////9Or7hAAAAAEHRSTlMAJEltkrbb////////////J6IGdAAAAVdJREFUeNrtkj2O2zAQRt/QKhbbiGSqdCJ9AltX2Bvk2Akc9wtLrlJlxemSytyClk0FcRAX2/krJOjpgeD8wCOP3BFZfK2+BKav+xqZheAA57gp+OAAH24LGwuy/ofgAOS28LeYP+94fZU0AGbbHo5VyVYvrAi+b/MR8izolWEAE6z4Dkjlf6qZAfwGYlje7cLMuToJwKQAeaxZqSIrANN4fc6sCGKLMCjkYaxZA0xqy7kMNjDtqNkKeHr+zNtOgfxrGH4owG8JTN/1fMKuYzwCLidAbILTmDiM88JIbAeFdSiNcNPuwkon8wFA1qH00r0NembQgLhWySrR2XlocVCxSJuUBqS38Lo3fXcZcX/amxfI35QGidHCT1zVbO9xEfKkatgGCzn5bT2KGJKC+DWGPgJJzaYWPnU5AbHH4Cxw0uWy4/IRELcc1iKLYf3v0n6M8Mgjd+Udh0J7uULN2MoAAAAASUVORK5CYII=",
-    health = "iVBORw0KGgoAAAANSUhEUgAAAEAAAABABAMAAABYR2ztAAAAMFBMVEX///////////////////////////////////////////////////////////////9Or7hAAAAAEHRSTlMAJEltkrbb////////////J6IGdAAAAZlJREFUeNrtlLt63CAQRg9I32cpldhuXcXaKin9/rXfwHYV5Ca2m2jowjaeFFp0s9B2SRMqBg5z+YGBvziauWHGWZEmzhGnfVfFOWpcg2kERAYUpwGVAJQArr0DQL0GzKEdovU+AaZNgErAJaBBAhRgDqdvYzzjbtvjYNU3v2OkgMPpe3XJqDrX7nhIVm0kUIJpxwrNncPMrB9QgpspYNxCDQd2LdFaLrs6tByuwdLuAS2W+695wJ4oaXcu0DnstUv+DyRA9rYFO7zk3L5gkZAHVCjpdtLQHku/F6K7HsKyQ4iAhY8cof0LWJDuioe8VP0gtWZDSLh4kJzOl8vSftPFhw8J8N22Sgmg3wSGVUuOuKwNXS6eb6t1CY/PcfKg/lOaacmyTYwLqZHGL8dlBg/vy0e7TnO0LZvEZI29elFIKmHuQf3LzMGU8/Ri9ZcsRV6FgFinQn4+vW99vT6d0/kbK+a513UFqH8K259XhtTUS+Z3q+8DqF/IXiybc0N87RaSFav2Xd+8Pcc8EM9OX7u9DiPsN5R/M/4AP5e0DRNfNXcAAAAASUVORK5CYII=",
-    armor = "iVBORw0KGgoAAAANSUhEUgAAAEAAAABABAMAAABYR2ztAAAAMFBMVEX///////////////////////////////////////////////////////////////9Or7hAAAAAEHRSTlMAJEltkrbb////////////J6IGdAAAAbZJREFUeNrtlSt33DAQhe9oF+yiagaGWbCszU/I389JWFnsogZV0qI6SAHWYyyrJyCFFVlb5/M8ru5ogc8u2r2Zh+94efy529oBTIDl3da5PYqFWIDEIS0DgBxbMMAiKYR4BFi+ZRD4PfeAWMiksjkqac75qwlkVW9O4Lc0GyDi9t2L4It/BoATALi7r5eDQtdIoUS41+FVmrkAbiiyyFHJwfoPHBwFX0xA0xBIczGasB0Bwc/56ebsoIbkQ0WXOAKaD9Wj7qI5OYWP2kyfFoqGQGueeASoXR7qAKkETXYYoQLM4xrKd6SOQgM1hA6wAVnDnJrEKj0NACwhFz9tP5xP9xBB2AIkuZbtgjAAUA6aZLJUa90inAEgnIoUIRpX/JZiS9E6ZW56hd60AMTdppGr6/mTSBUpatPGss29aUx26dETubUN8Mql3ZSYg407ZxuMibphDlOTNegAzF2Zfun8kMIuR3s1bR4HPWrAexUiLRU/VZHfLtdLbeFXXHsAK+oxpKc2/3r8y/2BWalyUpW92UgXpPD6ov45NbD+Wa+MMP94Xce3XFpo82L82/inGIGUIv7pegd4CabIsSNWlQAAAABJRU5ErkJggg==",
-    distance = "iVBORw0KGgoAAAANSUhEUgAAAEAAAABABAMAAABYR2ztAAAAMFBMVEX///////////////////////////////////////////////////////////////9Or7hAAAAAEHRSTlMAJEltkrbb////////////J6IGdAAAAf9JREFUeNqtlKt23DAQhn+5C3aLRkJNkKXAopw8Qt+9qGdZT9FKy8KkKXNIJmAtWRdvSCvgY8mfZn7PDfjXpar36YcjAOJ/XavDCqC9W182W8Y9PpTPywhM360+AQAW9Y05Hx8KYN28vmktIXGvwZi5ku70INI81z9nbA9MRteAtnMHWNvGx5gWUIa6AFpqAdcDrgGUHpOgqQFoSFIL2NGCqYEpu0jep+xirkKtaHURz3i6wUpRDawWJHpMq379NtQDxAcgeq7PGgAxASngLiCe18c9gKEI8omLndUAt+uK7gOOhry1LowGtP3EhbOAaS3cIilbbyBXCrgG0qrMvCBHnRsguNwSW1S50vCexgCkawVI4P67NBZkz0IN7BC5OaduXzykLlC9hdQDMXQWQgvI6KLT0KscB0jrY9uVGbW8PR43B7//LL2FplarzVYP79uh+OvOnMTy9SEr+Ml7FbUJqwVP1VzL5zHA2RF4oXhmAJBLUE8DoJybV+3ieXKlcsuU08qR+AQkz8qR7qYcHMFYuQSWeGZjoRyGMWg0ok/JB2i79deh6Ux4Lb7N2qFpfshF+H53a7qluWnvQ44+EZRjyF+C0lW6sgvvSBkFJGhAE4qUQ5l/c9138LmVSjZPR1bHUn+vPgzp5pMuJfXqw9L/ZuJt5Ke4V1EiOzX9P9YHk0DSWHLUStQAAAAASUVORK5CYII=",
-    vehicle = "iVBORw0KGgoAAAANSUhEUgAAAEAAAABABAMAAABYR2ztAAAAMFBMVEX///////////////////////////////////////////////////////////////9Or7hAAAAAEHRSTlMAJEltkrbb////////////J6IGdAAAAXRJREFUeNrtVD1PAkEQfXuAsbDYOREr9QJaA1Gp0Yg/wJhYqoler9G/4R9A/oDxq1YSqKVAawxgZ0HYi0YTAVkLZHdP+AfeVHOz7+a9fTNZIIggdDDzg4gASNEYD2C59G8m76uqGtaATLrdEAAYxTdFc5QsdMpVr6VjVbZUFq15w1TWPrj/7xn3gLlmYXYv4h4aGizqh6dMQCvKSA6YAQCfX06nZeqSc5MLxVetQdbfsrZBy2ystauGD6ETANITYuAXIw6ge6Y1LAIAI/Ipj3BPUaTGjiGlNDDnctS551tHA/B9UfIf9++uOBlOZuVDwTN9yFdZlhkdYuu8dWPYUPDsnG+abDVR1yNGLxGP8z/jtu0V44bbI/vQZsw3QCEtrgES/TwosjsksZLn0ps4Mjv0ALFTKavlTJbR9S1MCYjNq3NcZzjkozQALzS9X9EKuk9bRE1TgwvgfVkjvJQLdDSg6QDY8N2CIEt6HxgHIIJnJIh/Ej94AGkjurDQFQAAAABJRU5ErkJggg==",
-    weapon = "iVBORw0KGgoAAAANSUhEUgAAAEAAAABABAMAAABYR2ztAAAAMFBMVEX///////////////////////////////////////////////////////////////9Or7hAAAAAEHRSTlMAJEltkrbb////////////J6IGdAAAAWZJREFUeNrtlD9OwzAUhz87GZCQqMOfPWoHVqqeACFYYeECiFMBNwCpB6BSe4AKunWiRGIsbbwi0ZghTmicup2QQOJNtvzJfu/3fs/wH78lAgDOTuJx7Si8jscQAgRtIqVdoBNFSiMBJKBqNyhQICC8EgrSGhBBOu2G0Insth5RAwnx2iok6E0APwqYXChvTKZISPzA44AA0q2PyAO8aCRkvXtPpSaxzTI674R5au30G6KlZvmzMywgrJjT3t72EN7OH3S1zMBu+mgJxJl2dJDlk0nQBmVcodr5OoMJp7GIMxc4KoFPLWJR8YYEpCp0xdylI1npb7iU4yuwuOGwom0INO16twkgL8zIAWwKHFxaOZx2C8dzpkv1hqA80QDzoXaAwjPZrV7tKCsTC+2xXJHj3OPJQiaPs+R3jj6gkMkzQLKcvGwjsGlwvECy1MuVwPPaIpC858llo9WAgP1jgOng/8v/8/EFuRVfp7uBUy4AAAAASUVORK5CYII=",
-    speed = "iVBORw0KGgoAAAANSUhEUgAAAEAAAABABAMAAABYR2ztAAAAMFBMVEX///////////////////////////////////////////////////////////////9Or7hAAAAAEHRSTlMAJEltkrbb////////////J6IGdAAAAfFJREFUeNrtlTFyGzEMRR8YFWkyA1AXMOkLZKwj5PoZp0vnpco0JngBiylWu1pupJzArDjE248B8MmFzwUgm/3xRwKg/vx1Owwb1pad6e30sIYTdiXMYuxlD8Qsy4cST7zvAcmnm2yMfOxSWMxAbUu23kZAYla4TLNuNH0rI2A5K5Qr0OL3HSDRtBeqz2depzPE7itgyei1+DVxnypI/LYCEk3xaVWlVpCnyy2FGXXyYQQx4WurxbS/lTYAx5d6XhXM6NN5nGGyiy9AzNqnNoZFa0NSLxxAktYxgTxrnxry/FEIYGntwDq4fHltSFYIs2e2gMSk9EZ80bXVfZtBTrZUCgREdy60OE9TEigHTKllk1+PSp8KdBBrgWzdNxniKSm8O3hpMRPIti0ipJyglwb1FYscUL3cFCxGwN8b0B0xArYtci7tMjfWG3Zz9WI9AC93Lw5ItH/aMgDk+e5t2zYqZAXoPAJQOrAx3x4AGn2YbdhFRRndMwIOu/gIdG9Q/wNQfezSYhhdFabOzv8HQESXS1frpgs2A27ERdUHbybFCRRfH6ed9QyvBKYi8ekeEJLWiYC3xwrdOeANZhvsVmIGOhBO9xSAtrxR9vCt/gJi8vVurPvvPwSo06OvpwLhegnuKtQ2D8t3Llu8gX/+Ltf1F4DA0e+4jWQ3AAAAAElFTkSuQmCC",
-}
-local ICON_TEXTURES = {}
-
-local function uploadIcon(name, encoded)
-    if ICON_TEXTURES[name] then return end
-    local ok, png = pcall(decodeBase64, encoded)
-    if not ok or type(png) ~= "string" or #png <= 8 then return end
-    local okTex, texture = pcall(Susano.LoadTextureFromBuffer, png)
-    if okTex and type(texture) == "number" and texture ~= 0 then
-        ICON_TEXTURES[name] = texture
-    end
-end
-
-local function loadIconTextures()
-    if not Susano or type(Susano.LoadTextureFromBuffer) ~= "function" then
-        return
-    end
-    for name, encoded in pairs(ICON_B64) do
-        uploadIcon(name, encoded)
-    end
-end
-
--- Exposed so a reload can re-upload without re-running the chunk.
-Menu.LoadIconTextures = loadIconTextures
-
--- Upload from a thread, one glyph per tick. The base loader uploads its arrow
--- textures from a thread too; doing eleven uploads inline during the chunk
--- load faults on builds whose renderer is not ready yet. The vector fallback
--- covers the first frames, so the menu is usable while the textures arrive.
-if type(CreateThread) == "function" then
-    CreateThread(function()
-        if type(Wait) == "function" then Wait(0) end
-        if not Susano or type(Susano.LoadTextureFromBuffer) ~= "function" then
-            return
-        end
-        local names = {}
-        for name in pairs(ICON_B64) do names[#names + 1] = name end
-        for index = 1, #names do
-            pcall(uploadIcon, names[index], ICON_B64[names[index]])
-            if type(Wait) == "function" then Wait(0) end
-        end
-    end)
-else
-    -- No thread scheduler: keep the vector fallback rather than uploading
-    -- inline during the chunk load.
-end
+-- ---------------------------------------------------------------------------
+-- ICON GLYPHS
+--
+-- The glyphs are drawn with the menu's own primitives (DrawRectFilled and
+-- DrawLine). No texture is uploaded, no image is decoded and no image bytes are
+-- kept in the chunk: a texture upload runs inside the executor's DX11 path and
+-- a single bad decode or handle takes the whole client down without a FiveM
+-- crash dump. The vector set below is the same 0..1 box as the reference card,
+-- so the layout is identical and there is nothing left to fault.
+-- ---------------------------------------------------------------------------
 
 -- ---------------------------------------------------------------------------
 -- ICONS
@@ -32110,17 +32032,6 @@ end
 local function drawIcon(name, x, y, size, cr, cg, cb)
     if size <= 0 then return end
     local ir, ig, ib = cr or ICON_R, cg or ICON_G, cb or ICON_B
-
-    -- Material texture first: one tinted draw call instead of a primitive
-    -- cluster. The texture is white with alpha, so r/g/b is the whole colour.
-    local texture = ICON_TEXTURES[name]
-    if texture and Susano and type(Susano.DrawImage) == "function" then
-        local ok = pcall(Susano.DrawImage, texture, x, y, size, size, ir, ig, ib, 1.0, 0)
-        if ok then return end
-        -- The handle was rejected; drop it so the card stops retrying a bad
-        -- draw every frame and falls back to the vector glyph.
-        ICON_TEXTURES[name] = nil
-    end
 
     -- Filled cell in the icon colour.
     local function R(u, v, w, h, rad)
@@ -32236,15 +32147,6 @@ end
 -- reads at a glance without depending on what is behind it.
 local function drawVehicleBadge(x, y, size, r, g, b)
     if size <= 0 then return end
-
-    -- Same Material car texture as the card, tinted with the caller's colour.
-    -- One draw call per row; the primitive car below is the upload-failure path.
-    local texture = ICON_TEXTURES.vehicle
-    if texture and Susano and type(Susano.DrawImage) == "function" then
-        local ok = pcall(Susano.DrawImage, texture, x, y, size, size, r, g, b, 1.0, 0)
-        if ok then return end
-        ICON_TEXTURES.vehicle = nil
-    end
 
     fillRect(x + 0.06 * size, y + 0.44 * size, 0.88 * size, 0.24 * size,
         r, g, b, 1.0, 0.05 * size)
