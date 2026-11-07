@@ -2537,7 +2537,10 @@ Menu.Categories = {
             { name = "Ban Player", type = "toggle", value = false, risk = true},
             { name = "Shoot Player", type = "action", risk = true},
             { name = "Ped Flood", type = "action", risk = true},
-            { name = "Launch", type = "action", onClick = function() Menu.ActionLaunch() end },
+            { name = "Launch Player", type = "selector", options = {"Method 1", "Method 2"}, selected = 1, onClick = function(index, option)
+                Menu.LaunchMethod = index
+                Menu.ActionLaunch(index)
+            end },
             { name = "Attach Player", type = "toggle", value = false, targetBound = true, onClick = function(val)
                 local target = Menu.SelectedPlayer
                 if not target then
@@ -15239,25 +15242,31 @@ function Menu.ActionRagdoll()
     end
 end
 
--- Launch: no vehicle, no explosion, no visibility change, no far teleport.
+-- Launch: no vehicle and no explosion.
 --
 --   self ... SetEntityVelocity on the local ped. GET_ENTITY_SPEED is masked
 --            by the existing stealth hook for the duration; the ped must be
 --            on foot, so a vehicle never enters the path.
---   remote . The operator must be within LaunchAttachRange. When the victim
---            ped is controllable, only that ped is driven upward. When control
---            is refused, the victim is attached to the local operator
---            (reverse physical attach) and follows the local lift. The
---            hardened Susano ragdoll primitive keeps the victim's speed check
---            from treating the launch as a hack.
+--   remote method 1 . The operator must be within LaunchAttachRange. When the
+--            victim ped is controllable, only that ped is driven upward. When
+--            control is refused, the victim is attached to the local operator
+--            (reverse physical attach) and follows the local lift.
+--   remote method 2 . No range requirement. A short coordinate lift plus a
+--            repeated upward force and velocity are applied inside the injected
+--            resource. This is the fallback for servers that ignore method 1.
+--
+-- Both remote paths request the hardened Susano ragdoll so the victim speed
+-- check does not treat the launch as a hack.
 --
 -- A selected id that no longer resolves is refused; there is no nearest-player
 -- fallback. The old world-car and explosion paths are gone.
 --
--- Native signatures verified against the CFX natives dump:
---   SET_ENTITY_VELOCITY 0x1C99BB7B6E96D16F (Entity,f,f,f)
---   ATTACH_ENTITY_TO_ENTITY_PHYSICALLY 0xC3675780C92F90F9 (19 args)
---   DETACH_ENTITY 0x961AC54BF0613F5D (Entity,B,B)
+-- Native names and arities verified against the CFX natives dump:
+--   SET_ENTITY_VELOCITY (Entity,f,f,f)
+--   SET_ENTITY_COORDS (Entity,f,f,f,B,B,B,B)
+--   APPLY_FORCE_TO_ENTITY (Entity,int,f,f,f,f,f,f,int,B,B,B,B,B)
+--   ATTACH_ENTITY_TO_ENTITY_PHYSICALLY (19 args)
+--   DETACH_ENTITY (Entity,B,B)
 Menu.LaunchCooldownMs   = 4000
 Menu.LaunchLastAt       = 0
 Menu.LaunchAttachRange  = 3.0
@@ -15302,7 +15311,8 @@ local function _launchSelf()
     StealthRelease("speed")
 end
 
-function Menu.ActionLaunch()
+function Menu.ActionLaunch(method)
+    method = tonumber(method) or Menu.LaunchMethod or 1
     local selected = Menu.SelectedPlayer
     if type(selected) ~= "number" then return end
 
@@ -15331,6 +15341,47 @@ function Menu.ActionLaunch()
     if IsPedInAnyVehicle(targetPed, false) then return end
 
     Menu.LaunchLastAt = stamp
+
+    if method == 2 and type(Susano) == "table" and type(Susano.InjectResource) == "function" then
+        if type(Susano.RequestRagdoll) == "function" then
+            local okGuid, guid = pcall(GetEntityGuid, targetPed)
+            if okGuid and type(guid) == "number" and guid ~= 0 then
+                pcall(Susano.RequestRagdoll, guid)
+            end
+        end
+
+        Susano.InjectResource("any", string.format([[
+            local targetServerId = %d
+
+            CreateThread(function()
+                local targetPlayerId = nil
+                for _, player in ipairs(GetActivePlayers()) do
+                    if GetPlayerServerId(player) == targetServerId then
+                        targetPlayerId = player
+                        break
+                    end
+                end
+                if not targetPlayerId then return end
+
+                local targetPed = GetPlayerPed(targetPlayerId)
+                if not targetPed or targetPed == 0 or not DoesEntityExist(targetPed) then return end
+
+                local coords = GetEntityCoords(targetPed, true)
+                if not coords then return end
+                SetEntityCoords(targetPed, coords.x, coords.y, coords.z + 5.0,
+                    false, false, false, false)
+
+                for _ = 1, 10 do
+                    if not DoesEntityExist(targetPed) then break end
+                    ApplyForceToEntity(targetPed, 1, 0.0, 0.0, 50000.0,
+                        0.0, 0.0, 0.0, 0, false, true, true, false, true)
+                    SetEntityVelocity(targetPed, 0.0, 0.0, 1000.0)
+                    Wait(10)
+                end
+            end)
+        ]], selected))
+        return
+    end
 
     CreateThread(function()
         local me = PlayerPedId()
@@ -15486,10 +15537,11 @@ end
 
 -- The Launch row carries its own onClick now, so this binding survives any tab
 -- rebuild that copies the row spec. Kept as a second safety net.
-Actions.launchItem = FindItem("Online", "Troll", "Launch")
+Actions.launchItem = FindItem("Online", "Troll", "Launch Player")
 if Actions.launchItem then
-    Actions.launchItem.onClick = function()
-        Menu.ActionLaunch()
+    Actions.launchItem.onClick = function(index, option)
+        Menu.LaunchMethod = index
+        Menu.ActionLaunch(index)
     end
 end
 
@@ -18195,6 +18247,12 @@ local function RefreshPlayers()
         local ok, active = pcall(GetActivePlayers)
         if ok and type(active) == "table" then
             local localPlayer = PlayerId()
+            local myCoords = nil
+            local okMyPed, myPed = pcall(GetPlayerPed, localPlayer)
+            if okMyPed and myPed and myPed ~= 0 then
+                local okCoords, coords = pcall(GetEntityCoords, myPed, true)
+                if okCoords then myCoords = coords end
+            end
 
             for i = 1, #active do
                 local player = active[i]
@@ -18203,12 +18261,20 @@ local function RefreshPlayers()
                     if okPed and ped and ped ~= 0 and DoesEntityExist(ped) then
                         local okName, name = pcall(GetPlayerName, player)
                         local okId, serverId = pcall(GetPlayerServerId, player)
+                        local distance = 1.0e9
+                        if myCoords then
+                            local okCoords, pedCoords = pcall(GetEntityCoords, ped, true)
+                            if okCoords and pedCoords then
+                                distance = #(pedCoords - myCoords)
+                            end
+                        end
 
                         list[#list + 1] = {
                             player = player,
                             ped = ped,
                             name = okName and tostring(name) or ("player " .. tostring(player)),
                             serverId = okId and serverId or 0,
+                            distance = distance,
                         }
                     end
                 end
@@ -18216,8 +18282,12 @@ local function RefreshPlayers()
         end
     end
 
+    table.sort(list, function(a, b)
+        return (a.distance or 1.0e9) < (b.distance or 1.0e9)
+    end)
+
     Players.list = list
-    if #list == 0 or Players.index > #list then Players.index = 1 end
+    Players.index = 1
     return #list
 end
 
@@ -18398,13 +18468,6 @@ local function PlayerItemSync()
 end
 
 local function RefreshPlayerItem()
-    -- Capture the server id under the cursor before the list is rebuilt. The
-    -- active-player array is not ordered, so an index alone would point at a
-    -- different person a moment later. Resolving by id keeps the selected
-    -- player selected while the automatic refresh runs.
-    local previous = Players.list[playerItem.selected or Players.index or 1]
-    local previousServerId = previous and previous.serverId or nil
-
     local count = RefreshPlayers()
     local labels = {}
 
@@ -18417,21 +18480,7 @@ local function RefreshPlayerItem()
 
     if #labels == 0 then labels[1] = "none" end
     playerItem.options = labels
-
-    local selected = 1
-    if previousServerId then
-        for i = 1, count do
-            if Players.list[i].serverId == previousServerId then
-                selected = i
-                break
-            end
-        end
-    end
-    if playerItem.selected and previousServerId == nil then
-        selected = math.max(1, math.min(#labels, playerItem.selected))
-    end
-    if selected > #labels then selected = 1 end
-    playerItem.selected = selected
+    playerItem.selected = 1
     PlayerItemSync()
     return count
 end
@@ -35295,7 +35344,7 @@ end
 -- BOOT
 -- ---------------------------------------------------------------------------
 function UI.boot()
-    O.log("loader build 2026-11-07-r37 (Launch drives the victim ped directly when control is available, otherwise reverse-attaches the victim to the local ped so it follows the lift; no vehicle, explosion, far teleport or visibility write; hardened Susano ragdoll keeps the victim speed check lenient; self launch uses 58 m/s with GET_ENTITY_SPEED masked by the stealth hook; velocity and settle waits carry jitter; 3 m range; tight bold category chevrons; Troll Appearance section and Copy Appearance row removed; All mode Include me toggle adds the local ped alongside remote targets; Props Player row hidden in Self and All modes; attachment rows Attach to player and Attach point removed; target labels Self/Player/All; automatic player refresh keeps the selected server id; manual Refresh player list removed; Ban Player beta suffix removed; Servers and Bypass tabs moved from Destroyer to Misc; FOV moved from Visual/Camera to Self under Big Weapon; banner wbYgWhZ bottom-anchored flush on the category plate; White/Cyan theme selector; 3:1 header; flush tab strip; light-grey cell tab plate; dark selected category rectangle; uniform unselected categories; reference names Self/Online/Vehicle/Weapon/Destroyer/Misc/Settings/Search; Search category opens the prompt directly and lands on results; compact magnifier; tight bold category chevron pair; full-white section rules fitted to the label width; Target keeps only the Ctrl hint; Player Props folded into Online; 15px right-aligned slider readout; target-bound toggles reset on target change/unload; dark row plates; white toggle/scrollbar; footer centre mark removed; Delete/Backspace close)")
+    O.log("loader build 2026-11-07-r39 (Online Props Player row sorts the player list by distance and always targets the nearest player; Launch Player selector offers Method 1 and Method 2; Method 1 drives the victim ped directly when control is available and otherwise reverse-attaches the victim to the local ped within 3 m; Method 2 uses a range-free injected coordinate lift plus repeated upward force and velocity for servers that ignore Method 1; no vehicle or explosion; hardened Susano ragdoll keeps the victim speed check lenient; self launch uses 58 m/s with GET_ENTITY_SPEED masked by the stealth hook; velocity and settle waits carry jitter; tight bold category chevrons; Troll Appearance section and Copy Appearance row removed; All mode Include me toggle adds the local ped alongside remote targets; Props Player row hidden in Self and All modes; attachment rows Attach to player and Attach point removed; target labels Self/Player/All; automatic player refresh sorts by distance and selects nearest; manual Refresh player list removed; Ban Player beta suffix removed; Servers and Bypass tabs moved from Destroyer to Misc; FOV moved from Visual/Camera to Self under Big Weapon; banner wbYgWhZ bottom-anchored flush on the category plate; White/Cyan theme selector; 3:1 header; flush tab strip; light-grey cell tab plate; dark selected category rectangle; uniform unselected categories; reference names Self/Online/Vehicle/Weapon/Destroyer/Misc/Settings/Search; Search category opens the prompt directly and lands on results; compact magnifier; tight bold category chevron pair; full-white section rules fitted to the label width; Target keeps only the Ctrl hint; Player Props folded into Online; 15px right-aligned slider readout; target-bound toggles reset on target change/unload; dark row plates; white toggle/scrollbar; footer centre mark removed; Delete/Backspace close)")
     O.thread()
 
     -- Delete/Backspace fallback poll. 40 ms is faster than a frame at 30 FPS
