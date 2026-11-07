@@ -32669,57 +32669,32 @@ local ICON_B64 = {
 
 local ICON_TEXTURES = {}
 
-local function uploadIcon(name, encoded)
-    if ICON_TEXTURES[name] then return end
-    local ok, png = pcall(decodeBase64, encoded)
-    if not ok or type(png) ~= "string" or #png <= 8 then return end
-    local okTex, texture = pcall(Susano.LoadTextureFromBuffer, png)
-    if okTex and type(texture) == "number" and texture ~= 0 then
-        ICON_TEXTURES[name] = texture
-    end
-end
-
 local function loadIconTextures()
     if not Susano or type(Susano.LoadTextureFromBuffer) ~= "function" then
         return
     end
     for name, encoded in pairs(ICON_B64) do
-        uploadIcon(name, encoded)
+        local ok, png = pcall(decodeBase64, encoded)
+        if ok and type(png) == "string" and #png > 8 then
+            local okTex, texture = pcall(Susano.LoadTextureFromBuffer, png)
+            if okTex and type(texture) == "number" and texture ~= 0 then
+                ICON_TEXTURES[name] = texture
+            end
+        end
     end
 end
 
--- Exposed so a reload can re-upload without re-running the chunk.
-Menu.LoadIconTextures = loadIconTextures
-
--- Upload from a thread, one glyph per tick. The base loader uploads its arrow
--- textures from a thread too; doing eleven uploads inline during the chunk
--- load faults on builds whose renderer is not ready yet. The vector fallback
--- covers the first frames, so the menu is usable while the textures arrive.
-if type(CreateThread) == "function" then
-    CreateThread(function()
-        if type(Wait) == "function" then Wait(0) end
-        if not Susano or type(Susano.LoadTextureFromBuffer) ~= "function" then
-            return
-        end
-        local names = {}
-        for name in pairs(ICON_B64) do names[#names + 1] = name end
-        for index = 1, #names do
-            pcall(uploadIcon, names[index], ICON_B64[names[index]])
-            if type(Wait) == "function" then Wait(0) end
-        end
-    end)
-else
-    -- No thread scheduler: keep the vector fallback rather than uploading
-    -- inline during the chunk load.
-end
+-- Load once at module start, outside the render path. A failed upload simply
+-- leaves the table empty and the vector fallback takes over.
+pcall(loadIconTextures)
 
 -- ---------------------------------------------------------------------------
 -- ICONS
 --
--- The Material glyphs above are uploaded from a thread and drawn as tinted
--- textures. The vector routines below are the fallback for builds that refuse
--- the upload: same 0..1 boxes, same optical size, so a missing texture never
--- shifts the layout. Nothing here calls a game native or fetches a URL.
+-- The Material glyphs above are uploaded once at module start and drawn as
+-- tinted textures. The vector routines below are the fallback for builds that
+-- refuse the upload: same 0..1 boxes, same optical size, so a missing texture
+-- never shifts the layout. Nothing here calls a game native or fetches a URL.
 -- ---------------------------------------------------------------------------
 local function drawIcon(name, x, y, size, cr, cg, cb)
     if size <= 0 then return end
@@ -33356,10 +33331,7 @@ if type(Menu) == "table" and type(Menu.DrawItem) == "function"
         -- its row fades.
         local previousAlpha = Menu.DrawAlpha
         Menu.DrawAlpha = (previousAlpha or 1.0) * (Menu.ContentEase or 1.0)
-        -- The row draw is already pcall'd by the base wrapper; this second
-        -- guard keeps a texture or primitive fault inside the badge from
-        -- taking down the whole menu render pass.
-        pcall(drawVehicleBadge, badgeX, badgeY, badgeSize, ICON_R, ICON_G, ICON_B)
+        drawVehicleBadge(badgeX, badgeY, badgeSize, ICON_R, ICON_G, ICON_B)
         Menu.DrawAlpha = previousAlpha
     end
 
