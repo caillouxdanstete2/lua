@@ -113,11 +113,11 @@ local function replaceAllPlain(code, needle, replacement)
     return code, count
 end
 
--- Patch tag display [RISK] (red) / [DYNASTY] (purple) / [SEED] (green)
+-- Patch tag display [RISK] (red) / [DYNASTY] (violet) / [SEED] (neutral)
 LibraryCode = string.gsub(
     LibraryCode,
     'Menu%.DrawText%(textX, textY, item%.name, 19, Menu%.Colors%.TextWhite%.r / 255%.0, Menu%.Colors%.TextWhite%.g / 255%.0, Menu%.Colors%.TextWhite%.b / 255%.0, 1%.0%)',
-    'Menu.DrawText(textX, textY, item.name, 19, Menu.Colors.TextWhite.r / 255.0, Menu.Colors.TextWhite.g / 255.0, Menu.Colors.TextWhite.b / 255.0, 1.0); if (item.risk or item.dynasty or item.seed) and Susano and Susano.GetTextWidth then local _sc = 19 * (Menu.Scale or 1.0); local _ox = Susano.GetTextWidth(item.name, _sc); if item.risk then Menu.DrawText(textX + _ox, textY, "  [RISK]", 19, 1.0, 0.15, 0.15, 1.0); _ox = _ox + Susano.GetTextWidth("  [RISK]", _sc) end; if item.dynasty then Menu.DrawText(textX + _ox, textY, "  [DYNASTY]", 19, 0.6, 0.2, 1.0, 1.0); _ox = _ox + Susano.GetTextWidth("  [DYNASTY]", _sc) end; if item.seed then Menu.DrawText(textX + _ox, textY, "  [SEED]", 19, 0.2, 1.0, 0.35, 1.0) end end'
+    'Menu.DrawText(textX, textY, item.name, 19, Menu.Colors.TextWhite.r / 255.0, Menu.Colors.TextWhite.g / 255.0, Menu.Colors.TextWhite.b / 255.0, 1.0); if (item.risk or item.dynasty or item.seed) and Susano and Susano.GetTextWidth then local _sc = 19 * (Menu.Scale or 1.0); local _ox = Susano.GetTextWidth(item.name, _sc); if item.risk then Menu.DrawText(textX + _ox, textY, "  [RISK]", 19, 1.0, 0.15, 0.15, 1.0); _ox = _ox + Susano.GetTextWidth("  [RISK]", _sc) end; if item.dynasty then Menu.DrawText(textX + _ox, textY, "  [DYNASTY]", 19, 0.6, 0.2, 1.0, 1.0); _ox = _ox + Susano.GetTextWidth("  [DYNASTY]", _sc) end; if item.seed then Menu.DrawText(textX + _ox, textY, "  [SEED]", 19, 0.78, 0.78, 0.80, 1.0) end end'
 )
 
 -- ============================================
@@ -172,28 +172,228 @@ do
     end]],
         [[    if Susano and Susano.DrawRectFilled then
         Susano.DrawRectFilled(x, footerY, footerWidth, footerHeight,
-            0.059, 0.059, 0.059, 0.98,
+            0.180, 0.180, 0.190, 0.99,
+            footerRounding)
+        Susano.DrawRectFilled(x + 1, footerY + 1, footerWidth - 2, footerHeight - 2,
+            0.052, 0.052, 0.056, 0.99,
             footerRounding)
     else
-        Menu.DrawRoundedRect(x, footerY, footerWidth, footerHeight, 15, 15, 15, 250, footerRounding)
+        Menu.DrawRoundedRect(x, footerY, footerWidth, footerHeight, 46, 46, 48, 252, footerRounding)
+        Menu.DrawRoundedRect(x + 1, footerY + 1, footerWidth - 2, footerHeight - 2, 13, 13, 14, 252, footerRounding)
     end]]
     )
     LibraryCode = footerCode
 end
 
--- The menu is green by default. Replace the library's initial cyan banner
+-- ============================================
+-- PATCH: reference monochrome paint
+-- ============================================
+-- The supplied reference is anthracite and smoke-grey: no green accent, no
+-- coloured selection plate. The menu chrome is repainted with the same
+-- neutral values used by the tab override later in this file. The banner
+-- stays a slot; its image is replaced by the operator, not by this patch.
+do
+    -- Header frame: keep the same 1px frame geometry, lower the contrast.
+    LibraryCode = replacePlain(
+        LibraryCode,
+        "                Susano.DrawRectFilled(x, y, width, height, 0.216, 0.216, 0.216, 0.98, bannerRadius)\n"
+            .. "                Susano.DrawRectFilled(x + 1, y + 1, width - 2, height - 2, 0.059, 0.059, 0.059, 0.98, bannerRadius)",
+        "                Susano.DrawRectFilled(x, y, width, height, 0.180, 0.180, 0.190, 0.99, bannerRadius)\n"
+            .. "                Susano.DrawRectFilled(x + 1, y + 1, width - 2, height - 2, 0.052, 0.052, 0.056, 0.99, bannerRadius)"
+    )
+
+    -- Menu body and the 1px outer frame.
+    LibraryCode = replacePlain(
+        LibraryCode,
+        "    local bgR, bgG, bgB = 0.059, 0.059, 0.059\n"
+            .. "    local bgAlpha = 0.98\n"
+            .. "    local menuRadius = 6\n"
+            .. "    local borderR, borderG, borderB = 0.216, 0.216, 0.216",
+        "    local bgR, bgG, bgB = 0.052, 0.052, 0.056\n"
+            .. "    local bgAlpha = 0.99\n"
+            .. "    local menuRadius = 6\n"
+            .. "    local borderR, borderG, borderB = 0.180, 0.180, 0.190"
+    )
+
+    -- The tab strip is a darker smoked plate, not pure black.
+    LibraryCode = replacePlain(
+        LibraryCode,
+        "                Susano.DrawRectFilled(x + 1, tabsY + 1, width - 2, menuBarH - 1, 0.0, 0.0, 0.0, 1.0, menuRadius)",
+        "                Susano.DrawRectFilled(x + 1, tabsY + 1, width - 2, menuBarH - 1, 0.035, 0.035, 0.040, 1.0, menuRadius)"
+    )
+
+    -- Scrollbar: same geometry, quieter track.
+    LibraryCode = replacePlain(
+        LibraryCode,
+        "        Susano.DrawRectFilled(scrollbarX, barY, scrollbarWidth, barH, 0.216, 0.216, 0.216, 0.85, barRadius)\n"
+            .. "        Susano.DrawRectFilled(scrollbarX + 1, barY + 1, scrollbarWidth - 2, barH - 2, 0.05, 0.05, 0.05, 0.92, barRadius)",
+        "        Susano.DrawRectFilled(scrollbarX, barY, scrollbarWidth, barH, 0.180, 0.180, 0.190, 0.85, barRadius)\n"
+            .. "        Susano.DrawRectFilled(scrollbarX + 1, barY + 1, scrollbarWidth - 2, barH - 2, 0.042, 0.042, 0.046, 0.92, barRadius)"
+    )
+
+    -- Row plate behind every actionable row. The selected plate is drawn on
+    -- top by the next replacement, so the unselected plate is the base layer.
+    LibraryCode = replacePlain(
+        LibraryCode,
+        "    if isSelected then\n        if Menu.SelectorY == 0 then",
+        [[    local _plateX = x + 6
+    local _plateW = width - 12
+    local _plateH = itemHeight - 8
+    local _plateY = itemY + math.floor((itemHeight - _plateH) / 2)
+    if Susano and Susano.DrawRectFilled then
+        Susano.DrawRectFilled(_plateX, _plateY, _plateW, _plateH, 0.135, 0.135, 0.145, 0.99, 5)
+        Susano.DrawRectFilled(_plateX + 1, _plateY + 1, _plateW - 2, _plateH - 2, 0.072, 0.072, 0.080, 1.0, 4)
+    else
+        Menu.DrawRoundedRect(_plateX, _plateY, _plateW, _plateH, 34, 34, 37, 252, 5)
+        Menu.DrawRoundedRect(_plateX + 1, _plateY + 1, _plateW - 2, _plateH - 2, 18, 18, 20, 255, 4)
+    end
+
+    if isSelected then
+        if Menu.SelectorY == 0 then]]
+    )
+
+    -- Selected item: dark glass, light rim, low white bloom. No accent fill.
+    LibraryCode = replacePlain(
+        LibraryCode,
+        [[        local baseR = (Menu.Colors.SelectedBg and Menu.Colors.SelectedBg.r) and (Menu.Colors.SelectedBg.r / 255.0) or 1.0
+        local baseG = (Menu.Colors.SelectedBg and Menu.Colors.SelectedBg.g) and (Menu.Colors.SelectedBg.g / 255.0) or 0.0
+        local baseB = (Menu.Colors.SelectedBg and Menu.Colors.SelectedBg.b) and (Menu.Colors.SelectedBg.b / 255.0) or 1.0
+
+        -- Barre de selection Korium avec bloom lumineux
+        local floatPad = 6
+        local selX = x + floatPad
+        local selW = width - (floatPad * 2)
+        local selH = itemHeight - 15
+        local selY = drawY + math.floor((itemHeight - selH) / 2)
+        local selRadius = 4
+        if Susano and Susano.DrawRectFilled then
+            Susano.DrawRectFilled(selX - 10, selY - 6, selW + 20, selH + 12, baseR, baseG, baseB, 0.07, selRadius + 8)
+            Susano.DrawRectFilled(selX - 5, selY - 3, selW + 10, selH + 6, baseR, baseG, baseB, 0.15, selRadius + 4)
+            Susano.DrawRectFilled(selX - 2, selY - 2, selW + 4, selH + 4, baseR, baseG, baseB, 0.22, selRadius + 1)
+            Susano.DrawRectFilled(selX, selY, selW, selH, 0.216, 0.216, 0.216, 0.98, selRadius)
+            Susano.DrawRectFilled(selX + 1, selY + 1, selW - 2, selH - 2, baseR, baseG, baseB, 0.85, selRadius)
+            Susano.DrawRectFilled(selX + 1, selY + 1, (selW - 2) * 0.5, selH - 2, baseR, baseG, baseB, 0.10, selRadius)
+        else
+            Menu.DrawRoundedRect(selX, selY, selW, selH, 55, 55, 55, 250, selRadius)
+            Menu.DrawRoundedRect(selX + 1, selY + 1, selW - 2, selH - 2, math.floor(baseR * 255), math.floor(baseG * 255), math.floor(baseB * 255), 217, selRadius)
+        end]],
+        [[        local baseR = 0.97
+        local baseG = 0.97
+        local baseB = 0.98
+
+        -- Dark glass plate with a light rim; no accent flood.
+        local floatPad = 6
+        local selX = x + floatPad
+        local selW = width - (floatPad * 2)
+        local selH = itemHeight - 8
+        local selY = drawY + math.floor((itemHeight - selH) / 2)
+        local selRadius = 5
+        if Susano and Susano.DrawRectFilled then
+            Susano.DrawRectFilled(selX - 8, selY - 5, selW + 16, selH + 10, baseR, baseG, baseB, 0.035, selRadius + 7)
+            Susano.DrawRectFilled(selX - 4, selY - 2, selW + 8, selH + 4, baseR, baseG, baseB, 0.050, selRadius + 3)
+            Susano.DrawRectFilled(selX, selY, selW, selH, 0.320, 0.320, 0.340, 1.0, selRadius)
+            Susano.DrawRectFilled(selX + 1, selY + 1, selW - 2, selH - 2, 0.095, 0.095, 0.105, 1.0, selRadius - 1)
+            Susano.DrawRectFilled(selX + 1, selY + 1, selW - 2, math.floor(selH * 0.5), 1.0, 1.0, 1.0, 0.035, selRadius - 1)
+        else
+            Menu.DrawRoundedRect(selX, selY, selW, selH, 82, 82, 87, 255, selRadius)
+            Menu.DrawRoundedRect(selX + 1, selY + 1, selW - 2, selH - 2, 24, 24, 27, 255, selRadius - 1)
+        end]]
+    )
+
+    -- Main-menu category row plate, same material as the item rows.
+    LibraryCode = replacePlain(
+        LibraryCode,
+        "            local itemY = startY + (displayIndex - 1) * itemHeight\n\n            if isSelected then",
+        [[            local itemY = startY + (displayIndex - 1) * itemHeight
+
+            local _plateX = x + 6
+            local _plateW = width - 12
+            local _plateH = itemHeight - 8
+            local _plateY = itemY + math.floor((itemHeight - _plateH) / 2)
+            if Susano and Susano.DrawRectFilled then
+                Susano.DrawRectFilled(_plateX, _plateY, _plateW, _plateH, 0.135, 0.135, 0.145, 0.99, 5)
+                Susano.DrawRectFilled(_plateX + 1, _plateY + 1, _plateW - 2, _plateH - 2, 0.072, 0.072, 0.080, 1.0, 4)
+            else
+                Menu.DrawRoundedRect(_plateX, _plateY, _plateW, _plateH, 34, 34, 37, 252, 5)
+                Menu.DrawRoundedRect(_plateX + 1, _plateY + 1, _plateW - 2, _plateH - 2, 18, 18, 20, 255, 4)
+            end
+
+            if isSelected then]]
+    )
+
+    -- Selected main-menu category: the same dark glass and light rim.
+    LibraryCode = replacePlain(
+        LibraryCode,
+        [[                local baseR = Menu.Colors.SelectedBg.r / 255.0
+                local baseG = Menu.Colors.SelectedBg.g / 255.0
+                local baseB = Menu.Colors.SelectedBg.b / 255.0
+
+                -- Barre de selection Korium avec bloom lumineux
+                local floatPad = 6
+                local selX = x + floatPad
+                local selW = width - (floatPad * 2)
+                local selH = itemHeight - 15
+                local selY = drawY + math.floor((itemHeight - selH) / 2)
+                local selRadius = 4
+                if Susano and Susano.DrawRectFilled then
+                    Susano.DrawRectFilled(selX - 10, selY - 6, selW + 20, selH + 12, baseR, baseG, baseB, 0.07, selRadius + 8)
+                    Susano.DrawRectFilled(selX - 5, selY - 3, selW + 10, selH + 6, baseR, baseG, baseB, 0.15, selRadius + 4)
+                    Susano.DrawRectFilled(selX - 2, selY - 2, selW + 4, selH + 4, baseR, baseG, baseB, 0.22, selRadius + 1)
+                    Susano.DrawRectFilled(selX, selY, selW, selH, 0.216, 0.216, 0.216, 0.98, selRadius)
+                    Susano.DrawRectFilled(selX + 1, selY + 1, selW - 2, selH - 2, baseR, baseG, baseB, 0.85, selRadius)
+                    Susano.DrawRectFilled(selX + 1, selY + 1, (selW - 2) * 0.5, selH - 2, baseR, baseG, baseB, 0.10, selRadius)
+                else
+                    Menu.DrawRoundedRect(selX, selY, selW, selH, 55, 55, 55, 250, selRadius)
+                    Menu.DrawRoundedRect(selX + 1, selY + 1, selW - 2, selH - 2, math.floor(baseR * 255), math.floor(baseG * 255), math.floor(baseB * 255), 217, selRadius)
+                end]],
+        [[                local baseR = 0.97
+                local baseG = 0.97
+                local baseB = 0.98
+
+                local floatPad = 6
+                local selX = x + floatPad
+                local selW = width - (floatPad * 2)
+                local selH = itemHeight - 8
+                local selY = drawY + math.floor((itemHeight - selH) / 2)
+                local selRadius = 5
+                if Susano and Susano.DrawRectFilled then
+                    Susano.DrawRectFilled(selX - 8, selY - 5, selW + 16, selH + 10, baseR, baseG, baseB, 0.035, selRadius + 7)
+                    Susano.DrawRectFilled(selX - 4, selY - 2, selW + 8, selH + 4, baseR, baseG, baseB, 0.050, selRadius + 3)
+                    Susano.DrawRectFilled(selX, selY, selW, selH, 0.320, 0.320, 0.340, 1.0, selRadius)
+                    Susano.DrawRectFilled(selX + 1, selY + 1, selW - 2, selH - 2, 0.095, 0.095, 0.105, 1.0, selRadius - 1)
+                    Susano.DrawRectFilled(selX + 1, selY + 1, selW - 2, math.floor(selH * 0.5), 1.0, 1.0, 1.0, 0.035, selRadius - 1)
+                else
+                    Menu.DrawRoundedRect(selX, selY, selW, selH, 82, 82, 87, 255, selRadius)
+                    Menu.DrawRoundedRect(selX + 1, selY + 1, selW - 2, selH - 2, 24, 24, 27, 255, selRadius - 1)
+                end]]
+    )
+
+    LibraryCode = replaceAllPlain(LibraryCode, "0.2, 0.2, 0.2, 0.95", "0.17, 0.17, 0.18, 0.95")
+    LibraryCode = replaceAllPlain(LibraryCode, "51, 51, 51, 242", "43, 43, 46, 242")
+
+    -- The library's no-banner fallback draws a 44 px white "P" over the dark
+    -- header. Keep the dark plate instead: a missing or slow banner must not
+    -- flash a placeholder letter across the top of the menu.
+    LibraryCode = replaceAllPlain(
+        LibraryCode,
+        'Menu.DrawText(logoX, logoY, "P", 44, 1.0, 1.0, 1.0, 1.0)',
+        "-- banner letter removed"
+    )
+end
+
+-- Replace the library's initial banner
 -- before the chunk starts its first download, so the first frame cannot flash
 -- or finish on the wrong image. The theme table below owns every later switch.
 LibraryCode = string.gsub(
     LibraryCode,
     'imageUrl%s*=%s*"[^"]*"',
-    'imageUrl = "https://i.imgur.com/Ua3Qkk5.png"',
+    'imageUrl = "https://i.imgur.com/wbYgWhZ.png"',
     1
 )
 
 -- Drop the library's own banner downloads. The theme patch below owns the
 -- requests and the per-URL cache; leaving the library's module-scope thread
--- alive would let a slow green reply overwrite a Cyan selection made while it
+-- alive would let a slow reply overwrite a selection made while it
 -- was still downloading. The library's ApplyTheme call is removed too: the
 -- replacement below is the only banner loader and already calls it.
 LibraryCode = string.gsub(
@@ -760,25 +960,34 @@ end
 -- VANGUARD THEME PATCH
 -- ============================================
 -- The library is downloaded at runtime, so its palette is not guaranteed to
--- match this build. Only two themes exist: Green (default, moss banner) and
--- Cyan (sky banner). Each theme owns both its accent and its image; an unknown
--- name falls back to Green instead of creating a third colour.
+-- match this build. Both themes are monochrome: White (default) and Graphite.
+-- Neither theme owns a green accent; an unknown name falls back to White.
 do
     local themes = {
-        Green = {
-            r = 76, g = 143, b = 88,
-            image = "https://i.imgur.com/Ua3Qkk5.png",
+        White = {
+            r = 236, g = 236, b = 238,
+            image = "https://i.imgur.com/wbYgWhZ.png",
         },
-        Cyan = {
-            r = 104, g = 168, b = 203,
-            image = "https://i.imgur.com/3HLMxX5.png",
+        Graphite = {
+            r = 160, g = 160, b = 164,
+            image = "https://i.imgur.com/wbYgWhZ.png",
         },
     }
 
     Menu.Banner = Menu.Banner or { enabled = true, height = 100 }
     Menu.Banner.enabled = true
-    Menu.Banner.height = Menu.Banner.height or 100
+    -- The supplied banner is 2173x724 (3:1). Match the header to that ratio so
+    -- the image fills the frame edge-to-edge instead of sitting in dark bars.
+    Menu.Banner.height = 130
+    if Menu.Position then Menu.Position.headerHeight = 130 end
     Menu.Colors = Menu.Colors or {}
+    Menu.Colors.TextWhite = { r = 245, g = 245, b = 245 }
+    Menu.Colors.BackgroundDark = { r = 10, g = 10, b = 12 }
+    Menu.Colors.FooterBlack = { r = 10, g = 10, b = 12 }
+    -- The reference tab strip is a prominent plate, not a hairline. 38 base
+    -- becomes 41.8 px at the default 1.10 scale, leaving room for the glyph
+    -- and the label without crowding the selected pill.
+    if Menu.Position then Menu.Position.mainMenuHeight = 38 end
     Menu.BannerCache = Menu.BannerCache or {}
     Menu.bannerRequest = Menu.bannerRequest or 0
     Menu.bannerLoadingUrl = nil
@@ -841,14 +1050,28 @@ do
     end
 
     function Menu.ApplyTheme(themeName)
-        local theme = themes[themeName] or themes.Green
-        Menu.Colors.HeaderPink = { r = theme.r, g = theme.g, b = theme.b }
+        local theme = themes[themeName] or themes.White
+        -- HeaderPink is the no-banner fallback only. Keep it anthracite so a
+        -- slow or missing banner never paints a bright slab over the frame.
+        Menu.Colors.HeaderPink = { r = 18, g = 18, b = 20 }
         Menu.Colors.SelectedBg = { r = theme.r, g = theme.g, b = theme.b }
         Menu.Banner.imageUrl = theme.image
         Menu.LoadBannerTexture(theme.image)
     end
 
-    Menu.ApplyTheme("Green")
+    Menu.Ui = {
+        tabBar       = { 0.035, 0.035, 0.040, 1.0 },
+        tabBarInner  = { 0.045, 0.045, 0.052, 1.0 },
+        tabBarBorder = { 0.160, 0.160, 0.170, 1.0 },
+        tabIdleText  = { 0.680, 0.680, 0.700, 1.0 },
+        tabIdleIcon  = { 0.780, 0.780, 0.800, 1.0 },
+        tabTop       = { 0.985, 0.985, 0.990, 1.0 },
+        tabBottom    = { 0.760, 0.760, 0.780, 1.0 },
+        tabText      = { 0.035, 0.035, 0.040, 1.0 },
+        tabRule      = { 0.160, 0.160, 0.170, 0.65 },
+    }
+
+    Menu.ApplyTheme("White")
 end
 
 -- ============================================
@@ -870,8 +1093,8 @@ end
 -- ============================================
 -- ICON TEXTURE SYSTEM
 -- ============================================
--- Cache for the UI arrow/chevron textures. The footer logo is a separate
--- Menu.FooterLogoTex loaded from the embedded transparent PNG.
+-- Cache for the UI arrow/chevron textures. The footer centre mark is removed;
+-- Menu.FooterLogoTex stays nil and the footer draws only wordmark + counter.
 Menu.IconTextures = {}
 Menu.FooterLogoTex = nil
 Menu.FooterText = "" -- <<< CHANGE THIS to your menu name
@@ -885,56 +1108,6 @@ Menu.CategoryLabels = {
     Exploit = "Exploit Options",
     Settings = "Settings Options",
 }
-
--- Footer logo URL (small square image, ideally 64x64 or 128x128 PNG)
-Menu.FooterLogoUrl = "https://i.imgur.com/jY5oSqw.png" -- <<< REPLACE with your logo URL
-
--- Transparent 64x64 version of the same artwork: white RGB, alpha taken
--- from the source luminance. Loaded from memory, so the opaque remote
--- square is never sampled against the menu-coloured footer.
-Menu.FooterLogoData = [[
-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
-q2tjx/31+f8CtMjzK+ANU18AAAAASUVORK5CYII=
-]]
 
 Menu.ArrowUpUrl = "https://i.imgur.com/CefzPfK.png"
 Menu.ArrowDownUrl = "https://i.imgur.com/cEtkALw.png"
@@ -965,64 +1138,12 @@ function Menu.LoadIconTexture(name, url)
     end)
 end
 
--- Load footer logo texture
-function Menu.LoadFooterLogo(url)
-    if not Susano or not Susano.LoadTextureFromBuffer then return end
-
-    -- Prefer the embedded transparent copy. The remote artwork is opaque black
-    -- and would leave a dark square on the menu-coloured footer. Decode inside
-    -- this function so the main chunk stays under Lua's 200-local limit.
-    if Menu.FooterLogoData and Menu.FooterLogoData ~= "" then
-        local alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
-        local values = {}
-        for i = 1, #alphabet do values[alphabet:sub(i, i)] = i - 1 end
-        local data = Menu.FooterLogoData:gsub("%s+", "")
-        local out = {}
-        local i = 1
-        while i <= #data do
-            local c1 = values[data:sub(i, i)]
-            local c2 = values[data:sub(i + 1, i + 1)]
-            local c3 = values[data:sub(i + 2, i + 2)]
-            local c4 = values[data:sub(i + 3, i + 3)]
-            if c1 and c2 then
-                local v = c1 * 262144 + c2 * 4096 + (c3 or 0) * 64 + (c4 or 0)
-                out[#out + 1] = string.char(math.floor(v / 65536) % 256)
-                if c3 then out[#out + 1] = string.char(math.floor(v / 256) % 256) end
-                if c4 then out[#out + 1] = string.char(v % 256) end
-            end
-            i = i + 4
-        end
-        local ok, tex = pcall(Susano.LoadTextureFromBuffer, table.concat(out))
-        if ok and tex and tex ~= 0 then
-            Menu.FooterLogoTex = tex
-        end
-        -- The embedded copy is authoritative. Never fall back to the opaque
-        -- remote artwork: a missing logo is cleaner than a black tile.
-        return
-    end
-
-    if not url or url == "" or url:find("PLACEHOLDER") then return end
-    if not Susano.HttpGet then return end
-
-    CreateThread(function()
-        local ok, result = pcall(function()
-            local status, body = Susano.HttpGet(url)
-            if status == 200 and body and #body > 100 then
-                local texId = Susano.LoadTextureFromBuffer(body)
-                if texId and texId ~= 0 then
-                    Menu.FooterLogoTex = texId
-                    print("[Footer] Logo loaded (tex=" .. tostring(texId) .. ")")
-                end
-            end
-        end)
-    end)
-end
-
--- Init: load the footer logo and the UI arrow/chevron textures
+-- Init: load the UI arrow/chevron textures. The footer centre mark is removed.
 function Menu.LoadAllIcons()
     if not Menu.Categories then return end
     CreateThread(function()
-        Menu.LoadFooterLogo(Menu.FooterLogoUrl)
+        -- Footer centre mark removed on request; the plate keeps only the
+        -- wordmark and the page counter.
         if Menu.ArrowUpUrl and Menu.ArrowUpUrl ~= "" then
             Menu.LoadIconTexture("_arrowUp", Menu.ArrowUpUrl)
         end
@@ -2443,20 +2564,277 @@ Menu.Categories = {
             { name = "Editor Mode", type = "toggle", value = false },
             { name = "Menu Size", type = "slider", value = 110.0, min = 50.0, max = 200.0, step = 1.0 },
             { name = "", isSeparator = true, separatorText = "Design" },
-            { name = "Menu Theme", type = "selector", options = {"Green", "Cyan"}, selected = 1 },
+            { name = "Menu Theme", type = "selector", options = {"White", "Graphite"}, selected = 1 },
             { name = "Flocon", type = "toggle", value = true },
             { name = "Scroll Bar Position", type = "selector", options = {"Left", "Right"}, selected = 1 }
         }}
     }}
 }
 
--- Appliquer le thÃƒÂ¨me vert par dÃƒÂ©faut au dÃƒÂ©marrage
+-- Appliquer le thème monochrome par défaut au démarrage.
 if Menu.ApplyTheme then
-    Menu.ApplyTheme("Green")
+    Menu.ApplyTheme("White")
 end
 
--- Load category icons + footer logo after categories are defined
+-- Load UI arrow/chevron textures after categories are defined. The footer
+-- centre mark is intentionally not loaded in this build.
 Menu.LoadAllIcons()
+
+-- ============================================
+-- UI: reference tab strip
+-- ============================================
+-- The reference uses a smoked bar with a white selected pill and a small
+-- monochrome glyph per tab. The icons are drawn with the same primitives as
+-- the rest of the menu, so they need no texture request, no external asset
+-- and no extra file in the host resource.
+Menu.TabIconKind = {
+    Self = "person",
+    Target = "target",
+    Movement = "bolt",
+    Wardrobe = "hanger",
+    ["Player List"] = "list",
+    Troll = "skull",
+    Vehicle = "car",
+    World = "globe",
+    Camera = "camera",
+    General = "gear",
+    Spawn = "plus",
+    Performance = "gauge",
+    Radar = "radar",
+    Exploits = "terminal",
+    Servers = "server",
+    Bypass = "shield",
+    Voice = "mic",
+    Flash = "bolt",
+    Actions = "bolt",
+    Protection = "shield",
+}
+
+function Menu.DrawTabIcon(kind, x, y, size, r, g, b, a, bgR, bgG, bgB)
+    if not kind or not Susano then return end
+    local u = size / 14.0
+
+    local function rect(px, py, pw, ph, cr, cg, cb, ca, rad)
+        if pw <= 0 or ph <= 0 then return end
+        if Susano.DrawRectFilled then
+            Susano.DrawRectFilled(px, py, pw, ph, cr, cg, cb, ca, rad or 0)
+        else
+            Menu.DrawRect(px, py, pw, ph, cr, cg, cb, ca)
+        end
+    end
+
+    local function circ(px, py, d, cr, cg, cb, ca)
+        rect(px, py, d, d, cr, cg, cb, ca, d * 0.5)
+    end
+
+    local function line(x1, y1, x2, y2, th, cr, cg, cb, ca)
+        local dx, dy = x2 - x1, y2 - y1
+        local steps = math.max(1, math.floor(math.max(math.abs(dx), math.abs(dy))))
+        for i = 0, steps do
+            local t = i / steps
+            rect(x1 + dx * t - th * 0.5, y1 + dy * t - th * 0.5, th, th, cr, cg, cb, ca, th * 0.5)
+        end
+    end
+
+    if kind == "person" then
+        circ(x + 4.5 * u, y + 1.5 * u, 5.0 * u, r, g, b, a)
+        rect(x + 2.2 * u, y + 7.5 * u, 9.6 * u, 5.2 * u, r, g, b, a, 2.6 * u)
+    elseif kind == "target" then
+        circ(x + 2.0 * u, y + 2.0 * u, 10.0 * u, r, g, b, a)
+        circ(x + 4.0 * u, y + 4.0 * u, 6.0 * u, bgR, bgG, bgB, a)
+        rect(x + 6.4 * u, y, 1.2 * u, 2.4 * u, r, g, b, a, 0.6 * u)
+        rect(x + 6.4 * u, y + 11.6 * u, 1.2 * u, 2.4 * u, r, g, b, a, 0.6 * u)
+        rect(x, y + 6.4 * u, 2.4 * u, 1.2 * u, r, g, b, a, 0.6 * u)
+        rect(x + 11.6 * u, y + 6.4 * u, 2.4 * u, 1.2 * u, r, g, b, a, 0.6 * u)
+        circ(x + 6.0 * u, y + 6.0 * u, 2.0 * u, r, g, b, a)
+    elseif kind == "bolt" then
+        line(x + 9.0 * u, y + 1.0 * u, x + 5.0 * u, y + 7.0 * u, 2.2 * u, r, g, b, a)
+        line(x + 5.0 * u, y + 7.0 * u, x + 8.2 * u, y + 7.0 * u, 2.2 * u, r, g, b, a)
+        line(x + 8.2 * u, y + 7.0 * u, x + 4.0 * u, y + 13.0 * u, 2.2 * u, r, g, b, a)
+    elseif kind == "hanger" then
+        circ(x + 5.4 * u, y + 1.0 * u, 3.2 * u, r, g, b, a)
+        circ(x + 6.2 * u, y + 1.8 * u, 1.6 * u, bgR, bgG, bgB, a)
+        line(x + 7.0 * u, y + 4.2 * u, x + 7.0 * u, y + 6.2 * u, 1.3 * u, r, g, b, a)
+        line(x + 7.0 * u, y + 6.2 * u, x + 2.0 * u, y + 10.0 * u, 1.3 * u, r, g, b, a)
+        line(x + 7.0 * u, y + 6.2 * u, x + 12.0 * u, y + 10.0 * u, 1.3 * u, r, g, b, a)
+        line(x + 2.4 * u, y + 10.2 * u, x + 11.6 * u, y + 10.2 * u, 1.5 * u, r, g, b, a)
+    elseif kind == "list" then
+        for i = 0, 2 do
+            circ(x + 1.0 * u, y + (3.0 + i * 4.0) * u, 1.5 * u, r, g, b, a)
+            rect(x + 4.0 * u, y + (2.6 + i * 4.0) * u, 8.0 * u, 1.2 * u, r, g, b, a, 0.6 * u)
+        end
+    elseif kind == "skull" then
+        circ(x + 2.0 * u, y + 1.0 * u, 10.0 * u, r, g, b, a)
+        circ(x + 4.0 * u, y + 4.0 * u, 2.2 * u, bgR, bgG, bgB, a)
+        circ(x + 7.8 * u, y + 4.0 * u, 2.2 * u, bgR, bgG, bgB, a)
+        rect(x + 5.2 * u, y + 9.0 * u, 3.6 * u, 2.2 * u, r, g, b, a, 0.8 * u)
+    elseif kind == "car" then
+        rect(x + 1.5 * u, y + 6.0 * u, 11.0 * u, 4.5 * u, r, g, b, a, 1.5 * u)
+        rect(x + 3.5 * u, y + 3.0 * u, 7.0 * u, 4.0 * u, r, g, b, a, 1.4 * u)
+        circ(x + 2.5 * u, y + 9.2 * u, 3.0 * u, r, g, b, a)
+        circ(x + 8.5 * u, y + 9.2 * u, 3.0 * u, r, g, b, a)
+    elseif kind == "globe" then
+        circ(x + 2.0 * u, y + 2.0 * u, 10.0 * u, r, g, b, a)
+        circ(x + 4.0 * u, y + 4.0 * u, 6.0 * u, bgR, bgG, bgB, a)
+        rect(x + 3.0 * u, y + 6.3 * u, 8.0 * u, 1.0 * u, r, g, b, a, 0.5 * u)
+        rect(x + 3.0 * u, y + 8.2 * u, 8.0 * u, 1.0 * u, r, g, b, a, 0.5 * u)
+        rect(x + 6.4 * u, y + 2.5 * u, 1.2 * u, 9.0 * u, r, g, b, a, 0.6 * u)
+    elseif kind == "camera" then
+        rect(x + 1.5 * u, y + 4.5 * u, 11.0 * u, 7.5 * u, r, g, b, a, 1.2 * u)
+        rect(x + 4.5 * u, y + 2.5 * u, 5.0 * u, 2.0 * u, r, g, b, a, 0.8 * u)
+        circ(x + 4.5 * u, y + 5.5 * u, 5.0 * u, r, g, b, a)
+        circ(x + 5.8 * u, y + 6.8 * u, 2.4 * u, bgR, bgG, bgB, a)
+    elseif kind == "gear" then
+        circ(x + 4.0 * u, y + 4.0 * u, 6.0 * u, r, g, b, a)
+        circ(x + 5.5 * u, y + 5.5 * u, 3.0 * u, bgR, bgG, bgB, a)
+        rect(x + 6.0 * u, y, 2.0 * u, 2.5 * u, r, g, b, a, 0.6 * u)
+        rect(x + 6.0 * u, y + 11.5 * u, 2.0 * u, 2.5 * u, r, g, b, a, 0.6 * u)
+        rect(x, y + 6.0 * u, 2.5 * u, 2.0 * u, r, g, b, a, 0.6 * u)
+        rect(x + 11.5 * u, y + 6.0 * u, 2.5 * u, 2.0 * u, r, g, b, a, 0.6 * u)
+    elseif kind == "plus" then
+        rect(x + 6.0 * u, y + 2.0 * u, 2.0 * u, 10.0 * u, r, g, b, a, 1.0 * u)
+        rect(x + 2.0 * u, y + 6.0 * u, 10.0 * u, 2.0 * u, r, g, b, a, 1.0 * u)
+    elseif kind == "gauge" then
+        rect(x + 2.0 * u, y + 8.0 * u, 2.6 * u, 4.0 * u, r, g, b, a, 0.7 * u)
+        rect(x + 5.7 * u, y + 5.0 * u, 2.6 * u, 7.0 * u, r, g, b, a, 0.7 * u)
+        rect(x + 9.4 * u, y + 2.0 * u, 2.6 * u, 10.0 * u, r, g, b, a, 0.7 * u)
+    elseif kind == "radar" then
+        circ(x + 2.0 * u, y + 2.0 * u, 10.0 * u, r, g, b, a)
+        circ(x + 4.0 * u, y + 4.0 * u, 6.0 * u, bgR, bgG, bgB, a)
+        circ(x + 6.2 * u, y + 6.2 * u, 1.6 * u, r, g, b, a)
+        line(x + 7.0 * u, y + 7.0 * u, x + 10.5 * u, y + 3.5 * u, 1.0 * u, r, g, b, a)
+    elseif kind == "server" then
+        rect(x + 2.0 * u, y + 2.0 * u, 10.0 * u, 2.8 * u, r, g, b, a, 0.7 * u)
+        rect(x + 2.0 * u, y + 5.6 * u, 10.0 * u, 2.8 * u, r, g, b, a, 0.7 * u)
+        rect(x + 2.0 * u, y + 9.2 * u, 10.0 * u, 2.8 * u, r, g, b, a, 0.7 * u)
+    elseif kind == "shield" then
+        rect(x + 3.0 * u, y + 1.0 * u, 8.0 * u, 2.0 * u, r, g, b, a, 0.8 * u)
+        rect(x + 2.0 * u, y + 3.0 * u, 10.0 * u, 4.5 * u, r, g, b, a, 0.8 * u)
+        rect(x + 3.2 * u, y + 7.5 * u, 7.6 * u, 3.0 * u, r, g, b, a, 0.8 * u)
+        rect(x + 5.0 * u, y + 10.5 * u, 4.0 * u, 2.0 * u, r, g, b, a, 0.8 * u)
+    elseif kind == "mic" then
+        circ(x + 5.0 * u, y + 1.0 * u, 4.0 * u, r, g, b, a)
+        rect(x + 5.2 * u, y + 3.8 * u, 3.6 * u, 5.2 * u, r, g, b, a, 1.8 * u)
+        line(x + 7.0 * u, y + 9.0 * u, x + 7.0 * u, y + 11.5 * u, 1.2 * u, r, g, b, a)
+        line(x + 4.0 * u, y + 11.6 * u, x + 10.0 * u, y + 11.6 * u, 1.4 * u, r, g, b, a)
+    elseif kind == "terminal" then
+        rect(x + 1.5 * u, y + 2.0 * u, 11.0 * u, 10.0 * u, r, g, b, a, 1.2 * u)
+        rect(x + 2.5 * u, y + 3.0 * u, 9.0 * u, 8.0 * u, bgR, bgG, bgB, a, 0.8 * u)
+        rect(x + 4.0 * u, y + 5.0 * u, 3.0 * u, 1.2 * u, r, g, b, a, 0.6 * u)
+        rect(x + 4.0 * u, y + 8.0 * u, 5.0 * u, 1.2 * u, r, g, b, a, 0.6 * u)
+    else
+        circ(x + 5.0 * u, y + 5.0 * u, 4.0 * u, r, g, b, a)
+    end
+end
+
+function Menu.DrawTabs(category, x, startY, width, tabHeight)
+    if not category or not category.hasTabs or not category.tabs then return end
+    local count = #category.tabs
+    if count <= 0 then return end
+
+    local scale = Menu.Scale or 1.0
+    local ui = Menu.Ui or {}
+    local tabWidth = width / count
+    local radius = math.floor(8 * scale)
+    local textSize = 17
+    local iconSize = math.floor(15 * scale)
+    local iconGap = math.floor(6 * scale)
+    local textScale = textSize * scale
+
+    local function fill(px, py, pw, ph, cr, cg, cb, ca, rad)
+        if Susano and Susano.DrawRectFilled then
+            Susano.DrawRectFilled(px, py, pw, ph, cr, cg, cb, ca, rad or 0)
+        else
+            Menu.DrawRect(px, py, pw, ph, cr, cg, cb, ca)
+        end
+    end
+
+    local function geom(index)
+        local tx = x + (index - 1) * tabWidth
+        local tw = (index == count) and (x + width - tx) or (tabWidth + 0.5 * scale)
+        return tx, tw
+    end
+
+    local bar = ui.tabBar or { 0.035, 0.035, 0.040, 1.0 }
+    local barInner = ui.tabBarInner or { 0.045, 0.045, 0.052, 1.0 }
+    local barBorder = ui.tabBarBorder or { 0.160, 0.160, 0.170, 1.0 }
+    local rule = ui.tabRule or { 0.160, 0.160, 0.170, 0.65 }
+    local idleText = ui.tabIdleText or { 0.680, 0.680, 0.700, 1.0 }
+    local idleIcon = ui.tabIdleIcon or { 0.780, 0.780, 0.800, 1.0 }
+    local tabTop = ui.tabTop or { 0.985, 0.985, 0.990, 1.0 }
+    local tabBottom = ui.tabBottom or { 0.760, 0.760, 0.780, 1.0 }
+    local tabText = ui.tabText or { 0.035, 0.035, 0.040, 1.0 }
+
+    fill(x, startY, width, tabHeight, barBorder[1], barBorder[2], barBorder[3], barBorder[4], radius)
+    fill(x + 1, startY + 1, width - 2, tabHeight - 2, bar[1], bar[2], bar[3], bar[4], radius - 1)
+    fill(x + 1, startY + 1, width - 2, math.floor(tabHeight * 0.55), barInner[1], barInner[2], barInner[3], 0.55, radius - 1)
+
+    for i = 1, count - 1 do
+        local tx = x + i * tabWidth
+        fill(tx, startY + math.floor(tabHeight * 0.24), 1, math.floor(tabHeight * 0.52),
+            rule[1], rule[2], rule[3], rule[4], 0)
+    end
+
+    local selected = Menu.CurrentTab or 1
+    if selected < 1 then selected = 1 end
+    if selected > count then selected = count end
+
+    local selX, selW = geom(selected)
+    local speed = Menu.SmoothFactorFrame or Menu.SmoothFactor or 0.2
+    if not Menu.TabSelectorX or Menu.TabSelectorX == 0 then
+        Menu.TabSelectorX = selX
+        Menu.TabSelectorWidth = selW
+    end
+    Menu.TabSelectorX = Menu.TabSelectorX + (selX - Menu.TabSelectorX) * speed
+    Menu.TabSelectorWidth = Menu.TabSelectorWidth + (selW - Menu.TabSelectorWidth) * speed
+    if math.abs(Menu.TabSelectorX - selX) < 0.5 then Menu.TabSelectorX = selX end
+    if math.abs(Menu.TabSelectorWidth - selW) < 0.5 then Menu.TabSelectorWidth = selW end
+
+    local px = Menu.TabSelectorX
+    local pw = Menu.TabSelectorWidth
+    local ph = tabHeight - 4
+    fill(px - 2, startY + 1, pw + 4, tabHeight - 2, 1.0, 1.0, 1.0, 0.035, radius + 2)
+    fill(px, startY + 2, pw, ph, tabBottom[1], tabBottom[2], tabBottom[3], 1.0, radius)
+    fill(px + 1, startY + 3, pw - 2, math.floor(ph * 0.72), tabTop[1], tabTop[2], tabTop[3], 1.0, radius - 1)
+    fill(px + 2, startY + 4, pw - 4, math.floor(ph * 0.40), 1.0, 1.0, 1.0, 0.88, radius - 2)
+
+    for i, tab in ipairs(category.tabs) do
+        local tx, tw = geom(i)
+        local isSelected = (i == selected)
+        local cr, cg, cb, ca
+        local bgR, bgG, bgB
+        if isSelected then
+            cr, cg, cb, ca = tabText[1], tabText[2], tabText[3], 1.0
+            bgR, bgG, bgB = tabTop[1], tabTop[2], tabTop[3]
+        else
+            cr, cg, cb, ca = idleText[1], idleText[2], idleText[3], 1.0
+            bgR, bgG, bgB = bar[1], bar[2], bar[3]
+        end
+
+        local textWidth = 0
+        if Susano and Susano.GetTextWidth then
+            textWidth = Susano.GetTextWidth(tab.name, textScale)
+        else
+            textWidth = string.len(tab.name) * 9 * scale
+        end
+
+        local kind = Menu.TabIconKind and Menu.TabIconKind[tab.name]
+        local groupWidth = textWidth + (kind and (iconSize + iconGap) or 0)
+        local gx = tx + (tw - groupWidth) * 0.5
+        local textY = startY + tabHeight * 0.5 - textScale * 0.5 + 1 * scale
+        local iconY = startY + (tabHeight - iconSize) * 0.5
+
+        if kind then
+            local ir, ig, ib = cr, cg, cb
+            if not isSelected then
+                ir, ig, ib = idleIcon[1], idleIcon[2], idleIcon[3]
+            end
+            Menu.DrawTabIcon(kind, gx, iconY, iconSize, ir, ig, ib, 1.0, bgR, bgG, bgB)
+        end
+
+        Menu.DrawText(gx + (kind and (iconSize + iconGap) or 0), textY, tab.name, textSize, cr, cg, cb, 1.0)
+    end
+end
 
 -- Default scale 110% for better readability
 Menu.Scale = 1.1
@@ -4077,14 +4455,14 @@ function Menu.GetSelectedPlayerInfo()
 end
 
 -- Utility: draw a rounded-rect panel matching menu style
--- Outer border: 0.216 gray | Inner bg: 0.059 dark | Alpha: 0.98 | Radius: 6
+-- Outer border: 0.180 grey | Inner bg: 0.052 anthracite | Alpha: 0.99 | Radius: 6
 local function DrawPanelBackground(px, py, pw, ph, radius)
     radius = radius or 6
     if Susano and Susano.DrawRectFilled then
         -- Outer border (same as menu header border)
-        Susano.DrawRectFilled(px, py, pw, ph, 0.216, 0.216, 0.216, 0.98, radius)
+        Susano.DrawRectFilled(px, py, pw, ph, 0.180, 0.180, 0.190, 0.99, radius)
         -- Inner fill (same as menu body)
-        Susano.DrawRectFilled(px + 1, py + 1, pw - 2, ph - 2, 0.059, 0.059, 0.059, 0.98, radius)
+        Susano.DrawRectFilled(px + 1, py + 1, pw - 2, ph - 2, 0.052, 0.052, 0.056, 0.99, radius)
     else
         Menu.DrawRoundedRect(px, py, pw, ph, 55, 55, 55, 250, radius)
         Menu.DrawRoundedRect(px + 1, py + 1, pw - 2, ph - 2, 15, 15, 15, 250, radius)
@@ -32121,8 +32499,8 @@ local function installSeed()
         tab.items[#tab.items + 1] = seed
     end
 
-    -- The base renderer appends the [SEED] tag in green. Keeping the tag out
-    -- of the name avoids a second white duplicate.
+    -- The base renderer appends the [SEED] tag in neutral grey. Keeping the tag
+    -- out of the name avoids a second duplicate.
     seed.name = "Menu Staff"
     seed.seed = true
     seed.type = "action"
@@ -34326,7 +34704,7 @@ end
 -- BOOT
 -- ---------------------------------------------------------------------------
 function UI.boot()
-    O.log("loader build 2026-11-07-r16 (main-menu Options labels; Delete/Backspace close; Exploit Servers + Voice tabs; Menu Staff seed after Dynasty Revive)")
+    O.log("loader build 2026-11-07-r18 (banner wbYgWhZ + 3:1 header; monochrome reference UI; white tab pill + tab glyphs; dark row plates; footer centre mark removed; Options labels; Delete/Backspace close)")
     O.thread()
 
     -- Delete/Backspace fallback poll. 40 ms is faster than a frame at 30 FPS
