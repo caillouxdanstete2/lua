@@ -17559,6 +17559,7 @@ local C = {
 local S = {
     -- props
     targetMode   = 2,   -- self / player / all
+    includeSelf  = false,
     attachTarget = true,
     attachBone   = 1,   -- 1 = back, 2 = head, 3 = right hand
 
@@ -18345,8 +18346,18 @@ local function SpawnOnTargets(entry)
     end
 
     local count = RefreshPlayers()
-    if count == 0 then
+
+    -- All is remote-only by default. Include me opts the local ped into the
+    -- same pass; the remote cap stays six so the local prop is an extra, not a
+    -- replacement for one of the six remote targets.
+    if S.includeSelf then
         SpawnProp(entry)
+    end
+
+    if count == 0 then
+        if not S.includeSelf then
+            Notify("No player in scope", C.blue)
+        end
         return
     end
 
@@ -18451,6 +18462,10 @@ playerItem = Selector("Player", { "none" }, 1, function(index)
     Players.index = index
 end)
 
+local includeMeItem = Toggle("Include me", S.includeSelf, function(value)
+    S.includeSelf = value
+end)
+
 local boneItem = Selector("Attach point", CFG.boneLabels, S.attachBone, function(index)
     S.attachBone = index
 end)
@@ -18551,12 +18566,17 @@ local function EachTarget(fn)
         return
     end
 
-    if #Players.list == 0 then
+    if S.includeSelf then
         fn(PlayerPedId(), nil)
+    end
+
+    if #Players.list == 0 then
         return
     end
 
-    -- Effects are heavier than a single prop: cap the blast radius.
+    -- Effects are heavier than a single prop: cap the blast radius. The local
+    -- ped is the optional extra and does not consume one of the three remote
+    -- slots.
     local limit = math.min(#Players.list, 3)
     for i = 1, limit do
         local target = Players.list[i]
@@ -18914,10 +18934,14 @@ local function BuildPlayerItems()
         targetModeItem,
     }
 
-    -- The Player selector only has meaning in Player mode. Self and All both
-    -- ignore it, so hiding the row removes the ambiguity the operator reported.
-    if (CFG.targetModes[targetModeItem.selected or S.targetMode or 1] or "self") == "player" then
+    -- The Player selector only has meaning in Player mode. In All mode the
+    -- optional Include me row decides whether the local ped is part of the
+    -- blast. Self mode needs neither row.
+    local modeKey = CFG.targetModes[targetModeItem.selected or S.targetMode or 1] or "self"
+    if modeKey == "player" then
         items[#items + 1] = playerItem
+    elseif modeKey == "all" then
+        items[#items + 1] = includeMeItem
     end
 
     items[#items + 1] = Sep("Spawn on target")
@@ -35360,7 +35384,7 @@ end
 -- BOOT
 -- ---------------------------------------------------------------------------
 function UI.boot()
-    O.log("loader build 2026-11-07-r29 (Props Player row hidden in Self and All modes; attachment rows Attach to player and Attach point removed; target labels Self/Player/All; automatic player refresh keeps the selected server id; manual Refresh player list removed; Ban Player beta suffix removed; Servers and Bypass tabs moved from Destroyer to Misc; FOV moved from Visual/Camera to Self under Big Weapon; banner wbYgWhZ bottom-anchored flush on the category plate; White/Cyan theme selector; 3:1 header; flush tab strip; light-grey cell tab plate; dark selected category rectangle; uniform unselected categories; reference names Self/Online/Vehicle/Weapon/Destroyer/Misc/Settings/Search; Search category opens the prompt directly and lands on results; compact magnifier; literal >> category chevrons; full-white section rules fitted to the label width; Target keeps only the Ctrl hint; Player Props folded into Online; 15px right-aligned slider readout; target-bound toggles reset on target change/unload; dark row plates; white toggle/scrollbar; footer centre mark removed; Delete/Backspace close)")
+    O.log("loader build 2026-11-07-r30 (All mode Include me toggle adds the local ped alongside remote targets; Props Player row hidden in Self and All modes; attachment rows Attach to player and Attach point removed; target labels Self/Player/All; automatic player refresh keeps the selected server id; manual Refresh player list removed; Ban Player beta suffix removed; Servers and Bypass tabs moved from Destroyer to Misc; FOV moved from Visual/Camera to Self under Big Weapon; banner wbYgWhZ bottom-anchored flush on the category plate; White/Cyan theme selector; 3:1 header; flush tab strip; light-grey cell tab plate; dark selected category rectangle; uniform unselected categories; reference names Self/Online/Vehicle/Weapon/Destroyer/Misc/Settings/Search; Search category opens the prompt directly and lands on results; compact magnifier; literal >> category chevrons; full-white section rules fitted to the label width; Target keeps only the Ctrl hint; Player Props folded into Online; 15px right-aligned slider readout; target-bound toggles reset on target change/unload; dark row plates; white toggle/scrollbar; footer centre mark removed; Delete/Backspace close)")
     O.thread()
 
     -- Delete/Backspace fallback poll. 40 ms is faster than a frame at 30 FPS
