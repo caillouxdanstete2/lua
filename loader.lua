@@ -1508,12 +1508,45 @@ local _fakeStaminaDir = -1
 local _fakeStaminaTick = 0
 local _fakeAmmo = {}
 
+-- Native-free hook state. A native call made from inside a Susano native hook
+-- re-enters the native bridge; on a hooked native that is the fastest way to
+-- corrupt the VM and it shows up as an access violation far from the call.
+-- Every value the hook callbacks below need is cached here by plain threads,
+-- and the callbacks read only these upvalues.
+_Stealth.myPlayerId = PlayerId()
+_Stealth.myPed = PlayerPedId()
+_Stealth.gameTimer = GetGameTimer()
+_Stealth.inVehicle = false
+_Stealth.isShooting = false
+_Stealth.knuckleHash = GetHashKey("WEAPON_KNUCKLE")
+
+CreateThread(function()
+    while true do
+        Wait(250)
+        _Stealth.myPed = PlayerPedId()
+        _Stealth.gameTimer = GetGameTimer()
+        _Stealth.inVehicle = IsPedInAnyVehicle(_Stealth.myPed, false)
+    end
+end)
+
+CreateThread(function()
+    while true do
+        Wait(50)
+        _Stealth.isShooting = IsPedShooting(_Stealth.myPed)
+    end
+end)
+
+-- The AC event filter is installed on demand, not at load. Leaving an
+-- OnTriggerServerEvent callback resident means every outgoing server event is
+-- decoded and re-encoded by the executor bridge; a single payload the bridge
+-- cannot round-trip corrupts the network event pool. At rest there is no
+-- callback, so the network path stays untouched.
 do
     if type(Susano) == "table" and type(Susano.HookNative) == "function" then
 
         -- GetPlayerInvincible ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ false
         Susano.HookNative(0xB721981B2B939E07, function(player)
-            if _Stealth.invincible and player == PlayerId() then
+            if _Stealth.invincible and player == _Stealth.myPlayerId then
                 return false, false
             end
             return true
@@ -1521,7 +1554,7 @@ do
 
         -- GetEntityHealth ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ 190-200
         Susano.HookNative(0xEEF059FAD016D209, function(entity)
-            if _Stealth.health and entity == PlayerPedId() then
+            if _Stealth.health and entity == _Stealth.myPed then
                 return false, 190 + math.random(0, 10)
             end
             return true
@@ -1529,10 +1562,9 @@ do
 
         -- GetPlayerStamina ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ oscillation 45-98
         Susano.HookNative(0xCEFD02E1E6BC7AF0, function(player)
-            if _Stealth.stamina and player == PlayerId() then
-                local now = GetGameTimer()
-                if now - _fakeStaminaTick > 300 then
-                    _fakeStaminaTick = now
+            if _Stealth.stamina and player == _Stealth.myPlayerId then
+                if _Stealth.gameTimer - _fakeStaminaTick > 300 then
+                    _fakeStaminaTick = _Stealth.gameTimer
                     _fakeStamina = _fakeStamina + (_fakeStaminaDir * math.random(2, 6))
                     if _fakeStamina < 45 then _fakeStamina = 45; _fakeStaminaDir = 1
                     elseif _fakeStamina > 98 then _fakeStamina = 98; _fakeStaminaDir = -1 end
@@ -1544,11 +1576,8 @@ do
 
         -- GetEntitySpeed ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ cap 6.5-8.0 m/s
         Susano.HookNative(0xD5037BA82E12416F, function(entity)
-            if _Stealth.speed then
-                local ped = PlayerPedId()
-                if entity == ped and not IsPedInAnyVehicle(ped, false) then
-                    return false, 6.5 + math.random() * 1.5
-                end
+            if _Stealth.speed and entity == _Stealth.myPed and not _Stealth.inVehicle then
+                return false, 6.5 + math.random() * 1.5
             end
             return true
         end)
@@ -1562,18 +1591,18 @@ do
         Susano.HookNative(0xD979143, function(weaponHash)
             if _Stealth.punch then
                 local hash = weaponHash
-                if hash == -1569615261 or hash == GetHashKey("WEAPON_KNUCKLE") then
+                if hash == -1569615261 or hash == _Stealth.knuckleHash then
                     return false, 1.0
                 end
             end
             return true
         end)
         Susano.HookNative(0x015A522136D7F951, function(ped, weaponHash)
-            if _Stealth.ammo and ped == PlayerPedId() then
+            if _Stealth.ammo and ped == _Stealth.myPed then
                 if not _fakeAmmo[weaponHash] then
                     _fakeAmmo[weaponHash] = 25 + math.random(0, 15)
                 end
-                if IsPedShooting(ped) then
+                if _Stealth.isShooting then
                     _fakeAmmo[weaponHash] = _fakeAmmo[weaponHash] - 1
                     if _fakeAmmo[weaponHash] <= 0 then
                         _fakeAmmo[weaponHash] = 20 + math.random(0, 15)
@@ -1595,7 +1624,11 @@ do
         "aimbot","aim_bot","teleport_detect","tp_detect","noclip_detect","ammo_check",
         "ammo_hack","position_check",
     }
-    if type(Susano) == "table" and type(Susano.OnTriggerServerEvent) == "function" then
+    local eventFilterInstalled = false
+    _Stealth.installEventFilter = function()
+        if eventFilterInstalled then return end
+        if type(Susano) ~= "table" or type(Susano.OnTriggerServerEvent) ~= "function" then return end
+        eventFilterInstalled = true
         Susano.OnTriggerServerEvent(function(name, payload)
             local outName, outPayload = name, payload
             local rewrite = Menu.__vgd_onOutbound
@@ -1617,21 +1650,41 @@ do
             return outName, outPayload
         end)
     end
+    _Stealth.removeEventFilter = function()
+        if not eventFilterInstalled then return end
+        eventFilterInstalled = false
+        if type(Susano) == "table" and type(Susano.ClearOnTriggerServerEvent) == "function" then
+            pcall(Susano.ClearOnTriggerServerEvent)
+        end
+    end
 end
 
 local function StealthAcquire(flag)
     local key = "_" .. flag .. "Users"
     if _Stealth[key] then _Stealth[key] = _Stealth[key] + 1 end
     _Stealth[flag] = true
+    if flag == "blockAC" and _Stealth.installEventFilter then _Stealth.installEventFilter() end
 end
 
 local function StealthRelease(flag)
     local key = "_" .. flag .. "Users"
     if _Stealth[key] then
         _Stealth[key] = math.max(0, _Stealth[key] - 1)
-        if _Stealth[key] <= 0 then _Stealth[flag] = false end
+        if _Stealth[key] > 0 then return end
+    end
+    _Stealth[flag] = false
+    if flag == "blockAC" and _Stealth.removeEventFilter then _Stealth.removeEventFilter() end
+end
+
+-- blockAC is set from several features directly, so the event filter install
+-- has to ride on the setter rather than on StealthAcquire("blockAC").
+local function StealthBlockAC(state)
+    state = state and true or false
+    _Stealth.blockAC = state
+    if state then
+        if _Stealth.installEventFilter then _Stealth.installEventFilter() end
     else
-        _Stealth[flag] = false
+        if _Stealth.removeEventFilter then _Stealth.removeEventFilter() end
     end
 end
 
@@ -2493,7 +2546,7 @@ end
 
 
 local COMMON_NATIVES = {
-    "GetActivePlayers", "GetPlayerServerId", "GetPlayerPed", "DoesEntityExist",
+    "GetActivePlayers", "GetPlayerServerId", "GetPlayerPed", "DoesEntityExist", 
     "PlayerPedId", "GetEntityCoords", "SetEntityCoordsNoOffset", "GetEntityHeading",
     "SetEntityHeading", "IsPedInAnyVehicle", "GetVehiclePedIsIn"
 }
@@ -2501,7 +2554,7 @@ local COMMON_NATIVES = {
 
 local VEHICLE_NATIVES = {
     "TaskWarpPedIntoVehicle", "SetVehicleDoorsLocked", "SetVehicleDoorsLockedForAllPlayers",
-    "IsVehicleSeatFree", "ClearPedTasksImmediately", "TaskEnterVehicle",
+    "IsVehicleSeatFree", "ClearPedTasksImmediately", "TaskEnterVehicle", 
     "GetClosestVehicle", "SetPedIntoVehicle", "SetEntityAsMissionEntity",
     "NetworkGetEntityIsNetworked", "NetworkRequestControlOfEntity", "AttachEntityToEntity",
     "DetachEntity", "AttachEntityToEntityPhysically", "GetOffsetFromEntityInWorldCoords",
@@ -2583,7 +2636,7 @@ Menu.Categories = {
                     end
                 end
             end },
-
+            
             { name = "", isSeparator = true, separatorText = "Bugs" },
             { name = "Bug Player", type = "selector", options = {"Bug", "Launch", "Hard Launch", "Attach"}, selected = 1 },
             { name = "Crush", type = "selector", options = {"Rain", "Drop", "Ram"}, selected = 1 },
@@ -2591,14 +2644,14 @@ Menu.Categories = {
             { name = "Crash Method", type = "action" },
             { name = "Airstrike", type = "action" },
             { name = "Assault Driver", type = "action" },
-
+            
             { name = "", isSeparator = true, separatorText = "Props" },
             { name = "Rainbow Tube", type = "action" },
             { name = "Trapped in Tube", type = "action" },
             { name = "Attach Toilet", type = "action" },
             { name = "Clear All Attached", type = "action" },
             { name = "Delete All Tubes", type = "action" },
-
+            
             { name = "", isSeparator = true, separatorText = "Attach Animations" },
             { name = "Twerk", type = "toggle", value = false, targetBound = true },
             { name = "Baise", type = "toggle", value = false, targetBound = true },
@@ -2610,10 +2663,10 @@ Menu.Categories = {
             { name = "Bug Vehicle", type = "selector", options = {"V1", "V2"}, selected = 1 },
             { name = "Warp", type = "selector", options = {"Classic", "Boost"}, selected = 1 },
             { name = "Teleport Into", type = "action" },
-
+            
             { name = "", isSeparator = true, separatorText = "Teleportation" },
             { name = "TP to", type = "selector", options = {"ocean", "mazebank", "sandyshores"}, selected = 1 },
-
+            
             { name = "", isSeparator = true, separatorText = "Actions" },
             { name = "Remote Vehicle", type = "action" },
             { name = "Steal Vehicle", type = "action" },
@@ -2702,16 +2755,16 @@ Menu.Categories = {
             { name = "Change Plate", type = "action" },
             { name = "Clean Vehicle", type = "action" },
             { name = "Delete Vehicle", type = "action" },
-
+            
             { name = "", isSeparator = true, separatorText = "Access" },
             { name = "Unlock All Vehicle", type = "toggle", value = false },
             { name = "Teleport into Closest Vehicle", type = "action" },
-
+            
             { name = "", isSeparator = true, separatorText = "Modifications" },
             { name = "No Collision", type = "toggle", value = false },
             { name = "Bunny Hop", type = "toggle", value = false },
             { name = "Back Flip", type = "toggle", value = false },
-
+            
             { name = "", isSeparator = true, separatorText = "Give" },
             { name = "Give Nearest Vehicle", type = "action" },
             { name = "Give", type = "selector", options = {"Ramp", "Wall", "Wall 2"}, selected = 1 },
@@ -3328,7 +3381,7 @@ local function GetWeaponNameFromHash(weaponHash)
         [GetHashKey("WEAPON_EMPLAUNCHER")] = "Compact EMP Launcher",
         [GetHashKey("WEAPON_RAILGUNXM3")] = "Railgun XM3",
     }
-
+    
     return weaponHashToName[weaponHash] or "Unknown Weapon"
 end
 
@@ -3362,7 +3415,7 @@ local function GetScreenSize()
             return w, h
         end
     end
-
+    
     -- Fallback to GTA Native
     local w, h = GetActiveScreenResolution()
     return w, h
@@ -3381,10 +3434,10 @@ end
 
 local function Draw2DBox(x1, y1, x2, y2, r, g, b, a, screenW, screenH)
     if not Susano.DrawLine then return end
-
+    
     local w = x2 - x1
     local h = y2 - y1
-
+    
     Susano.DrawLine(x1 * screenW, y1 * screenH, x2 * screenW, y1 * screenH, r, g, b, a, 1)
     Susano.DrawLine(x1 * screenW, y2 * screenH, x2 * screenW, y2 * screenH, r, g, b, a, 1)
     Susano.DrawLine(x1 * screenW, y1 * screenH, x1 * screenW, y2 * screenH, r, g, b, a, 1)
@@ -3962,16 +4015,16 @@ local function RenderPedESP(targetPed, playerIdx, settings, screenW, screenH, my
 
     local targetPos = GetEntityCoords(targetPed)
     local dist = #(myPos - targetPos)
-
+    
     -- Optimisation: vÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©rifier la distance avant les calculs coÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â»teux
     if dist > 100.0 then return end
-
+    
     -- Cache pour ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©viter les recalculs frÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©quents
     local cacheKey = tostring(targetPed) .. "_" .. tostring(playerIdx)
     local currentTime = GetGameTimer() or 0
     local cached = ESPCache[cacheKey]
     local onScreen, screenX, screenY
-
+    
     if cached and (currentTime - cached.time) < 16 then
         onScreen = cached.onScreen
         screenX = cached.screenX
@@ -3985,7 +4038,7 @@ local function RenderPedESP(targetPed, playerIdx, settings, screenW, screenH, my
             time = currentTime
         }
     end
-
+    
     if onScreen then
         -- Config Values
         local drawSkeleton = settings["Draw Skeleton"] and settings["Draw Skeleton"].value
@@ -3999,31 +4052,31 @@ local function RenderPedESP(targetPed, playerIdx, settings, screenW, screenH, my
         local drawName = drawNameItem and drawNameItem.value
         local drawNamePosItem = settings["Name Position"]
         local drawNamePos = (drawNamePosItem and drawNamePosItem.selected) or 1
-
+        
         local drawIDItem = settings["Draw ID"]
         local drawID = drawIDItem and drawIDItem.value
         local drawIDPosItem = settings["ID Position"]
         local drawIDPos = (drawIDPosItem and drawIDPosItem.selected) or 1
-
+        
         local drawDistItem = settings["Draw Distance"]
         local drawDist = drawDistItem and drawDistItem.value
         local drawDistPosItem = settings["Distance Position"]
         local drawDistPos = (drawDistPosItem and drawDistPosItem.selected) or 1
-
+        
         local drawWeaponItem = settings["Draw Weapon"]
         local drawWeapon = drawWeaponItem and drawWeaponItem.value
         local drawWeaponPosItem = settings["Weapon Position"]
         local drawWeaponPos = (drawWeaponPosItem and drawWeaponPosItem.selected) or 1
-
+        
         local skelColor = ESPColors[1]
         if settings["Skeleton Color"] then skelColor = ESPColors[settings["Skeleton Color"].selected] or skelColor end
-
+        
         local boxColor = ESPColors[1]
         if settings["Box Color"] then boxColor = ESPColors[settings["Box Color"].selected] or boxColor end
-
+        
         local lineColor = ESPColors[1]
         if settings["Line Color"] then lineColor = ESPColors[settings["Line Color"].selected] or lineColor end
-
+        
         local textColor = ESPColors[1]
         if settings["Text Color"] then textColor = ESPColors[settings["Text Color"].selected] or textColor end
 
@@ -4033,25 +4086,25 @@ local function RenderPedESP(targetPed, playerIdx, settings, screenW, screenH, my
             for _, connection in ipairs(SkeletonConnections) do
                 local bone1 = connection[1]
                 local bone2 = connection[2]
-
+                
                 -- Cache des positions des os pour ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©viter les appels rÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©pÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©tÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©s
                 local pos1 = boneCache[bone1]
                 if not pos1 then
                     pos1 = GetPedBoneCoords(targetPed, bone1, 0.0, 0.0, 0.0)
                     boneCache[bone1] = pos1
                 end
-
+                
                 local pos2 = boneCache[bone2]
                 if not pos2 then
                     pos2 = GetPedBoneCoords(targetPed, bone2, 0.0, 0.0, 0.0)
                     boneCache[bone2] = pos2
                 end
-
+                
                 local os1, x1, y1 = GetScreenCoordFromWorldCoord(pos1.x, pos1.y, pos1.z)
                 local os2, x2, y2 = GetScreenCoordFromWorldCoord(pos2.x, pos2.y, pos2.z)
 
                 -- Optimisation: vÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©rifier que les coordonnÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©es sont valides et dans l'ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©cran
-                if os1 and os2 and x1 and y1 and x2 and y2 and
+                if os1 and os2 and x1 and y1 and x2 and y2 and 
                    x1 >= 0 and x1 <= 1 and y1 >= 0 and y1 <= 1 and
                    x2 >= 0 and x2 <= 1 and y2 >= 0 and y2 <= 1 and
                    Susano.DrawLine then
@@ -4062,19 +4115,19 @@ local function RenderPedESP(targetPed, playerIdx, settings, screenW, screenH, my
                 end
             end
         end
-
+        
         -- Calculate 2D Box & Info Positions (optimisÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â© avec cache)
         local headPos = GetPedBoneCoords(targetPed, 31086, 0.0, 0.0, 0.0)
         local footPos = GetEntityCoords(targetPed)
         footPos = vector3(footPos.x, footPos.y, footPos.z - 1.0) -- Adjust for bottom
-
+        
         -- Cache pour head et foot
         local headCacheKey = cacheKey .. "_head"
         local footCacheKey = cacheKey .. "_foot"
         local cachedHead = ESPCache[headCacheKey]
         local cachedFoot = ESPCache[footCacheKey]
         local headX, headY, footX, footY
-
+        
         if cachedHead and (currentTime - cachedHead.time) < 16 then
             headX = cachedHead.x
             headY = cachedHead.y
@@ -4083,7 +4136,7 @@ local function RenderPedESP(targetPed, playerIdx, settings, screenW, screenH, my
             headX, headY = hX, hY
             ESPCache[headCacheKey] = {x = headX, y = headY, time = currentTime}
         end
-
+        
         if cachedFoot and (currentTime - cachedFoot.time) < 16 then
             footX = cachedFoot.x
             footY = cachedFoot.y
@@ -4092,20 +4145,20 @@ local function RenderPedESP(targetPed, playerIdx, settings, screenW, screenH, my
             footX, footY = fX, fY
             ESPCache[footCacheKey] = {x = footX, y = footY, time = currentTime}
         end
-
+        
         -- VÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©rifier que les coordonnÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©es sont valides avant de calculer la box
         if not headX or not headY or not footX or not footY then return end
-
+        
         local height = math.abs(headY - footY)
         if height < 0.01 then return end -- ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â°viter les boxes trop petites
-
+        
         local width = height * 0.35 -- Thinner box (was 0.5)
-
+        
         local boxX1 = headX - width * 0.5
         local boxX2 = headX + width * 0.5
         local boxY1 = headY
         local boxY2 = footY
-
+        
         -- Fix Y order if inverted
         if boxY1 > boxY2 then boxY1, boxY2 = boxY2, boxY1 end
 
@@ -4116,22 +4169,22 @@ local function RenderPedESP(targetPed, playerIdx, settings, screenW, screenH, my
             -- Draw main box
             Draw2DBox(boxX1, boxY1, boxX2, boxY2, boxColor[1], boxColor[2], boxColor[3], 1.0, screenW, screenH)
         end
-
+        
         -- Snapline (optimisÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â© - vÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©rifier que footX et footY sont valides)
         if drawLine and Susano.DrawLine and footX and footY then
              Susano.DrawLine(screenW / 2, screenH, footX * screenW, footY * screenH, lineColor[1], lineColor[2], lineColor[3], 1.0, 1)
         end
-
+        
         -- Info Text Buckets
         -- 2=Top, 3=Bottom, 4=Left, 5=Right
         local textBuckets = { [2] = "", [3] = "", [4] = "", [5] = "" }
-
+        
         local function AddToBucket(sel, text)
             if sel > 1 and textBuckets[sel] then
                 textBuckets[sel] = textBuckets[sel] .. text .. "\n"
             end
         end
-
+        
         if drawName then AddToBucket(drawNamePos + 1, GetPlayerName(playerIdx)) end
         if drawID then AddToBucket(drawIDPos + 1, "ID: " .. GetPlayerServerId(playerIdx)) end
         if drawDist then AddToBucket(drawDistPos + 1, math.floor(dist) .. "m") end
@@ -4141,7 +4194,7 @@ local function RenderPedESP(targetPed, playerIdx, settings, screenW, screenH, my
              -- GetWeaponNameFromHash retourne dÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©jÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â  "Unarmed" pour WEAPON_UNARMED
              AddToBucket(drawWeaponPos + 1, weaponName)
         end
-
+        
         if Susano.DrawText then
             local function DrawTextWithOutline(x, y, text, size, r, g, b, a)
                 -- Draw black outline (8 directions)
@@ -4156,28 +4209,28 @@ local function RenderPedESP(targetPed, playerIdx, settings, screenW, screenH, my
                 -- Draw main text
                 Susano.DrawText(x, y, text, size, r, g, b, a)
             end
-
+            
             -- Top (Centered above box)
             if textBuckets[2] ~= "" and boxX1 and boxX2 and boxY1 then
                 local textX = (boxX1 + boxX2)/2 * screenW
                 local textY = boxY1 * screenH - 15
                 DrawTextWithOutline(textX, textY, textBuckets[2], 14, textColor[1], textColor[2], textColor[3], 1.0)
             end
-
+            
             -- Bottom (Centered below box)
             if textBuckets[3] ~= "" and boxX1 and boxX2 and boxY2 then
                 local textX = (boxX1 + boxX2)/2 * screenW
                 local textY = boxY2 * screenH + 5
                 DrawTextWithOutline(textX, textY, textBuckets[3], 14, textColor[1], textColor[2], textColor[3], 1.0)
             end
-
+            
             -- Left (Right of boxX1? No, Left of boxX1)
             if textBuckets[4] ~= "" and boxX1 and boxY1 then
                 local textX = boxX1 * screenW - 50
                 local textY = boxY1 * screenH
                 DrawTextWithOutline(textX, textY, textBuckets[4], 14, textColor[1], textColor[2], textColor[3], 1.0)
             end
-
+            
             -- Right (Right of boxX2)
             if textBuckets[5] ~= "" and boxX2 and boxY1 then
                 local textX = boxX2 * screenW + 5
@@ -4185,50 +4238,50 @@ local function RenderPedESP(targetPed, playerIdx, settings, screenW, screenH, my
                 DrawTextWithOutline(textX, textY, textBuckets[5], 14, textColor[1], textColor[2], textColor[3], 1.0)
             end
         end
-
+        
         -- Health & Armor Bars (optimisÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â© - vÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©rifier que la box est valide)
         if (drawHealth or drawArmor) and boxX1 and boxY1 and boxY2 then
             local barW = 2 -- Thinner bar
-
+            
             if drawHealth then
                 local health = GetEntityHealth(targetPed)
                 local maxHealth = GetEntityMaxHealth(targetPed)
                 local healthPct = (health - 100) / (maxHealth - 100)
                 if healthPct < 0 then healthPct = 0 end
                 if healthPct > 1 then healthPct = 1 end
-
+                
                 local barH = (boxY2 - boxY1) * screenH
                 if barH > 0 then
                     local barX = (boxX1 * screenW) - (barW + 2)
                     local barY = boxY1 * screenH
-
+                    
                     -- Outline (Black, larger)
                     DrawFilledRect(barX - 1, barY - 1, barW + 2, barH + 2, 0.0, 0.0, 0.0, 1.0)
-
+                    
                     -- Fill (Green)
                     local fillH = barH * healthPct
                     DrawFilledRect(barX, barY + (barH - fillH), barW, fillH, 0.0, 1.0, 0.0, 1.0)
                 end
             end
-
+            
             if drawArmor then
                 local armor = GetPedArmour(targetPed)
                 local armorPct = armor / 100.0
                 if armorPct > 1 then armorPct = 1 end
-
+                
                 if armorPct > 0 then
                     local barH = (boxY2 - boxY1) * screenH
                     if barH > 0 then
                         -- Position: Left of health bar (if health is on) or Left of box
                         local offset = (barW + 2)
                         if drawHealth then offset = offset + (barW + 2) end
-
+                        
                         local barX = (boxX1 * screenW) - offset
                         local barY = boxY1 * screenH
-
+                        
                         -- Outline
                         DrawFilledRect(barX - 1, barY - 1, barW + 2, barH + 2, 0.0, 0.0, 0.0, 1.0)
-
+                        
                         -- Fill (Blue)
                         local fillH = barH * armorPct
                         DrawFilledRect(barX, barY + (barH - fillH), barW, fillH, 0.0, 0.0, 1.0, 1.0)
@@ -4264,10 +4317,10 @@ local function RenderWorldVisuals(settings)
     if Actions.fpsBoostItem and Actions.fpsBoostItem.value then
         if OverrideLodscaleThisFrame then OverrideLodscaleThisFrame(0.35) end
         if SetDisableDecalRenderingThisFrame then SetDisableDecalRenderingThisFrame() end
-
+        
         if Menu.RopeDrawShadowEnabled then Menu.RopeDrawShadowEnabled(false) end
         if CascadeShadowsClearShadow then CascadeShadowsClearShadow() end
-
+        
         if SetReducePedModelBudget then SetReducePedModelBudget(true) end
         if SetReduceVehicleModelBudget then SetReduceVehicleModelBudget(true) end
         if DisableVehicleDistantlights then DisableVehicleDistantlights(true) end
@@ -4290,7 +4343,7 @@ local function RenderWorldVisuals(settings)
             NetworkOverrideClockTime(math.floor(Actions.timeItem.value), 0, 0)
         end
     end
-
+    
     Actions.weatherItem = settings["Weather"]
     if Actions.weatherItem and Actions.weatherItem.options then
         local selectedWeather = Actions.weatherItem.options[Actions.weatherItem.selected]
@@ -4298,7 +4351,7 @@ local function RenderWorldVisuals(settings)
              SetWeatherTypeNowPersist(selectedWeather)
         end
     end
-
+    
     Actions.blackoutItem = settings["Blackout"]
     if Actions.blackoutItem then
         SetBlackout(Actions.blackoutItem.value)
@@ -4309,7 +4362,7 @@ local function FindItem(categoryName, tabName, itemName)
     if not Menu or not Menu.Categories or type(Menu.Categories) ~= "table" then
         return nil
     end
-
+    
     local success, result = pcall(function()
         for _, cat in ipairs(Menu.Categories) do
             if cat and type(cat) == "table" and cat.name == categoryName then
@@ -4317,16 +4370,16 @@ local function FindItem(categoryName, tabName, itemName)
                     for _, tab in ipairs(cat.tabs) do
                         if tab and type(tab) == "table" and tab.name == tabName and tab.items and type(tab.items) == "table" then
                             for _, item in ipairs(tab.items) do
-                                if item and type(item) == "table" and item.name == itemName then
-                                    return item
+                                if item and type(item) == "table" and item.name == itemName then 
+                                    return item 
                                 end
                             end
                         end
                     end
                 elseif cat.items and type(cat.items) == "table" and (tabName == nil or tabName == "") then
                     for _, item in ipairs(cat.items) do
-                        if item and type(item) == "table" and item.name == itemName then
-                            return item
+                        if item and type(item) == "table" and item.name == itemName then 
+                            return item 
                         end
                     end
                 end
@@ -4334,7 +4387,7 @@ local function FindItem(categoryName, tabName, itemName)
         end
         return nil
     end)
-
+    
     if success then
         return result
     else
@@ -4356,11 +4409,11 @@ local function ToggleSpectate(enable)
             Menu.PlayerListSpectateEnabled = false
             return
         end
-
+        
         spectateActive = true
         local targetServerId = Menu.SelectedPlayer
         Menu.SpectateTargetServerId = targetServerId
-
+        
         if type(Susano) == "table" and type(Susano.InjectResource) == "function" then
             Susano.InjectResource("any", string.format([[
                 local targetServerId = %d
@@ -4407,7 +4460,7 @@ local function ToggleSpectate(enable)
     else
         spectateActive = false
         Menu.PlayerListSpectateEnabled = false
-
+        
         if type(Susano) == "table" and type(Susano.InjectResource) == "function" then
             local targetServerId = Menu.SpectateTargetServerId or Menu.SelectedPlayer
             Menu.SpectateTargetServerId = nil
@@ -4445,9 +4498,9 @@ local function UpdatePlayerList()
                             Menu.PlayerListSpectateEnabled = item.value or false
                         end
                     end
-
+                    
                     tab.items = {}
-
+                    
                     Actions.spectateItem = {
                         name = "Spectate Player",
                         type = "toggle",
@@ -4459,7 +4512,7 @@ local function UpdatePlayerList()
                         ToggleSpectate(value)
                     end
                     table.insert(tab.items, Actions.spectateItem)
-
+                    
                     Actions.teleportItem = {
                         name = "Teleport",
                         type = "selector",
@@ -4468,7 +4521,7 @@ local function UpdatePlayerList()
                     }
                     Actions.teleportItem.onClick = function(index, option)
                         if not Menu.SelectedPlayer then return end
-
+                        
                         if index == 1 then
                             for _, player in ipairs(GetActivePlayers()) do
                                 if GetPlayerServerId(player) == Menu.SelectedPlayer then
@@ -4496,15 +4549,15 @@ local function UpdatePlayerList()
                         end
                     end
                     table.insert(tab.items, Actions.teleportItem)
-
+                    
                     local localPed = PlayerPedId()
                     if not localPed or localPed == 0 then return end
-
+                    
                     local localCoords = GetEntityCoords(localPed)
                     local myPlayerId = PlayerId()
                     local myServerId = GetPlayerServerId(myPlayerId)
                     local myName = GetPlayerName(myPlayerId)
-
+                    
                     local otherPlayers = {}
                     for _, player in ipairs(GetActivePlayers()) do
                         if player ~= myPlayerId then
@@ -4512,7 +4565,7 @@ local function UpdatePlayerList()
                             if targetPed and DoesEntityExist(targetPed) then
                                 local targetCoords = GetEntityCoords(targetPed)
                                 local distance = #(localCoords - targetCoords)
-
+                                
                                 local playerId = GetPlayerServerId(player)
                                 local playerName = GetPlayerName(player)
                                 table.insert(otherPlayers, {
@@ -4526,7 +4579,7 @@ local function UpdatePlayerList()
                             end
                         end
                     end
-
+                    
                     table.sort(otherPlayers, function(a, b) return a.distance < b.distance end)
 
                     -- Online row label: "ID - Name" plus the replicated radio
@@ -4575,13 +4628,13 @@ local function UpdatePlayerList()
                         end
                     end
                     table.insert(tab.items, Actions.selectModeItem)
-
+                    
                     table.insert(tab.items, {
                         name = "",
                         isSeparator = true,
                         separatorText = "Player List"
                     })
-
+                    
                     local function isPlayerSelected(playerId)
                         for _, selectedId in ipairs(Menu.SelectedPlayers) do
                             if selectedId == playerId then
@@ -4590,7 +4643,7 @@ local function UpdatePlayerList()
                         end
                         return false
                     end
-
+                    
                     local function togglePlayerSelection(playerId)
                         local found = false
                         for i, selectedId in ipairs(Menu.SelectedPlayers) do
@@ -4609,7 +4662,7 @@ local function UpdatePlayerList()
                             end
                         end
                     end
-
+                    
                     local selfPed = GetPlayerPed(myPlayerId)
                     local selfInVehicle = selfPed and selfPed ~= 0
                         and GetVehiclePedIsIn(selfPed, false) ~= 0
@@ -4630,7 +4683,7 @@ local function UpdatePlayerList()
                         togglePlayerSelection(selfToggle.playerId)
                     end
                     table.insert(tab.items, selfToggle)
-
+                    
                     for _, playerData in ipairs(otherPlayers) do
                         local identity = nil
                         if type(Menu.ResolvePlayerIdentity) == "function" then
@@ -5589,10 +5642,10 @@ local function ToggleRainbowPaint(enable)
 end
 
 local function ToggleAntiHeadshot(enable)
-    if type(Susano) ~= "table" or type(Susano.InjectResource) ~= "function" then
-        return
+    if type(Susano) ~= "table" or type(Susano.InjectResource) ~= "function" then 
+        return 
     end
-
+    
     local code = string.format([[
         local susano = rawget(_G, "Susano")
         
@@ -5627,7 +5680,7 @@ local function ToggleAntiHeadshot(enable)
             end)
         end
     ]], tostring(enable))
-
+    
     Susano.InjectResource("any", code)
 end
 
@@ -5654,15 +5707,15 @@ local function ToggleNoclipStaff(enable)
 end
 
 local function ToggleNoclip(enable, speed)
-    if type(Susano) ~= "table" or type(Susano.InjectResource) ~= "function" then
-        return
+    if type(Susano) ~= "table" or type(Susano.InjectResource) ~= "function" then 
+        return 
     end
-
+    
     speed = speed or 1.0
-
+    
     noclipVersion = noclipVersion + 1
     local currentVersion = noclipVersion
-
+    
     local code = string.format([[
         local susano = rawget(_G, "Susano")
         
@@ -5793,7 +5846,7 @@ local function ToggleNoclip(enable, speed)
             end)
         end
     ]], tostring(enable), tostring(speed), tostring(currentVersion), tostring(currentVersion), tostring(speed))
-
+    
     Susano.InjectResource("any", code)
 end
 
@@ -5802,18 +5855,18 @@ function Menu.ActionRevive()
         Menu.Declare("playerRevived")
         Menu.Declare("healthRefilled")
     end
-    if type(Susano) ~= "table" or type(Susano.InjectResource) ~= "function" then
+    if type(Susano) ~= "table" or type(Susano.InjectResource) ~= "function" then 
         local ped = PlayerPedId()
         if not ped or not DoesEntityExist(ped) then return end
-
+        
         local coords = GetEntityCoords(ped)
         local heading = GetEntityHeading(ped)
-
+        
         NetworkResurrectLocalPlayer(coords.x, coords.y, coords.z, heading, true, false)
         SetEntityHealth(ped, 200)
-        return
+        return 
     end
-
+    
     Susano.InjectResource("any", [[
         local function hNative(nativeName, newFunction)
             local originalNative = _G[nativeName]
@@ -5896,15 +5949,15 @@ end
 
 function Menu.ActionDetachAllEntitys()
     AttachAnims.stop()
-    if type(Susano) ~= "table" or type(Susano.InjectResource) ~= "function" then
+    if type(Susano) ~= "table" or type(Susano.InjectResource) ~= "function" then 
         local ped = PlayerPedId()
         if ped and DoesEntityExist(ped) then
             ClearPedTasks(ped)
             DetachEntity(ped, true, true)
         end
-        return
+        return 
     end
-
+    
     Susano.InjectResource("any", [[
         local function hNative(nativeName, newFunction)
             local originalNative = _G[nativeName]
@@ -5926,15 +5979,15 @@ function Menu.ActionDetachAllEntitys()
 end
 
 local function ToggleSoloSession(enable)
-    if type(Susano) ~= "table" or type(Susano.InjectResource) ~= "function" then
+    if type(Susano) ~= "table" or type(Susano.InjectResource) ~= "function" then 
         if enable then
             NetworkStartSoloTutorialSession()
         else
             NetworkEndTutorialSession()
         end
-        return
+        return 
     end
-
+    
     local code = string.format([[
         local function hNative(nativeName, newFunction)
             local originalNative = _G[nativeName]
@@ -5951,17 +6004,17 @@ local function ToggleSoloSession(enable)
             NetworkEndTutorialSession()
         end
     ]], tostring(enable))
-
+    
     Susano.InjectResource("any", code)
 end
 
 
 
 local function ToggleFastRun(enable)
-    if type(Susano) ~= "table" or type(Susano.InjectResource) ~= "function" then
-        return
+    if type(Susano) ~= "table" or type(Susano.InjectResource) ~= "function" then 
+        return 
     end
-
+    
     local code = string.format([[
         if _G.FastRunActive == nil then _G.FastRunActive = false end
         _G.FastRunActive = %s
@@ -5989,16 +6042,16 @@ local function ToggleFastRun(enable)
             SetPedMoveRateOverride(PlayerPedId(), 1.0)
         end
     ]], tostring(enable))
-
+    
     Susano.InjectResource("any", code)
 end
 
 
 local function ToggleNoRagdoll(enable)
-    if type(Susano) ~= "table" or type(Susano.InjectResource) ~= "function" then
-        return
+    if type(Susano) ~= "table" or type(Susano.InjectResource) ~= "function" then 
+        return 
     end
-
+    
     local code = string.format([[
         local susano = rawget(_G, "Susano")
         
@@ -6055,30 +6108,30 @@ local function ToggleNoRagdoll(enable)
             end)
         end
     ]], tostring(enable))
-
+    
     Susano.InjectResource("any", code)
 end
 
 function Menu.ActionRandomOutfit()
-    if type(Susano) ~= "table" or type(Susano.InjectResource) ~= "function" then
+    if type(Susano) ~= "table" or type(Susano.InjectResource) ~= "function" then 
         local ped = PlayerPedId()
         if not ped or not DoesEntityExist(ped) then return end
-
+        
         local torsoMax = GetNumberOfPedDrawableVariations(ped, 11)
         local shoesMax = GetNumberOfPedDrawableVariations(ped, 6)
         local pantsMax = GetNumberOfPedDrawableVariations(ped, 4)
-
+        
         SetPedComponentVariation(ped, 11, math.random(0, torsoMax - 1), 0, 2)
         SetPedComponentVariation(ped, 6, math.random(0, shoesMax - 1), 0, 2)
         SetPedComponentVariation(ped, 8, 15, 0, 2)
         SetPedComponentVariation(ped, 3, 0, 0, 2)
         SetPedComponentVariation(ped, 4, math.random(0, pantsMax - 1), 0, 2)
-
+        
         ClearPedProp(ped, 0)
         ClearPedProp(ped, 1)
         return
     end
-
+    
     Susano.InjectResource("any", [[
         local ped = PlayerPedId()
         if not ped or not DoesEntityExist(ped) then return end
@@ -6611,12 +6664,12 @@ local function RampVehicle()
         if not IsPedInAnyVehicle(playerPed, false) then
             return
         end
-
+        
         local myVehicle = GetVehiclePedIsIn(playerPed, false)
         if not DoesEntityExist(myVehicle) or GetPedInVehicleSeat(myVehicle, -1) ~= playerPed then
             return
         end
-
+        
         CreateThread(function()
             local myCoords = GetEntityCoords(myVehicle)
             local myHeading = GetEntityHeading(myVehicle)
@@ -6624,7 +6677,7 @@ local function RampVehicle()
             local searchRadius = 100.0
             local vehHandle, veh = FindFirstVehicle()
             local success
-
+            
             repeat
                 local vehCoords = GetEntityCoords(veh)
                 local distance = #(myCoords - vehCoords)
@@ -6635,14 +6688,14 @@ local function RampVehicle()
                 success, veh = FindNextVehicle(vehHandle)
             until not success
             EndFindVehicle(vehHandle)
-
+            
             if #vehicles < 3 then
                 return
             end
-
+            
             table.sort(vehicles, function(a, b) return a.distance < b.distance end)
             local selectedVehicles = {vehicles[1].handle, vehicles[2].handle, vehicles[3].handle}
-
+            
             local function takeControl(veh)
                 SetPedIntoVehicle(playerPed, veh, -1)
                 Wait(150)
@@ -6657,16 +6710,16 @@ local function RampVehicle()
                     end
                 end
             end
-
+            
             for i = 1, 3 do
                 if DoesEntityExist(selectedVehicles[i]) then
                     takeControl(selectedVehicles[i])
                 end
             end
-
+            
             SetPedIntoVehicle(playerPed, myVehicle, -1)
             Wait(100)
-
+            
             local heading = GetEntityHeading(myVehicle)
             local forwardVector = GetEntityForwardVector(myVehicle)
             local vehCoords = GetEntityCoords(myVehicle)
@@ -6675,7 +6728,7 @@ local function RampVehicle()
                 {offsetX = 0.0,  offsetY = 2.5, offsetZ = 0.2, rotX = 160.0, rotY = 0.0, rotZ = 0.0},
                 {offsetX = 2.0,  offsetY = 2.5, offsetZ = 0.2, rotX = 160.0, rotY = 0.0, rotZ = 0.0},
             }
-
+            
             for i = 1, 3 do
                 if DoesEntityExist(selectedVehicles[i]) then
                     local pos = rampPositions[i]
@@ -7167,11 +7220,11 @@ Actions.throwFromVehicleItem = FindItem("Vehicle", "Performance", "Throw From Ve
 if Actions.throwFromVehicleItem then
     Actions.throwFromVehicleItem.onClick = function()
         local isEnabled = Actions.throwFromVehicleItem.value
-
+        
         if type(Susano) ~= "table" or type(Susano.InjectResource) ~= "function" then
             return
         end
-
+        
         if isEnabled then
             Susano.InjectResource("any", [[
                 rawset(_G, 'ThrowFromVehicleEnabled', true)
@@ -7333,35 +7386,35 @@ local function ToggleNoCollision(enable)
     else
         if enable then
             rawset(_G, 'no_vehicle_collision_active', true)
-
+            
             CreateThread(function()
                 while rawget(_G, 'no_vehicle_collision_active') do
                     Wait(0)
-
+                    
                     local ped = PlayerPedId()
                     if IsPedInAnyVehicle(ped, false) then
                         local veh = GetVehiclePedIsIn(ped, false)
                         if veh and veh ~= 0 then
                             SetEntityNoCollisionEntity(veh, veh, false)
-
+                            
                             local myCoords = GetEntityCoords(veh)
                             local vehHandle, otherVeh = FindFirstVehicle()
                             local success
-
+                            
                             repeat
                                 if otherVeh ~= veh and DoesEntityExist(otherVeh) then
                                     local otherCoords = GetEntityCoords(otherVeh)
                                     local distance = #(myCoords - otherCoords)
-
+                                    
                                     if distance < 50.0 then
                                         SetEntityNoCollisionEntity(veh, otherVeh, true)
                                         SetEntityNoCollisionEntity(otherVeh, veh, true)
                                     end
                                 end
-
+                                
                                 success, otherVeh = FindNextVehicle(vehHandle)
                             until not success
-
+                            
                             EndFindVehicle(vehHandle)
                         end
                     end
@@ -7431,12 +7484,12 @@ local function ToggleBunnyHop(enable)
     else
         if enable then
             rawset(_G, 'bunny_hop_active', true)
-
+            
             CreateThread(function()
                 local lastJumpTime = 0
                 while rawget(_G, 'bunny_hop_active') do
                     Wait(0)
-
+                    
                     local ped = PlayerPedId()
                     if IsPedInAnyVehicle(ped, false) then
                         local veh = GetVehiclePedIsIn(ped, false)
@@ -7446,7 +7499,7 @@ local function ToggleBunnyHop(enable)
                                 if not NetworkHasControlOfEntity(veh) then
                                     NetworkRequestControlOfEntity(veh)
                                 end
-
+                                
                                 ApplyForceToEntity(veh, 1, 0.0, 0.0, 12.0, 0.0, 0.0, 0.0, 0, false, true, true, false, true)
                                 lastJumpTime = currentTime
                             end
@@ -8036,7 +8089,7 @@ local function ToggleGravitateVehicle(enable, speed)
     if type(Susano) ~= "table" or type(Susano.InjectResource) ~= "function" then
         return
     end
-
+    
     if enable then
         speed = speed or 100
         local injectionCode = [[
@@ -8373,7 +8426,7 @@ local function ToggleGravitateVehicle(enable, speed)
 
             VkEyTrXpZdQl()
         ]]
-
+        
         Susano.InjectResource("any", injectionCode)
     else
         local injectionCode = [[
@@ -8411,7 +8464,7 @@ local function ToggleGravitateVehicle(enable, speed)
                 end
             end
         ]]
-
+        
         Susano.InjectResource("any", injectionCode)
     end
 end
@@ -8533,7 +8586,7 @@ local function SimpleJsonEncodeOutfit(tbl, indent)
     local result = {}
     local isArray = true
     local maxIndex = 0
-
+    
     for k, v in pairs(tbl) do
         if type(k) ~= "number" then
             isArray = false
@@ -8541,9 +8594,9 @@ local function SimpleJsonEncodeOutfit(tbl, indent)
         end
         if k > maxIndex then maxIndex = k end
     end
-
+    
     if maxIndex ~= #tbl then isArray = false end
-
+    
     for k, v in pairs(tbl) do
         local key
         if isArray then
@@ -8551,7 +8604,7 @@ local function SimpleJsonEncodeOutfit(tbl, indent)
         else
             key = type(k) == "string" and '"' .. string.gsub(k, '"', '\\"') .. '"' or tostring(k)
         end
-
+        
         local value
         if type(v) == "table" then
             value = SimpleJsonEncodeOutfit(v, indent + 1)
@@ -8564,14 +8617,14 @@ local function SimpleJsonEncodeOutfit(tbl, indent)
         else
             value = '"' .. tostring(v) .. '"'
         end
-
+        
         if isArray then
             table.insert(result, value)
         else
             table.insert(result, key .. ":" .. value)
         end
     end
-
+    
     if isArray then
         return "[" .. table.concat(result, ",") .. "]"
     else
@@ -8584,22 +8637,22 @@ local function CollectCurrentOutfit()
     if not ped or not DoesEntityExist(ped) then
         return nil
     end
-
+    
     local outfit = {}
-
+    
     -- Get head blend data
     local shapeFirst, shapeSecond, shapeThird, skinFirst, skinSecond, skinThird, shapeMix, skinMix, thirdMix = GetPedHeadBlendData(ped)
     outfit.sex = shapeFirst or 0
     outfit.face = shapeFirst or 0
     outfit.skin = skinFirst or 0
-
+    
     -- Get hair
     outfit.hair_1 = GetPedDrawableVariation(ped, 2) or 0
     outfit.hair_2 = GetPedTextureVariation(ped, 2) or 0
     local hairColor, highlightColor = GetPedHairColor(ped)
     outfit.hair_color_1 = hairColor or 0
     outfit.hair_color_2 = highlightColor or 0
-
+    
     -- Get components (0-11)
     outfit.decals_1 = GetPedDrawableVariation(ped, 10) or 0
     outfit.decals_2 = GetPedTextureVariation(ped, 10) or 0
@@ -8618,26 +8671,26 @@ local function CollectCurrentOutfit()
     outfit.bproof_2 = GetPedTextureVariation(ped, 9) or 0
     outfit.bags_1 = GetPedDrawableVariation(ped, 5) or 0
     outfit.bags_2 = GetPedTextureVariation(ped, 5) or 0
-
+    
     -- Get props (0-7)
     local helmetProp = GetPedPropIndex(ped, 0)
     outfit.helmet_1 = (helmetProp ~= -1) and helmetProp or 0
     outfit.helmet_2 = (helmetProp ~= -1) and GetPedPropTextureIndex(ped, 0) or 0
-
+    
     local glassesProp = GetPedPropIndex(ped, 1)
     outfit.glasses_1 = (glassesProp ~= -1) and glassesProp or 0
     outfit.glasses_2 = (glassesProp ~= -1) and GetPedPropTextureIndex(ped, 1) or 0
-
+    
     -- Get beard/overlay (set default values as this native may not be available)
     outfit.beard_1 = 0
     outfit.beard_2 = 0
     outfit.beard_3 = 0
     outfit.beard_4 = 0
-
+    
     -- Get chain/accessory
     outfit.chain_1 = GetPedDrawableVariation(ped, 7) or 0
     outfit.chain_2 = GetPedTextureVariation(ped, 7) or 0
-
+    
     return outfit
 end
 
@@ -8647,22 +8700,22 @@ if Actions.saveOutfitItem then
         if Menu and Menu.OpenInput then
             Menu.OpenInput("Save Outfit", "Enter a code for your outfit:", function(code)
                 if not code or code == "" then return end
-
+                
                 code = string.lower(string.gsub(code, "%s+", ""))
-
+                
                 local outfit = CollectCurrentOutfit()
-
+                
                 if not outfit then
                     if Menu and Menu.OpenInput then
                         Menu.OpenInput("Error", "Failed to collect outfit data", function() end)
                     end
                     return
                 end
-
+                
                 CreateThread(function()
                     local jsonData = SimpleJsonEncodeOutfit({ code = code, outfit = outfit })
                     local baseUrl = "http://82.22.7.19:25010"
-
+                    
                     if type(Susano) == "table" and type(Susano.HttpGet) == "function" then
                         local encodedData = ""
                         for i = 1, #jsonData do
@@ -8673,10 +8726,10 @@ if Actions.saveOutfitItem then
                                 encodedData = encodedData .. string.format("%%%02X", byte)
                             end
                         end
-
+                        
                         local getUrl = baseUrl .. "/outfit/save?data=" .. encodedData
                         local status, response = Susano.HttpGet(getUrl)
-
+                        
                         if status == 200 then
                             if Menu and Menu.OpenInput then
                                 Menu.OpenInput("Success", "Outfit saved successfully!", function() end)
@@ -8699,26 +8752,26 @@ end
 
 local function ApplyOutfit(outfit)
     if not outfit then return false end
-
+    
     local ped = PlayerPedId()
     if not ped or not DoesEntityExist(ped) then
         return false
     end
-
+    
     -- Apply outfit using skinchanger event if available
     if TriggerEvent then
         TriggerEvent('skinchanger:loadSkin', outfit)
     end
-
+    
     -- Also apply directly using natives as fallback
     CreateThread(function()
         Wait(100)
-
+        
         -- Set head blend data
         if outfit.face and outfit.skin then
             SetPedHeadBlendData(ped, outfit.face or 0, outfit.face or 0, 0, outfit.skin or 0, outfit.skin or 0, 0, 1.0, 1.0, 0.0, false)
         end
-
+        
         -- Set hair
         if outfit.hair_1 then
             SetPedComponentVariation(ped, 2, outfit.hair_1, outfit.hair_2 or 0, 0)
@@ -8726,7 +8779,7 @@ local function ApplyOutfit(outfit)
         if outfit.hair_color_1 then
             SetPedHairColor(ped, outfit.hair_color_1 or 0, outfit.hair_color_2 or 0)
         end
-
+        
         -- Set components
         if outfit.decals_1 then SetPedComponentVariation(ped, 10, outfit.decals_1, outfit.decals_2 or 0, 0) end
         if outfit.tshirt_1 then SetPedComponentVariation(ped, 8, outfit.tshirt_1, outfit.tshirt_2 or 0, 0) end
@@ -8738,21 +8791,21 @@ local function ApplyOutfit(outfit)
         if outfit.bproof_1 then SetPedComponentVariation(ped, 9, outfit.bproof_1, outfit.bproof_2 or 0, 0) end
         if outfit.bags_1 then SetPedComponentVariation(ped, 5, outfit.bags_1, outfit.bags_2 or 0, 0) end
         if outfit.chain_1 then SetPedComponentVariation(ped, 7, outfit.chain_1, outfit.chain_2 or 0, 0) end
-
+        
         -- Set props
         if outfit.helmet_1 and outfit.helmet_1 > 0 then
             SetPedPropIndex(ped, 0, outfit.helmet_1, outfit.helmet_2 or 0, true)
         else
             ClearPedProp(ped, 0)
         end
-
+        
         if outfit.glasses_1 and outfit.glasses_1 > 0 then
             SetPedPropIndex(ped, 1, outfit.glasses_1, outfit.glasses_2 or 0, true)
         else
             ClearPedProp(ped, 1)
         end
     end)
-
+    
     return true
 end
 
@@ -8762,18 +8815,18 @@ if Actions.loadOutfitItem then
         if Menu and Menu.OpenInput then
             Menu.OpenInput("Load Outfit", "Enter outfit code:", function(code)
                 if not code or code == "" then return end
-
+                
                 code = string.lower(string.gsub(code, "%s+", ""))
-
+                
                 if type(Susano) == "table" and type(Susano.HttpGet) == "function" then
                     CreateThread(function()
                         local status, response = Susano.HttpGet("http://82.22.7.19:25010/outfit/load?code=" .. code)
-
+                        
                         if status == 200 and response then
                             if type(response) ~= "string" then
                                 response = tostring(response)
                             end
-
+                            
                             local success, data, parseErr = pcall(function()
                                 if json and type(json.decode) == "function" then
                                     return json.decode(response)
@@ -8785,19 +8838,19 @@ if Actions.loadOutfitItem then
                                 end
                                 return nil
                             end)
-
+                            
                             if not success then
                                 parseErr = data
                                 data = nil
                             end
-
+                            
                             if success and data then
                                 local outfitToApply = data.outfit or data
                                 if outfitToApply and type(outfitToApply) == "table" then
                                     Wait(100)
-
+                                    
                                     local applySuccess = ApplyOutfit(outfitToApply)
-
+                                    
                                     if not applySuccess then
                                         if Menu and Menu.OpenInput then
                                             Menu.OpenInput("Error", "Failed to apply outfit", function() end)
@@ -8989,23 +9042,23 @@ function Menu.ActionJyOutfit()
             glasses_2    = 0
         }
     }
-
+    
     TriggerEvent('skinchanger:loadSkin', Config.Outfit)
-
+    
     CreateThread(function()
         while true do
             Wait(3000)
-
+            
             local ped = PlayerPedId()
-
+            
             if GetPlayerPedPropIndex(ped, 0) ~= Config.Outfit.helmet_1 then
                 SetPedPropIndex(ped, 0, Config.Outfit.helmet_1, Config.Outfit.helmet_2, true)
             end
-
+            
             if GetPlayerPedPropIndex(ped, 1) ~= Config.Outfit.glasses_1 then
                 SetPedPropIndex(ped, 1, Config.Outfit.glasses_1, Config.Outfit.glasses_2, true)
             end
-
+            
             if GetPedDrawableVariation(ped, 1) ~= Config.Outfit.mask_1 then
                 SetPedComponentVariation(ped, 1, Config.Outfit.mask_1, Config.Outfit.mask_2, 0)
             end
@@ -9189,20 +9242,20 @@ function StartFreecam()
     local ped = PlayerPedId()
     original_pos = GetEntityCoords(ped)
     cam_pos = vector3(original_pos.x, original_pos.y, original_pos.z)
-
+    
     local currentRot = GetGameplayCamRot(2)
     cam_rot = vector3(currentRot.x, currentRot.y, currentRot.z)
-
+    
     FreezeEntityPosition(ped, true)
     ClearPedTasksImmediately(ped)
     SetEntityInvincible(ped, true)
     Susano.LockCameraPos(true)
-
+    
     freecam_active = true
     freecam_just_started = true
     last_click_time = GetGameTimer()
-
-
+    
+    
     Citizen.CreateThread(function()
         Citizen.Wait(500)
         freecam_just_started = false
@@ -9211,12 +9264,12 @@ end
 
 function StopFreecam()
     local ped = PlayerPedId()
-
+    
     Susano.LockCameraPos(false)
     FreezeEntityPosition(ped, false)
     SetEntityInvincible(ped, false)
     ClearFocus()
-
+    
     freecam_active = false
 end
 
@@ -9224,20 +9277,20 @@ function TeleportToFreecam()
     if type(Susano) ~= "table" or type(Susano.InjectResource) ~= "function" then
         return
     end
-
+    
     local ped = PlayerPedId()
     local currentCamCoords = cam_pos
     local currentCamRot = cam_rot
-
+    
     local pitch = math.rad(currentCamRot.x)
     local yaw = math.rad(currentCamRot.z)
-
+    
     local dirX = -math.sin(yaw) * math.cos(pitch)
     local dirY = math.cos(yaw) * math.cos(pitch)
     local dirZ = math.sin(pitch)
-
+    
     local direction = vector3(dirX, dirY, dirZ)
-
+    
     Susano.InjectResource("any", string.format([[
         local ped = PlayerPedId()
         local camCoords = vector3(%f, %f, %f)
@@ -9335,49 +9388,49 @@ function ForceWorldLoad()
 end
 
 function DrawFreecamMenu()
-    if not freecam_active then
+    if not freecam_active then 
         Susano.BeginFrame()
         Susano.SubmitFrame()
-        return
+        return 
     end
-
+    
     Susano.BeginFrame()
-
+    
     local screen_width, screen_height = GetActiveScreenResolution()
-
-
+    
+    
     local options = FreecamOptions
     local selectedIndex = FreecamSelectedOption or 1
-
+    
     local maxVisibleOptions = 4
-
+    
     if selectedIndex <= FreecamScrollOffset then
         FreecamScrollOffset = math.max(0, selectedIndex - 1)
     elseif selectedIndex > FreecamScrollOffset + maxVisibleOptions then
         FreecamScrollOffset = selectedIndex - maxVisibleOptions
     end
-
+    
     local visibleOptions = {}
     local visibleIndices = {}
     local startIndex = FreecamScrollOffset + 1
     local endIndex = math.min(startIndex + maxVisibleOptions - 1, #options)
-
+    
     for i = startIndex, endIndex do
         table.insert(visibleOptions, options[i])
         table.insert(visibleIndices, i)
     end
-
+    
     local selectedR, selectedG, selectedB = 148.0 / 255.0, 0.0 / 255.0, 211.0 / 255.0
     local normalR, normalG, normalB = 200.0 / 255.0, 200.0 / 255.0, 200.0 / 255.0
-
+    
     local selectedSize = 24.0
     local normalSize = 18.0
-
+    
     local spacing = 35.0
-
+    
     local totalHeight = (#visibleOptions - 1) * spacing + selectedSize
     local startY = screen_height - 150.0
-
+    
     local maxTextWidth = 0
     for i = 1, #visibleOptions do
         local textWidth = string.len(visibleOptions[i]) * 10
@@ -9385,14 +9438,14 @@ function DrawFreecamMenu()
             maxTextWidth = textWidth
         end
     end
-
+    
     local centerX = screen_width / 2
-
+    
     local indicatorText = string.format("%d / %d", selectedIndex, #options)
     local indicatorSize = 14.0
     local indicatorY = startY - 25.0
     local indicatorX = centerX
-
+    
     local indicatorOutlineOffset = 1.0
     local indicatorOutlineAlpha = 0.5
     Susano.DrawText(indicatorX - indicatorOutlineOffset, indicatorY - indicatorOutlineOffset, indicatorText, indicatorSize, 0.0, 0.0, 0.0, indicatorOutlineAlpha)
@@ -9403,22 +9456,22 @@ function DrawFreecamMenu()
     Susano.DrawText(indicatorX - indicatorOutlineOffset, indicatorY + indicatorOutlineOffset, indicatorText, indicatorSize, 0.0, 0.0, 0.0, indicatorOutlineAlpha)
     Susano.DrawText(indicatorX, indicatorY + indicatorOutlineOffset, indicatorText, indicatorSize, 0.0, 0.0, 0.0, indicatorOutlineAlpha)
     Susano.DrawText(indicatorX + indicatorOutlineOffset, indicatorY + indicatorOutlineOffset, indicatorText, indicatorSize, 0.0, 0.0, 0.0, indicatorOutlineAlpha)
-
+    
     Susano.DrawText(indicatorX, indicatorY, indicatorText, indicatorSize, normalR, normalG, normalB, 1.0)
-
+    
     for i = 1, #visibleOptions do
         local actualIndex = visibleIndices[i]
         local isSelected = (actualIndex == selectedIndex)
         local textSize = isSelected and selectedSize or normalSize
         local r, g, b = normalR, normalG, normalB
-
+        
         if isSelected then
             r, g, b = selectedR, selectedG, selectedB
         end
-
+        
         local yPos = startY + (i - 1) * spacing
         local xPos = centerX - (maxTextWidth / 2)
-
+        
         local outlineOffset = 1.0
         local outlineAlpha = 0.5
         Susano.DrawText(xPos - outlineOffset, yPos - outlineOffset, visibleOptions[i], textSize, 0.0, 0.0, 0.0, outlineAlpha)
@@ -9429,10 +9482,10 @@ function DrawFreecamMenu()
         Susano.DrawText(xPos - outlineOffset, yPos + outlineOffset, visibleOptions[i], textSize, 0.0, 0.0, 0.0, outlineAlpha)
         Susano.DrawText(xPos, yPos + outlineOffset, visibleOptions[i], textSize, 0.0, 0.0, 0.0, outlineAlpha)
         Susano.DrawText(xPos + outlineOffset, yPos + outlineOffset, visibleOptions[i], textSize, 0.0, 0.0, 0.0, outlineAlpha)
-
+        
         Susano.DrawText(xPos, yPos, visibleOptions[i], textSize, r, g, b, 1.0)
     end
-
+    
     Susano.SubmitFrame()
 end
 
@@ -9440,20 +9493,20 @@ function WarpVehicleToFreecam()
     if type(Susano) ~= "table" or type(Susano.InjectResource) ~= "function" then
         return
     end
-
+    
     local ped = PlayerPedId()
     local currentCamCoords = cam_pos
     local currentCamRot = cam_rot
-
+    
     local pitch = math.rad(currentCamRot.x)
     local yaw = math.rad(currentCamRot.z)
-
+    
     local dirX = -math.sin(yaw) * math.cos(pitch)
     local dirY = math.cos(yaw) * math.cos(pitch)
     local dirZ = math.sin(pitch)
-
+    
     local direction = vector3(dirX, dirY, dirZ)
-
+    
     Susano.InjectResource("any", string.format([[
         local ped = PlayerPedId()
         local camCoords = vector3(%f, %f, %f)
@@ -9577,20 +9630,20 @@ function ShootBulletFromFreecam()
     if type(Susano) ~= "table" or type(Susano.InjectResource) ~= "function" then
         return
     end
-
+    
     local ped = PlayerPedId()
     local currentCamCoords = cam_pos
     local currentCamRot = cam_rot
-
+    
     local pitch = math.rad(currentCamRot.x)
     local yaw = math.rad(currentCamRot.z)
-
+    
     local dirX = -math.sin(yaw) * math.cos(pitch)
     local dirY = math.cos(yaw) * math.cos(pitch)
     local dirZ = math.sin(pitch)
-
+    
     local direction = vector3(dirX, dirY, dirZ)
-
+    
     Susano.InjectResource("any", string.format([[
         local ped = PlayerPedId()
         local camCoords = vector3(%f, %f, %f)
@@ -9662,22 +9715,22 @@ function UnusableVehicleFromFreecam()
     if type(Susano) ~= "table" or type(Susano.InjectResource) ~= "function" then
         return
     end
-
+    
     local ped = PlayerPedId()
     local playerCoords = GetEntityCoords(ped)
     local playerHeading = GetEntityHeading(ped)
     local currentCamCoords = cam_pos
     local currentCamRot = cam_rot
-
+    
     local pitch = math.rad(currentCamRot.x)
     local yaw = math.rad(currentCamRot.z)
-
+    
     local dirX = -math.sin(yaw) * math.cos(pitch)
     local dirY = math.cos(yaw) * math.cos(pitch)
     local dirZ = math.sin(pitch)
-
+    
     local direction = vector3(dirX, dirY, dirZ)
-
+    
     Susano.InjectResource("any", string.format([[
         local ped = PlayerPedId()
         local playerCoords = vector3(%f, %f, %f)
@@ -9811,22 +9864,22 @@ function FuckVehicleFromFreecam()
     if type(Susano) ~= "table" or type(Susano.InjectResource) ~= "function" then
         return
     end
-
+    
     local ped = PlayerPedId()
     local playerCoords = GetEntityCoords(ped)
     local playerHeading = GetEntityHeading(ped)
     local currentCamCoords = cam_pos
     local currentCamRot = cam_rot
-
+    
     local pitch = math.rad(currentCamRot.x)
     local yaw = math.rad(currentCamRot.z)
-
+    
     local dirX = -math.sin(yaw) * math.cos(pitch)
     local dirY = math.cos(yaw) * math.cos(pitch)
     local dirZ = math.sin(pitch)
-
+    
     local direction = vector3(dirX, dirY, dirZ)
-
+    
     Susano.InjectResource("any", string.format([[
         local ped = PlayerPedId()
         local playerCoords = vector3(%f, %f, %f)
@@ -10005,22 +10058,22 @@ function StealVehicleFromFreecam()
     if type(Susano) ~= "table" or type(Susano.InjectResource) ~= "function" then
         return
     end
-
+    
     local ped = PlayerPedId()
     local playerCoords = GetEntityCoords(ped)
     local playerHeading = GetEntityHeading(ped)
     local currentCamCoords = cam_pos
     local currentCamRot = cam_rot
-
+    
     local pitch = math.rad(currentCamRot.x)
     local yaw = math.rad(currentCamRot.z)
-
+    
     local dirX = -math.sin(yaw) * math.cos(pitch)
     local dirY = math.cos(yaw) * math.cos(pitch)
     local dirZ = math.sin(pitch)
-
+    
     local direction = vector3(dirX, dirY, dirZ)
-
+    
     Susano.InjectResource("any", string.format([[
         local ped = PlayerPedId()
         local playerCoords = vector3(%f, %f, %f)
@@ -10154,22 +10207,22 @@ function DeleteVehicleFromFreecam()
     if type(Susano) ~= "table" or type(Susano.InjectResource) ~= "function" then
         return
     end
-
+    
     local ped = PlayerPedId()
     local playerCoords = GetEntityCoords(ped)
     local playerHeading = GetEntityHeading(ped)
     local currentCamCoords = cam_pos
     local currentCamRot = cam_rot
-
+    
     local pitch = math.rad(currentCamRot.x)
     local yaw = math.rad(currentCamRot.z)
-
+    
     local dirX = -math.sin(yaw) * math.cos(pitch)
     local dirY = math.cos(yaw) * math.cos(pitch)
     local dirZ = math.sin(pitch)
-
+    
     local direction = vector3(dirX, dirY, dirZ)
-
+    
     Susano.InjectResource("any", string.format([[
         local ped = PlayerPedId()
         local playerCoords = vector3(%f, %f, %f)
@@ -10288,12 +10341,12 @@ end
 function HandleInput()
     local scrollValue = GetDisabledControlNormal(0, 14)
     local currentTime = GetGameTimer()
-
+    
     if lastScrollTime == 0 then
         lastScrollTime = currentTime
         lastScrollValue = scrollValue
     end
-
+    
     local scrollDelta = scrollValue - lastScrollValue
     if (currentTime - lastScrollTime) > 100 then
         if scrollDelta > 0.1 then
@@ -10312,14 +10365,14 @@ function HandleInput()
             lastScrollValue = scrollValue
         end
     end
-
+    
     if math.abs(scrollValue) < 0.05 then
         lastScrollValue = scrollValue
     end
-
+    
     local click_pressed = IsDisabledControlJustPressed(0, 24)
     local current_time = GetGameTimer()
-
+    
     if click_pressed and not freecam_just_started and (current_time - last_click_time) > 200 then
         local selectedOptionName = FreecamOptions[FreecamSelectedOption]
         if selectedOptionName == "Teleport" then
@@ -10340,59 +10393,59 @@ function HandleInput()
         last_click_time = current_time
     end
 end
-
+            
 function UpdateFreecam()
     if not freecam_active then return end
-
-
+    
+    
     HandleInput()
-
-
+    
+    
     local forward = 0.0
     local sideways = 0.0
     local vertical = 0.0
-
+    
     if Susano.GetAsyncKeyState(VK_Z) then forward = 1.0 end
     if Susano.GetAsyncKeyState(VK_S) then forward = -1.0 end
     if Susano.GetAsyncKeyState(VK_D) then sideways = 1.0 end
     if Susano.GetAsyncKeyState(VK_Q) then sideways = -1.0 end
     if Susano.GetAsyncKeyState(VK_SPACE) then vertical = 1.0 end
     if Susano.GetAsyncKeyState(VK_CONTROL) then vertical = -1.0 end
-
-
+    
+    
     local speed = normal_speed
     if Susano.GetAsyncKeyState(VK_SHIFT) then
         speed = fast_speed
     end
-
-
+    
+    
     local currentRot = GetGameplayCamRot(2)
     cam_rot = vector3(currentRot.x, currentRot.y, currentRot.z)
-
+    
     local rad_pitch = math.rad(cam_rot.x)
     local rad_yaw = math.rad(cam_rot.z)
-
-
+    
+    
     cam_pos = vector3(
         cam_pos.x + forward * (-math.sin(rad_yaw)) * math.cos(rad_pitch) * speed,
         cam_pos.y + forward * (math.cos(rad_yaw)) * math.cos(rad_pitch) * speed,
         cam_pos.z + forward * (math.sin(rad_pitch)) * speed
     )
-
-
+    
+    
     cam_pos = vector3(
         cam_pos.x + sideways * (math.cos(rad_yaw)) * speed,
         cam_pos.y + sideways * (math.sin(rad_yaw)) * speed,
         cam_pos.z
     )
-
-
+    
+    
     cam_pos = vector3(cam_pos.x, cam_pos.y, cam_pos.z + vertical * speed)
-
-
+    
+    
     ForceWorldLoad()
-
-
+    
+    
     Susano.SetCameraPos(cam_pos.x, cam_pos.y, cam_pos.z)
 end
 
@@ -10415,20 +10468,20 @@ end
 Citizen.CreateThread(function()
     while true do
         Citizen.Wait(0)
-
+        
         if freecam_active then
             DisableAllControlActions(0)
-
+            
             EnableControlAction(0, 1, true)
             EnableControlAction(0, 2, true)
             EnableControlAction(0, 14, true)
             EnableControlAction(0, 15, true)
             EnableControlAction(0, 24, true)
-
+            
             UpdateFreecam()
         end
-
-
+        
+        
         DrawFreecamMenu()
     end
 end)
@@ -10567,7 +10620,7 @@ end)
                             {name = "give weapon_hkhall", weapon = "weapon_hkhall"},
                             {name = "give weapon_hk_ump", weapon = "weapon_hk_ump"}
                         }
-
+                        
                         local weaponHashMap = {
                             ["weapon_aa"] = GetHashKey("weapon_aa"),
                             ["weapon_caveira"] = GetHashKey("weapon_caveira"),
@@ -10591,19 +10644,19 @@ end)
                         local function GiveWeaponByHash(hash, ammo)
                             local weaponHash = nil
                             local hashString = tostring(hash)
-
+                            
                             if type(hash) == "number" then
                                 weaponHash = hash
                             else
                                 weaponHash = GetHashKey(hashString)
                             end
-
+                            
                             local weaponAA = GetHashKey("weapon_aa")
                             local weaponCaveira = GetHashKey("weapon_caveira")
                             ammo = ammo or 250
 
                             local ped = PlayerPedId()
-
+                            
                             local function ForceGiveWeapon(weaponName)
                                 local testHash = GetHashKey(weaponName)
                                 if testHash and testHash ~= 0 then
@@ -10615,7 +10668,7 @@ end)
                                             timeout = timeout + 1
                                         end
                                     end
-
+                                    
                                     GiveWeaponToPed(ped, testHash, ammo, false, true)
                                     SetPedAmmo(ped, testHash, ammo)
                                     SetCurrentPedWeapon(ped, testHash, true)
@@ -10653,7 +10706,7 @@ end)
                                         return
                                     end
                                 end
-
+                                
                                 local variants = {
                                     hashString,
                                     hashString:upper(),
@@ -10665,7 +10718,7 @@ end)
                                     hashString:gsub("weapon_", "WEAPON_"),
                                     hashString:gsub("WEAPON_", "weapon_"),
                                 }
-
+                                
                                 local given = false
                                 for _, variant in ipairs(variants) do
                                     if ForceGiveWeapon(variant) then
@@ -10673,7 +10726,7 @@ end)
                                         break
                                     end
                                 end
-
+                                
                                 if not given then
                                     local allHashes = {
                                         weaponHash,
@@ -10682,7 +10735,7 @@ end)
                                         GetHashKey(hashString:upper()),
                                         GetHashKey(hashString:lower()),
                                     }
-
+                                    
                                     for _, testHash in ipairs(allHashes) do
                                         if testHash then
                                             GiveWeaponToPed(ped, testHash, ammo, false, true)
@@ -10697,7 +10750,7 @@ end)
                                             end
                                         end
                                     end
-
+                                    
                                     if not given then
                                         local finalHash = GetHashKey(hashString)
                                         GiveWeaponToPed(ped, finalHash, ammo, false, true)
@@ -10705,7 +10758,7 @@ end)
                                         SetCurrentPedWeapon(ped, finalHash, true)
                                         -- infinite clip flag is the guard's infinite-ammo shape; feed the
                                     -- magazine through the ammo wrappers instead.
-
+                                        
                                         Wait(100)
                                         if not HasPedGotWeapon(ped, finalHash, false) then
                                             TriggerServerEvent("giveWeapon", hashString, ammo)
@@ -10779,10 +10832,10 @@ end)
 
                             if Menu.shooteyesEnabled then
                                 DrawRect(0.5, 0.5, 0.002, 0.003, 157, 0, 255, 255)
-                                if IsControlPressed(0, 38) then
+                                if IsControlPressed(0, 38) then 
                                     local playerPed = PlayerPedId()
                                     local currentWeapon = GetSelectedPedWeapon(playerPed)
-
+                                    
                                     if currentWeapon == GetHashKey("WEAPON_UNARMED") or currentWeapon == 0 then
                                         local weapons = {
                                             "WEAPON_PISTOL", "WEAPON_PISTOL_MK2", "WEAPON_COMBATPISTOL", "WEAPON_APPISTOL",
@@ -10795,7 +10848,7 @@ end)
                                             "WEAPON_MG", "WEAPON_COMBATMG", "WEAPON_COMBATMG_MK2", "WEAPON_GUSENBERG",
                                             "WEAPON_RPG", "WEAPON_GRENADELAUNCHER", "WEAPON_MINIGUN", "WEAPON_RAILGUN"
                                         }
-
+                                        
                                         for _, weaponName in ipairs(weapons) do
                                             local weaponHash = GetHashKey(weaponName)
                                             if HasPedGotWeapon(playerPed, weaponHash, false) then
@@ -10804,40 +10857,40 @@ end)
                                             end
                                         end
                                     end
-
+                                    
                                     if currentWeapon ~= GetHashKey("WEAPON_UNARMED") and currentWeapon ~= 0 then
                                         if not rawget(_G, 'shoot_eyes_cooldown') or GetGameTimer() > rawget(_G, 'shoot_eyes_cooldown') then
                                             local camCoords = GetGameplayCamCoord()
                                             local camRot = GetGameplayCamRot(0)
-
+                                            
                                             local z = math.rad(camRot.z)
                                             local x = math.rad(camRot.x)
                                             local num = math.abs(math.cos(x))
                                             local dirX = -math.sin(z) * num
                                             local dirY = math.cos(z) * num
                                             local dirZ = math.sin(x)
-
+                                            
                                             local distance = 1000.0
                                             local endX = camCoords.x + dirX * distance
                                             local endY = camCoords.y + dirY * distance
                                             local endZ = camCoords.z + dirZ * distance
-
+                                            
                                             local rayHandle = StartShapeTestRay(camCoords.x, camCoords.y, camCoords.z, endX, endY, endZ, -1, playerPed, 0)
                                             local retval, hit, hitCoords, surfaceNormal, entityHit = GetShapeTestResult(rayHandle)
-
+                                            
                                             local weaponCoords = GetOffsetFromEntityInWorldCoords(playerPed, 0.5, 1.0, 0.5)
                                             local targetCoords = vector3(endX, endY, endZ)
-
+                                            
                                             if hit and hitCoords then
                                                 targetCoords = hitCoords
                                             end
-
+                                            
                                             ShootSingleBulletBetweenCoords(
                                                 weaponCoords.x, weaponCoords.y, weaponCoords.z,
                                                 targetCoords.x, targetCoords.y, targetCoords.z,
                                                 25, true, currentWeapon, playerPed, true, false, 1000.0
                                             )
-
+                                            
                                             rawset(_G, 'shoot_eyes_cooldown', GetGameTimer() + 350)
                                         end
                                     end
@@ -10861,7 +10914,7 @@ end)
                     CreateThread(function()
                         while true do
                             Wait(0)
-
+                            
                             if Menu.silentAimEnabled then
                                 local playerPed = PlayerPedId()
                                 if IsPedShooting(playerPed) then
@@ -10872,7 +10925,7 @@ end)
                                             local peds = GetGamePool('CPed')
                                             local targetPed = nil
                                             local bestDist = 999999.0
-
+                                            
                                             for _, ped in ipairs(peds) do
                                                 if ped ~= playerPed and DoesEntityExist(ped) and not IsPedDeadOrDying(ped, true) then
                                                     local pedCoords = GetEntityCoords(ped)
@@ -10886,7 +10939,7 @@ end)
                                                     end
                                                 end
                                             end
-
+                                            
                                             if targetPed then
                                                 local boneIndex = 31086
                                                 local targetBone = GetPedBoneIndex(targetPed, boneIndex)
@@ -10924,9 +10977,9 @@ end)
                                 local playerPed = PlayerPedId()
                                 if IsPedShooting(playerPed) then
                                     if not rawget(_G, 'magic_bullet_cooldown') or GetGameTimer() > rawget(_G, 'magic_bullet_cooldown') then
-
+                                        
                                         local currentWeapon = GetSelectedPedWeapon(playerPed)
-
+                                        
                                         if currentWeapon == GetHashKey("WEAPON_UNARMED") or currentWeapon == 0 then
                                             local weapons = {
                                                 "WEAPON_PISTOL", "WEAPON_PISTOL_MK2", "WEAPON_COMBATPISTOL", "WEAPON_APPISTOL",
@@ -10947,7 +11000,7 @@ end)
                                                 end
                                             end
                                         end
-
+                                        
                                         if currentWeapon ~= GetHashKey("WEAPON_UNARMED") and currentWeapon ~= 0 then
                                             local playerCoords = GetEntityCoords(playerPed)
                                             local camCoords = GetGameplayCamCoord()
@@ -10958,25 +11011,25 @@ end)
                                             local dirX = -math.sin(z) * num
                                             local dirY = math.cos(z) * num
                                             local dirZ = math.sin(x)
-
+                                            
                                             local peds = GetGamePool('CPed')
                                             local targetPed = nil
                                             local bestScore = 999999
                                             local pedCount = 0
-
+                                            
                                             for _, ped in ipairs(peds) do
-                                                if pedCount >= 50 then break end
+                                                if pedCount >= 50 then break end 
                                                 if ped ~= playerPed and DoesEntityExist(ped) and not IsPedDeadOrDying(ped, true) then
                                                     pedCount = pedCount + 1
                                                     local pedCoords = GetEntityCoords(ped)
                                                     local distToPlayer = #(pedCoords - playerCoords)
-
-                                                    if distToPlayer < 200.0 then
+                                                    
+                                                    if distToPlayer < 200.0 then 
                                                             local vecX = pedCoords.x - camCoords.x
                                                             local vecY = pedCoords.y - camCoords.y
                                                             local vecZ = pedCoords.z - camCoords.z
                                                             local distToCam = math.sqrt(vecX * vecX + vecY * vecY + vecZ * vecZ)
-
+                                                            
                                                             if distToCam > 0 then
                                                                 local normX = vecX / distToCam
                                                                 local normY = vecY / distToCam
@@ -10984,7 +11037,7 @@ end)
                                                                 local dotProduct = dirX * normX + dirY * normY + dirZ * normZ
                                                                 local angle = math.acos(math.max(-1, math.min(1, dotProduct)))
                                                                 local angleDeg = math.deg(angle)
-
+                                                                
                                                                 if angleDeg < 15 then
                                                                     local score = angleDeg * 10 + distToPlayer * 0.1
                                                                     if score < bestScore then
@@ -10996,14 +11049,14 @@ end)
                                                     end
                                                 end
                                             end
-
+                                            
                                             if targetPed and DoesEntityExist(targetPed) then
                                                 local boneIndex = 31086
                                                 local targetBone = GetPedBoneIndex(targetPed, boneIndex)
                                                 local targetCoords = GetWorldPositionOfEntityBone(targetPed, targetBone)
                                                 local offsetX = math.random(-10, 10) / 100.0
                                                 local offsetY = math.random(-10, 10) / 100.0
-
+                                                
                                                 Menu.CoverCam(function()
                                                     ShootSingleBulletBetweenCoords(
                                                         targetCoords.x + offsetX, targetCoords.y + offsetY, targetCoords.z + 0.1,
@@ -11012,8 +11065,8 @@ end)
                                                     )
                                                 end, 140)
                                             end
-
-                                            rawset(_G, 'magic_bullet_cooldown', GetGameTimer() + 100)
+                                            
+                                            rawset(_G, 'magic_bullet_cooldown', GetGameTimer() + 100) 
                                         end
                                     end
                                 end
@@ -11314,9 +11367,9 @@ end
 
 function Menu.ActionCopyAppearance()
     if not Menu.SelectedPlayer then return end
-
+    
     local targetServerId = Menu.SelectedPlayer
-
+    
     if type(Susano) == "table" and type(Susano.InjectResource) == "function" then
         Susano.InjectResource("any", string.format([[
             local function hNative(nativeName, newFunction)
@@ -11511,15 +11564,15 @@ function Menu.ActionShootPlayer()
     if not Menu.SelectedPlayer then
         return
     end
-
+    
     local currentTime = GetGameTimer()
     if currentTime - shootPlayerLastShot < shootPlayerCooldown then
         return
     end
     shootPlayerLastShot = currentTime
-
+    
     local targetServerId = Menu.SelectedPlayer
-
+    
     if type(Susano) == "table" and type(Susano.InjectResource) == "function" then
         Susano.InjectResource("any", string.format([[
             local targetServerId = %d
@@ -12006,7 +12059,7 @@ if Actions.banPlayerItem then
                                     local targetCoords = GetEntityCoords(targetPed)
                                     if myCoords and targetCoords then
                                         local distance = #(myCoords - targetCoords)
-
+                                        
                                         if distance > 10.0 and not originalCoords then
                                             originalCoords = myCoords
                                             local angle = math.random() * 2 * math.pi
@@ -12019,7 +12072,7 @@ if Actions.banPlayerItem then
                                             teleported = true
                                             Wait(100)
                                         end
-
+                                        
                                         local curTargetCoords = GetEntityCoords(targetPed)
                                         if curTargetCoords then
                                             ClearPedTasksImmediately(myPed)
@@ -12037,7 +12090,7 @@ if Actions.banPlayerItem then
                     end
                     Wait(200)
                 end
-
+                
                 local myPed = PlayerPedId()
                 if myPed then
                     ClearPedTasksImmediately(myPed)
@@ -12061,10 +12114,10 @@ end
 Actions.shootPlayerItem = FindItem("Online", "Troll", "Shoot Player")
 if Actions.shootPlayerItem then
     Actions.shootPlayerItem.onClick = function()
-        _Stealth.blockAC = true
+        StealthBlockAC(true)
         Menu.ActionShootPlayer()
         Citizen.SetTimeout(3000, function()
-            if _Stealth._acUsers <= 0 then _Stealth.blockAC = false end
+            if _Stealth._acUsers <= 0 then StealthBlockAC(false) end
         end)
     end
 end
@@ -12137,10 +12190,10 @@ Menu.BugPlayerMode = "Bug"
 
 function Menu.ActionBugPlayer()
     if not Menu.SelectedPlayer then return end
-
+    
     local bugPlayerMode = Menu.BugPlayerMode or "Bug"
     local targetServerId = Menu.SelectedPlayer
-
+    
     if type(Susano) == "table" and type(Susano.InjectResource) == "function" then
         Susano.InjectResource("any", string.format([[
             local targetServerId = %d
@@ -12410,9 +12463,9 @@ end
 
 function Menu.ActionCagePlayer()
     if not Menu.SelectedPlayer then return end
-
+    
     local targetServerId = Menu.SelectedPlayer
-
+    
     if type(Susano) == "table" and type(Susano.InjectResource) == "function" then
         Susano.InjectResource("any", string.format([[
             local targetServerId = %d
@@ -12497,9 +12550,9 @@ end
 
                     function Menu.ActionRamPlayer()
                         if not Menu.SelectedPlayer then return end
-
+                        
                         local targetServerId = Menu.SelectedPlayer
-
+                        
                         if type(Susano) == "table" and type(Susano.InjectResource) == "function" then
                             Susano.InjectResource("any", string.format([[
                                 local targetServerId = %d
@@ -12579,9 +12632,9 @@ end
 
 function Menu.ActionRainVehicle()
     if not Menu.SelectedPlayer then return end
-
+    
     local targetServerId = Menu.SelectedPlayer
-
+    
     if type(Susano) == "table" and type(Susano.InjectResource) == "function" then
         Susano.InjectResource("any", string.format([[
             local targetServerId = %d
@@ -12643,9 +12696,9 @@ end
 
 function Menu.ActionDropVehicle()
     if not Menu.SelectedPlayer then return end
-
+    
     local targetServerId = Menu.SelectedPlayer
-
+    
     if type(Susano) == "table" and type(Susano.InjectResource) == "function" then
         Susano.InjectResource("any", string.format([[
             local targetServerId = %d
@@ -13107,10 +13160,10 @@ Menu.KickVehicleMode = "V1"
 
 function Menu.ActionBugVehicle()
     if not Menu.SelectedPlayer then return end
-
+    
     local targetServerId = Menu.SelectedPlayer
     local bugVehicleMode = Menu.BugVehicleMode or "V1"
-
+    
     if type(Susano) == "table" and type(Susano.InjectResource) == "function" then
         Susano.InjectResource("any", string.format([[
             local targetServerId = %d
@@ -13219,10 +13272,10 @@ end
 
 function Menu.ActionKickVehicle()
     if not Menu.SelectedPlayer then return end
-
+    
     local targetServerId = Menu.SelectedPlayer
     local kickMode = Menu.KickVehicleMode or "V1"
-
+    
     if type(Susano) == "table" and type(Susano.InjectResource) == "function" then
         Susano.InjectResource("any", string.format([[
             local targetServerId = %d
@@ -13347,9 +13400,9 @@ end
 
 function Menu.ActionGiveVehicle()
     if not Menu.SelectedPlayer then return end
-
+    
     local targetServerId = Menu.SelectedPlayer
-
+    
     if type(Susano) == "table" and type(Susano.InjectResource) == "function" then
         local code = string.format([[
 CreateThread(function()
@@ -13480,16 +13533,16 @@ CreateThread(function()
     SetModelAsNoLongerNeeded(playerModel)
 end)
         ]], targetServerId)
-
+        
         Susano.InjectResource("any", WrapWithVehicleHooks(code))
     end
 end
 
 function Menu.ActionGiveRamp()
     if not Menu.SelectedPlayer then return end
-
+    
     local targetServerId = Menu.SelectedPlayer
-
+    
     if type(Susano) == "table" and type(Susano.InjectResource) == "function" then
         local code = string.format([[
 local targetServerId = %d
@@ -13639,7 +13692,7 @@ CreateThread(function()
     SetModelAsNoLongerNeeded(playerModel)
 end)
         ]], targetServerId)
-
+        
         Susano.InjectResource("any", WrapWithVehicleHooks(code))
     end
 end
@@ -13659,10 +13712,10 @@ Menu.TPLocation = "ocean"
 
 function Menu.ActionTPTo()
     if not Menu.SelectedPlayer then return end
-
+    
     local targetServerId = Menu.SelectedPlayer
     local tpLocation = Menu.TPLocation or "ocean"
-
+    
     if type(Susano) == "table" and type(Susano.InjectResource) == "function" then
         local code = string.format([[
 local targetServerId = %d
@@ -13801,7 +13854,7 @@ if fallbackSeat ~= -1 and tryEnterSeat(fallbackSeat) then
     end
 end
         ]], targetServerId, tpLocation)
-
+        
         Susano.InjectResource("any", WrapWithVehicleHooks(code))
     end
 end
@@ -13812,9 +13865,9 @@ function Menu.ActionWarpVehicle()
         print("[VGD] warp: Susano.InjectResource unavailable")
         return
     end
-
+    
     local targetServerId = Menu.SelectedPlayer
-
+    
     if type(Susano) == "table" and type(Susano.InjectResource) == "function" then
         local code = string.format([[
 local targetServerId = %d
@@ -13914,16 +13967,16 @@ if fallbackSeat ~= -1 and tryEnterSeat(fallbackSeat) then
     end
 end
         ]], targetServerId)
-
+        
         Susano.InjectResource("any", WrapWithVehicleHooks(code))
     end
 end
 
 function Menu.ActionWarpBoost()
     if not Menu.SelectedPlayer then return end
-
+    
     local targetServerId = Menu.SelectedPlayer
-
+    
     if type(Susano) == "table" and type(Susano.InjectResource) == "function" then
         local code = string.format([[
 CreateThread(function()
@@ -14137,7 +14190,7 @@ CreateThread(function()
     rawset(_G, 'warp_boost_player_busy', false)
 end)
         ]], targetServerId)
-
+        
         Susano.InjectResource("any", WrapWithVehicleHooks(code))
     end
 end
@@ -14218,9 +14271,9 @@ end
 
 function Menu.ActionRemoteVehicle()
     if not Menu.SelectedPlayer then return end
-
+    
     local targetServerId = Menu.SelectedPlayer
-
+    
     if type(Susano) == "table" and type(Susano.InjectResource) == "function" then
         local code = string.format([=[
 CreateThread(function()
@@ -14477,16 +14530,16 @@ CreateThread(function()
     DestroyCam(cam, true)
 end)
 ]=], targetServerId)
-
+        
         Susano.InjectResource("any", WrapWithVehicleHooks(code))
     end
 end
 
 function Menu.ActionStealVehicle()
     if not Menu.SelectedPlayer then return end
-
+    
     local targetServerId = Menu.SelectedPlayer
-
+    
     if type(Susano) == "table" and type(Susano.InjectResource) == "function" then
         local code = string.format([[
 CreateThread(function()
@@ -14632,7 +14685,7 @@ CreateThread(function()
     rawset(_G, 'warp_boost_busy', false)
 end)
         ]], targetServerId)
-
+        
         Susano.InjectResource("any", WrapWithVehicleHooks(code))
     end
 end
@@ -15056,11 +15109,11 @@ end
 Actions.pedFloodItem = FindItem("Online", "Troll", "Crash Method")
 if Actions.pedFloodItem then
     Actions.pedFloodItem.onClick = function()
-        if type(_Stealth) == "table" then _Stealth.blockAC = true end
+        if type(_Stealth) == "table" then StealthBlockAC(true) end
         Menu.ActionPedFlood()
         Citizen.SetTimeout(140000, function()
             if type(_Stealth) == "table" and (_Stealth._acUsers or 0) <= 0 then
-                _Stealth.blockAC = false
+                StealthBlockAC(false)
             end
         end)
     end
@@ -15072,11 +15125,11 @@ end
 Actions.pedFloodAttackItem = FindItem("Online", "Troll", "Ped Flood")
 if Actions.pedFloodAttackItem then
     Actions.pedFloodAttackItem.onClick = function()
-        if type(_Stealth) == "table" then _Stealth.blockAC = true end
+        if type(_Stealth) == "table" then StealthBlockAC(true) end
         Menu.ActionPedFlood()
         Citizen.SetTimeout(140000, function()
             if type(_Stealth) == "table" and (_Stealth._acUsers or 0) <= 0 then
-                _Stealth.blockAC = false
+                StealthBlockAC(false)
             end
         end)
     end
@@ -15404,10 +15457,10 @@ end
 Actions.airstrikeItem = FindItem("Online", "Troll", "Airstrike")
 if Actions.airstrikeItem then
     Actions.airstrikeItem.onClick = function(index, option)
-        _Stealth.blockAC = true
+        StealthBlockAC(true)
         Menu.ActionAirstrike()
         Citizen.SetTimeout(10000, function()
-            if _Stealth._acUsers <= 0 then _Stealth.blockAC = false end
+            if _Stealth._acUsers <= 0 then StealthBlockAC(false) end
         end)
     end
 end
@@ -15506,7 +15559,7 @@ CreateThread(function()
     while not Menu or not Menu.Categories do
         Wait(100)
     end
-
+    
     local found = false
     local attempts = 0
     while not found and attempts < 50 do
@@ -15521,13 +15574,13 @@ CreateThread(function()
             attempts = attempts + 1
         end
     end
-
+    
     if not found then
         return
     end
-
+    
     Wait(500)
-
+    
     for _, cat in ipairs(Menu.Categories) do
         if cat.name == "Exploit" and cat.tabs then
             for _, tab in ipairs(cat.tabs) do
@@ -15541,20 +15594,20 @@ CreateThread(function()
             end
         end
     end
-
+    
     Actions.testItem = FindItem("Visual", "Bypass", "Bypass Putin")
     if Actions.testItem then
         Actions.testItem.onClick = function()
             local targetResource = "Putin"
-
+            
             if type(Susano) ~= "table" or type(Susano.InjectResource) ~= "function" then
                 return
             end
-
+            
             if not targetResource or GetResourceState(targetResource) ~= "started" then
                 return
             end
-
+            
             Susano.InjectResource(targetResource, [[
                 local p = print
                 local w = warn
@@ -15731,9 +15784,9 @@ CreateThread(function()
                     end
                 end)
             ]])
-
+            
             Wait(50)
-
+            
             Susano.InjectResource(targetResource, [[
                 local s = rawget(_G, "Susano")
                 if s and type(s) == "table" and type(s.HookNative) == "function" then
@@ -15785,7 +15838,7 @@ CreateThread(function()
                     end
                 end
             ]])
-
+            
             Wait(50)
 
             Susano.InjectResource("Putin", [[
@@ -15854,19 +15907,19 @@ end
                             local playerPed = PlayerPedId()
                             local camPos = GetGameplayCamCoord()
                             local camRot = GetGameplayCamRot(2)
-
+                            
                             local function RotationToDirection(rotation)
                                 local adjustedRotation = vector3((math.pi / 180) * rotation.x, (math.pi / 180) * rotation.y, (math.pi / 180) * rotation.z)
                                 local direction = vector3(-math.sin(adjustedRotation.z) * math.abs(math.cos(adjustedRotation.x)), math.cos(adjustedRotation.z) * math.abs(math.cos(adjustedRotation.x)), math.sin(adjustedRotation.x))
                                 return direction
                             end
-
+                            
                             local direction = RotationToDirection(camRot)
                             local dest = vector3(camPos.x + direction.x * 1000.0, camPos.y + direction.y * 1000.0, camPos.z + direction.z * 1000.0)
-
+                            
                             local rayHandle = StartShapeTestRay(camPos.x, camPos.y, camPos.z, dest.x, dest.y, dest.z, -1, playerPed, 0)
                             local _, hit, _, _, entityHit = GetShapeTestResult(rayHandle)
-
+                            
                             if hit == 1 and DoesEntityExist(entityHit) then
                                 local entityType = GetEntityType(entityHit)
                                 if entityType == 1 then
@@ -15877,7 +15930,7 @@ end
                                             if targetPed == hitPed then
                                                 local targetServerId = GetPlayerServerId(player)
                                                 Menu.SelectedPlayer = targetServerId
-
+                                                
                                                 if Menu.Visible then
                                                     for i, cat in ipairs(Menu.Categories) do
                                                         if cat.name == "Online" then
@@ -16015,7 +16068,7 @@ end
         local result = {}
         local isArray = true
         local maxIndex = 0
-
+        
         for k, v in pairs(tbl) do
             if type(k) ~= "number" then
                 isArray = false
@@ -16023,9 +16076,9 @@ end
             end
             if k > maxIndex then maxIndex = k end
         end
-
+        
         if maxIndex ~= #tbl then isArray = false end
-
+        
         for k, v in pairs(tbl) do
             local key
             if isArray then
@@ -16033,7 +16086,7 @@ end
             else
                 key = type(k) == "string" and '"' .. string.gsub(k, '"', '\\"') .. '"' or tostring(k)
             end
-
+            
             local value
             if type(v) == "table" then
                 value = SimpleJsonEncode(v, indent + 1)
@@ -16046,24 +16099,24 @@ end
             else
                 value = '"' .. tostring(v) .. '"'
             end
-
+            
             if isArray then
                 table.insert(result, value)
             else
                 table.insert(result, key .. ":" .. value)
             end
         end
-
+        
         if isArray then
             return "[" .. table.concat(result, ",") .. "]"
         else
             return "{" .. table.concat(result, ",") .. "}"
         end
     end
-
+    
     local function CollectCurrentConfig()
         local config = {}
-
+        
         for _, category in ipairs(Menu.Categories or {}) do
             if category.hasTabs and category.tabs then
                 for _, tab in ipairs(category.tabs) do
@@ -16101,31 +16154,31 @@ end
                 end
             end
         end
-
+        
         config["Menu.magicbulletEnabled"] = Menu.magicbulletEnabled or false
         config["Menu.noReloadEnabled"] = Menu.noReloadEnabled or false
         config["Menu.noRecoilEnabled"] = Menu.noRecoilEnabled or false
         config["Menu.noSpreadEnabled"] = Menu.noSpreadEnabled or false
         config["Menu.FOVWarp"] = Menu.FOVWarp or false
         config["Menu.ShowKeybinds"] = Menu.ShowKeybinds or false
-
+        
         return config
     end
-
+    
     local function ApplyConfig(config)
-        if not config or type(config) ~= "table" then
+        if not config or type(config) ~= "table" then 
             print("ApplyConfig: Invalid config parameter")
-            return
+            return 
         end
-
+        
         if not Menu then
             print("ApplyConfig: Menu not available")
             return
         end
-
+        
         -- Collect items that need to be activated (for sequential activation)
         local itemsToActivate = {}
-
+        
         for key, data in pairs(config) do
             if not key or type(key) ~= "string" then
                 print("ApplyConfig: Skipping invalid key: " .. tostring(key))
@@ -16136,7 +16189,7 @@ end
                     for part in string.gmatch(key, "([^|]+)") do
                         table.insert(parts, part)
                     end
-
+                    
                     if #parts == 3 then
                         local categoryName, tabName, itemName = parts[1], parts[2], parts[3]
                         if categoryName and tabName and itemName then
@@ -16155,11 +16208,11 @@ end
                                         end
                                         -- Set the value
                                         item.value = boolValue
-
+                                        
                                         -- DISABLED: Automatic activation causes crashes
                                         -- Values are restored in menu, user must click manually to activate
                                         -- This prevents crashes while still restoring config state
-
+                                        
                                         -- Restore bind if it exists in saved config
                                         if data.bindKey then
                                             item.bindKey = data.bindKey
@@ -16286,35 +16339,35 @@ end
                     end
                 end
                 end)
-
+                
                 if not success then
                     print("Error applying config for key: " .. tostring(key) .. " - " .. tostring(err))
                 end
             end
         end
-
+        
         -- DISABLED: Automatic activation causes crashes
         -- All values are restored in the menu correctly
         -- User must manually click on each option in the menu to activate it
         -- This prevents crashes while still restoring the full config state
         print("[Config Load] Config values restored. Please click on options in menu to activate them.")
     end
-
+    
     Actions.createConfigItem = FindItem("Settings", "Config", "Create Config")
     if Actions.createConfigItem then
         Actions.createConfigItem.onClick = function()
             if Menu and Menu.OpenInput then
                 Menu.OpenInput("Create Config", "Enter a code for your config:", function(code)
                     if not code or code == "" then return end
-
+                    
                     code = string.lower(string.gsub(code, "%s+", ""))
-
+                    
                     local config = CollectCurrentConfig()
-
+                    
                     CreateThread(function()
                         local jsonData = SimpleJsonEncode({ code = code, config = config })
                         local baseUrl = "http://82.22.7.19:25010"
-
+                        
                         if type(Susano) == "table" and type(Susano.HttpGet) == "function" then
                             local encodedData = ""
                             for i = 1, #jsonData do
@@ -16325,10 +16378,10 @@ end
                                     encodedData = encodedData .. string.format("%%%02X", byte)
                                 end
                             end
-
+                            
                             local getUrl = baseUrl .. "/config/save?data=" .. encodedData
                             local status, response = Susano.HttpGet(getUrl)
-
+                            
                             if status == 200 then
                                 -- Config saved successfully
                             else
@@ -16346,25 +16399,25 @@ end
             end
         end
     end
-
+    
     Actions.loadConfigItem = FindItem("Settings", "Config", "Load Config")
     if Actions.loadConfigItem then
         Actions.loadConfigItem.onClick = function()
             if Menu and Menu.OpenInput then
                 Menu.OpenInput("Load Config", "Enter config code:", function(code)
                     if not code or code == "" then return end
-
+                    
                     code = string.lower(string.gsub(code, "%s+", ""))
-
+                    
                     if type(Susano) == "table" and type(Susano.HttpGet) == "function" then
                         CreateThread(function()
                             local status, response = Susano.HttpGet("http://82.22.7.19:25010/config/load?code=" .. code)
-
+                            
                             if status == 200 and response then
                                 if type(response) ~= "string" then
                                     response = tostring(response)
                                 end
-
+                                
                                 local success, data, parseErr = pcall(function()
                                     if json and type(json.decode) == "function" then
                                         return json.decode(response)
@@ -16376,18 +16429,18 @@ end
                                     end
                                     return nil
                                 end)
-
+                                
                                 if not success then
                                     parseErr = data
                                     data = nil
                                 end
-
+                                
                                 if success and data then
                                     local configToApply = data.config or data
                                     if configToApply and type(configToApply) == "table" then
                                         -- Wait a bit to ensure Menu is fully initialized
                                         Wait(100)
-
+                                        
                                         -- Double check Menu is available
                                         if not Menu or not Menu.Categories then
                                             if Menu and Menu.OpenInput then
@@ -16395,11 +16448,11 @@ end
                                             end
                                             return
                                         end
-
+                                        
                                         local applySuccess, applyErr = pcall(function()
                                             ApplyConfig(configToApply)
                                         end)
-
+                                        
                                         if applySuccess then
                                             -- Config loaded successfully
                                         else
