@@ -2493,7 +2493,7 @@ end
 
 
 local COMMON_NATIVES = {
-    "GetActivePlayers", "GetPlayerServerId", "GetPlayerPed", "DoesEntityExist", 
+    "GetActivePlayers", "GetPlayerServerId", "GetPlayerPed", "DoesEntityExist",
     "PlayerPedId", "GetEntityCoords", "SetEntityCoordsNoOffset", "GetEntityHeading",
     "SetEntityHeading", "IsPedInAnyVehicle", "GetVehiclePedIsIn"
 }
@@ -2501,7 +2501,7 @@ local COMMON_NATIVES = {
 
 local VEHICLE_NATIVES = {
     "TaskWarpPedIntoVehicle", "SetVehicleDoorsLocked", "SetVehicleDoorsLockedForAllPlayers",
-    "IsVehicleSeatFree", "ClearPedTasksImmediately", "TaskEnterVehicle", 
+    "IsVehicleSeatFree", "ClearPedTasksImmediately", "TaskEnterVehicle",
     "GetClosestVehicle", "SetPedIntoVehicle", "SetEntityAsMissionEntity",
     "NetworkGetEntityIsNetworked", "NetworkRequestControlOfEntity", "AttachEntityToEntity",
     "DetachEntity", "AttachEntityToEntityPhysically", "GetOffsetFromEntityInWorldCoords",
@@ -2583,7 +2583,7 @@ Menu.Categories = {
                     end
                 end
             end },
-            
+
             { name = "", isSeparator = true, separatorText = "Bugs" },
             { name = "Bug Player", type = "selector", options = {"Bug", "Launch", "Hard Launch", "Attach"}, selected = 1 },
             { name = "Crush", type = "selector", options = {"Rain", "Drop", "Ram"}, selected = 1 },
@@ -2591,14 +2591,14 @@ Menu.Categories = {
             { name = "Crash Method", type = "action" },
             { name = "Airstrike", type = "action" },
             { name = "Assault Driver", type = "action" },
-            
+
             { name = "", isSeparator = true, separatorText = "Props" },
             { name = "Rainbow Tube", type = "action" },
             { name = "Trapped in Tube", type = "action" },
             { name = "Attach Toilet", type = "action" },
             { name = "Clear All Attached", type = "action" },
             { name = "Delete All Tubes", type = "action" },
-            
+
             { name = "", isSeparator = true, separatorText = "Attach Animations" },
             { name = "Twerk", type = "toggle", value = false, targetBound = true },
             { name = "Baise", type = "toggle", value = false, targetBound = true },
@@ -2610,10 +2610,10 @@ Menu.Categories = {
             { name = "Bug Vehicle", type = "selector", options = {"V1", "V2"}, selected = 1 },
             { name = "Warp", type = "selector", options = {"Classic", "Boost"}, selected = 1 },
             { name = "Teleport Into", type = "action" },
-            
+
             { name = "", isSeparator = true, separatorText = "Teleportation" },
             { name = "TP to", type = "selector", options = {"ocean", "mazebank", "sandyshores"}, selected = 1 },
-            
+
             { name = "", isSeparator = true, separatorText = "Actions" },
             { name = "Remote Vehicle", type = "action" },
             { name = "Steal Vehicle", type = "action" },
@@ -2702,16 +2702,16 @@ Menu.Categories = {
             { name = "Change Plate", type = "action" },
             { name = "Clean Vehicle", type = "action" },
             { name = "Delete Vehicle", type = "action" },
-            
+
             { name = "", isSeparator = true, separatorText = "Access" },
             { name = "Unlock All Vehicle", type = "toggle", value = false },
             { name = "Teleport into Closest Vehicle", type = "action" },
-            
+
             { name = "", isSeparator = true, separatorText = "Modifications" },
             { name = "No Collision", type = "toggle", value = false },
             { name = "Bunny Hop", type = "toggle", value = false },
             { name = "Back Flip", type = "toggle", value = false },
-            
+
             { name = "", isSeparator = true, separatorText = "Give" },
             { name = "Give Nearest Vehicle", type = "action" },
             { name = "Give", type = "selector", options = {"Ramp", "Wall", "Wall 2"}, selected = 1 },
@@ -3328,7 +3328,7 @@ local function GetWeaponNameFromHash(weaponHash)
         [GetHashKey("WEAPON_EMPLAUNCHER")] = "Compact EMP Launcher",
         [GetHashKey("WEAPON_RAILGUNXM3")] = "Railgun XM3",
     }
-    
+
     return weaponHashToName[weaponHash] or "Unknown Weapon"
 end
 
@@ -3362,7 +3362,7 @@ local function GetScreenSize()
             return w, h
         end
     end
-    
+
     -- Fallback to GTA Native
     local w, h = GetActiveScreenResolution()
     return w, h
@@ -3381,10 +3381,10 @@ end
 
 local function Draw2DBox(x1, y1, x2, y2, r, g, b, a, screenW, screenH)
     if not Susano.DrawLine then return end
-    
+
     local w = x2 - x1
     local h = y2 - y1
-    
+
     Susano.DrawLine(x1 * screenW, y1 * screenH, x2 * screenW, y1 * screenH, r, g, b, a, 1)
     Susano.DrawLine(x1 * screenW, y2 * screenH, x2 * screenW, y2 * screenH, r, g, b, a, 1)
     Susano.DrawLine(x1 * screenW, y1 * screenH, x1 * screenW, y2 * screenH, r, g, b, a, 1)
@@ -3962,16 +3962,16 @@ local function RenderPedESP(targetPed, playerIdx, settings, screenW, screenH, my
 
     local targetPos = GetEntityCoords(targetPed)
     local dist = #(myPos - targetPos)
-    
+
     -- Optimisation: vÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©rifier la distance avant les calculs coÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â»teux
     if dist > 100.0 then return end
-    
+
     -- Cache pour ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©viter les recalculs frÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©quents
     local cacheKey = tostring(targetPed) .. "_" .. tostring(playerIdx)
     local currentTime = GetGameTimer() or 0
     local cached = ESPCache[cacheKey]
     local onScreen, screenX, screenY
-    
+
     if cached and (currentTime - cached.time) < 16 then
         onScreen = cached.onScreen
         screenX = cached.screenX
@@ -3985,7 +3985,7 @@ local function RenderPedESP(targetPed, playerIdx, settings, screenW, screenH, my
             time = currentTime
         }
     end
-    
+
     if onScreen then
         -- Config Values
         local drawSkeleton = settings["Draw Skeleton"] and settings["Draw Skeleton"].value
@@ -3999,31 +3999,31 @@ local function RenderPedESP(targetPed, playerIdx, settings, screenW, screenH, my
         local drawName = drawNameItem and drawNameItem.value
         local drawNamePosItem = settings["Name Position"]
         local drawNamePos = (drawNamePosItem and drawNamePosItem.selected) or 1
-        
+
         local drawIDItem = settings["Draw ID"]
         local drawID = drawIDItem and drawIDItem.value
         local drawIDPosItem = settings["ID Position"]
         local drawIDPos = (drawIDPosItem and drawIDPosItem.selected) or 1
-        
+
         local drawDistItem = settings["Draw Distance"]
         local drawDist = drawDistItem and drawDistItem.value
         local drawDistPosItem = settings["Distance Position"]
         local drawDistPos = (drawDistPosItem and drawDistPosItem.selected) or 1
-        
+
         local drawWeaponItem = settings["Draw Weapon"]
         local drawWeapon = drawWeaponItem and drawWeaponItem.value
         local drawWeaponPosItem = settings["Weapon Position"]
         local drawWeaponPos = (drawWeaponPosItem and drawWeaponPosItem.selected) or 1
-        
+
         local skelColor = ESPColors[1]
         if settings["Skeleton Color"] then skelColor = ESPColors[settings["Skeleton Color"].selected] or skelColor end
-        
+
         local boxColor = ESPColors[1]
         if settings["Box Color"] then boxColor = ESPColors[settings["Box Color"].selected] or boxColor end
-        
+
         local lineColor = ESPColors[1]
         if settings["Line Color"] then lineColor = ESPColors[settings["Line Color"].selected] or lineColor end
-        
+
         local textColor = ESPColors[1]
         if settings["Text Color"] then textColor = ESPColors[settings["Text Color"].selected] or textColor end
 
@@ -4033,25 +4033,25 @@ local function RenderPedESP(targetPed, playerIdx, settings, screenW, screenH, my
             for _, connection in ipairs(SkeletonConnections) do
                 local bone1 = connection[1]
                 local bone2 = connection[2]
-                
+
                 -- Cache des positions des os pour ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©viter les appels rÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©pÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©tÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©s
                 local pos1 = boneCache[bone1]
                 if not pos1 then
                     pos1 = GetPedBoneCoords(targetPed, bone1, 0.0, 0.0, 0.0)
                     boneCache[bone1] = pos1
                 end
-                
+
                 local pos2 = boneCache[bone2]
                 if not pos2 then
                     pos2 = GetPedBoneCoords(targetPed, bone2, 0.0, 0.0, 0.0)
                     boneCache[bone2] = pos2
                 end
-                
+
                 local os1, x1, y1 = GetScreenCoordFromWorldCoord(pos1.x, pos1.y, pos1.z)
                 local os2, x2, y2 = GetScreenCoordFromWorldCoord(pos2.x, pos2.y, pos2.z)
 
                 -- Optimisation: vÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©rifier que les coordonnÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©es sont valides et dans l'ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©cran
-                if os1 and os2 and x1 and y1 and x2 and y2 and 
+                if os1 and os2 and x1 and y1 and x2 and y2 and
                    x1 >= 0 and x1 <= 1 and y1 >= 0 and y1 <= 1 and
                    x2 >= 0 and x2 <= 1 and y2 >= 0 and y2 <= 1 and
                    Susano.DrawLine then
@@ -4062,19 +4062,19 @@ local function RenderPedESP(targetPed, playerIdx, settings, screenW, screenH, my
                 end
             end
         end
-        
+
         -- Calculate 2D Box & Info Positions (optimisÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â© avec cache)
         local headPos = GetPedBoneCoords(targetPed, 31086, 0.0, 0.0, 0.0)
         local footPos = GetEntityCoords(targetPed)
         footPos = vector3(footPos.x, footPos.y, footPos.z - 1.0) -- Adjust for bottom
-        
+
         -- Cache pour head et foot
         local headCacheKey = cacheKey .. "_head"
         local footCacheKey = cacheKey .. "_foot"
         local cachedHead = ESPCache[headCacheKey]
         local cachedFoot = ESPCache[footCacheKey]
         local headX, headY, footX, footY
-        
+
         if cachedHead and (currentTime - cachedHead.time) < 16 then
             headX = cachedHead.x
             headY = cachedHead.y
@@ -4083,7 +4083,7 @@ local function RenderPedESP(targetPed, playerIdx, settings, screenW, screenH, my
             headX, headY = hX, hY
             ESPCache[headCacheKey] = {x = headX, y = headY, time = currentTime}
         end
-        
+
         if cachedFoot and (currentTime - cachedFoot.time) < 16 then
             footX = cachedFoot.x
             footY = cachedFoot.y
@@ -4092,20 +4092,20 @@ local function RenderPedESP(targetPed, playerIdx, settings, screenW, screenH, my
             footX, footY = fX, fY
             ESPCache[footCacheKey] = {x = footX, y = footY, time = currentTime}
         end
-        
+
         -- VÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©rifier que les coordonnÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©es sont valides avant de calculer la box
         if not headX or not headY or not footX or not footY then return end
-        
+
         local height = math.abs(headY - footY)
         if height < 0.01 then return end -- ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â°viter les boxes trop petites
-        
+
         local width = height * 0.35 -- Thinner box (was 0.5)
-        
+
         local boxX1 = headX - width * 0.5
         local boxX2 = headX + width * 0.5
         local boxY1 = headY
         local boxY2 = footY
-        
+
         -- Fix Y order if inverted
         if boxY1 > boxY2 then boxY1, boxY2 = boxY2, boxY1 end
 
@@ -4116,22 +4116,22 @@ local function RenderPedESP(targetPed, playerIdx, settings, screenW, screenH, my
             -- Draw main box
             Draw2DBox(boxX1, boxY1, boxX2, boxY2, boxColor[1], boxColor[2], boxColor[3], 1.0, screenW, screenH)
         end
-        
+
         -- Snapline (optimisÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â© - vÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©rifier que footX et footY sont valides)
         if drawLine and Susano.DrawLine and footX and footY then
              Susano.DrawLine(screenW / 2, screenH, footX * screenW, footY * screenH, lineColor[1], lineColor[2], lineColor[3], 1.0, 1)
         end
-        
+
         -- Info Text Buckets
         -- 2=Top, 3=Bottom, 4=Left, 5=Right
         local textBuckets = { [2] = "", [3] = "", [4] = "", [5] = "" }
-        
+
         local function AddToBucket(sel, text)
             if sel > 1 and textBuckets[sel] then
                 textBuckets[sel] = textBuckets[sel] .. text .. "\n"
             end
         end
-        
+
         if drawName then AddToBucket(drawNamePos + 1, GetPlayerName(playerIdx)) end
         if drawID then AddToBucket(drawIDPos + 1, "ID: " .. GetPlayerServerId(playerIdx)) end
         if drawDist then AddToBucket(drawDistPos + 1, math.floor(dist) .. "m") end
@@ -4141,7 +4141,7 @@ local function RenderPedESP(targetPed, playerIdx, settings, screenW, screenH, my
              -- GetWeaponNameFromHash retourne dÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©jÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â  "Unarmed" pour WEAPON_UNARMED
              AddToBucket(drawWeaponPos + 1, weaponName)
         end
-        
+
         if Susano.DrawText then
             local function DrawTextWithOutline(x, y, text, size, r, g, b, a)
                 -- Draw black outline (8 directions)
@@ -4156,28 +4156,28 @@ local function RenderPedESP(targetPed, playerIdx, settings, screenW, screenH, my
                 -- Draw main text
                 Susano.DrawText(x, y, text, size, r, g, b, a)
             end
-            
+
             -- Top (Centered above box)
             if textBuckets[2] ~= "" and boxX1 and boxX2 and boxY1 then
                 local textX = (boxX1 + boxX2)/2 * screenW
                 local textY = boxY1 * screenH - 15
                 DrawTextWithOutline(textX, textY, textBuckets[2], 14, textColor[1], textColor[2], textColor[3], 1.0)
             end
-            
+
             -- Bottom (Centered below box)
             if textBuckets[3] ~= "" and boxX1 and boxX2 and boxY2 then
                 local textX = (boxX1 + boxX2)/2 * screenW
                 local textY = boxY2 * screenH + 5
                 DrawTextWithOutline(textX, textY, textBuckets[3], 14, textColor[1], textColor[2], textColor[3], 1.0)
             end
-            
+
             -- Left (Right of boxX1? No, Left of boxX1)
             if textBuckets[4] ~= "" and boxX1 and boxY1 then
                 local textX = boxX1 * screenW - 50
                 local textY = boxY1 * screenH
                 DrawTextWithOutline(textX, textY, textBuckets[4], 14, textColor[1], textColor[2], textColor[3], 1.0)
             end
-            
+
             -- Right (Right of boxX2)
             if textBuckets[5] ~= "" and boxX2 and boxY1 then
                 local textX = boxX2 * screenW + 5
@@ -4185,50 +4185,50 @@ local function RenderPedESP(targetPed, playerIdx, settings, screenW, screenH, my
                 DrawTextWithOutline(textX, textY, textBuckets[5], 14, textColor[1], textColor[2], textColor[3], 1.0)
             end
         end
-        
+
         -- Health & Armor Bars (optimisÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â© - vÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©rifier que la box est valide)
         if (drawHealth or drawArmor) and boxX1 and boxY1 and boxY2 then
             local barW = 2 -- Thinner bar
-            
+
             if drawHealth then
                 local health = GetEntityHealth(targetPed)
                 local maxHealth = GetEntityMaxHealth(targetPed)
                 local healthPct = (health - 100) / (maxHealth - 100)
                 if healthPct < 0 then healthPct = 0 end
                 if healthPct > 1 then healthPct = 1 end
-                
+
                 local barH = (boxY2 - boxY1) * screenH
                 if barH > 0 then
                     local barX = (boxX1 * screenW) - (barW + 2)
                     local barY = boxY1 * screenH
-                    
+
                     -- Outline (Black, larger)
                     DrawFilledRect(barX - 1, barY - 1, barW + 2, barH + 2, 0.0, 0.0, 0.0, 1.0)
-                    
+
                     -- Fill (Green)
                     local fillH = barH * healthPct
                     DrawFilledRect(barX, barY + (barH - fillH), barW, fillH, 0.0, 1.0, 0.0, 1.0)
                 end
             end
-            
+
             if drawArmor then
                 local armor = GetPedArmour(targetPed)
                 local armorPct = armor / 100.0
                 if armorPct > 1 then armorPct = 1 end
-                
+
                 if armorPct > 0 then
                     local barH = (boxY2 - boxY1) * screenH
                     if barH > 0 then
                         -- Position: Left of health bar (if health is on) or Left of box
                         local offset = (barW + 2)
                         if drawHealth then offset = offset + (barW + 2) end
-                        
+
                         local barX = (boxX1 * screenW) - offset
                         local barY = boxY1 * screenH
-                        
+
                         -- Outline
                         DrawFilledRect(barX - 1, barY - 1, barW + 2, barH + 2, 0.0, 0.0, 0.0, 1.0)
-                        
+
                         -- Fill (Blue)
                         local fillH = barH * armorPct
                         DrawFilledRect(barX, barY + (barH - fillH), barW, fillH, 0.0, 0.0, 1.0, 1.0)
@@ -4264,10 +4264,10 @@ local function RenderWorldVisuals(settings)
     if Actions.fpsBoostItem and Actions.fpsBoostItem.value then
         if OverrideLodscaleThisFrame then OverrideLodscaleThisFrame(0.35) end
         if SetDisableDecalRenderingThisFrame then SetDisableDecalRenderingThisFrame() end
-        
+
         if Menu.RopeDrawShadowEnabled then Menu.RopeDrawShadowEnabled(false) end
         if CascadeShadowsClearShadow then CascadeShadowsClearShadow() end
-        
+
         if SetReducePedModelBudget then SetReducePedModelBudget(true) end
         if SetReduceVehicleModelBudget then SetReduceVehicleModelBudget(true) end
         if DisableVehicleDistantlights then DisableVehicleDistantlights(true) end
@@ -4290,7 +4290,7 @@ local function RenderWorldVisuals(settings)
             NetworkOverrideClockTime(math.floor(Actions.timeItem.value), 0, 0)
         end
     end
-    
+
     Actions.weatherItem = settings["Weather"]
     if Actions.weatherItem and Actions.weatherItem.options then
         local selectedWeather = Actions.weatherItem.options[Actions.weatherItem.selected]
@@ -4298,7 +4298,7 @@ local function RenderWorldVisuals(settings)
              SetWeatherTypeNowPersist(selectedWeather)
         end
     end
-    
+
     Actions.blackoutItem = settings["Blackout"]
     if Actions.blackoutItem then
         SetBlackout(Actions.blackoutItem.value)
@@ -4309,7 +4309,7 @@ local function FindItem(categoryName, tabName, itemName)
     if not Menu or not Menu.Categories or type(Menu.Categories) ~= "table" then
         return nil
     end
-    
+
     local success, result = pcall(function()
         for _, cat in ipairs(Menu.Categories) do
             if cat and type(cat) == "table" and cat.name == categoryName then
@@ -4317,16 +4317,16 @@ local function FindItem(categoryName, tabName, itemName)
                     for _, tab in ipairs(cat.tabs) do
                         if tab and type(tab) == "table" and tab.name == tabName and tab.items and type(tab.items) == "table" then
                             for _, item in ipairs(tab.items) do
-                                if item and type(item) == "table" and item.name == itemName then 
-                                    return item 
+                                if item and type(item) == "table" and item.name == itemName then
+                                    return item
                                 end
                             end
                         end
                     end
                 elseif cat.items and type(cat.items) == "table" and (tabName == nil or tabName == "") then
                     for _, item in ipairs(cat.items) do
-                        if item and type(item) == "table" and item.name == itemName then 
-                            return item 
+                        if item and type(item) == "table" and item.name == itemName then
+                            return item
                         end
                     end
                 end
@@ -4334,7 +4334,7 @@ local function FindItem(categoryName, tabName, itemName)
         end
         return nil
     end)
-    
+
     if success then
         return result
     else
@@ -4356,11 +4356,11 @@ local function ToggleSpectate(enable)
             Menu.PlayerListSpectateEnabled = false
             return
         end
-        
+
         spectateActive = true
         local targetServerId = Menu.SelectedPlayer
         Menu.SpectateTargetServerId = targetServerId
-        
+
         if type(Susano) == "table" and type(Susano.InjectResource) == "function" then
             Susano.InjectResource("any", string.format([[
                 local targetServerId = %d
@@ -4407,7 +4407,7 @@ local function ToggleSpectate(enable)
     else
         spectateActive = false
         Menu.PlayerListSpectateEnabled = false
-        
+
         if type(Susano) == "table" and type(Susano.InjectResource) == "function" then
             local targetServerId = Menu.SpectateTargetServerId or Menu.SelectedPlayer
             Menu.SpectateTargetServerId = nil
@@ -4445,9 +4445,9 @@ local function UpdatePlayerList()
                             Menu.PlayerListSpectateEnabled = item.value or false
                         end
                     end
-                    
+
                     tab.items = {}
-                    
+
                     Actions.spectateItem = {
                         name = "Spectate Player",
                         type = "toggle",
@@ -4459,7 +4459,7 @@ local function UpdatePlayerList()
                         ToggleSpectate(value)
                     end
                     table.insert(tab.items, Actions.spectateItem)
-                    
+
                     Actions.teleportItem = {
                         name = "Teleport",
                         type = "selector",
@@ -4468,7 +4468,7 @@ local function UpdatePlayerList()
                     }
                     Actions.teleportItem.onClick = function(index, option)
                         if not Menu.SelectedPlayer then return end
-                        
+
                         if index == 1 then
                             for _, player in ipairs(GetActivePlayers()) do
                                 if GetPlayerServerId(player) == Menu.SelectedPlayer then
@@ -4496,15 +4496,15 @@ local function UpdatePlayerList()
                         end
                     end
                     table.insert(tab.items, Actions.teleportItem)
-                    
+
                     local localPed = PlayerPedId()
                     if not localPed or localPed == 0 then return end
-                    
+
                     local localCoords = GetEntityCoords(localPed)
                     local myPlayerId = PlayerId()
                     local myServerId = GetPlayerServerId(myPlayerId)
                     local myName = GetPlayerName(myPlayerId)
-                    
+
                     local otherPlayers = {}
                     for _, player in ipairs(GetActivePlayers()) do
                         if player ~= myPlayerId then
@@ -4512,7 +4512,7 @@ local function UpdatePlayerList()
                             if targetPed and DoesEntityExist(targetPed) then
                                 local targetCoords = GetEntityCoords(targetPed)
                                 local distance = #(localCoords - targetCoords)
-                                
+
                                 local playerId = GetPlayerServerId(player)
                                 local playerName = GetPlayerName(player)
                                 table.insert(otherPlayers, {
@@ -4526,15 +4526,18 @@ local function UpdatePlayerList()
                             end
                         end
                     end
-                    
+
                     table.sort(otherPlayers, function(a, b) return a.distance < b.distance end)
 
                     -- Online row label: "ID - Name" plus the replicated radio
                     -- channel, truncated to the width left by the car badge and
                     -- the toggle. The identity reader is passive and cached; the
                     -- row builder only reads its result.
-                    local listPos = type(Menu.GetScaledPosition) == "function"
-                        and Menu.GetScaledPosition() or nil
+                    local listPos = nil
+                    if type(Menu.GetScaledPosition) == "function" then
+                        local ok, pos = pcall(Menu.GetScaledPosition)
+                        if ok and type(pos) == "table" then listPos = pos end
+                    end
                     local listWidth = (listPos and tonumber(listPos.width))
                         or (360 * (Menu.Scale or 1.0))
                     local function playerRowLabel(playerId, playerName, identity, inVehicle)
@@ -4546,7 +4549,8 @@ local function UpdatePlayerList()
                         local maxWidth = listWidth - 16 - reserved
                         if maxWidth < 40 then maxWidth = 40 end
                         if type(Menu.FitRowLabel) == "function" then
-                            return Menu.FitRowLabel(label, maxWidth)
+                            local ok, fitted = pcall(Menu.FitRowLabel, label, maxWidth)
+                            if ok and type(fitted) == "string" then return fitted end
                         end
                         return label
                     end
@@ -4571,13 +4575,13 @@ local function UpdatePlayerList()
                         end
                     end
                     table.insert(tab.items, Actions.selectModeItem)
-                    
+
                     table.insert(tab.items, {
                         name = "",
                         isSeparator = true,
                         separatorText = "Player List"
                     })
-                    
+
                     local function isPlayerSelected(playerId)
                         for _, selectedId in ipairs(Menu.SelectedPlayers) do
                             if selectedId == playerId then
@@ -4586,7 +4590,7 @@ local function UpdatePlayerList()
                         end
                         return false
                     end
-                    
+
                     local function togglePlayerSelection(playerId)
                         local found = false
                         for i, selectedId in ipairs(Menu.SelectedPlayers) do
@@ -4605,12 +4609,15 @@ local function UpdatePlayerList()
                             end
                         end
                     end
-                    
+
                     local selfPed = GetPlayerPed(myPlayerId)
                     local selfInVehicle = selfPed and selfPed ~= 0
                         and GetVehiclePedIsIn(selfPed, false) ~= 0
-                    local selfIdentity = (type(Menu.ResolvePlayerIdentity) == "function")
-                        and Menu.ResolvePlayerIdentity(myPlayerId, selfPed) or nil
+                    local selfIdentity = nil
+                    if type(Menu.ResolvePlayerIdentity) == "function" then
+                        local ok, identity = pcall(Menu.ResolvePlayerIdentity, myPlayerId, selfPed)
+                        if ok and type(identity) == "table" then selfIdentity = identity end
+                    end
                     local selfToggle = {
                         name = playerRowLabel(myServerId, myName, selfIdentity, selfInVehicle),
                         type = "toggle",
@@ -4623,10 +4630,13 @@ local function UpdatePlayerList()
                         togglePlayerSelection(selfToggle.playerId)
                     end
                     table.insert(tab.items, selfToggle)
-                    
+
                     for _, playerData in ipairs(otherPlayers) do
-                        local identity = (type(Menu.ResolvePlayerIdentity) == "function")
-                            and Menu.ResolvePlayerIdentity(playerData.localId, playerData.ped) or nil
+                        local identity = nil
+                        if type(Menu.ResolvePlayerIdentity) == "function" then
+                            local ok, value = pcall(Menu.ResolvePlayerIdentity, playerData.localId, playerData.ped)
+                            if ok and type(value) == "table" then identity = value end
+                        end
                         local playerToggle = {
                             name = playerRowLabel(playerData.id, playerData.name, identity, playerData.inVehicle),
                             type = "toggle",
@@ -4651,7 +4661,10 @@ Citizen.CreateThread(function()
     Wait(500)
     while true do
         UpdatePlayerList()
-        Wait(0)
+        -- The list is a 4 Hz surface. Rebuilding it every frame keeps the
+        -- entity reads and the identity cache hot for no visible benefit and
+        -- is the one loop that runs while the menu is closed.
+        Wait(250)
     end
 end)
 
@@ -4841,235 +4854,6 @@ end
 
 -- Utility: draw a rounded-rect panel matching menu style
 -- Outer border: 0.180 grey | Inner bg: 0.052 anthracite | Alpha: 0.99 | Radius: 6
-local function DrawPanelBackground(px, py, pw, ph, radius)
-    radius = radius or 6
-    if Susano and Susano.DrawRectFilled then
-        -- Outer border (same as menu header border)
-        Susano.DrawRectFilled(px, py, pw, ph, 0.180, 0.180, 0.190, 0.99, radius)
-        -- Inner fill (same as menu body)
-        Susano.DrawRectFilled(px + 1, py + 1, pw - 2, ph - 2, 0.052, 0.052, 0.056, 0.99, radius)
-    else
-        Menu.DrawRoundedRect(px, py, pw, ph, 55, 55, 55, 250, radius)
-        Menu.DrawRoundedRect(px + 1, py + 1, pw - 2, ph - 2, 15, 15, 15, 250, radius)
-    end
-end
-
--- Utility: draw a health/armor style bar with rounded ends
-local function DrawInfoBar(bx, by, bw, bh, pct, fillR, fillG, fillB, label, radius)
-    radius = radius or 3
-    pct = math.max(0, math.min(1, pct))
-    -- Bar track
-    if Susano and Susano.DrawRectFilled then
-        Susano.DrawRectFilled(bx, by, bw, bh, 0.16, 0.16, 0.16, 0.9, radius)
-    else
-        Menu.DrawRect(bx, by, bw, bh, 40, 40, 40, 230)
-    end
-    -- Bar fill
-    if pct > 0 then
-        local fillW = math.max(radius * 2, math.floor(bw * pct))
-        if Susano and Susano.DrawRectFilled then
-            Susano.DrawRectFilled(bx, by, fillW, bh, fillR / 255, fillG / 255, fillB / 255, 0.95, radius)
-        else
-            Menu.DrawRect(bx, by, fillW, bh, fillR, fillG, fillB, 242)
-        end
-    end
-    -- Bar text
-    if label then
-        Menu.DrawText(bx + 5, by + 1, label, 11, 1.0, 1.0, 1.0, 0.95)
-    end
-end
-
--- Draw section separator line
-local function DrawSectionSep(sx, sy, sw, text, scale, accent)
-    -- Dim line
-    if Susano and Susano.DrawRectFilled then
-        Susano.DrawRectFilled(sx, sy + 8 * scale, sw, 1, 0.25, 0.25, 0.25, 0.5, 0)
-    else
-        Menu.DrawRect(sx, sy + 8 * scale, sw, 1, 64, 64, 64, 128)
-    end
-    if text then
-        Menu.DrawText(sx, sy, text, 11, accent.r / 255, accent.g / 255, accent.b / 255, 0.8)
-    end
-    return sy + 18 * scale
-end
-
-function Menu.DrawPlayerInfoPanel()
-    local info = Menu.GetSelectedPlayerInfo()
-    if not info then return end
-
-    local scale = Menu.Scale or 1.0
-    local sp = Menu.GetScaledPosition()
-    local accent = Menu.Colors.SelectedBg or { r = 104, g = 168, b = 203 }
-
-    -- Compute exact menu total height (banner to footer bottom)
-    local menuTotalH
-    if Menu.OpenedCategory then
-        local category = Menu.Categories[Menu.OpenedCategory]
-        if category and category.hasTabs and category.tabs then
-            local currentTab = category.tabs[Menu.CurrentTab]
-            local visibleItems = 0
-            if currentTab and currentTab.items then
-                visibleItems = math.min(Menu.ItemsPerPage, #currentTab.items)
-            end
-            menuTotalH = sp.headerHeight + (sp.headerSpacing or 0) + sp.mainMenuHeight + sp.mainMenuSpacing + (visibleItems * sp.itemHeight) + sp.footerSpacing + sp.footerHeight
-        else
-            menuTotalH = sp.headerHeight + (sp.headerSpacing or 0) + sp.mainMenuHeight + sp.mainMenuSpacing + sp.footerSpacing + sp.footerHeight
-        end
-    else
-        local totalCats = #Menu.Categories - 1
-        local visCats = math.min(Menu.ItemsPerPage, totalCats)
-        menuTotalH = sp.headerHeight + (sp.headerSpacing or 0) + (visCats * sp.itemHeight) + sp.footerSpacing + sp.footerHeight
-    end
-
-    -- Panel position: right of menu, same Y, same height
-    local gap = 12 * scale
-    local panelX = sp.x + sp.width + gap
-    local panelW = 310 * scale
-    local panelY = sp.y
-    local panelH = menuTotalH
-
-    local pad = 14 * scale
-    local rowH = 22 * scale
-    local barH = 14 * scale
-    local fontSize = 13
-    local headerFontSize = 16
-
-    local cx = panelX + pad
-    local contentW = panelW - pad * 2
-    local labelW = 95 * scale
-    local valX = cx + labelW
-
-    -- === BACKGROUND (matches menu: outer border + inner fill, rounded) ===
-    DrawPanelBackground(panelX, panelY, panelW, panelH, 6)
-
-    -- Start content below top padding
-    local cy = panelY + pad
-
-    -- =====================
-    --  HEADER: Nom + ID
-    -- =====================
-    Menu.DrawText(cx, cy, info.name, headerFontSize, accent.r / 255, accent.g / 255, accent.b / 255, 1.0)
-
-    local idText = "ID: " .. tostring(info.serverId)
-    if Susano and Susano.GetTextWidth then
-        local tw = Susano.GetTextWidth(idText, fontSize * scale)
-        Menu.DrawText(panelX + panelW - pad - tw, cy + 2 * scale, idText, fontSize, 0.45, 0.45, 0.45, 1.0)
-    else
-        Menu.DrawText(panelX + panelW - pad - 55 * scale, cy + 2 * scale, idText, fontSize, 0.45, 0.45, 0.45, 1.0)
-    end
-    cy = cy + 26 * scale
-
-    -- Helper: draw a label:value row
-    local function Row(label, value, vR, vG, vB)
-        vR = vR or 1.0; vG = vG or 1.0; vB = vB or 1.0
-        Menu.DrawText(cx, cy, label, fontSize, 0.50, 0.50, 0.50, 1.0)
-        Menu.DrawText(valX, cy, tostring(value), fontSize, vR, vG, vB, 1.0)
-        cy = cy + rowH
-    end
-
-    -- =====================
-    --  SANTE & ARMURE
-    -- =====================
-    cy = DrawSectionSep(cx, cy, contentW, "", scale, accent)
-
-    -- Sante
-    Menu.DrawText(cx, cy, "Sante", fontSize, 0.55, 0.55, 0.55, 1.0)
-    local healthPct = 0
-    if info.maxHealth > 0 then
-        healthPct = math.max(0, math.min(1, info.health / info.maxHealth))
-    end
-    local healthPctText = tostring(math.floor(healthPct * 100)) .. "%"
-    if Susano and Susano.GetTextWidth then
-        local tw = Susano.GetTextWidth(healthPctText, fontSize * scale)
-        Menu.DrawText(panelX + panelW - pad - tw, cy, healthPctText, fontSize, 0.7, 0.7, 0.7, 1.0)
-    else
-        Menu.DrawText(panelX + panelW - pad - 30 * scale, cy, healthPctText, fontSize, 0.7, 0.7, 0.7, 1.0)
-    end
-    cy = cy + rowH * 0.65
-
-    local hR, hG, hB = 76, 175, 80
-    if healthPct < 0.25 then hR, hG, hB = 211, 64, 60
-    elseif healthPct < 0.55 then hR, hG, hB = 230, 160, 40 end
-    DrawInfoBar(cx, cy, contentW, barH, healthPct, hR, hG, hB, tostring(info.health) .. " / " .. tostring(info.maxHealth))
-    cy = cy + barH + 5 * scale
-
-    -- Armure
-    Menu.DrawText(cx, cy, "Armure", fontSize, 0.55, 0.55, 0.55, 1.0)
-    local armorPct = math.max(0, math.min(1, info.armor / 100))
-    local armorPctText = tostring(info.armor) .. "%"
-    if Susano and Susano.GetTextWidth then
-        local tw = Susano.GetTextWidth(armorPctText, fontSize * scale)
-        Menu.DrawText(panelX + panelW - pad - tw, cy, armorPctText, fontSize, 0.7, 0.7, 0.7, 1.0)
-    else
-        Menu.DrawText(panelX + panelW - pad - 30 * scale, cy, armorPctText, fontSize, 0.7, 0.7, 0.7, 1.0)
-    end
-    cy = cy + rowH * 0.65
-
-    DrawInfoBar(cx, cy, contentW, barH, armorPct, 60, 130, 220, tostring(info.armor) .. " / 100")
-    cy = cy + barH + 5 * scale
-
-    -- =====================
-    --  JOUEUR
-    -- =====================
-    cy = DrawSectionSep(cx, cy, contentW, "", scale, accent)
-
-    Row("Arme", info.weapon)
-    Row("Distance", tostring(info.distance) .. " m")
-    Row("Direction", tostring(info.heading) .. "  ")
-    local coordsStr = string.format("%.1f, %.1f, %.1f", info.coords.x, info.coords.y, info.coords.z)
-    Row("Coords", coordsStr, 0.7, 0.7, 0.7)
-
-    -- =====================
-    --  VEHICULE (conditionnel)
-    -- =====================
-    if info.inVehicle then
-        cy = DrawSectionSep(cx, cy, contentW, "", scale, accent)
-        Row("Modele", info.vehicle)
-        if info.vehPlate ~= "" then
-            Row("Plaque", info.vehPlate)
-        end
-        Row("Vitesse", tostring(info.speed) .. " km/h")
-
-        Menu.DrawText(cx, cy, "Vie Vehicule", fontSize, 0.55, 0.55, 0.55, 1.0)
-        cy = cy + rowH * 0.65
-        local vhPct = 0
-        if info.vehMaxHealth > 0 then
-            vhPct = math.max(0, math.min(1, info.vehHealth / info.vehMaxHealth))
-        end
-        local vhR, vhG, vhB = 76, 175, 80
-        if vhPct < 0.25 then vhR, vhG, vhB = 211, 64, 60
-        elseif vhPct < 0.55 then vhR, vhG, vhB = 230, 160, 40 end
-        DrawInfoBar(cx, cy, contentW, barH, vhPct, vhR, vhG, vhB, tostring(info.vehHealth) .. " / " .. tostring(info.vehMaxHealth))
-        cy = cy + barH + 5 * scale
-    end
-
-    -- =====================
-    --  ETAT (only if active flags)
-    -- =====================
-    local states = {}
-    if info.isAiming then states[#states + 1] = "Vise" end
-    if info.isInCover then states[#states + 1] = "Couvert" end
-    if info.isSprinting then states[#states + 1] = "Sprint" end
-    if info.isSwimming then states[#states + 1] = "Nage" end
-    if info.isFalling then states[#states + 1] = "Chute" end
-    if info.isRagdoll then states[#states + 1] = "Ragdoll" end
-    if info.isInvisible then states[#states + 1] = "Invisible" end
-
-    if #states > 0 then
-        cy = DrawSectionSep(cx, cy, contentW, "", scale, accent)
-        Row("Action", table.concat(states, ", "))
-    end
-
-    -- Statut
-    cy = DrawSectionSep(cx, cy, contentW, "", scale, accent)
-    if not info.isAlive then
-        Row("Statut", "Mort", 0.9, 0.2, 0.2)
-    elseif info.isGodmode then
-        Row("Statut", "En Vie  [GODMODE]", 1.0, 0.85, 0.0)
-    else
-        Row("Statut", "En Vie", 0.3, 0.9, 0.35)
-    end
-end
 
 
 
@@ -5805,10 +5589,10 @@ local function ToggleRainbowPaint(enable)
 end
 
 local function ToggleAntiHeadshot(enable)
-    if type(Susano) ~= "table" or type(Susano.InjectResource) ~= "function" then 
-        return 
+    if type(Susano) ~= "table" or type(Susano.InjectResource) ~= "function" then
+        return
     end
-    
+
     local code = string.format([[
         local susano = rawget(_G, "Susano")
         
@@ -5843,7 +5627,7 @@ local function ToggleAntiHeadshot(enable)
             end)
         end
     ]], tostring(enable))
-    
+
     Susano.InjectResource("any", code)
 end
 
@@ -5870,15 +5654,15 @@ local function ToggleNoclipStaff(enable)
 end
 
 local function ToggleNoclip(enable, speed)
-    if type(Susano) ~= "table" or type(Susano.InjectResource) ~= "function" then 
-        return 
+    if type(Susano) ~= "table" or type(Susano.InjectResource) ~= "function" then
+        return
     end
-    
+
     speed = speed or 1.0
-    
+
     noclipVersion = noclipVersion + 1
     local currentVersion = noclipVersion
-    
+
     local code = string.format([[
         local susano = rawget(_G, "Susano")
         
@@ -6009,7 +5793,7 @@ local function ToggleNoclip(enable, speed)
             end)
         end
     ]], tostring(enable), tostring(speed), tostring(currentVersion), tostring(currentVersion), tostring(speed))
-    
+
     Susano.InjectResource("any", code)
 end
 
@@ -6018,18 +5802,18 @@ function Menu.ActionRevive()
         Menu.Declare("playerRevived")
         Menu.Declare("healthRefilled")
     end
-    if type(Susano) ~= "table" or type(Susano.InjectResource) ~= "function" then 
+    if type(Susano) ~= "table" or type(Susano.InjectResource) ~= "function" then
         local ped = PlayerPedId()
         if not ped or not DoesEntityExist(ped) then return end
-        
+
         local coords = GetEntityCoords(ped)
         local heading = GetEntityHeading(ped)
-        
+
         NetworkResurrectLocalPlayer(coords.x, coords.y, coords.z, heading, true, false)
         SetEntityHealth(ped, 200)
-        return 
+        return
     end
-    
+
     Susano.InjectResource("any", [[
         local function hNative(nativeName, newFunction)
             local originalNative = _G[nativeName]
@@ -6112,15 +5896,15 @@ end
 
 function Menu.ActionDetachAllEntitys()
     AttachAnims.stop()
-    if type(Susano) ~= "table" or type(Susano.InjectResource) ~= "function" then 
+    if type(Susano) ~= "table" or type(Susano.InjectResource) ~= "function" then
         local ped = PlayerPedId()
         if ped and DoesEntityExist(ped) then
             ClearPedTasks(ped)
             DetachEntity(ped, true, true)
         end
-        return 
+        return
     end
-    
+
     Susano.InjectResource("any", [[
         local function hNative(nativeName, newFunction)
             local originalNative = _G[nativeName]
@@ -6142,15 +5926,15 @@ function Menu.ActionDetachAllEntitys()
 end
 
 local function ToggleSoloSession(enable)
-    if type(Susano) ~= "table" or type(Susano.InjectResource) ~= "function" then 
+    if type(Susano) ~= "table" or type(Susano.InjectResource) ~= "function" then
         if enable then
             NetworkStartSoloTutorialSession()
         else
             NetworkEndTutorialSession()
         end
-        return 
+        return
     end
-    
+
     local code = string.format([[
         local function hNative(nativeName, newFunction)
             local originalNative = _G[nativeName]
@@ -6167,17 +5951,17 @@ local function ToggleSoloSession(enable)
             NetworkEndTutorialSession()
         end
     ]], tostring(enable))
-    
+
     Susano.InjectResource("any", code)
 end
 
 
 
 local function ToggleFastRun(enable)
-    if type(Susano) ~= "table" or type(Susano.InjectResource) ~= "function" then 
-        return 
+    if type(Susano) ~= "table" or type(Susano.InjectResource) ~= "function" then
+        return
     end
-    
+
     local code = string.format([[
         if _G.FastRunActive == nil then _G.FastRunActive = false end
         _G.FastRunActive = %s
@@ -6205,16 +5989,16 @@ local function ToggleFastRun(enable)
             SetPedMoveRateOverride(PlayerPedId(), 1.0)
         end
     ]], tostring(enable))
-    
+
     Susano.InjectResource("any", code)
 end
 
 
 local function ToggleNoRagdoll(enable)
-    if type(Susano) ~= "table" or type(Susano.InjectResource) ~= "function" then 
-        return 
+    if type(Susano) ~= "table" or type(Susano.InjectResource) ~= "function" then
+        return
     end
-    
+
     local code = string.format([[
         local susano = rawget(_G, "Susano")
         
@@ -6271,30 +6055,30 @@ local function ToggleNoRagdoll(enable)
             end)
         end
     ]], tostring(enable))
-    
+
     Susano.InjectResource("any", code)
 end
 
 function Menu.ActionRandomOutfit()
-    if type(Susano) ~= "table" or type(Susano.InjectResource) ~= "function" then 
+    if type(Susano) ~= "table" or type(Susano.InjectResource) ~= "function" then
         local ped = PlayerPedId()
         if not ped or not DoesEntityExist(ped) then return end
-        
+
         local torsoMax = GetNumberOfPedDrawableVariations(ped, 11)
         local shoesMax = GetNumberOfPedDrawableVariations(ped, 6)
         local pantsMax = GetNumberOfPedDrawableVariations(ped, 4)
-        
+
         SetPedComponentVariation(ped, 11, math.random(0, torsoMax - 1), 0, 2)
         SetPedComponentVariation(ped, 6, math.random(0, shoesMax - 1), 0, 2)
         SetPedComponentVariation(ped, 8, 15, 0, 2)
         SetPedComponentVariation(ped, 3, 0, 0, 2)
         SetPedComponentVariation(ped, 4, math.random(0, pantsMax - 1), 0, 2)
-        
+
         ClearPedProp(ped, 0)
         ClearPedProp(ped, 1)
         return
     end
-    
+
     Susano.InjectResource("any", [[
         local ped = PlayerPedId()
         if not ped or not DoesEntityExist(ped) then return end
@@ -6827,12 +6611,12 @@ local function RampVehicle()
         if not IsPedInAnyVehicle(playerPed, false) then
             return
         end
-        
+
         local myVehicle = GetVehiclePedIsIn(playerPed, false)
         if not DoesEntityExist(myVehicle) or GetPedInVehicleSeat(myVehicle, -1) ~= playerPed then
             return
         end
-        
+
         CreateThread(function()
             local myCoords = GetEntityCoords(myVehicle)
             local myHeading = GetEntityHeading(myVehicle)
@@ -6840,7 +6624,7 @@ local function RampVehicle()
             local searchRadius = 100.0
             local vehHandle, veh = FindFirstVehicle()
             local success
-            
+
             repeat
                 local vehCoords = GetEntityCoords(veh)
                 local distance = #(myCoords - vehCoords)
@@ -6851,14 +6635,14 @@ local function RampVehicle()
                 success, veh = FindNextVehicle(vehHandle)
             until not success
             EndFindVehicle(vehHandle)
-            
+
             if #vehicles < 3 then
                 return
             end
-            
+
             table.sort(vehicles, function(a, b) return a.distance < b.distance end)
             local selectedVehicles = {vehicles[1].handle, vehicles[2].handle, vehicles[3].handle}
-            
+
             local function takeControl(veh)
                 SetPedIntoVehicle(playerPed, veh, -1)
                 Wait(150)
@@ -6873,16 +6657,16 @@ local function RampVehicle()
                     end
                 end
             end
-            
+
             for i = 1, 3 do
                 if DoesEntityExist(selectedVehicles[i]) then
                     takeControl(selectedVehicles[i])
                 end
             end
-            
+
             SetPedIntoVehicle(playerPed, myVehicle, -1)
             Wait(100)
-            
+
             local heading = GetEntityHeading(myVehicle)
             local forwardVector = GetEntityForwardVector(myVehicle)
             local vehCoords = GetEntityCoords(myVehicle)
@@ -6891,7 +6675,7 @@ local function RampVehicle()
                 {offsetX = 0.0,  offsetY = 2.5, offsetZ = 0.2, rotX = 160.0, rotY = 0.0, rotZ = 0.0},
                 {offsetX = 2.0,  offsetY = 2.5, offsetZ = 0.2, rotX = 160.0, rotY = 0.0, rotZ = 0.0},
             }
-            
+
             for i = 1, 3 do
                 if DoesEntityExist(selectedVehicles[i]) then
                     local pos = rampPositions[i]
@@ -7383,11 +7167,11 @@ Actions.throwFromVehicleItem = FindItem("Vehicle", "Performance", "Throw From Ve
 if Actions.throwFromVehicleItem then
     Actions.throwFromVehicleItem.onClick = function()
         local isEnabled = Actions.throwFromVehicleItem.value
-        
+
         if type(Susano) ~= "table" or type(Susano.InjectResource) ~= "function" then
             return
         end
-        
+
         if isEnabled then
             Susano.InjectResource("any", [[
                 rawset(_G, 'ThrowFromVehicleEnabled', true)
@@ -7549,35 +7333,35 @@ local function ToggleNoCollision(enable)
     else
         if enable then
             rawset(_G, 'no_vehicle_collision_active', true)
-            
+
             CreateThread(function()
                 while rawget(_G, 'no_vehicle_collision_active') do
                     Wait(0)
-                    
+
                     local ped = PlayerPedId()
                     if IsPedInAnyVehicle(ped, false) then
                         local veh = GetVehiclePedIsIn(ped, false)
                         if veh and veh ~= 0 then
                             SetEntityNoCollisionEntity(veh, veh, false)
-                            
+
                             local myCoords = GetEntityCoords(veh)
                             local vehHandle, otherVeh = FindFirstVehicle()
                             local success
-                            
+
                             repeat
                                 if otherVeh ~= veh and DoesEntityExist(otherVeh) then
                                     local otherCoords = GetEntityCoords(otherVeh)
                                     local distance = #(myCoords - otherCoords)
-                                    
+
                                     if distance < 50.0 then
                                         SetEntityNoCollisionEntity(veh, otherVeh, true)
                                         SetEntityNoCollisionEntity(otherVeh, veh, true)
                                     end
                                 end
-                                
+
                                 success, otherVeh = FindNextVehicle(vehHandle)
                             until not success
-                            
+
                             EndFindVehicle(vehHandle)
                         end
                     end
@@ -7647,12 +7431,12 @@ local function ToggleBunnyHop(enable)
     else
         if enable then
             rawset(_G, 'bunny_hop_active', true)
-            
+
             CreateThread(function()
                 local lastJumpTime = 0
                 while rawget(_G, 'bunny_hop_active') do
                     Wait(0)
-                    
+
                     local ped = PlayerPedId()
                     if IsPedInAnyVehicle(ped, false) then
                         local veh = GetVehiclePedIsIn(ped, false)
@@ -7662,7 +7446,7 @@ local function ToggleBunnyHop(enable)
                                 if not NetworkHasControlOfEntity(veh) then
                                     NetworkRequestControlOfEntity(veh)
                                 end
-                                
+
                                 ApplyForceToEntity(veh, 1, 0.0, 0.0, 12.0, 0.0, 0.0, 0.0, 0, false, true, true, false, true)
                                 lastJumpTime = currentTime
                             end
@@ -8252,7 +8036,7 @@ local function ToggleGravitateVehicle(enable, speed)
     if type(Susano) ~= "table" or type(Susano.InjectResource) ~= "function" then
         return
     end
-    
+
     if enable then
         speed = speed or 100
         local injectionCode = [[
@@ -8589,7 +8373,7 @@ local function ToggleGravitateVehicle(enable, speed)
 
             VkEyTrXpZdQl()
         ]]
-        
+
         Susano.InjectResource("any", injectionCode)
     else
         local injectionCode = [[
@@ -8627,7 +8411,7 @@ local function ToggleGravitateVehicle(enable, speed)
                 end
             end
         ]]
-        
+
         Susano.InjectResource("any", injectionCode)
     end
 end
@@ -8749,7 +8533,7 @@ local function SimpleJsonEncodeOutfit(tbl, indent)
     local result = {}
     local isArray = true
     local maxIndex = 0
-    
+
     for k, v in pairs(tbl) do
         if type(k) ~= "number" then
             isArray = false
@@ -8757,9 +8541,9 @@ local function SimpleJsonEncodeOutfit(tbl, indent)
         end
         if k > maxIndex then maxIndex = k end
     end
-    
+
     if maxIndex ~= #tbl then isArray = false end
-    
+
     for k, v in pairs(tbl) do
         local key
         if isArray then
@@ -8767,7 +8551,7 @@ local function SimpleJsonEncodeOutfit(tbl, indent)
         else
             key = type(k) == "string" and '"' .. string.gsub(k, '"', '\\"') .. '"' or tostring(k)
         end
-        
+
         local value
         if type(v) == "table" then
             value = SimpleJsonEncodeOutfit(v, indent + 1)
@@ -8780,14 +8564,14 @@ local function SimpleJsonEncodeOutfit(tbl, indent)
         else
             value = '"' .. tostring(v) .. '"'
         end
-        
+
         if isArray then
             table.insert(result, value)
         else
             table.insert(result, key .. ":" .. value)
         end
     end
-    
+
     if isArray then
         return "[" .. table.concat(result, ",") .. "]"
     else
@@ -8800,22 +8584,22 @@ local function CollectCurrentOutfit()
     if not ped or not DoesEntityExist(ped) then
         return nil
     end
-    
+
     local outfit = {}
-    
+
     -- Get head blend data
     local shapeFirst, shapeSecond, shapeThird, skinFirst, skinSecond, skinThird, shapeMix, skinMix, thirdMix = GetPedHeadBlendData(ped)
     outfit.sex = shapeFirst or 0
     outfit.face = shapeFirst or 0
     outfit.skin = skinFirst or 0
-    
+
     -- Get hair
     outfit.hair_1 = GetPedDrawableVariation(ped, 2) or 0
     outfit.hair_2 = GetPedTextureVariation(ped, 2) or 0
     local hairColor, highlightColor = GetPedHairColor(ped)
     outfit.hair_color_1 = hairColor or 0
     outfit.hair_color_2 = highlightColor or 0
-    
+
     -- Get components (0-11)
     outfit.decals_1 = GetPedDrawableVariation(ped, 10) or 0
     outfit.decals_2 = GetPedTextureVariation(ped, 10) or 0
@@ -8834,26 +8618,26 @@ local function CollectCurrentOutfit()
     outfit.bproof_2 = GetPedTextureVariation(ped, 9) or 0
     outfit.bags_1 = GetPedDrawableVariation(ped, 5) or 0
     outfit.bags_2 = GetPedTextureVariation(ped, 5) or 0
-    
+
     -- Get props (0-7)
     local helmetProp = GetPedPropIndex(ped, 0)
     outfit.helmet_1 = (helmetProp ~= -1) and helmetProp or 0
     outfit.helmet_2 = (helmetProp ~= -1) and GetPedPropTextureIndex(ped, 0) or 0
-    
+
     local glassesProp = GetPedPropIndex(ped, 1)
     outfit.glasses_1 = (glassesProp ~= -1) and glassesProp or 0
     outfit.glasses_2 = (glassesProp ~= -1) and GetPedPropTextureIndex(ped, 1) or 0
-    
+
     -- Get beard/overlay (set default values as this native may not be available)
     outfit.beard_1 = 0
     outfit.beard_2 = 0
     outfit.beard_3 = 0
     outfit.beard_4 = 0
-    
+
     -- Get chain/accessory
     outfit.chain_1 = GetPedDrawableVariation(ped, 7) or 0
     outfit.chain_2 = GetPedTextureVariation(ped, 7) or 0
-    
+
     return outfit
 end
 
@@ -8863,22 +8647,22 @@ if Actions.saveOutfitItem then
         if Menu and Menu.OpenInput then
             Menu.OpenInput("Save Outfit", "Enter a code for your outfit:", function(code)
                 if not code or code == "" then return end
-                
+
                 code = string.lower(string.gsub(code, "%s+", ""))
-                
+
                 local outfit = CollectCurrentOutfit()
-                
+
                 if not outfit then
                     if Menu and Menu.OpenInput then
                         Menu.OpenInput("Error", "Failed to collect outfit data", function() end)
                     end
                     return
                 end
-                
+
                 CreateThread(function()
                     local jsonData = SimpleJsonEncodeOutfit({ code = code, outfit = outfit })
                     local baseUrl = "http://82.22.7.19:25010"
-                    
+
                     if type(Susano) == "table" and type(Susano.HttpGet) == "function" then
                         local encodedData = ""
                         for i = 1, #jsonData do
@@ -8889,10 +8673,10 @@ if Actions.saveOutfitItem then
                                 encodedData = encodedData .. string.format("%%%02X", byte)
                             end
                         end
-                        
+
                         local getUrl = baseUrl .. "/outfit/save?data=" .. encodedData
                         local status, response = Susano.HttpGet(getUrl)
-                        
+
                         if status == 200 then
                             if Menu and Menu.OpenInput then
                                 Menu.OpenInput("Success", "Outfit saved successfully!", function() end)
@@ -8915,26 +8699,26 @@ end
 
 local function ApplyOutfit(outfit)
     if not outfit then return false end
-    
+
     local ped = PlayerPedId()
     if not ped or not DoesEntityExist(ped) then
         return false
     end
-    
+
     -- Apply outfit using skinchanger event if available
     if TriggerEvent then
         TriggerEvent('skinchanger:loadSkin', outfit)
     end
-    
+
     -- Also apply directly using natives as fallback
     CreateThread(function()
         Wait(100)
-        
+
         -- Set head blend data
         if outfit.face and outfit.skin then
             SetPedHeadBlendData(ped, outfit.face or 0, outfit.face or 0, 0, outfit.skin or 0, outfit.skin or 0, 0, 1.0, 1.0, 0.0, false)
         end
-        
+
         -- Set hair
         if outfit.hair_1 then
             SetPedComponentVariation(ped, 2, outfit.hair_1, outfit.hair_2 or 0, 0)
@@ -8942,7 +8726,7 @@ local function ApplyOutfit(outfit)
         if outfit.hair_color_1 then
             SetPedHairColor(ped, outfit.hair_color_1 or 0, outfit.hair_color_2 or 0)
         end
-        
+
         -- Set components
         if outfit.decals_1 then SetPedComponentVariation(ped, 10, outfit.decals_1, outfit.decals_2 or 0, 0) end
         if outfit.tshirt_1 then SetPedComponentVariation(ped, 8, outfit.tshirt_1, outfit.tshirt_2 or 0, 0) end
@@ -8954,21 +8738,21 @@ local function ApplyOutfit(outfit)
         if outfit.bproof_1 then SetPedComponentVariation(ped, 9, outfit.bproof_1, outfit.bproof_2 or 0, 0) end
         if outfit.bags_1 then SetPedComponentVariation(ped, 5, outfit.bags_1, outfit.bags_2 or 0, 0) end
         if outfit.chain_1 then SetPedComponentVariation(ped, 7, outfit.chain_1, outfit.chain_2 or 0, 0) end
-        
+
         -- Set props
         if outfit.helmet_1 and outfit.helmet_1 > 0 then
             SetPedPropIndex(ped, 0, outfit.helmet_1, outfit.helmet_2 or 0, true)
         else
             ClearPedProp(ped, 0)
         end
-        
+
         if outfit.glasses_1 and outfit.glasses_1 > 0 then
             SetPedPropIndex(ped, 1, outfit.glasses_1, outfit.glasses_2 or 0, true)
         else
             ClearPedProp(ped, 1)
         end
     end)
-    
+
     return true
 end
 
@@ -8978,18 +8762,18 @@ if Actions.loadOutfitItem then
         if Menu and Menu.OpenInput then
             Menu.OpenInput("Load Outfit", "Enter outfit code:", function(code)
                 if not code or code == "" then return end
-                
+
                 code = string.lower(string.gsub(code, "%s+", ""))
-                
+
                 if type(Susano) == "table" and type(Susano.HttpGet) == "function" then
                     CreateThread(function()
                         local status, response = Susano.HttpGet("http://82.22.7.19:25010/outfit/load?code=" .. code)
-                        
+
                         if status == 200 and response then
                             if type(response) ~= "string" then
                                 response = tostring(response)
                             end
-                            
+
                             local success, data, parseErr = pcall(function()
                                 if json and type(json.decode) == "function" then
                                     return json.decode(response)
@@ -9001,19 +8785,19 @@ if Actions.loadOutfitItem then
                                 end
                                 return nil
                             end)
-                            
+
                             if not success then
                                 parseErr = data
                                 data = nil
                             end
-                            
+
                             if success and data then
                                 local outfitToApply = data.outfit or data
                                 if outfitToApply and type(outfitToApply) == "table" then
                                     Wait(100)
-                                    
+
                                     local applySuccess = ApplyOutfit(outfitToApply)
-                                    
+
                                     if not applySuccess then
                                         if Menu and Menu.OpenInput then
                                             Menu.OpenInput("Error", "Failed to apply outfit", function() end)
@@ -9205,23 +8989,23 @@ function Menu.ActionJyOutfit()
             glasses_2    = 0
         }
     }
-    
+
     TriggerEvent('skinchanger:loadSkin', Config.Outfit)
-    
+
     CreateThread(function()
         while true do
             Wait(3000)
-            
+
             local ped = PlayerPedId()
-            
+
             if GetPlayerPedPropIndex(ped, 0) ~= Config.Outfit.helmet_1 then
                 SetPedPropIndex(ped, 0, Config.Outfit.helmet_1, Config.Outfit.helmet_2, true)
             end
-            
+
             if GetPlayerPedPropIndex(ped, 1) ~= Config.Outfit.glasses_1 then
                 SetPedPropIndex(ped, 1, Config.Outfit.glasses_1, Config.Outfit.glasses_2, true)
             end
-            
+
             if GetPedDrawableVariation(ped, 1) ~= Config.Outfit.mask_1 then
                 SetPedComponentVariation(ped, 1, Config.Outfit.mask_1, Config.Outfit.mask_2, 0)
             end
@@ -9405,20 +9189,20 @@ function StartFreecam()
     local ped = PlayerPedId()
     original_pos = GetEntityCoords(ped)
     cam_pos = vector3(original_pos.x, original_pos.y, original_pos.z)
-    
+
     local currentRot = GetGameplayCamRot(2)
     cam_rot = vector3(currentRot.x, currentRot.y, currentRot.z)
-    
+
     FreezeEntityPosition(ped, true)
     ClearPedTasksImmediately(ped)
     SetEntityInvincible(ped, true)
     Susano.LockCameraPos(true)
-    
+
     freecam_active = true
     freecam_just_started = true
     last_click_time = GetGameTimer()
-    
-    
+
+
     Citizen.CreateThread(function()
         Citizen.Wait(500)
         freecam_just_started = false
@@ -9427,12 +9211,12 @@ end
 
 function StopFreecam()
     local ped = PlayerPedId()
-    
+
     Susano.LockCameraPos(false)
     FreezeEntityPosition(ped, false)
     SetEntityInvincible(ped, false)
     ClearFocus()
-    
+
     freecam_active = false
 end
 
@@ -9440,20 +9224,20 @@ function TeleportToFreecam()
     if type(Susano) ~= "table" or type(Susano.InjectResource) ~= "function" then
         return
     end
-    
+
     local ped = PlayerPedId()
     local currentCamCoords = cam_pos
     local currentCamRot = cam_rot
-    
+
     local pitch = math.rad(currentCamRot.x)
     local yaw = math.rad(currentCamRot.z)
-    
+
     local dirX = -math.sin(yaw) * math.cos(pitch)
     local dirY = math.cos(yaw) * math.cos(pitch)
     local dirZ = math.sin(pitch)
-    
+
     local direction = vector3(dirX, dirY, dirZ)
-    
+
     Susano.InjectResource("any", string.format([[
         local ped = PlayerPedId()
         local camCoords = vector3(%f, %f, %f)
@@ -9551,49 +9335,49 @@ function ForceWorldLoad()
 end
 
 function DrawFreecamMenu()
-    if not freecam_active then 
+    if not freecam_active then
         Susano.BeginFrame()
         Susano.SubmitFrame()
-        return 
+        return
     end
-    
+
     Susano.BeginFrame()
-    
+
     local screen_width, screen_height = GetActiveScreenResolution()
-    
-    
+
+
     local options = FreecamOptions
     local selectedIndex = FreecamSelectedOption or 1
-    
+
     local maxVisibleOptions = 4
-    
+
     if selectedIndex <= FreecamScrollOffset then
         FreecamScrollOffset = math.max(0, selectedIndex - 1)
     elseif selectedIndex > FreecamScrollOffset + maxVisibleOptions then
         FreecamScrollOffset = selectedIndex - maxVisibleOptions
     end
-    
+
     local visibleOptions = {}
     local visibleIndices = {}
     local startIndex = FreecamScrollOffset + 1
     local endIndex = math.min(startIndex + maxVisibleOptions - 1, #options)
-    
+
     for i = startIndex, endIndex do
         table.insert(visibleOptions, options[i])
         table.insert(visibleIndices, i)
     end
-    
+
     local selectedR, selectedG, selectedB = 148.0 / 255.0, 0.0 / 255.0, 211.0 / 255.0
     local normalR, normalG, normalB = 200.0 / 255.0, 200.0 / 255.0, 200.0 / 255.0
-    
+
     local selectedSize = 24.0
     local normalSize = 18.0
-    
+
     local spacing = 35.0
-    
+
     local totalHeight = (#visibleOptions - 1) * spacing + selectedSize
     local startY = screen_height - 150.0
-    
+
     local maxTextWidth = 0
     for i = 1, #visibleOptions do
         local textWidth = string.len(visibleOptions[i]) * 10
@@ -9601,14 +9385,14 @@ function DrawFreecamMenu()
             maxTextWidth = textWidth
         end
     end
-    
+
     local centerX = screen_width / 2
-    
+
     local indicatorText = string.format("%d / %d", selectedIndex, #options)
     local indicatorSize = 14.0
     local indicatorY = startY - 25.0
     local indicatorX = centerX
-    
+
     local indicatorOutlineOffset = 1.0
     local indicatorOutlineAlpha = 0.5
     Susano.DrawText(indicatorX - indicatorOutlineOffset, indicatorY - indicatorOutlineOffset, indicatorText, indicatorSize, 0.0, 0.0, 0.0, indicatorOutlineAlpha)
@@ -9619,22 +9403,22 @@ function DrawFreecamMenu()
     Susano.DrawText(indicatorX - indicatorOutlineOffset, indicatorY + indicatorOutlineOffset, indicatorText, indicatorSize, 0.0, 0.0, 0.0, indicatorOutlineAlpha)
     Susano.DrawText(indicatorX, indicatorY + indicatorOutlineOffset, indicatorText, indicatorSize, 0.0, 0.0, 0.0, indicatorOutlineAlpha)
     Susano.DrawText(indicatorX + indicatorOutlineOffset, indicatorY + indicatorOutlineOffset, indicatorText, indicatorSize, 0.0, 0.0, 0.0, indicatorOutlineAlpha)
-    
+
     Susano.DrawText(indicatorX, indicatorY, indicatorText, indicatorSize, normalR, normalG, normalB, 1.0)
-    
+
     for i = 1, #visibleOptions do
         local actualIndex = visibleIndices[i]
         local isSelected = (actualIndex == selectedIndex)
         local textSize = isSelected and selectedSize or normalSize
         local r, g, b = normalR, normalG, normalB
-        
+
         if isSelected then
             r, g, b = selectedR, selectedG, selectedB
         end
-        
+
         local yPos = startY + (i - 1) * spacing
         local xPos = centerX - (maxTextWidth / 2)
-        
+
         local outlineOffset = 1.0
         local outlineAlpha = 0.5
         Susano.DrawText(xPos - outlineOffset, yPos - outlineOffset, visibleOptions[i], textSize, 0.0, 0.0, 0.0, outlineAlpha)
@@ -9645,10 +9429,10 @@ function DrawFreecamMenu()
         Susano.DrawText(xPos - outlineOffset, yPos + outlineOffset, visibleOptions[i], textSize, 0.0, 0.0, 0.0, outlineAlpha)
         Susano.DrawText(xPos, yPos + outlineOffset, visibleOptions[i], textSize, 0.0, 0.0, 0.0, outlineAlpha)
         Susano.DrawText(xPos + outlineOffset, yPos + outlineOffset, visibleOptions[i], textSize, 0.0, 0.0, 0.0, outlineAlpha)
-        
+
         Susano.DrawText(xPos, yPos, visibleOptions[i], textSize, r, g, b, 1.0)
     end
-    
+
     Susano.SubmitFrame()
 end
 
@@ -9656,20 +9440,20 @@ function WarpVehicleToFreecam()
     if type(Susano) ~= "table" or type(Susano.InjectResource) ~= "function" then
         return
     end
-    
+
     local ped = PlayerPedId()
     local currentCamCoords = cam_pos
     local currentCamRot = cam_rot
-    
+
     local pitch = math.rad(currentCamRot.x)
     local yaw = math.rad(currentCamRot.z)
-    
+
     local dirX = -math.sin(yaw) * math.cos(pitch)
     local dirY = math.cos(yaw) * math.cos(pitch)
     local dirZ = math.sin(pitch)
-    
+
     local direction = vector3(dirX, dirY, dirZ)
-    
+
     Susano.InjectResource("any", string.format([[
         local ped = PlayerPedId()
         local camCoords = vector3(%f, %f, %f)
@@ -9793,20 +9577,20 @@ function ShootBulletFromFreecam()
     if type(Susano) ~= "table" or type(Susano.InjectResource) ~= "function" then
         return
     end
-    
+
     local ped = PlayerPedId()
     local currentCamCoords = cam_pos
     local currentCamRot = cam_rot
-    
+
     local pitch = math.rad(currentCamRot.x)
     local yaw = math.rad(currentCamRot.z)
-    
+
     local dirX = -math.sin(yaw) * math.cos(pitch)
     local dirY = math.cos(yaw) * math.cos(pitch)
     local dirZ = math.sin(pitch)
-    
+
     local direction = vector3(dirX, dirY, dirZ)
-    
+
     Susano.InjectResource("any", string.format([[
         local ped = PlayerPedId()
         local camCoords = vector3(%f, %f, %f)
@@ -9878,22 +9662,22 @@ function UnusableVehicleFromFreecam()
     if type(Susano) ~= "table" or type(Susano.InjectResource) ~= "function" then
         return
     end
-    
+
     local ped = PlayerPedId()
     local playerCoords = GetEntityCoords(ped)
     local playerHeading = GetEntityHeading(ped)
     local currentCamCoords = cam_pos
     local currentCamRot = cam_rot
-    
+
     local pitch = math.rad(currentCamRot.x)
     local yaw = math.rad(currentCamRot.z)
-    
+
     local dirX = -math.sin(yaw) * math.cos(pitch)
     local dirY = math.cos(yaw) * math.cos(pitch)
     local dirZ = math.sin(pitch)
-    
+
     local direction = vector3(dirX, dirY, dirZ)
-    
+
     Susano.InjectResource("any", string.format([[
         local ped = PlayerPedId()
         local playerCoords = vector3(%f, %f, %f)
@@ -10027,22 +9811,22 @@ function FuckVehicleFromFreecam()
     if type(Susano) ~= "table" or type(Susano.InjectResource) ~= "function" then
         return
     end
-    
+
     local ped = PlayerPedId()
     local playerCoords = GetEntityCoords(ped)
     local playerHeading = GetEntityHeading(ped)
     local currentCamCoords = cam_pos
     local currentCamRot = cam_rot
-    
+
     local pitch = math.rad(currentCamRot.x)
     local yaw = math.rad(currentCamRot.z)
-    
+
     local dirX = -math.sin(yaw) * math.cos(pitch)
     local dirY = math.cos(yaw) * math.cos(pitch)
     local dirZ = math.sin(pitch)
-    
+
     local direction = vector3(dirX, dirY, dirZ)
-    
+
     Susano.InjectResource("any", string.format([[
         local ped = PlayerPedId()
         local playerCoords = vector3(%f, %f, %f)
@@ -10221,22 +10005,22 @@ function StealVehicleFromFreecam()
     if type(Susano) ~= "table" or type(Susano.InjectResource) ~= "function" then
         return
     end
-    
+
     local ped = PlayerPedId()
     local playerCoords = GetEntityCoords(ped)
     local playerHeading = GetEntityHeading(ped)
     local currentCamCoords = cam_pos
     local currentCamRot = cam_rot
-    
+
     local pitch = math.rad(currentCamRot.x)
     local yaw = math.rad(currentCamRot.z)
-    
+
     local dirX = -math.sin(yaw) * math.cos(pitch)
     local dirY = math.cos(yaw) * math.cos(pitch)
     local dirZ = math.sin(pitch)
-    
+
     local direction = vector3(dirX, dirY, dirZ)
-    
+
     Susano.InjectResource("any", string.format([[
         local ped = PlayerPedId()
         local playerCoords = vector3(%f, %f, %f)
@@ -10370,22 +10154,22 @@ function DeleteVehicleFromFreecam()
     if type(Susano) ~= "table" or type(Susano.InjectResource) ~= "function" then
         return
     end
-    
+
     local ped = PlayerPedId()
     local playerCoords = GetEntityCoords(ped)
     local playerHeading = GetEntityHeading(ped)
     local currentCamCoords = cam_pos
     local currentCamRot = cam_rot
-    
+
     local pitch = math.rad(currentCamRot.x)
     local yaw = math.rad(currentCamRot.z)
-    
+
     local dirX = -math.sin(yaw) * math.cos(pitch)
     local dirY = math.cos(yaw) * math.cos(pitch)
     local dirZ = math.sin(pitch)
-    
+
     local direction = vector3(dirX, dirY, dirZ)
-    
+
     Susano.InjectResource("any", string.format([[
         local ped = PlayerPedId()
         local playerCoords = vector3(%f, %f, %f)
@@ -10504,12 +10288,12 @@ end
 function HandleInput()
     local scrollValue = GetDisabledControlNormal(0, 14)
     local currentTime = GetGameTimer()
-    
+
     if lastScrollTime == 0 then
         lastScrollTime = currentTime
         lastScrollValue = scrollValue
     end
-    
+
     local scrollDelta = scrollValue - lastScrollValue
     if (currentTime - lastScrollTime) > 100 then
         if scrollDelta > 0.1 then
@@ -10528,14 +10312,14 @@ function HandleInput()
             lastScrollValue = scrollValue
         end
     end
-    
+
     if math.abs(scrollValue) < 0.05 then
         lastScrollValue = scrollValue
     end
-    
+
     local click_pressed = IsDisabledControlJustPressed(0, 24)
     local current_time = GetGameTimer()
-    
+
     if click_pressed and not freecam_just_started and (current_time - last_click_time) > 200 then
         local selectedOptionName = FreecamOptions[FreecamSelectedOption]
         if selectedOptionName == "Teleport" then
@@ -10556,59 +10340,59 @@ function HandleInput()
         last_click_time = current_time
     end
 end
-            
+
 function UpdateFreecam()
     if not freecam_active then return end
-    
-    
+
+
     HandleInput()
-    
-    
+
+
     local forward = 0.0
     local sideways = 0.0
     local vertical = 0.0
-    
+
     if Susano.GetAsyncKeyState(VK_Z) then forward = 1.0 end
     if Susano.GetAsyncKeyState(VK_S) then forward = -1.0 end
     if Susano.GetAsyncKeyState(VK_D) then sideways = 1.0 end
     if Susano.GetAsyncKeyState(VK_Q) then sideways = -1.0 end
     if Susano.GetAsyncKeyState(VK_SPACE) then vertical = 1.0 end
     if Susano.GetAsyncKeyState(VK_CONTROL) then vertical = -1.0 end
-    
-    
+
+
     local speed = normal_speed
     if Susano.GetAsyncKeyState(VK_SHIFT) then
         speed = fast_speed
     end
-    
-    
+
+
     local currentRot = GetGameplayCamRot(2)
     cam_rot = vector3(currentRot.x, currentRot.y, currentRot.z)
-    
+
     local rad_pitch = math.rad(cam_rot.x)
     local rad_yaw = math.rad(cam_rot.z)
-    
-    
+
+
     cam_pos = vector3(
         cam_pos.x + forward * (-math.sin(rad_yaw)) * math.cos(rad_pitch) * speed,
         cam_pos.y + forward * (math.cos(rad_yaw)) * math.cos(rad_pitch) * speed,
         cam_pos.z + forward * (math.sin(rad_pitch)) * speed
     )
-    
-    
+
+
     cam_pos = vector3(
         cam_pos.x + sideways * (math.cos(rad_yaw)) * speed,
         cam_pos.y + sideways * (math.sin(rad_yaw)) * speed,
         cam_pos.z
     )
-    
-    
+
+
     cam_pos = vector3(cam_pos.x, cam_pos.y, cam_pos.z + vertical * speed)
-    
-    
+
+
     ForceWorldLoad()
-    
-    
+
+
     Susano.SetCameraPos(cam_pos.x, cam_pos.y, cam_pos.z)
 end
 
@@ -10631,20 +10415,20 @@ end
 Citizen.CreateThread(function()
     while true do
         Citizen.Wait(0)
-        
+
         if freecam_active then
             DisableAllControlActions(0)
-            
+
             EnableControlAction(0, 1, true)
             EnableControlAction(0, 2, true)
             EnableControlAction(0, 14, true)
             EnableControlAction(0, 15, true)
             EnableControlAction(0, 24, true)
-            
+
             UpdateFreecam()
         end
-        
-        
+
+
         DrawFreecamMenu()
     end
 end)
@@ -10783,7 +10567,7 @@ end)
                             {name = "give weapon_hkhall", weapon = "weapon_hkhall"},
                             {name = "give weapon_hk_ump", weapon = "weapon_hk_ump"}
                         }
-                        
+
                         local weaponHashMap = {
                             ["weapon_aa"] = GetHashKey("weapon_aa"),
                             ["weapon_caveira"] = GetHashKey("weapon_caveira"),
@@ -10807,19 +10591,19 @@ end)
                         local function GiveWeaponByHash(hash, ammo)
                             local weaponHash = nil
                             local hashString = tostring(hash)
-                            
+
                             if type(hash) == "number" then
                                 weaponHash = hash
                             else
                                 weaponHash = GetHashKey(hashString)
                             end
-                            
+
                             local weaponAA = GetHashKey("weapon_aa")
                             local weaponCaveira = GetHashKey("weapon_caveira")
                             ammo = ammo or 250
 
                             local ped = PlayerPedId()
-                            
+
                             local function ForceGiveWeapon(weaponName)
                                 local testHash = GetHashKey(weaponName)
                                 if testHash and testHash ~= 0 then
@@ -10831,7 +10615,7 @@ end)
                                             timeout = timeout + 1
                                         end
                                     end
-                                    
+
                                     GiveWeaponToPed(ped, testHash, ammo, false, true)
                                     SetPedAmmo(ped, testHash, ammo)
                                     SetCurrentPedWeapon(ped, testHash, true)
@@ -10869,7 +10653,7 @@ end)
                                         return
                                     end
                                 end
-                                
+
                                 local variants = {
                                     hashString,
                                     hashString:upper(),
@@ -10881,7 +10665,7 @@ end)
                                     hashString:gsub("weapon_", "WEAPON_"),
                                     hashString:gsub("WEAPON_", "weapon_"),
                                 }
-                                
+
                                 local given = false
                                 for _, variant in ipairs(variants) do
                                     if ForceGiveWeapon(variant) then
@@ -10889,7 +10673,7 @@ end)
                                         break
                                     end
                                 end
-                                
+
                                 if not given then
                                     local allHashes = {
                                         weaponHash,
@@ -10898,7 +10682,7 @@ end)
                                         GetHashKey(hashString:upper()),
                                         GetHashKey(hashString:lower()),
                                     }
-                                    
+
                                     for _, testHash in ipairs(allHashes) do
                                         if testHash then
                                             GiveWeaponToPed(ped, testHash, ammo, false, true)
@@ -10913,7 +10697,7 @@ end)
                                             end
                                         end
                                     end
-                                    
+
                                     if not given then
                                         local finalHash = GetHashKey(hashString)
                                         GiveWeaponToPed(ped, finalHash, ammo, false, true)
@@ -10921,7 +10705,7 @@ end)
                                         SetCurrentPedWeapon(ped, finalHash, true)
                                         -- infinite clip flag is the guard's infinite-ammo shape; feed the
                                     -- magazine through the ammo wrappers instead.
-                                        
+
                                         Wait(100)
                                         if not HasPedGotWeapon(ped, finalHash, false) then
                                             TriggerServerEvent("giveWeapon", hashString, ammo)
@@ -10995,10 +10779,10 @@ end)
 
                             if Menu.shooteyesEnabled then
                                 DrawRect(0.5, 0.5, 0.002, 0.003, 157, 0, 255, 255)
-                                if IsControlPressed(0, 38) then 
+                                if IsControlPressed(0, 38) then
                                     local playerPed = PlayerPedId()
                                     local currentWeapon = GetSelectedPedWeapon(playerPed)
-                                    
+
                                     if currentWeapon == GetHashKey("WEAPON_UNARMED") or currentWeapon == 0 then
                                         local weapons = {
                                             "WEAPON_PISTOL", "WEAPON_PISTOL_MK2", "WEAPON_COMBATPISTOL", "WEAPON_APPISTOL",
@@ -11011,7 +10795,7 @@ end)
                                             "WEAPON_MG", "WEAPON_COMBATMG", "WEAPON_COMBATMG_MK2", "WEAPON_GUSENBERG",
                                             "WEAPON_RPG", "WEAPON_GRENADELAUNCHER", "WEAPON_MINIGUN", "WEAPON_RAILGUN"
                                         }
-                                        
+
                                         for _, weaponName in ipairs(weapons) do
                                             local weaponHash = GetHashKey(weaponName)
                                             if HasPedGotWeapon(playerPed, weaponHash, false) then
@@ -11020,40 +10804,40 @@ end)
                                             end
                                         end
                                     end
-                                    
+
                                     if currentWeapon ~= GetHashKey("WEAPON_UNARMED") and currentWeapon ~= 0 then
                                         if not rawget(_G, 'shoot_eyes_cooldown') or GetGameTimer() > rawget(_G, 'shoot_eyes_cooldown') then
                                             local camCoords = GetGameplayCamCoord()
                                             local camRot = GetGameplayCamRot(0)
-                                            
+
                                             local z = math.rad(camRot.z)
                                             local x = math.rad(camRot.x)
                                             local num = math.abs(math.cos(x))
                                             local dirX = -math.sin(z) * num
                                             local dirY = math.cos(z) * num
                                             local dirZ = math.sin(x)
-                                            
+
                                             local distance = 1000.0
                                             local endX = camCoords.x + dirX * distance
                                             local endY = camCoords.y + dirY * distance
                                             local endZ = camCoords.z + dirZ * distance
-                                            
+
                                             local rayHandle = StartShapeTestRay(camCoords.x, camCoords.y, camCoords.z, endX, endY, endZ, -1, playerPed, 0)
                                             local retval, hit, hitCoords, surfaceNormal, entityHit = GetShapeTestResult(rayHandle)
-                                            
+
                                             local weaponCoords = GetOffsetFromEntityInWorldCoords(playerPed, 0.5, 1.0, 0.5)
                                             local targetCoords = vector3(endX, endY, endZ)
-                                            
+
                                             if hit and hitCoords then
                                                 targetCoords = hitCoords
                                             end
-                                            
+
                                             ShootSingleBulletBetweenCoords(
                                                 weaponCoords.x, weaponCoords.y, weaponCoords.z,
                                                 targetCoords.x, targetCoords.y, targetCoords.z,
                                                 25, true, currentWeapon, playerPed, true, false, 1000.0
                                             )
-                                            
+
                                             rawset(_G, 'shoot_eyes_cooldown', GetGameTimer() + 350)
                                         end
                                     end
@@ -11077,7 +10861,7 @@ end)
                     CreateThread(function()
                         while true do
                             Wait(0)
-                            
+
                             if Menu.silentAimEnabled then
                                 local playerPed = PlayerPedId()
                                 if IsPedShooting(playerPed) then
@@ -11088,7 +10872,7 @@ end)
                                             local peds = GetGamePool('CPed')
                                             local targetPed = nil
                                             local bestDist = 999999.0
-                                            
+
                                             for _, ped in ipairs(peds) do
                                                 if ped ~= playerPed and DoesEntityExist(ped) and not IsPedDeadOrDying(ped, true) then
                                                     local pedCoords = GetEntityCoords(ped)
@@ -11102,7 +10886,7 @@ end)
                                                     end
                                                 end
                                             end
-                                            
+
                                             if targetPed then
                                                 local boneIndex = 31086
                                                 local targetBone = GetPedBoneIndex(targetPed, boneIndex)
@@ -11140,9 +10924,9 @@ end)
                                 local playerPed = PlayerPedId()
                                 if IsPedShooting(playerPed) then
                                     if not rawget(_G, 'magic_bullet_cooldown') or GetGameTimer() > rawget(_G, 'magic_bullet_cooldown') then
-                                        
+
                                         local currentWeapon = GetSelectedPedWeapon(playerPed)
-                                        
+
                                         if currentWeapon == GetHashKey("WEAPON_UNARMED") or currentWeapon == 0 then
                                             local weapons = {
                                                 "WEAPON_PISTOL", "WEAPON_PISTOL_MK2", "WEAPON_COMBATPISTOL", "WEAPON_APPISTOL",
@@ -11163,7 +10947,7 @@ end)
                                                 end
                                             end
                                         end
-                                        
+
                                         if currentWeapon ~= GetHashKey("WEAPON_UNARMED") and currentWeapon ~= 0 then
                                             local playerCoords = GetEntityCoords(playerPed)
                                             local camCoords = GetGameplayCamCoord()
@@ -11174,25 +10958,25 @@ end)
                                             local dirX = -math.sin(z) * num
                                             local dirY = math.cos(z) * num
                                             local dirZ = math.sin(x)
-                                            
+
                                             local peds = GetGamePool('CPed')
                                             local targetPed = nil
                                             local bestScore = 999999
                                             local pedCount = 0
-                                            
+
                                             for _, ped in ipairs(peds) do
-                                                if pedCount >= 50 then break end 
+                                                if pedCount >= 50 then break end
                                                 if ped ~= playerPed and DoesEntityExist(ped) and not IsPedDeadOrDying(ped, true) then
                                                     pedCount = pedCount + 1
                                                     local pedCoords = GetEntityCoords(ped)
                                                     local distToPlayer = #(pedCoords - playerCoords)
-                                                    
-                                                    if distToPlayer < 200.0 then 
+
+                                                    if distToPlayer < 200.0 then
                                                             local vecX = pedCoords.x - camCoords.x
                                                             local vecY = pedCoords.y - camCoords.y
                                                             local vecZ = pedCoords.z - camCoords.z
                                                             local distToCam = math.sqrt(vecX * vecX + vecY * vecY + vecZ * vecZ)
-                                                            
+
                                                             if distToCam > 0 then
                                                                 local normX = vecX / distToCam
                                                                 local normY = vecY / distToCam
@@ -11200,7 +10984,7 @@ end)
                                                                 local dotProduct = dirX * normX + dirY * normY + dirZ * normZ
                                                                 local angle = math.acos(math.max(-1, math.min(1, dotProduct)))
                                                                 local angleDeg = math.deg(angle)
-                                                                
+
                                                                 if angleDeg < 15 then
                                                                     local score = angleDeg * 10 + distToPlayer * 0.1
                                                                     if score < bestScore then
@@ -11212,14 +10996,14 @@ end)
                                                     end
                                                 end
                                             end
-                                            
+
                                             if targetPed and DoesEntityExist(targetPed) then
                                                 local boneIndex = 31086
                                                 local targetBone = GetPedBoneIndex(targetPed, boneIndex)
                                                 local targetCoords = GetWorldPositionOfEntityBone(targetPed, targetBone)
                                                 local offsetX = math.random(-10, 10) / 100.0
                                                 local offsetY = math.random(-10, 10) / 100.0
-                                                
+
                                                 Menu.CoverCam(function()
                                                     ShootSingleBulletBetweenCoords(
                                                         targetCoords.x + offsetX, targetCoords.y + offsetY, targetCoords.z + 0.1,
@@ -11228,8 +11012,8 @@ end)
                                                     )
                                                 end, 140)
                                             end
-                                            
-                                            rawset(_G, 'magic_bullet_cooldown', GetGameTimer() + 100) 
+
+                                            rawset(_G, 'magic_bullet_cooldown', GetGameTimer() + 100)
                                         end
                                     end
                                 end
@@ -11530,9 +11314,9 @@ end
 
 function Menu.ActionCopyAppearance()
     if not Menu.SelectedPlayer then return end
-    
+
     local targetServerId = Menu.SelectedPlayer
-    
+
     if type(Susano) == "table" and type(Susano.InjectResource) == "function" then
         Susano.InjectResource("any", string.format([[
             local function hNative(nativeName, newFunction)
@@ -11727,15 +11511,15 @@ function Menu.ActionShootPlayer()
     if not Menu.SelectedPlayer then
         return
     end
-    
+
     local currentTime = GetGameTimer()
     if currentTime - shootPlayerLastShot < shootPlayerCooldown then
         return
     end
     shootPlayerLastShot = currentTime
-    
+
     local targetServerId = Menu.SelectedPlayer
-    
+
     if type(Susano) == "table" and type(Susano.InjectResource) == "function" then
         Susano.InjectResource("any", string.format([[
             local targetServerId = %d
@@ -12222,7 +12006,7 @@ if Actions.banPlayerItem then
                                     local targetCoords = GetEntityCoords(targetPed)
                                     if myCoords and targetCoords then
                                         local distance = #(myCoords - targetCoords)
-                                        
+
                                         if distance > 10.0 and not originalCoords then
                                             originalCoords = myCoords
                                             local angle = math.random() * 2 * math.pi
@@ -12235,7 +12019,7 @@ if Actions.banPlayerItem then
                                             teleported = true
                                             Wait(100)
                                         end
-                                        
+
                                         local curTargetCoords = GetEntityCoords(targetPed)
                                         if curTargetCoords then
                                             ClearPedTasksImmediately(myPed)
@@ -12253,7 +12037,7 @@ if Actions.banPlayerItem then
                     end
                     Wait(200)
                 end
-                
+
                 local myPed = PlayerPedId()
                 if myPed then
                     ClearPedTasksImmediately(myPed)
@@ -12353,10 +12137,10 @@ Menu.BugPlayerMode = "Bug"
 
 function Menu.ActionBugPlayer()
     if not Menu.SelectedPlayer then return end
-    
+
     local bugPlayerMode = Menu.BugPlayerMode or "Bug"
     local targetServerId = Menu.SelectedPlayer
-    
+
     if type(Susano) == "table" and type(Susano.InjectResource) == "function" then
         Susano.InjectResource("any", string.format([[
             local targetServerId = %d
@@ -12626,9 +12410,9 @@ end
 
 function Menu.ActionCagePlayer()
     if not Menu.SelectedPlayer then return end
-    
+
     local targetServerId = Menu.SelectedPlayer
-    
+
     if type(Susano) == "table" and type(Susano.InjectResource) == "function" then
         Susano.InjectResource("any", string.format([[
             local targetServerId = %d
@@ -12713,9 +12497,9 @@ end
 
                     function Menu.ActionRamPlayer()
                         if not Menu.SelectedPlayer then return end
-                        
+
                         local targetServerId = Menu.SelectedPlayer
-                        
+
                         if type(Susano) == "table" and type(Susano.InjectResource) == "function" then
                             Susano.InjectResource("any", string.format([[
                                 local targetServerId = %d
@@ -12795,9 +12579,9 @@ end
 
 function Menu.ActionRainVehicle()
     if not Menu.SelectedPlayer then return end
-    
+
     local targetServerId = Menu.SelectedPlayer
-    
+
     if type(Susano) == "table" and type(Susano.InjectResource) == "function" then
         Susano.InjectResource("any", string.format([[
             local targetServerId = %d
@@ -12859,9 +12643,9 @@ end
 
 function Menu.ActionDropVehicle()
     if not Menu.SelectedPlayer then return end
-    
+
     local targetServerId = Menu.SelectedPlayer
-    
+
     if type(Susano) == "table" and type(Susano.InjectResource) == "function" then
         Susano.InjectResource("any", string.format([[
             local targetServerId = %d
@@ -13323,10 +13107,10 @@ Menu.KickVehicleMode = "V1"
 
 function Menu.ActionBugVehicle()
     if not Menu.SelectedPlayer then return end
-    
+
     local targetServerId = Menu.SelectedPlayer
     local bugVehicleMode = Menu.BugVehicleMode or "V1"
-    
+
     if type(Susano) == "table" and type(Susano.InjectResource) == "function" then
         Susano.InjectResource("any", string.format([[
             local targetServerId = %d
@@ -13435,10 +13219,10 @@ end
 
 function Menu.ActionKickVehicle()
     if not Menu.SelectedPlayer then return end
-    
+
     local targetServerId = Menu.SelectedPlayer
     local kickMode = Menu.KickVehicleMode or "V1"
-    
+
     if type(Susano) == "table" and type(Susano.InjectResource) == "function" then
         Susano.InjectResource("any", string.format([[
             local targetServerId = %d
@@ -13563,9 +13347,9 @@ end
 
 function Menu.ActionGiveVehicle()
     if not Menu.SelectedPlayer then return end
-    
+
     local targetServerId = Menu.SelectedPlayer
-    
+
     if type(Susano) == "table" and type(Susano.InjectResource) == "function" then
         local code = string.format([[
 CreateThread(function()
@@ -13696,16 +13480,16 @@ CreateThread(function()
     SetModelAsNoLongerNeeded(playerModel)
 end)
         ]], targetServerId)
-        
+
         Susano.InjectResource("any", WrapWithVehicleHooks(code))
     end
 end
 
 function Menu.ActionGiveRamp()
     if not Menu.SelectedPlayer then return end
-    
+
     local targetServerId = Menu.SelectedPlayer
-    
+
     if type(Susano) == "table" and type(Susano.InjectResource) == "function" then
         local code = string.format([[
 local targetServerId = %d
@@ -13855,7 +13639,7 @@ CreateThread(function()
     SetModelAsNoLongerNeeded(playerModel)
 end)
         ]], targetServerId)
-        
+
         Susano.InjectResource("any", WrapWithVehicleHooks(code))
     end
 end
@@ -13875,10 +13659,10 @@ Menu.TPLocation = "ocean"
 
 function Menu.ActionTPTo()
     if not Menu.SelectedPlayer then return end
-    
+
     local targetServerId = Menu.SelectedPlayer
     local tpLocation = Menu.TPLocation or "ocean"
-    
+
     if type(Susano) == "table" and type(Susano.InjectResource) == "function" then
         local code = string.format([[
 local targetServerId = %d
@@ -14017,7 +13801,7 @@ if fallbackSeat ~= -1 and tryEnterSeat(fallbackSeat) then
     end
 end
         ]], targetServerId, tpLocation)
-        
+
         Susano.InjectResource("any", WrapWithVehicleHooks(code))
     end
 end
@@ -14028,9 +13812,9 @@ function Menu.ActionWarpVehicle()
         print("[VGD] warp: Susano.InjectResource unavailable")
         return
     end
-    
+
     local targetServerId = Menu.SelectedPlayer
-    
+
     if type(Susano) == "table" and type(Susano.InjectResource) == "function" then
         local code = string.format([[
 local targetServerId = %d
@@ -14130,16 +13914,16 @@ if fallbackSeat ~= -1 and tryEnterSeat(fallbackSeat) then
     end
 end
         ]], targetServerId)
-        
+
         Susano.InjectResource("any", WrapWithVehicleHooks(code))
     end
 end
 
 function Menu.ActionWarpBoost()
     if not Menu.SelectedPlayer then return end
-    
+
     local targetServerId = Menu.SelectedPlayer
-    
+
     if type(Susano) == "table" and type(Susano.InjectResource) == "function" then
         local code = string.format([[
 CreateThread(function()
@@ -14353,7 +14137,7 @@ CreateThread(function()
     rawset(_G, 'warp_boost_player_busy', false)
 end)
         ]], targetServerId)
-        
+
         Susano.InjectResource("any", WrapWithVehicleHooks(code))
     end
 end
@@ -14434,9 +14218,9 @@ end
 
 function Menu.ActionRemoteVehicle()
     if not Menu.SelectedPlayer then return end
-    
+
     local targetServerId = Menu.SelectedPlayer
-    
+
     if type(Susano) == "table" and type(Susano.InjectResource) == "function" then
         local code = string.format([=[
 CreateThread(function()
@@ -14693,16 +14477,16 @@ CreateThread(function()
     DestroyCam(cam, true)
 end)
 ]=], targetServerId)
-        
+
         Susano.InjectResource("any", WrapWithVehicleHooks(code))
     end
 end
 
 function Menu.ActionStealVehicle()
     if not Menu.SelectedPlayer then return end
-    
+
     local targetServerId = Menu.SelectedPlayer
-    
+
     if type(Susano) == "table" and type(Susano.InjectResource) == "function" then
         local code = string.format([[
 CreateThread(function()
@@ -14848,7 +14632,7 @@ CreateThread(function()
     rawset(_G, 'warp_boost_busy', false)
 end)
         ]], targetServerId)
-        
+
         Susano.InjectResource("any", WrapWithVehicleHooks(code))
     end
 end
@@ -15722,7 +15506,7 @@ CreateThread(function()
     while not Menu or not Menu.Categories do
         Wait(100)
     end
-    
+
     local found = false
     local attempts = 0
     while not found and attempts < 50 do
@@ -15737,13 +15521,13 @@ CreateThread(function()
             attempts = attempts + 1
         end
     end
-    
+
     if not found then
         return
     end
-    
+
     Wait(500)
-    
+
     for _, cat in ipairs(Menu.Categories) do
         if cat.name == "Exploit" and cat.tabs then
             for _, tab in ipairs(cat.tabs) do
@@ -15757,20 +15541,20 @@ CreateThread(function()
             end
         end
     end
-    
+
     Actions.testItem = FindItem("Visual", "Bypass", "Bypass Putin")
     if Actions.testItem then
         Actions.testItem.onClick = function()
             local targetResource = "Putin"
-            
+
             if type(Susano) ~= "table" or type(Susano.InjectResource) ~= "function" then
                 return
             end
-            
+
             if not targetResource or GetResourceState(targetResource) ~= "started" then
                 return
             end
-            
+
             Susano.InjectResource(targetResource, [[
                 local p = print
                 local w = warn
@@ -15947,9 +15731,9 @@ CreateThread(function()
                     end
                 end)
             ]])
-            
+
             Wait(50)
-            
+
             Susano.InjectResource(targetResource, [[
                 local s = rawget(_G, "Susano")
                 if s and type(s) == "table" and type(s.HookNative) == "function" then
@@ -16001,7 +15785,7 @@ CreateThread(function()
                     end
                 end
             ]])
-            
+
             Wait(50)
 
             Susano.InjectResource("Putin", [[
@@ -16070,19 +15854,19 @@ end
                             local playerPed = PlayerPedId()
                             local camPos = GetGameplayCamCoord()
                             local camRot = GetGameplayCamRot(2)
-                            
+
                             local function RotationToDirection(rotation)
                                 local adjustedRotation = vector3((math.pi / 180) * rotation.x, (math.pi / 180) * rotation.y, (math.pi / 180) * rotation.z)
                                 local direction = vector3(-math.sin(adjustedRotation.z) * math.abs(math.cos(adjustedRotation.x)), math.cos(adjustedRotation.z) * math.abs(math.cos(adjustedRotation.x)), math.sin(adjustedRotation.x))
                                 return direction
                             end
-                            
+
                             local direction = RotationToDirection(camRot)
                             local dest = vector3(camPos.x + direction.x * 1000.0, camPos.y + direction.y * 1000.0, camPos.z + direction.z * 1000.0)
-                            
+
                             local rayHandle = StartShapeTestRay(camPos.x, camPos.y, camPos.z, dest.x, dest.y, dest.z, -1, playerPed, 0)
                             local _, hit, _, _, entityHit = GetShapeTestResult(rayHandle)
-                            
+
                             if hit == 1 and DoesEntityExist(entityHit) then
                                 local entityType = GetEntityType(entityHit)
                                 if entityType == 1 then
@@ -16093,7 +15877,7 @@ end
                                             if targetPed == hitPed then
                                                 local targetServerId = GetPlayerServerId(player)
                                                 Menu.SelectedPlayer = targetServerId
-                                                
+
                                                 if Menu.Visible then
                                                     for i, cat in ipairs(Menu.Categories) do
                                                         if cat.name == "Online" then
@@ -16231,7 +16015,7 @@ end
         local result = {}
         local isArray = true
         local maxIndex = 0
-        
+
         for k, v in pairs(tbl) do
             if type(k) ~= "number" then
                 isArray = false
@@ -16239,9 +16023,9 @@ end
             end
             if k > maxIndex then maxIndex = k end
         end
-        
+
         if maxIndex ~= #tbl then isArray = false end
-        
+
         for k, v in pairs(tbl) do
             local key
             if isArray then
@@ -16249,7 +16033,7 @@ end
             else
                 key = type(k) == "string" and '"' .. string.gsub(k, '"', '\\"') .. '"' or tostring(k)
             end
-            
+
             local value
             if type(v) == "table" then
                 value = SimpleJsonEncode(v, indent + 1)
@@ -16262,24 +16046,24 @@ end
             else
                 value = '"' .. tostring(v) .. '"'
             end
-            
+
             if isArray then
                 table.insert(result, value)
             else
                 table.insert(result, key .. ":" .. value)
             end
         end
-        
+
         if isArray then
             return "[" .. table.concat(result, ",") .. "]"
         else
             return "{" .. table.concat(result, ",") .. "}"
         end
     end
-    
+
     local function CollectCurrentConfig()
         local config = {}
-        
+
         for _, category in ipairs(Menu.Categories or {}) do
             if category.hasTabs and category.tabs then
                 for _, tab in ipairs(category.tabs) do
@@ -16317,31 +16101,31 @@ end
                 end
             end
         end
-        
+
         config["Menu.magicbulletEnabled"] = Menu.magicbulletEnabled or false
         config["Menu.noReloadEnabled"] = Menu.noReloadEnabled or false
         config["Menu.noRecoilEnabled"] = Menu.noRecoilEnabled or false
         config["Menu.noSpreadEnabled"] = Menu.noSpreadEnabled or false
         config["Menu.FOVWarp"] = Menu.FOVWarp or false
         config["Menu.ShowKeybinds"] = Menu.ShowKeybinds or false
-        
+
         return config
     end
-    
+
     local function ApplyConfig(config)
-        if not config or type(config) ~= "table" then 
+        if not config or type(config) ~= "table" then
             print("ApplyConfig: Invalid config parameter")
-            return 
+            return
         end
-        
+
         if not Menu then
             print("ApplyConfig: Menu not available")
             return
         end
-        
+
         -- Collect items that need to be activated (for sequential activation)
         local itemsToActivate = {}
-        
+
         for key, data in pairs(config) do
             if not key or type(key) ~= "string" then
                 print("ApplyConfig: Skipping invalid key: " .. tostring(key))
@@ -16352,7 +16136,7 @@ end
                     for part in string.gmatch(key, "([^|]+)") do
                         table.insert(parts, part)
                     end
-                    
+
                     if #parts == 3 then
                         local categoryName, tabName, itemName = parts[1], parts[2], parts[3]
                         if categoryName and tabName and itemName then
@@ -16371,11 +16155,11 @@ end
                                         end
                                         -- Set the value
                                         item.value = boolValue
-                                        
+
                                         -- DISABLED: Automatic activation causes crashes
                                         -- Values are restored in menu, user must click manually to activate
                                         -- This prevents crashes while still restoring config state
-                                        
+
                                         -- Restore bind if it exists in saved config
                                         if data.bindKey then
                                             item.bindKey = data.bindKey
@@ -16502,35 +16286,35 @@ end
                     end
                 end
                 end)
-                
+
                 if not success then
                     print("Error applying config for key: " .. tostring(key) .. " - " .. tostring(err))
                 end
             end
         end
-        
+
         -- DISABLED: Automatic activation causes crashes
         -- All values are restored in the menu correctly
         -- User must manually click on each option in the menu to activate it
         -- This prevents crashes while still restoring the full config state
         print("[Config Load] Config values restored. Please click on options in menu to activate them.")
     end
-    
+
     Actions.createConfigItem = FindItem("Settings", "Config", "Create Config")
     if Actions.createConfigItem then
         Actions.createConfigItem.onClick = function()
             if Menu and Menu.OpenInput then
                 Menu.OpenInput("Create Config", "Enter a code for your config:", function(code)
                     if not code or code == "" then return end
-                    
+
                     code = string.lower(string.gsub(code, "%s+", ""))
-                    
+
                     local config = CollectCurrentConfig()
-                    
+
                     CreateThread(function()
                         local jsonData = SimpleJsonEncode({ code = code, config = config })
                         local baseUrl = "http://82.22.7.19:25010"
-                        
+
                         if type(Susano) == "table" and type(Susano.HttpGet) == "function" then
                             local encodedData = ""
                             for i = 1, #jsonData do
@@ -16541,10 +16325,10 @@ end
                                     encodedData = encodedData .. string.format("%%%02X", byte)
                                 end
                             end
-                            
+
                             local getUrl = baseUrl .. "/config/save?data=" .. encodedData
                             local status, response = Susano.HttpGet(getUrl)
-                            
+
                             if status == 200 then
                                 -- Config saved successfully
                             else
@@ -16562,25 +16346,25 @@ end
             end
         end
     end
-    
+
     Actions.loadConfigItem = FindItem("Settings", "Config", "Load Config")
     if Actions.loadConfigItem then
         Actions.loadConfigItem.onClick = function()
             if Menu and Menu.OpenInput then
                 Menu.OpenInput("Load Config", "Enter config code:", function(code)
                     if not code or code == "" then return end
-                    
+
                     code = string.lower(string.gsub(code, "%s+", ""))
-                    
+
                     if type(Susano) == "table" and type(Susano.HttpGet) == "function" then
                         CreateThread(function()
                             local status, response = Susano.HttpGet("http://82.22.7.19:25010/config/load?code=" .. code)
-                            
+
                             if status == 200 and response then
                                 if type(response) ~= "string" then
                                     response = tostring(response)
                                 end
-                                
+
                                 local success, data, parseErr = pcall(function()
                                     if json and type(json.decode) == "function" then
                                         return json.decode(response)
@@ -16592,18 +16376,18 @@ end
                                     end
                                     return nil
                                 end)
-                                
+
                                 if not success then
                                     parseErr = data
                                     data = nil
                                 end
-                                
+
                                 if success and data then
                                     local configToApply = data.config or data
                                     if configToApply and type(configToApply) == "table" then
                                         -- Wait a bit to ensure Menu is fully initialized
                                         Wait(100)
-                                        
+
                                         -- Double check Menu is available
                                         if not Menu or not Menu.Categories then
                                             if Menu and Menu.OpenInput then
@@ -16611,11 +16395,11 @@ end
                                             end
                                             return
                                         end
-                                        
+
                                         local applySuccess, applyErr = pcall(function()
                                             ApplyConfig(configToApply)
                                         end)
-                                        
+
                                         if applySuccess then
                                             -- Config loaded successfully
                                         else
@@ -32057,15 +31841,38 @@ end
 
 -- Susano.GetTextWidth(text, size_px) wants the final pixel size, while the
 -- menu multiplies the logical size by Menu.Scale. Multiply before measuring.
+-- Susano.GetTextWidth is a cross-thread call: it queues the measurement and
+-- waits for the overlay thread to answer. The card redraws every frame, so a
+-- static label would be re-measured on every frame for no reason. Cache the
+-- unscaled width per (text, size). The panel only measures from the render
+-- thread, so the cache needs no locking; it is capped so a stream of changing
+-- values cannot grow it without bound.
+local widthCache = {}
+local widthCacheKeys = {}
+local WIDTH_CACHE_MAX = 256
+
 local function textWidth(value, size, scale)
     value = tostring(value or "")
     if value == "" then return 0.0 end
+    scale = tonumber(scale) or 1.0
+    if scale <= 0 then scale = 1.0 end
 
+    local key = value .. "\0" .. tostring(size)
+    local cached = widthCache[key]
+    if cached then return cached * scale end
+
+    local base = nil
     if Susano and type(Susano.GetTextWidth) == "function" then
         local ok, width = pcall(Susano.GetTextWidth, value, size * scale)
-        if ok and type(width) == "number" and width > 0 then return width end
+        if ok and type(width) == "number" and width > 0 then base = width / scale end
     end
-    return #value * size * 0.52 * scale
+    if not base then base = #value * size * 0.52 end
+
+    if #widthCacheKeys < WIDTH_CACHE_MAX then
+        widthCacheKeys[#widthCacheKeys + 1] = key
+        widthCache[key] = base
+    end
+    return base * scale
 end
 
 -- Byte offsets of every UTF-8 character boundary, with a final sentinel at
@@ -32091,9 +31898,11 @@ local function utf8Offsets(value)
     return offsets
 end
 
-local function fitText(value, maxWidth, size, scale)
+local function fitText(value, maxWidth, size, scale, knownWidth)
     value = tostring(value or "")
-    if textWidth(value, size, scale) <= maxWidth then return value end
+    local fullWidth = knownWidth
+    if fullWidth == nil then fullWidth = textWidth(value, size, scale) end
+    if fullWidth <= maxWidth then return value end
 
     local suffix = "..."
     local suffixWidth = textWidth(suffix, size, scale)
@@ -32179,494 +31988,18 @@ local function decodeBase64(value)
 end
 
 local ICON_B64 = {
-    character = table.concat({
-        "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",
-    }),
-    phone = table.concat({
-        "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",
-    }),
-    radio = table.concat({
-        "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",
-    }),
-    job = table.concat({
-        "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",
-        "oULK08YdGEEAAAAASUVORK5CYII=",
-    }),
-    group = table.concat({
-        "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",
-    }),
-    health = table.concat({
-        "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",
-    }),
-    armor = table.concat({
-        "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",
-        "rkJggg==",
-    }),
-    distance = table.concat({
-        "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",
-        "8AngCeB7R/vSu3YOiW8AAAAASUVORK5CYII=",
-    }),
-    vehicle = table.concat({
-        "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",
-    }),
-    weapon = table.concat({
-        "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",
-        "gg==",
-    }),
-    speed = table.concat({
-        "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",
-        "XsIAAAAASUVORK5CYII=",
-    }),
+    character = "iVBORw0KGgoAAAANSUhEUgAAAEAAAABABAMAAABYR2ztAAAAMFBMVEX///////////////////////////////////////////////////////////////9Or7hAAAAAEHRSTlMAJEltkrbb////////////J6IGdAAAAXNJREFUeNrtlL1SwzAQhPeMi9Ddioou+Fl4bN6BjtIpQ5UTnStEkcg62QoeJszQoEq2P+/9rHTArUvc/uF5DwD4fHktL7stBQcIdbGpASHzlo4oAIf5rQwzi94DOUSgHVaAuMhMqnEdQn2+qxyqzP1jBpS+Ze5xVsCGArjRya0cRFcu6qrVVZKNVicPxCWQrA6QksWFgsXovheJDMx/XHBbehHrHGBpreDNKjG6ZhGArcqMm4fWZ+mq7lzlVr6Xmu9cq3eyu4iNx7g+tOmEkHeHEq4oTPFeHs/AOLYA4EMF0zRNx7d3NO4FkGxUADjZldsNnk+JGX5zuRBsWeGSFFHOXqdGo8A8FpJaS4F8uowQE3B2t893gMJ8p5kSRYAUM6BBIXQjCIMR6ZAVRAYFRNUNEwk4+98D0MCnungiACdGA3oQTryiGAHrQeG+3cQAjdZjqMZiNQIgYexBXhseBA09yKtGEUAHfuclfzTt/4E/Bm5fX3DdcbiY1wucAAAAAElFTkSuQmCC",
+    phone = "iVBORw0KGgoAAAANSUhEUgAAAEAAAABABAMAAABYR2ztAAAAMFBMVEX///////////////////////////////////////////////////////////////9Or7hAAAAAEHRSTlMAJEltkrbb////////////J6IGdAAAAeBJREFUeNq9lLtyGzEMRQ8kzYRME2JdSa60qZL8/2/4E7SuklQLdqIrpqD2IZlczyQzYQWNzl4A5AXgX48AogHIFmvADkSDBgmiVYU9aKeIE++uqQIcEDmXb8cQqwBdFwAI42sd0HMJs9YkdqtYpd6FTR1LqANMwqpsp5AQakCe49BQiOtrrwEriQ9qgL8EltTxA4XRtovMZnH7Ju21oVA+zOOYG49VctsQG0XmoZRQrZEDYBGyDa8tV5OBaJbbNxkhj0NsAxmIuf0W2Qy08RZ7APE+JNtKEW/z2QLM6mZZFAxkSwGLTWJf7OqDb1RZANzuSLbUBmKn6n5uWC5fQFediuptEG8KfD4qzIYQ7VUhrYA3r35yBnT9194fuaYFwKn6T0MpU07P37ySUlwAQb1zseyx7vTdgXtzxEUhiSrk34CcfngHglyvaR6cbBal1wBoV/rRcyienIkg/SC3P0ozsqQgJTrnksc/9W4exrgAJC9H8d7t+uMs+isuKcg2mmqg09Z0m71E5GHXrYFifb03192GsfHCo78Pd7+yXR7d+7CjxpfL9hIbLzZUHbXaxw6Sv8Xj3T1MhWbRlcPfAXkwnroJsPcA2ZDxyxRWAMAuViSGWN/w5a60DO3GUeW/nD/dHbaZkeEf2wAAAABJRU5ErkJggg==",
+    radio = "iVBORw0KGgoAAAANSUhEUgAAAEAAAABABAMAAABYR2ztAAAAMFBMVEX///////////////////////////////////////////////////////////////9Or7hAAAAAEHRSTlMAJEltkrbb////////////J6IGdAAAAolJREFUeNrNlEGOHDcMRR8rtchuSF3Ao54LBIZXvv82yQXs0uQAEYls7I2bXkhVrp5uBEiAANGiBEi/Pj+pT8J/vn4C5MPHn798fXMhLx+qf4UFEJEHv4qqMgCo1XuAmTABamZ6R2BmNgBSBH0QAjWFBaxqtsBu+MkeUmwwVO2/hZyjiGl+blImg9Eb5Zah0hs2GciG1XpCWClKD3Sm6U65nEKI2eWC+0hTlB5Sqt0gStV8RZQFs3Qw8LjNgx5mLFwMDxFy1g9ID1TTkQsrVdNBR0grTzh4IODxrrBiegVT3wKxakhvZHe1VxBjxQApXFvAy7Phzx752X4xAGWdkvRTA7k8g11/DbqL6V8gLEAiSgIjUTHgeJsFIMTG++108xs7ANU9d4BpMMuDYa4Jm7ucQvzdegS4qfkw7TiKeREJkH6YVsCZTwBkBoDDYXsyECZsbMqA7Ro8blujWPquwYHsLO/Ppr080wJIliHNw+oZsDM4C1uIQYwnONqOBNN0FpqP4t8A5kHfWOgulV3STbVM3VnIYNHszQMDdzDSewupQ8MI2Td3Mc3eQkzdt4YZGayQSP29y9XFtDdMTf/YnhpFCVjAG6XSPaySvQXF0jul4g4L9BblvaZjhruPPeSlZh8MuYVUJRAlI+cuRbMPBvyhU3QYYwXwpz/j7X1u+s05AO2Br/qVCch+9QAZ/eluokH2LeMA9JzleoVrM7MAT+IIMcfKGAERZh7786wnF2mKCaJI3Y7T9Tz6sBdAENO4B2BQCuce/Ned9c8A61nCGJ1IxV7vAGKafQtALvb0I431x/jW6wRgahZvNYjhLfYeLnon0myXwDDVHcPRzwxTPUgzQEGYY/v/s74DQAI4gA/sHQsAAAAASUVORK5CYII=",
+    job = "iVBORw0KGgoAAAANSUhEUgAAAEAAAABABAMAAABYR2ztAAAAMFBMVEX///////////////////////////////////////////////////////////////9Or7hAAAAAEHRSTlMAJEltkrbb////////////J6IGdAAAAtBJREFUeNqtlDFz3DYUhL/HS0G6AqDq1EQgC4/tStJvyd/NL4jkylIaAVdFbgRg0ogpQqQACZInTRqbM3czAJfv4S12F370Obyz1/z28XFdvAPQOzSA7LbEqs3qFwDza07rlunlrIL0/aaE9FalPUDrvl+rGguZutGAGCu9XQtoQIarChDdK4xW9QQKMNpUHg6fLxW0r9/L+9tPwNj0KqalglX1Q5AeoL9WxtYWogCx8yA5xojoysYBOR4BpH0ega4N/s/LFmiJYwFo0wKiXAJe47NLgwKk/SsBDZOPpXtpEeNyF1qrwkNwCbbc3cznHXQBZB9BkSuVC6C3M9XBJwCzcLVUE6VmwfzTHQFy4artunY+z2ksegi+tgSiq8qxs2BycM6DncmrchAzC4Zwx4Xl4sYDyE2tIAsgO/4GsVcnYHP1eiPacJ9oegWmh+AJLu5VnR0wXJXf5Al3J8g7wAkxhsZo8C4G51L2O+PIB8XYXV4qnh6+K5fkGPzzFpAbi3R91+Y/nsc4jmM3PY7zFIWgkJTWQIyJCDm+xL03pe1aYHrwY9l4HffeDPd14FIynZk3x1RE+ca8u8d95X8B+cXv1nUKUUUy0SMK4lvALQhMdwkGNf3+BmAGlRREl5Dh6mWZpJ5BW4WCGBLSK7RVZ4CLIoKXr0XVMpwBloAIviTIGhjNJjUggxRby+ruAlgjaLA1idYp9JIOq3/MVKKsYZMeoJF9Fs2A63fyVm4qQIyu90mO1TV6CfPhi1qE+5hEuhku+TWVnKyk5Ke4vc2LYn8xldbo0/w3z6ahKXYCYHIJILg11qHhcH2myanepNyWKF4auPlFWJrszAv1dPkpvafJ7E5Vt34LmMoqB7/BFrbCEzT8W1rn+03dUKSf76FZDr0Otx+4mQvWk68TlaYHYPxwzA97AMgxf3uczRviHJUbf7kErphXIG2ctCCKQPkJz3+40iSK94cETAAAAABJRU5ErkJggg==",
+    group = "iVBORw0KGgoAAAANSUhEUgAAAEAAAABABAMAAABYR2ztAAAAMFBMVEX///////////////////////////////////////////////////////////////9Or7hAAAAAEHRSTlMAJEltkrbb////////////J6IGdAAAAVdJREFUeNrtkj2O2zAQRt/QKhbbiGSqdCJ9AltX2Bvk2Akc9wtLrlJlxemSytyClk0FcRAX2/krJOjpgeD8wCOP3BFZfK2+BKav+xqZheAA57gp+OAAH24LGwuy/ofgAOS28LeYP+94fZU0AGbbHo5VyVYvrAi+b/MR8izolWEAE6z4Dkjlf6qZAfwGYlje7cLMuToJwKQAeaxZqSIrANN4fc6sCGKLMCjkYaxZA0xqy7kMNjDtqNkKeHr+zNtOgfxrGH4owG8JTN/1fMKuYzwCLidAbILTmDiM88JIbAeFdSiNcNPuwkon8wFA1qH00r0NembQgLhWySrR2XlocVCxSJuUBqS38Lo3fXcZcX/amxfI35QGidHCT1zVbO9xEfKkatgGCzn5bT2KGJKC+DWGPgJJzaYWPnU5AbHH4Cxw0uWy4/IRELcc1iKLYf3v0n6M8Mgjd+Udh0J7uULN2MoAAAAASUVORK5CYII=",
+    health = "iVBORw0KGgoAAAANSUhEUgAAAEAAAABABAMAAABYR2ztAAAAMFBMVEX///////////////////////////////////////////////////////////////9Or7hAAAAAEHRSTlMAJEltkrbb////////////J6IGdAAAAZlJREFUeNrtlLt63CAQRg9I32cpldhuXcXaKin9/rXfwHYV5Ca2m2jowjaeFFp0s9B2SRMqBg5z+YGBvziauWHGWZEmzhGnfVfFOWpcg2kERAYUpwGVAJQArr0DQL0GzKEdovU+AaZNgErAJaBBAhRgDqdvYzzjbtvjYNU3v2OkgMPpe3XJqDrX7nhIVm0kUIJpxwrNncPMrB9QgpspYNxCDQd2LdFaLrs6tByuwdLuAS2W+695wJ4oaXcu0DnstUv+DyRA9rYFO7zk3L5gkZAHVCjpdtLQHku/F6K7HsKyQ4iAhY8cof0LWJDuioe8VP0gtWZDSLh4kJzOl8vSftPFhw8J8N22Sgmg3wSGVUuOuKwNXS6eb6t1CY/PcfKg/lOaacmyTYwLqZHGL8dlBg/vy0e7TnO0LZvEZI29elFIKmHuQf3LzMGU8/Ri9ZcsRV6FgFinQn4+vW99vT6d0/kbK+a513UFqH8K259XhtTUS+Z3q+8DqF/IXiybc0N87RaSFav2Xd+8Pcc8EM9OX7u9DiPsN5R/M/4AP5e0DRNfNXcAAAAASUVORK5CYII=",
+    armor = "iVBORw0KGgoAAAANSUhEUgAAAEAAAABABAMAAABYR2ztAAAAMFBMVEX///////////////////////////////////////////////////////////////9Or7hAAAAAEHRSTlMAJEltkrbb////////////J6IGdAAAAbZJREFUeNrtlSt33DAQhe9oF+yiagaGWbCszU/I389JWFnsogZV0qI6SAHWYyyrJyCFFVlb5/M8ru5ogc8u2r2Zh+94efy529oBTIDl3da5PYqFWIDEIS0DgBxbMMAiKYR4BFi+ZRD4PfeAWMiksjkqac75qwlkVW9O4Lc0GyDi9t2L4It/BoATALi7r5eDQtdIoUS41+FVmrkAbiiyyFHJwfoPHBwFX0xA0xBIczGasB0Bwc/56ebsoIbkQ0WXOAKaD9Wj7qI5OYWP2kyfFoqGQGueeASoXR7qAKkETXYYoQLM4xrKd6SOQgM1hA6wAVnDnJrEKj0NACwhFz9tP5xP9xBB2AIkuZbtgjAAUA6aZLJUa90inAEgnIoUIRpX/JZiS9E6ZW56hd60AMTdppGr6/mTSBUpatPGss29aUx26dETubUN8Mql3ZSYg407ZxuMibphDlOTNegAzF2Zfun8kMIuR3s1bR4HPWrAexUiLRU/VZHfLtdLbeFXXHsAK+oxpKc2/3r8y/2BWalyUpW92UgXpPD6ov45NbD+Wa+MMP94Xce3XFpo82L82/inGIGUIv7pegd4CabIsSNWlQAAAABJRU5ErkJggg==",
+    distance = "iVBORw0KGgoAAAANSUhEUgAAAEAAAABABAMAAABYR2ztAAAAMFBMVEX///////////////////////////////////////////////////////////////9Or7hAAAAAEHRSTlMAJEltkrbb////////////J6IGdAAAAf9JREFUeNqtlKt23DAQhn+5C3aLRkJNkKXAopw8Qt+9qGdZT9FKy8KkKXNIJmAtWRdvSCvgY8mfZn7PDfjXpar36YcjAOJ/XavDCqC9W182W8Y9PpTPywhM360+AQAW9Y05Hx8KYN28vmktIXGvwZi5ku70INI81z9nbA9MRteAtnMHWNvGx5gWUIa6AFpqAdcDrgGUHpOgqQFoSFIL2NGCqYEpu0jep+xirkKtaHURz3i6wUpRDawWJHpMq379NtQDxAcgeq7PGgAxASngLiCe18c9gKEI8omLndUAt+uK7gOOhry1LowGtP3EhbOAaS3cIilbbyBXCrgG0qrMvCBHnRsguNwSW1S50vCexgCkawVI4P67NBZkz0IN7BC5OaduXzykLlC9hdQDMXQWQgvI6KLT0KscB0jrY9uVGbW8PR43B7//LL2FplarzVYP79uh+OvOnMTy9SEr+Ml7FbUJqwVP1VzL5zHA2RF4oXhmAJBLUE8DoJybV+3ieXKlcsuU08qR+AQkz8qR7qYcHMFYuQSWeGZjoRyGMWg0ok/JB2i79deh6Ux4Lb7N2qFpfshF+H53a7qluWnvQ44+EZRjyF+C0lW6sgvvSBkFJGhAE4qUQ5l/c9138LmVSjZPR1bHUn+vPgzp5pMuJfXqw9L/ZuJt5Ke4V1EiOzX9P9YHk0DSWHLUStQAAAAASUVORK5CYII=",
+    vehicle = "iVBORw0KGgoAAAANSUhEUgAAAEAAAABABAMAAABYR2ztAAAAMFBMVEX///////////////////////////////////////////////////////////////9Or7hAAAAAEHRSTlMAJEltkrbb////////////J6IGdAAAAXRJREFUeNrtVD1PAkEQfXuAsbDYOREr9QJaA1Gp0Yg/wJhYqoler9G/4R9A/oDxq1YSqKVAawxgZ0HYi0YTAVkLZHdP+AfeVHOz7+a9fTNZIIggdDDzg4gASNEYD2C59G8m76uqGtaATLrdEAAYxTdFc5QsdMpVr6VjVbZUFq15w1TWPrj/7xn3gLlmYXYv4h4aGizqh6dMQCvKSA6YAQCfX06nZeqSc5MLxVetQdbfsrZBy2ystauGD6ETANITYuAXIw6ge6Y1LAIAI/Ipj3BPUaTGjiGlNDDnctS551tHA/B9UfIf9++uOBlOZuVDwTN9yFdZlhkdYuu8dWPYUPDsnG+abDVR1yNGLxGP8z/jtu0V44bbI/vQZsw3QCEtrgES/TwosjsksZLn0ps4Mjv0ALFTKavlTJbR9S1MCYjNq3NcZzjkozQALzS9X9EKuk9bRE1TgwvgfVkjvJQLdDSg6QDY8N2CIEt6HxgHIIJnJIh/Ej94AGkjurDQFQAAAABJRU5ErkJggg==",
+    weapon = "iVBORw0KGgoAAAANSUhEUgAAAEAAAABABAMAAABYR2ztAAAAMFBMVEX///////////////////////////////////////////////////////////////9Or7hAAAAAEHRSTlMAJEltkrbb////////////J6IGdAAAAWZJREFUeNrtlD9OwzAUhz87GZCQqMOfPWoHVqqeACFYYeECiFMBNwCpB6BSe4AKunWiRGIsbbwi0ZghTmicup2QQOJNtvzJfu/3fs/wH78lAgDOTuJx7Si8jscQAgRtIqVdoBNFSiMBJKBqNyhQICC8EgrSGhBBOu2G0Insth5RAwnx2iok6E0APwqYXChvTKZISPzA44AA0q2PyAO8aCRkvXtPpSaxzTI674R5au30G6KlZvmzMywgrJjT3t72EN7OH3S1zMBu+mgJxJl2dJDlk0nQBmVcodr5OoMJp7GIMxc4KoFPLWJR8YYEpCp0xdylI1npb7iU4yuwuOGwom0INO16twkgL8zIAWwKHFxaOZx2C8dzpkv1hqA80QDzoXaAwjPZrV7tKCsTC+2xXJHj3OPJQiaPs+R3jj6gkMkzQLKcvGwjsGlwvECy1MuVwPPaIpC858llo9WAgP1jgOng/8v/8/EFuRVfp7uBUy4AAAAASUVORK5CYII=",
+    speed = "iVBORw0KGgoAAAANSUhEUgAAAEAAAABABAMAAABYR2ztAAAAMFBMVEX///////////////////////////////////////////////////////////////9Or7hAAAAAEHRSTlMAJEltkrbb////////////J6IGdAAAAfFJREFUeNrtlTFyGzEMRR8YFWkyA1AXMOkLZKwj5PoZp0vnpco0JngBiylWu1pupJzArDjE248B8MmFzwUgm/3xRwKg/vx1Owwb1pad6e30sIYTdiXMYuxlD8Qsy4cST7zvAcmnm2yMfOxSWMxAbUu23kZAYla4TLNuNH0rI2A5K5Qr0OL3HSDRtBeqz2depzPE7itgyei1+DVxnypI/LYCEk3xaVWlVpCnyy2FGXXyYQQx4WurxbS/lTYAx5d6XhXM6NN5nGGyiy9AzNqnNoZFa0NSLxxAktYxgTxrnxry/FEIYGntwDq4fHltSFYIs2e2gMSk9EZ80bXVfZtBTrZUCgREdy60OE9TEigHTKllk1+PSp8KdBBrgWzdNxniKSm8O3hpMRPIti0ipJyglwb1FYscUL3cFCxGwN8b0B0xArYtci7tMjfWG3Zz9WI9AC93Lw5ItH/aMgDk+e5t2zYqZAXoPAJQOrAx3x4AGn2YbdhFRRndMwIOu/gIdG9Q/wNQfezSYhhdFabOzv8HQESXS1frpgs2A27ERdUHbybFCRRfH6ed9QyvBKYi8ekeEJLWiYC3xwrdOeANZhvsVmIGOhBO9xSAtrxR9vCt/gJi8vVurPvvPwSo06OvpwLhegnuKtQ2D8t3Llu8gX/+Ltf1F4DA0e+4jWQ3AAAAAElFTkSuQmCC",
 }
-
 local ICON_TEXTURES = {}
 
 local function uploadIcon(name, encoded)
@@ -32731,6 +32064,9 @@ local function drawIcon(name, x, y, size, cr, cg, cb)
     if texture and Susano and type(Susano.DrawImage) == "function" then
         local ok = pcall(Susano.DrawImage, texture, x, y, size, size, ir, ig, ib, 1.0, 0)
         if ok then return end
+        -- The handle was rejected; drop it so the card stops retrying a bad
+        -- draw every frame and falls back to the vector glyph.
+        ICON_TEXTURES[name] = nil
     end
 
     -- Filled cell in the icon colour.
@@ -32854,6 +32190,7 @@ local function drawVehicleBadge(x, y, size, r, g, b)
     if texture and Susano and type(Susano.DrawImage) == "function" then
         local ok = pcall(Susano.DrawImage, texture, x, y, size, size, r, g, b, 1.0, 0)
         if ok then return end
+        ICON_TEXTURES.vehicle = nil
     end
 
     fillRect(x + 0.06 * size, y + 0.44 * size, 0.88 * size, 0.24 * size,
@@ -33091,14 +32428,64 @@ end
 -- one place that touches a state bag.
 Menu.ResolvePlayerIdentity = resolveIdentity
 
--- The Online list needs the same width-aware truncation the card uses for its
--- values, but with the menu's 19 px row type. Exposing the helper keeps one
--- text-measurement path instead of a second byte-count approximation.
-Menu.FitRowLabel = function(value, maxWidth)
-    return fitText(value, maxWidth, 19, Menu.Scale or 1.0)
+-- The Online list builder runs on its own thread every 250 ms and asks for a
+-- truncation point for every row. It must not call Susano.GetTextWidth: that
+-- primitive blocks the calling thread until the overlay thread answers, so a
+-- measurement per player per rebuild starves the overlay and the client drops.
+-- A proportional-font average is exact enough for where to cut, and the whole
+-- helper stays pure Lua on the list thread.
+local ROW_FONT_SIZE = 19
+local ROW_CHAR_RATIO = 0.52
+
+local function utf8Length(value)
+    local count = 0
+    local index = 1
+    while index <= #value do
+        local byte = value:byte(index) or 0
+        local length = 1
+        if byte >= 0xF0 then length = 4
+        elseif byte >= 0xE0 then length = 3
+        elseif byte >= 0xC0 then length = 2 end
+        index = index + length
+        count = count + 1
+    end
+    return count
 end
 
-function Menu.DrawPlayerInfoPanel()
+local function utf8Cut(value, keep)
+    if keep <= 0 then return 0 end
+    local index = 1
+    local seen = 0
+    while index <= #value and seen < keep do
+        local byte = value:byte(index) or 0
+        local length = 1
+        if byte >= 0xF0 then length = 4
+        elseif byte >= 0xE0 then length = 3
+        elseif byte >= 0xC0 then length = 2 end
+        index = index + length
+        seen = seen + 1
+    end
+    return index - 1
+end
+
+Menu.FitRowLabel = function(value, maxWidth)
+    value = tostring(value or "")
+    maxWidth = tonumber(maxWidth) or 0
+    if value == "" or maxWidth <= 0 then return value end
+
+    local scale = Menu.Scale or 1.0
+    local charWidth = ROW_FONT_SIZE * ROW_CHAR_RATIO * scale
+    if charWidth <= 0 then return value end
+
+    local maxChars = math.floor(maxWidth / charWidth)
+    if maxChars < 1 then return "" end
+    if utf8Length(value) <= maxChars then return value end
+
+    if maxChars <= 3 then return value:sub(1, utf8Cut(value, maxChars)) end
+    return value:sub(1, utf8Cut(value, maxChars - 3)) .. "..."
+end
+
+local function drawPlayerInfoPanel()
     if type(Menu) ~= "table" or type(Menu.GetSelectedPlayerInfo) ~= "function" then
         return
     end
@@ -33212,8 +32599,14 @@ function Menu.DrawPlayerInfoPanel()
         local labelWidth = textWidth(label, FONT_ROW, scale)
         local maxValueWidth = effectiveRight - (labelX + labelWidth + 10 * scale)
         if maxValueWidth < 0 then maxValueWidth = 0 end
-        local shownValue = fitText(value, maxValueWidth, FONT_ROW, scale)
-        local valueWidth = textWidth(shownValue, FONT_ROW, scale)
+        -- Measure the full value once. When it already fits, reuse that width
+        -- for the right alignment instead of measuring the same string twice.
+        local valueWidth = textWidth(value, FONT_ROW, scale)
+        local shownValue = value
+        if valueWidth > maxValueWidth then
+            shownValue = fitText(value, maxValueWidth, FONT_ROW, scale, valueWidth)
+            valueWidth = textWidth(shownValue, FONT_ROW, scale)
+        end
 
         text(effectiveRight - valueWidth, textY, shownValue, FONT_ROW,
             VALUE_R, VALUE_G, VALUE_B, 1.0)
@@ -33316,6 +32709,18 @@ function Menu.DrawPlayerInfoPanel()
         local row = contextData[index]
         drawRow(cy + (index - 0.5) * rowHeight, row.icon, row.label,
             row.value, innerRight, nil)
+    end
+end
+
+-- The library calls the card from its render pass. A single bad value must not
+-- take the render thread with it, so the body is isolated and the first error
+-- is logged once instead of repeating every frame.
+function Menu.DrawPlayerInfoPanel()
+    if type(Menu) ~= "table" then return end
+    local ok, err = pcall(drawPlayerInfoPanel)
+    if not ok and not Menu.__vgd_panelErrorLogged then
+        Menu.__vgd_panelErrorLogged = true
+        print("[Menu] panel draw error: " .. tostring(err))
     end
 end
 
@@ -37807,7 +37212,7 @@ end
 -- BOOT
 -- ---------------------------------------------------------------------------
 function UI.boot()
-    O.log("loader build 2026-11-07-r45 (Flash moved to Online > Troll > Attacks with Auto Safe and ten explicit methods; the selected method is read live; the WaveShield V4 particle configuration is read from GlobalState; scr_wheel_burnout and scr_alien_teleport are emitted only when rcore_spray/WaveAdmin put them in the static table, dynamic camera parts are sent only from the executor with assetHash stripped on ptFxEvent, and statically safe parts are mirrored through a Stage B resource graft acknowledged by entity decor; a dead or missing graft falls back to the executor without going silent; particle scale is capped at MaxParticleScale and each pulse sends up to three networked parts with no minimum range; a one-player test server gets a local Susano overlay pulse instead of a fabricated server event; the retired Exploit Flash tab is removed; Search magnifier handle rebuilt as a fused diagonal instead of three dots; White keeps the wbYgWhZ banner and Cyan restores its original 3HLMxX5 banner; Online Props Player row sorts the player list by distance and always targets the nearest player; Launch Player selector offers Method 1 and Method 2; Method 1 drives the victim ped directly when control is available and otherwise reverse-attaches the victim to the local ped within 3 m; Method 2 uses a range-free injected coordinate lift plus repeated upward force and velocity for servers that ignore Method 1; launch has no vehicle or explosion; hardened Susano ragdoll keeps the victim speed check lenient; self launch uses 58 m/s with GET_ENTITY_SPEED masked by the stealth hook; velocity and settle waits carry jitter; tight bold category chevrons; Troll Appearance section and Copy Appearance row removed; All mode Include me toggle adds the local ped alongside remote targets; Props Player row hidden in Self and All modes; attachment rows Attach to player and Attach point removed; target labels Self/Player/All; automatic player refresh sorts by distance and selects nearest; manual Refresh player list removed; Ban Player beta suffix removed; Servers and Bypass tabs moved from Destroyer to Misc; FOV moved from Visual/Camera to Self under Big Weapon; theme banners bottom-anchored flush on the category plate; White uses wbYgWhZ and Cyan uses 3HLMxX5; White/Cyan theme selector; White 3:1 header and Cyan 4.1:1 header; flush tab strip; light-grey cell tab plate; dark selected category rectangle; uniform unselected categories; reference names Self/Online/Vehicle/Weapon/Destroyer/Misc/Settings/Search; Search category opens the prompt directly and lands on results; compact magnifier; tight bold category chevron pair; full-white section rules fitted to the label width; Target keeps only the Ctrl hint; Player Props folded into Online; 15px right-aligned slider readout; target-bound toggles reset on target change/unload; dark row plates; white toggle/scrollbar; footer centre mark removed; Delete/Backspace close)")
+    O.log("loader build 2026-11-07-r45")
     O.thread()
 
     -- Delete/Backspace fallback poll. 40 ms is faster than a frame at 30 FPS
