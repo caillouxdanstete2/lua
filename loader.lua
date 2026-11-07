@@ -219,7 +219,7 @@ do
     LibraryCode = replacePlain(
         LibraryCode,
         "                Susano.DrawRectFilled(x + 1, tabsY + 1, width - 2, menuBarH - 1, 0.0, 0.0, 0.0, 1.0, menuRadius)",
-        "                Susano.DrawRectFilled(x + 1, tabsY + 1, width - 2, menuBarH - 1, 0.035, 0.035, 0.040, 1.0, menuRadius)"
+        "                Susano.DrawRectFilled(x + 1, tabsY + 1, width - 2, menuBarH - 1, 0.052, 0.052, 0.056, 1.0, menuRadius)"
     )
 
     -- Scrollbar: same geometry, quieter track.
@@ -370,6 +370,45 @@ do
 
     LibraryCode = replaceAllPlain(LibraryCode, "0.2, 0.2, 0.2, 0.95", "0.17, 0.17, 0.18, 0.95")
     LibraryCode = replaceAllPlain(LibraryCode, "51, 51, 51, 242", "43, 43, 46, 242")
+
+    -- Toggle knob: white on the dark off-track, near-black on the white
+    -- on-track. The lerp tracks the same _toggleP as the track colour.
+    LibraryCode = replacePlain(
+        LibraryCode,
+        [[            Susano.DrawRectFilled(circleX, circleY, circleSize, circleSize,
+                0.0, 0.0, 0.0, 1.0,
+                circleSize / 2)]],
+        [[            local _knob = 1.0 - 0.94 * _toggleP
+            Susano.DrawRectFilled(circleX, circleY, circleSize, circleSize,
+                _knob, _knob, _knob, 1.0,
+                circleSize / 2)]]
+    )
+    LibraryCode = replacePlain(
+        LibraryCode,
+        [[            Menu.DrawRoundedRect(circleX, circleY, circleSize, circleSize,
+                0, 0, 0, 255,
+                circleSize / 2)]],
+        [[            local _knobF = math.floor((1.0 - 0.94 * _toggleP) * 255)
+            Menu.DrawRoundedRect(circleX, circleY, circleSize, circleSize,
+                _knobF, _knobF, _knobF, 255,
+                circleSize / 2)]]
+    )
+    LibraryCode = replaceAllPlain(
+        LibraryCode,
+        "            Susano.DrawRectFilled(circleX, circleY, circleSize, circleSize, 0.0, 0.0, 0.0, 1.0, circleSize / 2)",
+        [[            do
+                local _knob = 1.0 - 0.94 * _toggleP
+                Susano.DrawRectFilled(circleX, circleY, circleSize, circleSize, _knob, _knob, _knob, 1.0, circleSize / 2)
+            end]]
+    )
+    LibraryCode = replaceAllPlain(
+        LibraryCode,
+        "            Menu.DrawRoundedRect(circleX, circleY, circleSize, circleSize, 0, 0, 0, 255, circleSize / 2)",
+        [[            do
+                local _knobF = math.floor((1.0 - 0.94 * _toggleP) * 255)
+                Menu.DrawRoundedRect(circleX, circleY, circleSize, circleSize, _knobF, _knobF, _knobF, 255, circleSize / 2)
+            end]]
+    )
 
     -- The library's no-banner fallback draws a 44 px white "P" over the dark
     -- header. Keep the dark plate instead: a missing or slow banner must not
@@ -965,7 +1004,7 @@ end
 do
     local themes = {
         White = {
-            r = 236, g = 236, b = 238,
+            r = 255, g = 255, b = 255,
             image = "https://i.imgur.com/wbYgWhZ.png",
         },
         Graphite = {
@@ -1060,15 +1099,11 @@ do
     end
 
     Menu.Ui = {
-        tabBar       = { 0.035, 0.035, 0.040, 1.0 },
-        tabBarInner  = { 0.045, 0.045, 0.052, 1.0 },
-        tabBarBorder = { 0.160, 0.160, 0.170, 1.0 },
+        tabBar       = { 0.052, 0.052, 0.056, 1.0 },
+        tabBarBorder = { 0.052, 0.052, 0.056, 1.0 },
         tabIdleText  = { 0.680, 0.680, 0.700, 1.0 },
-        tabIdleIcon  = { 0.780, 0.780, 0.800, 1.0 },
-        tabTop       = { 0.985, 0.985, 0.990, 1.0 },
-        tabBottom    = { 0.760, 0.760, 0.780, 1.0 },
+        tabPill      = { 0.880, 0.880, 0.900, 1.0 },
         tabText      = { 0.035, 0.035, 0.040, 1.0 },
-        tabRule      = { 0.160, 0.160, 0.170, 0.65 },
     }
 
     Menu.ApplyTheme("White")
@@ -2587,146 +2622,6 @@ Menu.LoadAllIcons()
 -- monochrome glyph per tab. The icons are drawn with the same primitives as
 -- the rest of the menu, so they need no texture request, no external asset
 -- and no extra file in the host resource.
-Menu.TabIconKind = {
-    Self = "person",
-    Target = "target",
-    Movement = "bolt",
-    Wardrobe = "hanger",
-    ["Player List"] = "list",
-    Troll = "skull",
-    Vehicle = "car",
-    World = "globe",
-    Camera = "camera",
-    General = "gear",
-    Spawn = "plus",
-    Performance = "gauge",
-    Radar = "radar",
-    Exploits = "terminal",
-    Servers = "server",
-    Bypass = "shield",
-    Voice = "mic",
-    Flash = "bolt",
-    Actions = "bolt",
-    Protection = "shield",
-}
-
-function Menu.DrawTabIcon(kind, x, y, size, r, g, b, a, bgR, bgG, bgB)
-    if not kind or not Susano then return end
-    local u = size / 14.0
-
-    local function rect(px, py, pw, ph, cr, cg, cb, ca, rad)
-        if pw <= 0 or ph <= 0 then return end
-        if Susano.DrawRectFilled then
-            Susano.DrawRectFilled(px, py, pw, ph, cr, cg, cb, ca, rad or 0)
-        else
-            Menu.DrawRect(px, py, pw, ph, cr, cg, cb, ca)
-        end
-    end
-
-    local function circ(px, py, d, cr, cg, cb, ca)
-        rect(px, py, d, d, cr, cg, cb, ca, d * 0.5)
-    end
-
-    local function line(x1, y1, x2, y2, th, cr, cg, cb, ca)
-        local dx, dy = x2 - x1, y2 - y1
-        local steps = math.max(1, math.floor(math.max(math.abs(dx), math.abs(dy))))
-        for i = 0, steps do
-            local t = i / steps
-            rect(x1 + dx * t - th * 0.5, y1 + dy * t - th * 0.5, th, th, cr, cg, cb, ca, th * 0.5)
-        end
-    end
-
-    if kind == "person" then
-        circ(x + 4.5 * u, y + 1.5 * u, 5.0 * u, r, g, b, a)
-        rect(x + 2.2 * u, y + 7.5 * u, 9.6 * u, 5.2 * u, r, g, b, a, 2.6 * u)
-    elseif kind == "target" then
-        circ(x + 2.0 * u, y + 2.0 * u, 10.0 * u, r, g, b, a)
-        circ(x + 4.0 * u, y + 4.0 * u, 6.0 * u, bgR, bgG, bgB, a)
-        rect(x + 6.4 * u, y, 1.2 * u, 2.4 * u, r, g, b, a, 0.6 * u)
-        rect(x + 6.4 * u, y + 11.6 * u, 1.2 * u, 2.4 * u, r, g, b, a, 0.6 * u)
-        rect(x, y + 6.4 * u, 2.4 * u, 1.2 * u, r, g, b, a, 0.6 * u)
-        rect(x + 11.6 * u, y + 6.4 * u, 2.4 * u, 1.2 * u, r, g, b, a, 0.6 * u)
-        circ(x + 6.0 * u, y + 6.0 * u, 2.0 * u, r, g, b, a)
-    elseif kind == "bolt" then
-        line(x + 9.0 * u, y + 1.0 * u, x + 5.0 * u, y + 7.0 * u, 2.2 * u, r, g, b, a)
-        line(x + 5.0 * u, y + 7.0 * u, x + 8.2 * u, y + 7.0 * u, 2.2 * u, r, g, b, a)
-        line(x + 8.2 * u, y + 7.0 * u, x + 4.0 * u, y + 13.0 * u, 2.2 * u, r, g, b, a)
-    elseif kind == "hanger" then
-        circ(x + 5.4 * u, y + 1.0 * u, 3.2 * u, r, g, b, a)
-        circ(x + 6.2 * u, y + 1.8 * u, 1.6 * u, bgR, bgG, bgB, a)
-        line(x + 7.0 * u, y + 4.2 * u, x + 7.0 * u, y + 6.2 * u, 1.3 * u, r, g, b, a)
-        line(x + 7.0 * u, y + 6.2 * u, x + 2.0 * u, y + 10.0 * u, 1.3 * u, r, g, b, a)
-        line(x + 7.0 * u, y + 6.2 * u, x + 12.0 * u, y + 10.0 * u, 1.3 * u, r, g, b, a)
-        line(x + 2.4 * u, y + 10.2 * u, x + 11.6 * u, y + 10.2 * u, 1.5 * u, r, g, b, a)
-    elseif kind == "list" then
-        for i = 0, 2 do
-            circ(x + 1.0 * u, y + (3.0 + i * 4.0) * u, 1.5 * u, r, g, b, a)
-            rect(x + 4.0 * u, y + (2.6 + i * 4.0) * u, 8.0 * u, 1.2 * u, r, g, b, a, 0.6 * u)
-        end
-    elseif kind == "skull" then
-        circ(x + 2.0 * u, y + 1.0 * u, 10.0 * u, r, g, b, a)
-        circ(x + 4.0 * u, y + 4.0 * u, 2.2 * u, bgR, bgG, bgB, a)
-        circ(x + 7.8 * u, y + 4.0 * u, 2.2 * u, bgR, bgG, bgB, a)
-        rect(x + 5.2 * u, y + 9.0 * u, 3.6 * u, 2.2 * u, r, g, b, a, 0.8 * u)
-    elseif kind == "car" then
-        rect(x + 1.5 * u, y + 6.0 * u, 11.0 * u, 4.5 * u, r, g, b, a, 1.5 * u)
-        rect(x + 3.5 * u, y + 3.0 * u, 7.0 * u, 4.0 * u, r, g, b, a, 1.4 * u)
-        circ(x + 2.5 * u, y + 9.2 * u, 3.0 * u, r, g, b, a)
-        circ(x + 8.5 * u, y + 9.2 * u, 3.0 * u, r, g, b, a)
-    elseif kind == "globe" then
-        circ(x + 2.0 * u, y + 2.0 * u, 10.0 * u, r, g, b, a)
-        circ(x + 4.0 * u, y + 4.0 * u, 6.0 * u, bgR, bgG, bgB, a)
-        rect(x + 3.0 * u, y + 6.3 * u, 8.0 * u, 1.0 * u, r, g, b, a, 0.5 * u)
-        rect(x + 3.0 * u, y + 8.2 * u, 8.0 * u, 1.0 * u, r, g, b, a, 0.5 * u)
-        rect(x + 6.4 * u, y + 2.5 * u, 1.2 * u, 9.0 * u, r, g, b, a, 0.6 * u)
-    elseif kind == "camera" then
-        rect(x + 1.5 * u, y + 4.5 * u, 11.0 * u, 7.5 * u, r, g, b, a, 1.2 * u)
-        rect(x + 4.5 * u, y + 2.5 * u, 5.0 * u, 2.0 * u, r, g, b, a, 0.8 * u)
-        circ(x + 4.5 * u, y + 5.5 * u, 5.0 * u, r, g, b, a)
-        circ(x + 5.8 * u, y + 6.8 * u, 2.4 * u, bgR, bgG, bgB, a)
-    elseif kind == "gear" then
-        circ(x + 4.0 * u, y + 4.0 * u, 6.0 * u, r, g, b, a)
-        circ(x + 5.5 * u, y + 5.5 * u, 3.0 * u, bgR, bgG, bgB, a)
-        rect(x + 6.0 * u, y, 2.0 * u, 2.5 * u, r, g, b, a, 0.6 * u)
-        rect(x + 6.0 * u, y + 11.5 * u, 2.0 * u, 2.5 * u, r, g, b, a, 0.6 * u)
-        rect(x, y + 6.0 * u, 2.5 * u, 2.0 * u, r, g, b, a, 0.6 * u)
-        rect(x + 11.5 * u, y + 6.0 * u, 2.5 * u, 2.0 * u, r, g, b, a, 0.6 * u)
-    elseif kind == "plus" then
-        rect(x + 6.0 * u, y + 2.0 * u, 2.0 * u, 10.0 * u, r, g, b, a, 1.0 * u)
-        rect(x + 2.0 * u, y + 6.0 * u, 10.0 * u, 2.0 * u, r, g, b, a, 1.0 * u)
-    elseif kind == "gauge" then
-        rect(x + 2.0 * u, y + 8.0 * u, 2.6 * u, 4.0 * u, r, g, b, a, 0.7 * u)
-        rect(x + 5.7 * u, y + 5.0 * u, 2.6 * u, 7.0 * u, r, g, b, a, 0.7 * u)
-        rect(x + 9.4 * u, y + 2.0 * u, 2.6 * u, 10.0 * u, r, g, b, a, 0.7 * u)
-    elseif kind == "radar" then
-        circ(x + 2.0 * u, y + 2.0 * u, 10.0 * u, r, g, b, a)
-        circ(x + 4.0 * u, y + 4.0 * u, 6.0 * u, bgR, bgG, bgB, a)
-        circ(x + 6.2 * u, y + 6.2 * u, 1.6 * u, r, g, b, a)
-        line(x + 7.0 * u, y + 7.0 * u, x + 10.5 * u, y + 3.5 * u, 1.0 * u, r, g, b, a)
-    elseif kind == "server" then
-        rect(x + 2.0 * u, y + 2.0 * u, 10.0 * u, 2.8 * u, r, g, b, a, 0.7 * u)
-        rect(x + 2.0 * u, y + 5.6 * u, 10.0 * u, 2.8 * u, r, g, b, a, 0.7 * u)
-        rect(x + 2.0 * u, y + 9.2 * u, 10.0 * u, 2.8 * u, r, g, b, a, 0.7 * u)
-    elseif kind == "shield" then
-        rect(x + 3.0 * u, y + 1.0 * u, 8.0 * u, 2.0 * u, r, g, b, a, 0.8 * u)
-        rect(x + 2.0 * u, y + 3.0 * u, 10.0 * u, 4.5 * u, r, g, b, a, 0.8 * u)
-        rect(x + 3.2 * u, y + 7.5 * u, 7.6 * u, 3.0 * u, r, g, b, a, 0.8 * u)
-        rect(x + 5.0 * u, y + 10.5 * u, 4.0 * u, 2.0 * u, r, g, b, a, 0.8 * u)
-    elseif kind == "mic" then
-        circ(x + 5.0 * u, y + 1.0 * u, 4.0 * u, r, g, b, a)
-        rect(x + 5.2 * u, y + 3.8 * u, 3.6 * u, 5.2 * u, r, g, b, a, 1.8 * u)
-        line(x + 7.0 * u, y + 9.0 * u, x + 7.0 * u, y + 11.5 * u, 1.2 * u, r, g, b, a)
-        line(x + 4.0 * u, y + 11.6 * u, x + 10.0 * u, y + 11.6 * u, 1.4 * u, r, g, b, a)
-    elseif kind == "terminal" then
-        rect(x + 1.5 * u, y + 2.0 * u, 11.0 * u, 10.0 * u, r, g, b, a, 1.2 * u)
-        rect(x + 2.5 * u, y + 3.0 * u, 9.0 * u, 8.0 * u, bgR, bgG, bgB, a, 0.8 * u)
-        rect(x + 4.0 * u, y + 5.0 * u, 3.0 * u, 1.2 * u, r, g, b, a, 0.6 * u)
-        rect(x + 4.0 * u, y + 8.0 * u, 5.0 * u, 1.2 * u, r, g, b, a, 0.6 * u)
-    else
-        circ(x + 5.0 * u, y + 5.0 * u, 4.0 * u, r, g, b, a)
-    end
-end
-
 function Menu.DrawTabs(category, x, startY, width, tabHeight)
     if not category or not category.hasTabs or not category.tabs then return end
     local count = #category.tabs
@@ -2737,8 +2632,6 @@ function Menu.DrawTabs(category, x, startY, width, tabHeight)
     local tabWidth = width / count
     local radius = math.floor(8 * scale)
     local textSize = 17
-    local iconSize = math.floor(15 * scale)
-    local iconGap = math.floor(6 * scale)
     local textScale = textSize * scale
 
     local function fill(px, py, pw, ph, cr, cg, cb, ca, rad)
@@ -2756,24 +2649,13 @@ function Menu.DrawTabs(category, x, startY, width, tabHeight)
     end
 
     local bar = ui.tabBar or { 0.035, 0.035, 0.040, 1.0 }
-    local barInner = ui.tabBarInner or { 0.045, 0.045, 0.052, 1.0 }
     local barBorder = ui.tabBarBorder or { 0.160, 0.160, 0.170, 1.0 }
-    local rule = ui.tabRule or { 0.160, 0.160, 0.170, 0.65 }
     local idleText = ui.tabIdleText or { 0.680, 0.680, 0.700, 1.0 }
-    local idleIcon = ui.tabIdleIcon or { 0.780, 0.780, 0.800, 1.0 }
-    local tabTop = ui.tabTop or { 0.985, 0.985, 0.990, 1.0 }
-    local tabBottom = ui.tabBottom or { 0.760, 0.760, 0.780, 1.0 }
+    local tabPill = ui.tabPill or { 0.880, 0.880, 0.900, 1.0 }
     local tabText = ui.tabText or { 0.035, 0.035, 0.040, 1.0 }
 
     fill(x, startY, width, tabHeight, barBorder[1], barBorder[2], barBorder[3], barBorder[4], radius)
     fill(x + 1, startY + 1, width - 2, tabHeight - 2, bar[1], bar[2], bar[3], bar[4], radius - 1)
-    fill(x + 1, startY + 1, width - 2, math.floor(tabHeight * 0.55), barInner[1], barInner[2], barInner[3], 0.55, radius - 1)
-
-    for i = 1, count - 1 do
-        local tx = x + i * tabWidth
-        fill(tx, startY + math.floor(tabHeight * 0.24), 1, math.floor(tabHeight * 0.52),
-            rule[1], rule[2], rule[3], rule[4], 0)
-    end
 
     local selected = Menu.CurrentTab or 1
     if selected < 1 then selected = 1 end
@@ -2790,25 +2672,26 @@ function Menu.DrawTabs(category, x, startY, width, tabHeight)
     if math.abs(Menu.TabSelectorX - selX) < 0.5 then Menu.TabSelectorX = selX end
     if math.abs(Menu.TabSelectorWidth - selW) < 0.5 then Menu.TabSelectorWidth = selW end
 
-    local px = Menu.TabSelectorX
-    local pw = Menu.TabSelectorWidth
-    local ph = tabHeight - 4
-    fill(px - 2, startY + 1, pw + 4, tabHeight - 2, 1.0, 1.0, 1.0, 0.035, radius + 2)
-    fill(px, startY + 2, pw, ph, tabBottom[1], tabBottom[2], tabBottom[3], 1.0, radius)
-    fill(px + 1, startY + 3, pw - 2, math.floor(ph * 0.72), tabTop[1], tabTop[2], tabTop[3], 1.0, radius - 1)
-    fill(px + 2, startY + 4, pw - 4, math.floor(ph * 0.40), 1.0, 1.0, 1.0, 0.88, radius - 2)
+    -- A capsule around the label, inset on every side. One flat fill: no
+    -- two-tone stack, no bar flood, no icon gutter.
+    local insetX = math.floor(5 * scale)
+    local insetY = math.floor(6 * scale)
+    local px = Menu.TabSelectorX + insetX
+    local pw = Menu.TabSelectorWidth - insetX * 2
+    local ph = tabHeight - insetY * 2
+    if pw > 2 and ph > 2 then
+        fill(px, startY + insetY, pw, ph,
+            tabPill[1], tabPill[2], tabPill[3], 1.0, ph * 0.5)
+    end
 
     for i, tab in ipairs(category.tabs) do
         local tx, tw = geom(i)
         local isSelected = (i == selected)
-        local cr, cg, cb, ca
-        local bgR, bgG, bgB
+        local cr, cg, cb
         if isSelected then
-            cr, cg, cb, ca = tabText[1], tabText[2], tabText[3], 1.0
-            bgR, bgG, bgB = tabTop[1], tabTop[2], tabTop[3]
+            cr, cg, cb = tabText[1], tabText[2], tabText[3]
         else
-            cr, cg, cb, ca = idleText[1], idleText[2], idleText[3], 1.0
-            bgR, bgG, bgB = bar[1], bar[2], bar[3]
+            cr, cg, cb = idleText[1], idleText[2], idleText[3]
         end
 
         local textWidth = 0
@@ -2818,21 +2701,117 @@ function Menu.DrawTabs(category, x, startY, width, tabHeight)
             textWidth = string.len(tab.name) * 9 * scale
         end
 
-        local kind = Menu.TabIconKind and Menu.TabIconKind[tab.name]
-        local groupWidth = textWidth + (kind and (iconSize + iconGap) or 0)
-        local gx = tx + (tw - groupWidth) * 0.5
+        local gx = tx + (tw - textWidth) * 0.5
         local textY = startY + tabHeight * 0.5 - textScale * 0.5 + 1 * scale
-        local iconY = startY + (tabHeight - iconSize) * 0.5
+        Menu.DrawText(gx, textY, tab.name, textSize, cr, cg, cb, 1.0)
+    end
+end
 
-        if kind then
-            local ir, ig, ib = cr, cg, cb
-            if not isSelected then
-                ir, ig, ib = idleIcon[1], idleIcon[2], idleIcon[3]
-            end
-            Menu.DrawTabIcon(kind, gx, iconY, iconSize, ir, ig, ib, 1.0, bgR, bgG, bgB)
+-- ============================================
+-- UI: uniform category list
+-- ============================================
+-- The main list is one continuous plate. Rows have no individual dark fill;
+-- only the selected category gets a flat light capsule, with dark text so the
+-- label stays readable on the light fill.
+local originalDrawCategories = Menu.DrawCategories
+if type(originalDrawCategories) == "function" then
+    local categoryWarned = false
+
+    Menu.DrawCategories = function()
+        if Menu.OpenedCategory then
+            return originalDrawCategories()
         end
 
-        Menu.DrawText(gx + (kind and (iconSize + iconGap) or 0), textY, tab.name, textSize, cr, cg, cb, 1.0)
+        local previousAlpha = Menu.DrawAlpha
+        Menu.DrawAlpha = (previousAlpha or 1.0) * (Menu.Anim and Menu.Anim.ui or 1.0)
+
+        local function drawCategories()
+            local scaledPos = Menu.GetScaledPosition()
+            local x = scaledPos.x
+            local startY = scaledPos.y + scaledPos.headerHeight + (scaledPos.headerSpacing or 0)
+            local width = scaledPos.width
+            local itemHeight = scaledPos.itemHeight
+            local scale = Menu.Scale or 1.0
+            local totalCategories = #Menu.Categories - 1
+            local maxVisible = Menu.ItemsPerPage
+
+            if Menu.CurrentCategory > Menu.CategoryScrollOffset + maxVisible + 1 then
+                Menu.CategoryScrollOffset = Menu.CurrentCategory - maxVisible - 1
+            elseif Menu.CurrentCategory <= Menu.CategoryScrollOffset + 1 then
+                Menu.CategoryScrollOffset = math.max(0, Menu.CurrentCategory - 2)
+            end
+
+            local visibleHeight = math.min(maxVisible, totalCategories) * itemHeight
+            local pill = (Menu.Ui and Menu.Ui.tabPill) or { 0.880, 0.880, 0.900, 1.0 }
+            local pillText = (Menu.Ui and Menu.Ui.tabText) or { 0.035, 0.035, 0.040, 1.0 }
+            local textWhite = Menu.Colors.TextWhite or { r = 245, g = 245, b = 245 }
+
+            for displayIndex = 1, math.min(maxVisible, totalCategories) do
+                local categoryIndex = displayIndex + Menu.CategoryScrollOffset + 1
+                if categoryIndex <= #Menu.Categories then
+                    local category = Menu.Categories[categoryIndex]
+                    local isSelected = (categoryIndex == Menu.CurrentCategory)
+                    local itemY = startY + (displayIndex - 1) * itemHeight
+
+                    if isSelected then
+                        if Menu.CategorySelectorY == 0 then
+                            Menu.CategorySelectorY = itemY
+                        end
+                        local speed = Menu.SmoothFactor or 0.2
+                        Menu.CategorySelectorY = Menu.CategorySelectorY + (itemY - Menu.CategorySelectorY) * speed
+                        if math.abs(Menu.CategorySelectorY - itemY) < 0.5 then
+                            Menu.CategorySelectorY = itemY
+                        end
+
+                        local pillH = itemHeight - math.floor(12 * scale)
+                        local pillX = x + math.floor(5 * scale)
+                        local pillW = width - math.floor(10 * scale)
+                        local pillY = Menu.CategorySelectorY + math.floor((itemHeight - pillH) * 0.5)
+                        if pillW > 2 and pillH > 2 then
+                            if Susano and Susano.DrawRectFilled then
+                                Susano.DrawRectFilled(pillX, pillY, pillW, pillH,
+                                    pill[1], pill[2], pill[3], 1.0, pillH * 0.5)
+                            else
+                                Menu.DrawRoundedRect(pillX, pillY, pillW, pillH,
+                                    math.floor(pill[1] * 255), math.floor(pill[2] * 255),
+                                    math.floor(pill[3] * 255), 255, math.floor(pillH * 0.5))
+                            end
+                        end
+                    end
+
+                    local label = (Menu.CategoryLabels and Menu.CategoryLabels[category.name]) or category.name
+                    local textR, textG, textB
+                    if isSelected then
+                        textR, textG, textB = pillText[1], pillText[2], pillText[3]
+                    else
+                        textR, textG, textB = textWhite.r / 255.0, textWhite.g / 255.0, textWhite.b / 255.0
+                    end
+
+                    local textX = x + math.floor(16 * scale)
+                    local textY = itemY + itemHeight / 2 - 8
+                    Menu.DrawText(textX, textY, label, 19, textR, textG, textB, 1.0)
+
+                    local chevX = x + width - math.floor(26 * scale)
+                    if isSelected then
+                        Menu.DrawText(chevX, textY, ">", 19, textR, textG, textB, 1.0)
+                    else
+                        Menu.DrawText(chevX, textY, ">", 19,
+                            textWhite.r / 255.0, textWhite.g / 255.0, textWhite.b / 255.0, 1.0)
+                    end
+                end
+            end
+
+            if totalCategories > 0 then
+                Menu.DrawScrollbar(x, startY, visibleHeight, Menu.CurrentCategory, totalCategories, true, width)
+            end
+        end
+
+        local ok, err = pcall(drawCategories)
+        Menu.DrawAlpha = previousAlpha
+        if not ok and not categoryWarned then
+            categoryWarned = true
+            print("[Menu] category draw error: " .. tostring(err))
+        end
     end
 end
 
@@ -34704,7 +34683,7 @@ end
 -- BOOT
 -- ---------------------------------------------------------------------------
 function UI.boot()
-    O.log("loader build 2026-11-07-r18 (banner wbYgWhZ + 3:1 header; monochrome reference UI; white tab pill + tab glyphs; dark row plates; footer centre mark removed; Options labels; Delete/Backspace close)")
+    O.log("loader build 2026-11-07-r19 (banner wbYgWhZ + 3:1 header; monochrome UI; uniform tab strip; text-only tab capsule; white category capsule; dark row plates; white toggle/scrollbar; footer centre mark removed; Options labels; Delete/Backspace close)")
     O.thread()
 
     -- Delete/Backspace fallback poll. 40 ms is faster than a frame at 30 FPS
