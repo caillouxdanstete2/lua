@@ -23950,7 +23950,7 @@ local function emitParticle(method, coords)
         local z = coords.z + OFFSET_Z + (i == 1 and 0.0 or oz)
         local okay, didStart = pcall(StartNetworkedParticleFxNonLoopedAtCoord,
             method.effect, x, y, z,
-            0.0, 0.0, 0.0, scale, false, false, false)
+            0.0, 0.0, 0.0, scale, false, false, false, false)
         if okay and didStart ~= false then sent = sent + 1 end
     end
 
@@ -24052,13 +24052,13 @@ local function resolveTarget()
     end
 
     local best = nil
-    local sawOther = false
-    for _, player in ipairs(GetActivePlayers()) do
+    local okPlayers, players = pcall(GetActivePlayers)
+    if not okPlayers or type(players) ~= "table" then players = {} end
+    for _, player in ipairs(players) do
         if player ~= PlayerId() then
-            local ped = GetPlayerPed(player)
-            if ped and ped ~= 0 and ped ~= me
+            local okPed, ped = pcall(GetPlayerPed, player)
+            if okPed and type(ped) == "number" and ped ~= 0 and ped ~= me
                 and DoesEntityExist(ped) and not isDead(ped) then
-                sawOther = true
                 local entry = packPlayer(player, ped)
                 if entry then
                     entry.dist = distance(meCoords, entry.coords)
@@ -24071,25 +24071,23 @@ local function resolveTarget()
     end
     if best then return best end
 
-    -- A local test server normally has one physical player, so there is no
-    -- remote ped to target. FL still has to prove the control path works.
-    -- The self target uses a local overlay pulse only: no ptFxEvent, no server
-    -- event, no entity, and nothing enters the game framebuffer. It is never
-    -- selected when another living player exists, even if that player is out
-    -- of reach, so a real target is never silently replaced by the operator.
-    if not sawOther then
-        local selfPed = PlayerPedId()
-        local selfCoords = coordsOf(selfPed)
-        if selfCoords and DoesEntityExist(selfPed) then
-            return {
-                player = PlayerId(),
-                ped = selfPed,
-                name = playerName(PlayerId()),
-                coords = selfCoords,
-                dist = 0.0,
-                self = true,
-            }
-        end
+    -- No streamed player inside REACH_MAX. On a busy server the selected
+    -- player can be far away or not streamed yet; on a one-player test server
+    -- there is no remote ped at all. In both cases the toggle must still arm:
+    -- the self target uses a local overlay pulse only, with no ptFxEvent, no
+    -- server event and no entity. A real remote target still takes priority
+    -- whenever one is streamed inside range.
+    local selfPed = PlayerPedId()
+    local selfCoords = coordsOf(selfPed)
+    if selfCoords and DoesEntityExist(selfPed) then
+        return {
+            player = PlayerId(),
+            ped = selfPed,
+            name = playerName(PlayerId()),
+            coords = selfCoords,
+            dist = 0.0,
+            self = true,
+        }
     end
     return nil
 end
@@ -31255,8 +31253,8 @@ local HEAD_R, HEAD_G, HEAD_B = 0.970, 0.975, 0.985
 local ID_R, ID_G, ID_B = 0.560, 0.580, 0.610
 local ICON_R, ICON_G, ICON_B = 0.470, 0.620, 0.830
 local TRACK_R, TRACK_G, TRACK_B = 0.155, 0.165, 0.180
-local HEALTH_R, HEALTH_G, HEALTH_B = 0.240, 0.860, 0.400
-local ARMOR_R, ARMOR_G, ARMOR_B = 0.360, 0.630, 0.960
+local HEALTH_R, HEALTH_G, HEALTH_B = 0.380, 0.760, 0.900
+local ARMOR_R, ARMOR_G, ARMOR_B = 0.420, 0.580, 0.920
 local DIV_R, DIV_G, DIV_B = 0.180, 0.190, 0.210
 
 -- The reference card is narrower than the menu. The ratio keeps the card as a
@@ -31425,6 +31423,360 @@ local function centeredTextY(centerY, size, scale)
 end
 
 -- ---------------------------------------------------------------------------
+-- ICON TEXTURES
+--
+-- The glyphs are Google Material Icons rendered once to 64 x 64 white PNGs and
+-- embedded here as base64. They are decoded locally and uploaded through
+-- Susano.LoadTextureFromBuffer, the same primitive the menu already uses for
+-- its banner. No HTTP request, no file, no external asset and no game native:
+-- the bytes never leave this script. The texture is tinted per use, so the
+-- panel glyphs stay one steel blue and the list car keeps the reference red.
+--
+-- The primitive fallbacks below stay in place. If a build refuses the texture
+-- upload, the card still draws the same layout with vector glyphs instead of
+-- dropping the icon row.
+-- ---------------------------------------------------------------------------
+local B64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+local B64_VALUE = {}
+for index = 1, #B64_ALPHABET do
+    B64_VALUE[B64_ALPHABET:sub(index, index)] = index - 1
+end
+
+local function decodeBase64(value)
+    local out = {}
+    local index = 1
+    while index <= #value do
+        local c1 = value:sub(index, index)
+        local c2 = value:sub(index + 1, index + 1)
+        local c3 = value:sub(index + 2, index + 2)
+        local c4 = value:sub(index + 3, index + 3)
+        local n = (B64_VALUE[c1] or 0) * 262144
+            + (B64_VALUE[c2] or 0) * 4096
+            + (B64_VALUE[c3] or 0) * 64
+            + (B64_VALUE[c4] or 0)
+        out[#out + 1] = string.char(math.floor(n / 65536) % 256)
+        if c3 ~= "=" then
+            out[#out + 1] = string.char(math.floor(n / 256) % 256)
+        end
+        if c4 ~= "=" then
+            out[#out + 1] = string.char(n % 256)
+        end
+        index = index + 4
+    end
+    return table.concat(out)
+end
+
+local ICON_B64 = {
+    character = table.concat({
+        "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",
+    }),
+    phone = table.concat({
+        "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAGPUlEQVR42u2bS6hVVRjHf9859x6v",
+        "pl1fYUE+sCwrMsuBCjnpoRBJWmH0GlTUoEGjggijJvkgnTQIahAF0jCIghpEQTQrMgf5ih4qBelN",
+        "U0uv596z/w3Ot/Jrc8713vOwsy8uWOzFOfu1/uv/Pde34VK71ACQNE3Si5KOShqRlGnsFv8fkvSe",
+        "pJv9XqWizDu+6HPAemAQMO9jtfj/ZcAdwCOSrgLkQFiRGHC0yepOpB2QtD7cs1QkBlwOjPrqTXTl",
+        "MqAGVICFRRL9CMDIOKnfrJWBKQ5CIQEY9lUkyfAEWgKt30EoJAB/BwBabVNdIRaeAa20DBgAZhdJ",
+        "+0cAzrQJQM31wFwzUxEBOAZU29ABmY/nFJUBR1wMWgEgKsJBYAGAmWW9DkYE4BcXg3YBmA4slVRu",
+        "4DH2NACHgbNt3CtNdBawDOgrIgDtiEDJr5sJrHKFmH9GTwPwcwdEILnDK9y1LpwSHGpTBBJwM4Hr",
+        "XBGO9HJQ9O+LmVkG/OSr2NciCxSuHywUA9xcHQB+b1FusxAUnQR+9PuWWwTzojNAwF5ngSb40unc",
+        "CnACeBs4eP7WBfEMJc2StMuTG6MtJEROS9qWY1VPt77wsn1mdkLS/hZWXp5M2Q7syLGKoqx+nx83",
+        "SNoX0mLZGEnRER8PS3pB0mwKlhQln7+TNF/Sm2GitSaTHw203yxphl8/BYqZFrcAwuPjAECSTkja",
+        "Eq6rQLH3BioOxApJR5pkidP4ZFJ4kkqFpP0YeuAKSTsknW1gETJJVUkvS5pW9DnnV63mjstxYBdw",
+        "uonDUwZOmdkZSf2TBgA3W2ZmNWA/8GUIkLLcdXf7Vtho4XaBLmQNXA/0S1or6SenfjWIQE3Sn5K2",
+        "F2kXaEIWIYw/8AmfC3ogjfdIuqVInl8rADwgabeDUMuZxpqkD4MP0AeTa8u8LGm6pG0+4ZHAgmQZ",
+        "/pL0lJ/XF3KBkwMAPy6X9HnQAUkPJBC+l7RqUjhDY/gGm3y18yKQHKN3JS2MwE0WAPrdMizwSY42",
+        "cJGTaOwsbCxwIRa4aVzidM+vfowNXgrmtDxpfIMwXi/pcM4cRhYckvRMAKG/G0HbRfc7/MHm41dC",
+        "SU0UiQTCD5I2xiCrg0ws5cSz361Vqat+SALAH3a1pLfDhLMARtINuyXdkxjQrjjkJl65gCfbrFvb",
+        "IAWrsFLSpw30QBbG33mGqb9DizAg6TZJD0u6S9KV7n8MXFSRSFR0EL4OfkGj5MlBSU+3qhijvEt6",
+        "VdJvbo5Pur75QNLzktYlMzwRNlmrdAxb37cDbwE3UC+0Kod9wnT/Q9RT5dvNrOamctSjzjETNGZW",
+        "9Rd+DXgamNOgMGOI+l7EKe/Hqdc7HPdodph67cOvwFdmdqxjDpKPN0ra30APxPGQpNclLcn7GE3u",
+        "P8WPMzzneDpEpef8ODKONP2Qs+ZnSd9K2ippeSdD5+QuPxFAyOuE+KLvSFotaWo+BG+QoJ3t2ebh",
+        "YGrzWepkfap+3rCPa01AOSHp3Y57i368X9LeJin1LOQU9qUA6gIKb7Ovdi2nXMfTslzckvqwpD+6",
+        "ZSbLkta4YlQuYGpEzw9z+YRKWP1tgfYdb12LHIOJ/CQ872xYvVqOvnskbZd0UwjBtzpV8y53xwGw",
+        "TptHM0s5wpXAk8BD1LfKa2H3OG2lJf/gLPAZ8AX1GqPnOV+7XOpClYnMrNSV+h2ncMnMRiXNA54F",
+        "HgWuCfuI8kllPsno2VUdmMzP6Yp7a2bW1QImSeVk5yXdB2wBloRVz2+yZrlMdVfziwmAUhcfEJ2c",
+        "j4ENwPtBFKph0uaiUW6zYr3l0rZuJlfNy2+QtABY7bphLefL9Ake5MWZeLdFoJGFCCKxGrjX+zL+",
+        "+81CqZuy/78AENhQdgVZ9d8eBB4BbgQW5/RDFA8rPACNorEgGuuAZ4A1wAzqZfdMKgaMI7AaAK4F",
+        "HgM2AfNzER85RlhP+gHtKEn/bR71avOl1Etu7wSub2A2qw0AaQaO5cxtZmaVXmJAyfVDFs2npEXA",
+        "rcBNDsgiB2d+m488ambzeq6SOypKoJYDY9CTLtc7GIs9OTKN+rdKsVeCX5F6EqVvgI/MbFtPl7In",
+        "8Qi9li+78xTYYmfEAmfIfGAu9Y+3BsKx4tmincAbZnaGS+1S4x89oQ8ajlLVzAAAAABJRU5ErkJg",
+        "gg==",
+    }),
+    radio = table.concat({
+        "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAGaElEQVR42u2bSYhcVRSGv/OqqtOd",
+        "SEbjhMQYcdaEBCVxwkSQGKJoXLgSJxKiC90JKnGAgLh0CuIm4kI3GiOhUQlxQEhECYhm1MQxCSIh",
+        "I2bo7qr6Xbxz9VpWV1VXV3fVC33h0a9u17t1z3/OPfODsTE2Om5IMkkWfZ4gaZak/JlOdCIpieZm",
+        "S3pZ0n5JH0maFL57JhGdizkrqUvSckmfSzoiaUDpKEuafaYQnkgqSMpFc3MkvS5pj6Sj+u8o+d9V",
+        "krozKQVOdF5SIZobL2mFpE8k/SaprwrhAz5flHRY0oywXiv2lR9pEQcS/51+Myv6/HXAA8CNwMXA",
+        "1OixMiCgBBgQADsKbABOheVbsUcbKW4DOUAR0VOBe4ClwJXAFdHvywkPxHdFy20G1gNbgL3AITMr",
+        "t2qv1mJu54DEzPqj+QXA3cAC4GpgevRYMeJ6EknkQef2JuB7M9s5UlJqLSA855svBc5Img4sBm4D",
+        "5gFzokdKTnAYhej+C+Az4Btgq5kdin4nD5Rbyf2mAYi4bWY2EM3fANwC3OTn++xIxIvRfSzi+53T",
+        "XwFbzGx7BdFywtVWCXCiDchVEH1uRPAi53gYA9F9kJQg+puBr/1sbzKzExX6o9RqbjcFQKTJFW/I",
+        "Nfk8J3oxMCUS8aDBrcLS/AJsdW5/bGa7YwcoHI+R4vaQAHBOmJmVornzgGtdoS0D5kaP9DnnchXr",
+        "ngZ2OOGbgA8jy9AziF5omW6uZFxDAEhKIoXWBVzmhN8B3Ad0V4h4LN4Ax9xk/eBErzOz4+10uQeT",
+        "qloSMBW4xEX8fgcgmKxiRHS1NfYC7wMfuOMyEeiJnh0NES8DfwEHYmvSqATMAR4FVjihgdtWRcQ7",
+        "eRwB1gGvmtm2hgCQdDPQC0yKzmaliDdy9kqRZ9eOERRwAhwAlprZdzUB8EhrFzDDN55kiNuDMSJ4",
+        "md8CC2ITThWuLgOmOdFZJ56IDoBLgSX1osFrfM6qKJSsjaRCygvusG2oBcA50YNBdH4F1roTM77D",
+        "wUiAkx5iPwLMjOgwl+6aEpCrOD8hMlsP7AwuagcDEPZ3FXCXA6AaR76hhIiAopmVlXoUonOzTjIz",
+        "SWrY18gPUZEk7ZKAKCb5n8MTMSXsr2EFnpk8uxPZcvDzGUqqBte8EKXPzgK2mdnBZrPEWaq0XA+8",
+        "6ESXgX5gAvCkK+l8MxYqSwBM8fC7ktPThpPdSjIEwICH2SWPKE/4ff9I6wADuiSNA3KS2uUHFKKE",
+        "i6L7gu+tAJR9f12ttAJ9wD4z62uzEvyzwrb/46j53vqi7+6LPzcLQEDwQuAJSX/4kWmXKzyvIpsc",
+        "9n6vpAsiJVgGzvd919UN+Qb0w0XAcx0Y5YV6woN+NaXn8g2mlgbamNiI/fzCIMqxNAhASSt0QAKM",
+        "qxEnjEq9sY5yLIy2J6go71/r/x0/8sOsJ/SR5v2DWep2bmQmk5RvgusAx4HdpIXMXZ6EmEZa/b2d",
+        "NKc4/kwEQKTJxWfMbGMNm70SeN7NEVnIm9UbRef+u8ASM9vo7S5W7TKzN4GFnkXKPAADLinvAU95",
+        "6Jkzs6KZqdrl8fuPpB0hv7eypWW0ASi7UvsdeMPMDkjKxwXTOkmMPcBq1xnWiSAkDYi+gLeAL/m3",
+        "kjuUXqG3SWuFmTsCcWVoiydF80NNinol5lM3lx0nBfUAyJPW1Q436+V5qmq7m0qyBkCoC/Q1WSEK",
+        "SvHQcBMX7QAgcLtnOL52tEaSRQBK7tVNrJGXr7m+t9FdTprMpNPc5EYA6HECklB8Gcr6bjIX+jrK",
+        "EgBE+beHgRne3FRotIHSzAa8U3RuVv2AAMB84DFJPWbW741Ttd4ByJtZSdJk4CVgcmRWMxkMlUj7",
+        "hQ5JesXMTvvZjrlqbveLQNHbZV8Abu1kV7jRjFDJubgKmCTpHTPbUcPuzwdWAg9V1OczGw7nolrc",
+        "08AiSWtJ+wCPuY3vdpDmA8tJ63jFTq8+5avUAFRDEkKFdoFfZU+MnCZ96WFmRRRZoLMapvrqAbA7",
+        "UlTVTFZoPQv9wDnSbow4eCr7dwodRHjwYXbXswK9pK+mUEdx5UiLFKFQEvcTdnWQtldF02RvTQDM",
+        "7CdgjQcu1oDiCsjmOlTRBRpOAmucvpqNkomHvc8Cj5PW35OMVZHjZE6ZtIr8mpmtjpvAa7XKBhBm",
+        "AXeSvtzUk0EATvmZ7zWzn6sRPzbGBvwNSZcSe4fqV/YAAAAASUVORK5CYII=",
+    }),
+    job = table.concat({
+        "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAADPElEQVR42u2bz48MURDHPzU9ywrr",
+        "R4iLi5OEEJZ/QCJBHFwccBInEf+AA3f/gIgbJxxcJC4u/gISIdi9OYkfMclOZJeZ7q/DVEeb7V4z",
+        "Mmtne6qSTmfy3qv36vOq6r2Z1EBIyESLrYZSSWZmkrQXOAMcAKaHmE/AEvAWeGpmH3KdYw2guEhJ",
+        "14HLwHZgCmgMCSADOkALuGdmt/rnGCuR1JBkkjZKuilpQaOTBUk3JE37HI1xBGD+npXU8oV3/Ukl",
+        "dST99PdKT94nLYyX65wtzjUKaY5q980sk7QJOOVun/W5/b/uWh4O24GTkt6b2WI+51gAKBi5DTgC",
+        "pEBSaO8CbWBxgDm7wCZgxvuaPykw63Msjip/NUccCU1gS8F4+UI/AQ+Bd34apBXjE8/++4ELwJ6C",
+        "jsR1N0e94FFL0ue+BnwBHpjZiwFD6hhwog9Av+6xBVAFZbOkxI/ETkW/vG3zahi7lgAEZGaWevJK",
+        "V0imqaTMx6wNAD9nG0NclhIf06zob0BT0pS/K9fjbYPoSQa8D+STZWWnRrPE+Ckz6/jRM6h0fOxH",
+        "T2Jl7Z9db2cAPZ8r+i0BHwfQU5VbctvKr8KSmmbWlXQUOAfs83j8mxeYk54GDgK7+pJg2+/1Lfes",
+        "Krh52w7//jDTlwS/Am8chA0QJgK+A/PAYzN7mdu4DICkxOPvKnAJOOpJqQ7SAV4C983sTm5rmQec",
+        "B+74DuQDNURCMg+rRslOdIcIq6p8krmeYdZjhY1sAVfN7FGZB+wEngOHgJ8VhqxXycFtAF4Dx83s",
+        "W//9/DSw2zvXyfiiR2Vu42lKvqDMOqE6GV4GYoPnt2UAthVuX0Z9f/1K3NZlAOq882WeMHFGr0wi",
+        "AASAABAAAkAACAABIAAEgAAQAAJAAAgAASAABIAAEAACQAAIAAEgAASAABAAJgWAJshulQFY4ncR",
+        "k2psdFasZSwCmKdXxZ3VeOczt3GuDMAzegWNebGiarb7+R842m7rnwDM7D29mv5shVpd1nF9UF4l",
+        "9tDM5korRf3zbeAssBXYyH8qW19FSYEfwALwBLgGqKpStOHuchG4AhymV6/bWMcx3wZeAXeBBz1n",
+        "tzrnuZCQkCHkF+Sx1bcpicgAAAAAAElFTkSuQmCC",
+    }),
+    group = table.concat({
+        "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAEyklEQVR42u2ZO4xVVRSGv3XnwSOg",
+        "oEyGBBUkYoOMjYmvRNFYEIMUJhp7Q2kjDxF6g2CF9iRUVjY+CkIwQRI1oTFIAYVKokQ0YGScGWbm",
+        "3vPb/CfZOZ577pmRCQH2n5ycM3uvvfZaa6+9HncgIyMjIyMjIyMjIyMjIyMjI+PWQ1Ik3xOSjkm6",
+        "KGlG0k1/H5M0UbfmrlBe0nJJByTNqj9mTbP8rjCCpJA0ImmZpE+sZCGpV6N8z3My7TKvjTvZAEN+",
+        "75Y0JanbR/nUCF3T7k553InKd/wek3TWCs5rMEqas5LGUl5LgU5bZeyOo35GWghVntxLwASgZGzQ",
+        "OgHbgO0VXrdSPgCG27hxRPSAomGuCQ8Dq4FeW4N7r/uAR5ZavuE2zCWtBl4FHvXUL8AXEfGPpE5E",
+        "FDXLy+C1wifaa+kBYdoAVlZ4/efkLd8qYCewyVM/A19FxGTLQ2q8wxOSvpQ0ndzTKY9ta1g/4vce",
+        "r+kmUb4JhWklaU/Kq88+2yzLVMJj2mMTi4ohvlMh6TFJ5xLGc35KXJC0YYAB3pR0w4q1NUAh6W9J",
+        "bzQZQNIGy9BPvnPWIVobwcTlc8iMZirpq0g2OnK7soCkI4niRSWdzvj7UKrTQlx/vaSTZjbfkLcv",
+        "92O8lHWAFbrcwG/ecyclre9nyCa3WAWsM000pNHxhvnC7nsCOO4gGHUR22NhmuPACa8tGoLleIMO",
+        "4bl11mXBdcA0cL00eAPd7/3mI0JANyJmgb3AwYZ02PHcQWCv13TNo9YJgKtNzuz3NWBqMTV8SHo/",
+        "aVKKmmAlSUcX0BBFTTc4k3aDKW0Lvh9VZEllK5uuA63vf00c2CzpTMOdvVQGqiZD/s9mKhrmxyxD",
+        "P5yRtHmxqbAMYFscSG64d5+TNCnpG0mb2grusRWS1khaZ+HH/Yx5bI1poq0hJG2yLJOW7aZlPSlp",
+        "y6CGKgadQHkHJb0MPOOgdC4iTvVx9SgrQ0krgQeBzcCzru+3Ag8B9yeVaBf4G/gVuACcB74FfgKu",
+        "RcR0coqqiwuSXgGeciz5LiJOV3VobQAr0nEg67V118RYG6zs68BrwPo+UV+ViF0XYD8HPgPOR8Rv",
+        "bZSq82SgqFsTNYoPRUS3MvaAG5pRD88BN4C/UqZOWzuB94Cnk2jc9V7Vpxq1q89wQvc98KF7kPmK",
+        "fGvdPKXyTQLXK/INA710LOpOUdIK4EngceAJu/C4m5OeFfoY+NT0pUKHgX2JEJ0k9y8qDnq/IlHu",
+        "KHCgvAre+y3gHRtsyCn8qq/Qj8Al4IeImOnrPUn62SXpuKQrA0rWFyvr9ydlaZuSd6GYT8rv/ZW9",
+        "Xxiw9op12tWYYiXtq3RVs37mXaLOurw85Ra5XLc1UbzQ0qFIDLE12X+1ZepZxq7pZis/wk5J2ltb",
+        "CUraDnxgN59L3G40ca0yWJ22m5V4GxgZUDbfCpSl8giwOxmfAb5O9h+yzKX8hXVaCRxOvTeNvO96",
+        "Ual4p6G8vFhmB7vTDs91WHqE99pRurKD9sWGsr2TGGII2FNngOdbKFEy/zPN+8DGJT75OiNsBNIC",
+        "6Y8WfUvH88/VGWDtApSYq/y9/Db88Dw6QKYm462tM8Dd8a+oBf4a3uEexz1vgIyMjIyMjIyMjIyM",
+        "jIyMjIx7Dv8CU/2cGN2s160AAAAASUVORK5CYII=",
+    }),
+    health = table.concat({
+        "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",
+    }),
+    armor = table.concat({
+        "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAACl0lEQVR42u2bv2uTQRyHP99qjdIM",
+        "da4gnTSgSJ3sVujo6Ojgj45iR8V/QB2dFR20g+JYlBZq0RaKQy2Ioi4BNTrGVgoJljaPywldat+k",
+        "1/e9S+4DGQJv7n2f5w5yd+/3pJSUwgKcAE72IvgYMA203GcaGOt26H7gIrDCzllx1/R3E/ggcAOo",
+        "kT0195vBmMGHgXvAOp1n3bUxHBP4KPAc2MRfNl2bo6FCHwAuAEvsf5bcvfpCAC8Dk0CV/FN19y4X",
+        "AT4E3AVWKT6r7lmG8gAfAZ4AG4SXDfdsI76hDTgPzBNP5t0z2258lkHAZ0mxTle/mFllrwKIeSJm",
+        "Zv9l7FOPJwlIApKAJCAJSAKSgCQgCUgCkoAkIAnYaUUcMV/Lh4BmxAKavS6g4UNAPWIBv3wI+B6x",
+        "gG8+BHztdQEfIxbwwYeA5YgFLPt4L3BE0pqkQ5HB/5F01MyaexoBroE3Efb+693g25kKv4hQwMss",
+        "F5kyvg12f4exrB22JB03s59eRoBraDai3p/NAt/uavBBRALuZ73QlP01eZ+bE1QCh/8k6ZSZ4XUE",
+        "mFlL0u0Iev9OVvi2RsC/YihJ7ySdCRT+vaSzrrPkfUfIzLYkTQbc+9fbge9oS8zMFiRNBQj/2MwW",
+        "2+ZRh+WvbqFxLBD4mqTTZvZbeWyKmtmapEvKsOemfPb9LncCLw8VZLcCqAi7qYKrRZ8VCP9UAZTL",
+        "HgZeFQA/B5QUSLH0QE6F0tsLpgcUWMV4GZjJAX6mkALpNo7FPNpH+IfAQUVwaGICaHgEbwATiuzI",
+        "TAVY9AC/AFSkOM8NGXAV+NEBeA24kqXiOwYRJeBaxpMlVXdtSeq+s4MGjANTQH0bdN0ddhjPu8et",
+        "yINWks65r2/dUjslJef8BTpad6ItSEHnAAAAAElFTkSuQmCC",
+    }),
+    distance = table.concat({
+        "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAEMUlEQVR42u1bPWhUQRD+nrkE4SSF",
+        "gaiJZSSSoI0oRKNIsBcTohZeAsFWOzsN2qaM2qiFYieC2ienhTYRGyVHDoMR5c4f0ELujM3dZ5ER",
+        "wrn7dt/dvp8kb6pjbnd2dnZ3/h+QwtYGL45FSQ4D6GtAL3ue93JLSJ3kff4P9+PgZdtWfwKpAFIB",
+        "pFYgEqXXDeAkgGEAAwAOA+hsGPYLwGsABQAvAbzwPO/7Rtb0HSRzJOdJ1hgcaiTnhEb7Rtp4huQl",
+        "kiW6g5LQzCR988dJLjE8WBInKnEbbyM50+RVb+ZpzJBsS4QSJNkF4BGAEYvhXwAsAFgGUAJQFXwW",
+        "QK+4x0cA7LGglQcw7nnezzhPvpdkwXBiKySvk9wfgO5+mfPRQHuRZG+cm//gw9xnkhOtKC5RqBNC",
+        "SwcfIhcCyS7Dyd8kmXW43g6h6XcTdkZp5vIaRqokR0Nce4zkb83a864Uo4mJGQ0DP0kORbD+UVlL",
+        "BTNR2Pma5uSHInyCRzU3oRaan0CynWRRI/mxGJTwmI+zlAljwcuaBWcD0smSPE3yqii2W/L7dFDF",
+        "6aMYL4UR2JQ1pi5rSaOH5B2Sqz7afFXG9ASwDp81sUO7SwFMahjOWc4/S7ISwN2tkBy3pD3RCm+2",
+        "AshrPLyMxdwrJOtN+Px1klcszbLKY5xzlszQaP5py5OvtxD41G1ugrjNKovQ7UIA5zXM9Vu8+YqD",
+        "6K9i0gkSO6jgrIuc4DEFrux5XtEw74ZEea1CFsB135DW85Yk0myEYRcCGFTgFkymDsAFh4YoZ2Ft",
+        "VDwNmAhnGspVFxVjDilw7w10TwHY7lAA24XmM58xywrcYU3F6d6/Mtx6Ld4HYNKSobLh/4MhOH8H",
+        "DAIoKXCdmj29kMxz03WBquH/XSEIYHeLPEVaGAmj3kAkqDJkUkhfQ+D1W4s8+StBUSIPFGPOKKo4",
+        "Jl/9bQgCeGf4X5UW+wXgiaXCDOQGP7GI+P44TIWvmswgyafNuMM2T2BRgTticEyqAB46PP2HQtMP",
+        "VDwV4naFq5vBFc4DqCvw5wy3oAxgqkXtTQBTQssPzitwdbH3WyIcXlFliZOUEDkX8DlUbK5vlAkR",
+        "XUrsU8CU2F2DdViVMT0B8ou6lFhH0pOi10jelqTotUQnRS3S4qFVg3z4GY00LS6LnkhIYWRIo1Nq",
+        "JI9v9tLYUGylsXVm53mMxdFqrMVRy/L4rOPyeFZo6qAgnSqRKqG9GgdkvYnMOWiQyCWuQaJBCDYt",
+        "MtOm2KGBbr/MWTHQLrS6eVdNUo+x1glqk0tckKRquaFJqgfAPonqbByh51hrkvoBJKM5Muo2ueQ1",
+        "TYqfUAxx88XQ7bwjj/GyJnZoFspCs32jNUtPSijdbLN0Xmh0YBO0y49grc44iLVqk6pd/o2k4F4B",
+        "yG/odvn0oymkn8ykAkgFgPSjqfTT2RQSDn8BTLa3dUFZAtIAAAAASUVORK5CYII=",
+    }),
+    vehicle = table.concat({
+        "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",
+        "AAAAAElFTkSuQmCC",
+    }),
+    weapon = table.concat({
+        "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAA00lEQVR42u2YSQ6EMAwEcYv/fzlz",
+        "mSMSngXT2FVnkOKineBsGwAAAAAAAAAAzCIyD6211uHLEeFQxNH6smvT9ASIFvgi+o8pLtEG6lp8",
+        "tgZ1LT5bS3QXcNYinAIIQAACEICAwexTzvuPEuAy5lbMA/plkOgwDMWVg0ZlIW02wXhTJVuuMa2S",
+        "IOcerdiH1O2Co0TAPxaS/bpXp2B3PZ7GngLMAhNngTv/OuX8B0gLdBTgNmSRgMn9TwIQgIBaAY7X",
+        "bJq8AdICCEAAAuR2BUYCEABQyQucaER3HIL4xwAAAABJRU5ErkJggg==",
+    }),
+    speed = table.concat({
+        "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",
+    }),
+}
+
+local ICON_TEXTURES = {}
+
+local function loadIconTextures()
+    if not Susano or type(Susano.LoadTextureFromBuffer) ~= "function" then
+        return
+    end
+    for name, encoded in pairs(ICON_B64) do
+        local ok, png = pcall(decodeBase64, encoded)
+        if ok and type(png) == "string" and #png > 8 then
+            local okTex, texture = pcall(Susano.LoadTextureFromBuffer, png)
+            if okTex and type(texture) == "number" and texture ~= 0 then
+                ICON_TEXTURES[name] = texture
+            end
+        end
+    end
+end
+
+-- Load once at module start, outside the render path. A failed upload simply
+-- leaves the table empty and the vector fallback takes over.
+pcall(loadIconTextures)
+
+-- ---------------------------------------------------------------------------
 -- ICONS
 --
 -- Every glyph is composed from filled rectangles and, for the gauge, a handful
@@ -31436,6 +31788,14 @@ end
 local function drawIcon(name, x, y, size, cr, cg, cb)
     if size <= 0 then return end
     local ir, ig, ib = cr or ICON_R, cg or ICON_G, cb or ICON_B
+
+    -- Material texture first: one tinted draw call instead of a primitive
+    -- cluster. The texture is white with alpha, so r/g/b is the whole colour.
+    local texture = ICON_TEXTURES[name]
+    if texture and Susano and type(Susano.DrawImage) == "function" then
+        local ok = pcall(Susano.DrawImage, texture, x, y, size, size, ir, ig, ib, 1.0, 0)
+        if ok then return end
+    end
 
     -- Filled cell in the icon colour.
     local function R(u, v, w, h, rad)
@@ -31551,6 +31911,15 @@ end
 -- reads at a glance without depending on what is behind it.
 local function drawVehicleBadge(x, y, size, r, g, b)
     if size <= 0 then return end
+
+    -- Same Material car texture as the card, tinted with the list's red. One
+    -- draw call per row; the primitive car below is the upload-failure path.
+    local texture = ICON_TEXTURES.vehicle
+    if texture and Susano and type(Susano.DrawImage) == "function" then
+        local ok = pcall(Susano.DrawImage, texture, x, y, size, size, r, g, b, 1.0, 0)
+        if ok then return end
+    end
+
     fillRect(x + 0.06 * size, y + 0.44 * size, 0.88 * size, 0.24 * size,
         r, g, b, 1.0, 0.05 * size)
     fillRect(x + 0.24 * size, y + 0.30 * size, 0.46 * size, 0.20 * size,
@@ -34739,8 +35108,9 @@ local function installFlash()
                 row.value = FL.active
             end
             local method = Menu.__vgd_flashMethodRow
-            if method and type(FL.method) == "number" and method.selected ~= FL.method then
-                method.selected = FL.method
+            if method and type(method.selected) == "number"
+                and method.selected ~= FL.method then
+                FL.method = math.max(1, math.min(#FL.methods, method.selected))
             end
         end)
     end
