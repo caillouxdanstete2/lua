@@ -144,8 +144,8 @@ LibraryCode = string.gsub(
 -- PATCH: Main-menu label alias
 -- ============================================
 -- Every feature lookup still uses the original category key. Only the row
--- labels shown in the main menu are decorated: "Self Options", "Online
--- Options", "Player Props Options", and so on. Internal names never change.
+-- labels shown in the main menu use the reference names: Self, Online,
+-- Vehicle, Weapon, Destroyer, Misc, Settings. Internal names never change.
 LibraryCode = replacePlain(
     LibraryCode,
     "            Menu.DrawText(textX, textY, category.name, 19, Menu.Colors.TextWhite.r / 255.0, Menu.Colors.TextWhite.g / 255.0, Menu.Colors.TextWhite.b / 255.0, 1.0)",
@@ -653,6 +653,32 @@ do
         local circleX = toggleX + 2 + (toggleWidth - circleSize - 4) * _toggleP]]
     )
 
+    -- 6c. Slider readout: the stock 11 px right-edge number is too small on
+    --      the 110% menu and sits well inside the row. Keep the same value
+    --      string, raise it to 15 px, right-align it to the row edge and use
+    --      the scaled width so multi-digit values (200, 500, 2000) do not
+    --      drift away from the right side.
+    LibraryCode = replacePlain(
+        LibraryCode,
+        [[        local valueText = string.format("%.0f", currentValue)
+        local valuePadding = 10
+        local valueX = sliderX + sliderWidth + valuePadding
+        local valueY = sliderY + (sliderHeight / 2) - 6
+        Menu.DrawText(valueX, valueY, valueText, 11, Menu.Colors.TextWhite.r / 255.0, Menu.Colors.TextWhite.g / 255.0, Menu.Colors.TextWhite.b / 255.0, 0.8)]],
+        [[        local valueText = string.format("%.0f", currentValue)
+        local valueSize = 15
+        local valueScale = Menu.Scale or 1.0
+        local valueRight = x + width - (10 * valueScale)
+        local valueWidth = #valueText * 8 * valueScale
+        if Susano and Susano.GetTextWidth then
+            local measured = Susano.GetTextWidth(valueText, valueSize * valueScale)
+            if type(measured) == "number" and measured > 0 then valueWidth = measured end
+        end
+        local valueX = valueRight - valueWidth
+        local valueY = itemY + (itemHeight / 2) - (valueSize * valueScale / 2)
+        Menu.DrawText(valueX, valueY, valueText, valueSize, Menu.Colors.TextWhite.r / 255.0, Menu.Colors.TextWhite.g / 255.0, Menu.Colors.TextWhite.b / 255.0, 1.0)]]
+    )
+
     -- 7. The "Smooth Menu" slider still owns Menu.SmoothFactor. The runtime
     --    writes a refresh-rate independent lerp to Menu.SmoothFactorFrame, so
     --    the scroll speed the operator chose stays the same at 60, 144 or
@@ -1031,7 +1057,7 @@ do
     Menu.Colors.FooterBlack = { r = 10, g = 10, b = 12 }
     -- The reference tab strip is a prominent plate, not a hairline. 38 base
     -- becomes 41.8 px at the default 1.10 scale, leaving room for the glyph
-    -- and the label without crowding the selected pill.
+    -- and the label without crowding the selected tab plate.
     if Menu.Position then Menu.Position.mainMenuHeight = 38 end
     Menu.BannerCache = Menu.BannerCache or {}
     Menu.bannerRequest = Menu.bannerRequest or 0
@@ -1107,9 +1133,9 @@ do
     Menu.Ui = {
         tabBar       = { 0.052, 0.052, 0.056, 1.0 },
         tabBarBorder = { 0.052, 0.052, 0.056, 1.0 },
-        tabIdleText  = { 0.680, 0.680, 0.700, 1.0 },
-        tabPill      = { 0.930, 0.930, 0.945, 1.0 },
-        tabPillEdge  = { 0.720, 0.720, 0.750, 1.0 },
+        tabIdleText  = { 0.620, 0.620, 0.650, 1.0 },
+        tabPill      = { 0.785, 0.785, 0.805, 1.0 },
+        tabPillEdge  = { 0.640, 0.640, 0.670, 1.0 },
         tabText      = { 0.035, 0.035, 0.040, 1.0 },
     }
 
@@ -1141,14 +1167,14 @@ Menu.IconTextures = {}
 Menu.FooterLogoTex = nil
 Menu.FooterText = "" -- <<< CHANGE THIS to your menu name
 Menu.CategoryLabels = {
-    Player = "Self Options",
-    Online = "Online Options",
-    ["Player Props"] = "Player Props Options",
-    Visual = "Visual Options",
-    Combat = "Combat Options",
-    Vehicle = "Vehicle Options",
-    Exploit = "Exploit Options",
-    Settings = "Settings Options",
+    Player = "Self",
+    Online = "Online",
+    ["Player Props"] = "Props",
+    Visual = "Misc",
+    Combat = "Weapon",
+    Vehicle = "Vehicle",
+    Exploit = "Destroyer",
+    Settings = "Settings",
 }
 
 Menu.ArrowUpUrl = "https://i.imgur.com/CefzPfK.png"
@@ -1203,7 +1229,7 @@ Menu.UpdatePlayerCount = function() end
 Menu.ShowSnowflakes = true -- sync avec Flocon value = true
 
 -- ============================================
--- DÃƒÆ’Ã¢â‚¬Â°BUT DU CODE ORIGINAL (ligne 39 de l'ancien fichier)
+-- DÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â°BUT DU CODE ORIGINAL (ligne 39 de l'ancien fichier)
 -- ============================================
 Menu.shooteyesEnabled = false
 Menu.magicbulletEnabled = false
@@ -1223,8 +1249,8 @@ Menu.WarpPressW = false
 -- ============================================
 -- STEALTH AUTO-SPOOF SYSTEM
 -- ============================================
--- Hooks enregistrÃƒÂ©s une seule fois. ConditionnÃƒÂ©s par flags.
--- Chaque feature toggle active/dÃƒÂ©sactive ses flags automatiquement.
+-- Hooks enregistrÃƒÆ’Ã‚Â©s une seule fois. ConditionnÃƒÆ’Ã‚Â©s par flags.
+-- Chaque feature toggle active/dÃƒÆ’Ã‚Â©sactive ses flags automatiquement.
 
 _Stealth = {
     invincible = false,
@@ -1247,7 +1273,7 @@ local _fakeAmmo = {}
 do
     if type(Susano) == "table" and type(Susano.HookNative) == "function" then
 
-        -- GetPlayerInvincible Ã¢â€ â€™ false
+        -- GetPlayerInvincible ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ false
         Susano.HookNative(0xB721981B2B939E07, function(player)
             if _Stealth.invincible and player == PlayerId() then
                 return false, false
@@ -1255,7 +1281,7 @@ do
             return true
         end)
 
-        -- GetEntityHealth Ã¢â€ â€™ 190-200
+        -- GetEntityHealth ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ 190-200
         Susano.HookNative(0xEEF059FAD016D209, function(entity)
             if _Stealth.health and entity == PlayerPedId() then
                 return false, 190 + math.random(0, 10)
@@ -1263,7 +1289,7 @@ do
             return true
         end)
 
-        -- GetPlayerStamina Ã¢â€ â€™ oscillation 45-98
+        -- GetPlayerStamina ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ oscillation 45-98
         Susano.HookNative(0xCEFD02E1E6BC7AF0, function(player)
             if _Stealth.stamina and player == PlayerId() then
                 local now = GetGameTimer()
@@ -1278,7 +1304,7 @@ do
             return true
         end)
 
-        -- GetEntitySpeed Ã¢â€ â€™ cap 6.5-8.0 m/s
+        -- GetEntitySpeed ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ cap 6.5-8.0 m/s
         Susano.HookNative(0xD5037BA82E12416F, function(entity)
             if _Stealth.speed then
                 local ped = PlayerPedId()
@@ -1289,7 +1315,7 @@ do
             return true
         end)
 
-        -- GetAmmoInPedWeapon Ã¢â€ â€™ fake count dÃƒÂ©croissant
+        -- GetAmmoInPedWeapon ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ fake count dÃƒÆ’Ã‚Â©croissant
 
         -- GetWeaponDamageModifier: the real per-weapon modifier field is what
         -- the engine uses to scale melee damage; the script getter is only a
@@ -2613,7 +2639,7 @@ Menu.Categories = {
     }}
 }
 
--- Appliquer le thème monochrome par défaut au démarrage.
+-- Appliquer le thÃ¨me monochrome par dÃ©faut au dÃ©marrage.
 if Menu.ApplyTheme then
     Menu.ApplyTheme("White")
 end
@@ -2625,10 +2651,10 @@ Menu.LoadAllIcons()
 -- ============================================
 -- UI: reference tab strip
 -- ============================================
--- The reference uses a smoked bar with a white selected pill and a small
--- monochrome glyph per tab. The icons are drawn with the same primitives as
--- the rest of the menu, so they need no texture request, no external asset
--- and no extra file in the host resource.
+-- The reference uses a dark tab bar with a light-grey selected plate; the
+-- plate fills its cell with a small inset. No icon or external asset is
+-- requested, so the strip stays inside the same draw primitives as the rest
+-- of the menu.
 function Menu.DrawTabs(category, x, startY, width, tabHeight)
     if not category or not category.hasTabs or not category.tabs then return end
     local count = #category.tabs
@@ -2655,20 +2681,11 @@ function Menu.DrawTabs(category, x, startY, width, tabHeight)
         return tx, tw
     end
 
-    local function measure(tab)
-        if not tab then return 0 end
-        if Susano and Susano.GetTextWidth then
-            local width = Susano.GetTextWidth(tab.name, textScale)
-            if type(width) == "number" and width > 0 then return width end
-        end
-        return string.len(tab.name) * 9 * scale
-    end
-
     local bar = ui.tabBar or { 0.052, 0.052, 0.056, 1.0 }
     local barBorder = ui.tabBarBorder or { 0.052, 0.052, 0.056, 1.0 }
-    local idleText = ui.tabIdleText or { 0.680, 0.680, 0.700, 1.0 }
-    local tabPill = ui.tabPill or { 0.930, 0.930, 0.945, 1.0 }
-    local pillEdge = ui.tabPillEdge or { 0.720, 0.720, 0.750, 1.0 }
+    local idleText = ui.tabIdleText or { 0.620, 0.620, 0.650, 1.0 }
+    local tabPill = ui.tabPill or { 0.785, 0.785, 0.805, 1.0 }
+    local pillEdge = ui.tabPillEdge or { 0.640, 0.640, 0.670, 1.0 }
     local tabText = ui.tabText or { 0.035, 0.035, 0.040, 1.0 }
 
     fill(x, startY, width, tabHeight, barBorder[1], barBorder[2], barBorder[3], barBorder[4], radius)
@@ -2678,15 +2695,17 @@ function Menu.DrawTabs(category, x, startY, width, tabHeight)
     if selected < 1 then selected = 1 end
     if selected > count then selected = count end
 
-    -- The capsule hugs the selected label instead of filling its whole cell.
-    -- That keeps short labels from reading as wide, empty white slabs.
-    local selectedTab = category.tabs[selected]
-    local selectedTextWidth = measure(selectedTab)
-    local cellCenter = x + (selected - 0.5) * tabWidth
-    local targetW = math.min(tabWidth - math.floor(8 * scale),
-        math.max(selectedTextWidth + math.floor(42 * scale), math.floor(52 * scale)))
-    if targetW < 2 then targetW = tabWidth - math.floor(8 * scale) end
-    local targetX = cellCenter - targetW * 0.5
+    -- Selected tab follows the reference: a light grey rounded plate that
+    -- fills its cell with a small inset, not a tight white capsule floating
+    -- inside the cell. The geometry is derived from the real cell width so
+    -- four-tab and five-tab categories keep the same visual weight.
+    local selectedCellX, selectedCellW = geom(selected)
+    local targetW = selectedCellW - math.floor(8 * scale)
+    local targetX = selectedCellX + math.floor(4 * scale)
+    if targetW < 2 then
+        targetW = selectedCellW
+        targetX = selectedCellX
+    end
 
     local speed = Menu.SmoothFactorFrame or Menu.SmoothFactor or 0.2
     if not Menu.TabSelectorX or Menu.TabSelectorX == 0 then
@@ -2701,22 +2720,21 @@ function Menu.DrawTabs(category, x, startY, width, tabHeight)
     if math.abs(Menu.TabSelectorX - targetX) < 0.5 then Menu.TabSelectorX = targetX end
     if math.abs(Menu.TabSelectorWidth - targetW) < 0.5 then Menu.TabSelectorWidth = targetW end
 
-    -- Layered capsule: a soft lift under the plate, a pale rim, a near-white
-    -- face and a one-pixel gloss. No gradient texture, no green, no extra asset.
+    -- Flat light-grey plate with a thin darker rim and a soft lift. No gloss,
+    -- no white halo: the reference reads as a tab button, not a glass pill.
     local insetY = math.floor(6 * scale)
     local ph = tabHeight - insetY * 2
     local pw = Menu.TabSelectorWidth
     local px = Menu.TabSelectorX
     local py = startY + insetY
     if pw > 2 and ph > 2 then
-        local pr = ph * 0.5
+        local pr = math.floor(8 * scale)
+        if pr > ph * 0.5 then pr = ph * 0.5 end
         local edge = math.max(1, math.floor(1 * scale))
 
-        fill(px + 1 * scale, py + 2 * scale, pw, ph, 0.0, 0.0, 0.0, 0.20, pr)
-        fill(px - 2 * scale, py - 1 * scale, pw + 4 * scale, ph + 2 * scale,
-            0.98, 0.98, 1.0, 0.045, pr + 2 * scale)
+        fill(px + 1 * scale, py + 2 * scale, pw, ph, 0.0, 0.0, 0.0, 0.16, pr)
         fill(px, py, pw, ph,
-            pillEdge[1], pillEdge[2], pillEdge[3], 0.78, pr)
+            pillEdge[1], pillEdge[2], pillEdge[3], 1.0, pr)
         fill(px + edge, py + edge, pw - edge * 2, ph - edge * 2,
             tabPill[1], tabPill[2], tabPill[3], 1.0, math.max(1, pr - edge))
     end
@@ -3024,7 +3042,7 @@ local espSettings = nil
 -- ESP Cache pour optimisation
 local ESPCache = {}
 local ESPCacheTime = 0
-local ESPCacheMaxAge = 0.016 -- 1 frame ÃƒÆ’Ã‚Â  60fps
+local ESPCacheMaxAge = 0.016 -- 1 frame ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â  60fps
 
 local function GetScreenSize()
     if Susano and Susano.GetScreenWidth and Susano.GetScreenHeight then
@@ -3634,10 +3652,10 @@ local function RenderPedESP(targetPed, playerIdx, settings, screenW, screenH, my
     local targetPos = GetEntityCoords(targetPed)
     local dist = #(myPos - targetPos)
     
-    -- Optimisation: vÃƒÆ’Ã‚Â©rifier la distance avant les calculs coÃƒÆ’Ã‚Â»teux
+    -- Optimisation: vÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©rifier la distance avant les calculs coÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â»teux
     if dist > 100.0 then return end
     
-    -- Cache pour ÃƒÆ’Ã‚Â©viter les recalculs frÃƒÆ’Ã‚Â©quents
+    -- Cache pour ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©viter les recalculs frÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©quents
     local cacheKey = tostring(targetPed) .. "_" .. tostring(playerIdx)
     local currentTime = GetGameTimer() or 0
     local cached = ESPCache[cacheKey]
@@ -3698,14 +3716,14 @@ local function RenderPedESP(targetPed, playerIdx, settings, screenW, screenH, my
         local textColor = ESPColors[1]
         if settings["Text Color"] then textColor = ESPColors[settings["Text Color"].selected] or textColor end
 
-        -- Skeleton (optimisÃƒÆ’Ã‚Â© avec cache des os)
+        -- Skeleton (optimisÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â© avec cache des os)
         if drawSkeleton then
             local boneCache = {}
             for _, connection in ipairs(SkeletonConnections) do
                 local bone1 = connection[1]
                 local bone2 = connection[2]
                 
-                -- Cache des positions des os pour ÃƒÆ’Ã‚Â©viter les appels rÃƒÆ’Ã‚Â©pÃƒÆ’Ã‚Â©tÃƒÆ’Ã‚Â©s
+                -- Cache des positions des os pour ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©viter les appels rÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©pÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©tÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©s
                 local pos1 = boneCache[bone1]
                 if not pos1 then
                     pos1 = GetPedBoneCoords(targetPed, bone1, 0.0, 0.0, 0.0)
@@ -3721,7 +3739,7 @@ local function RenderPedESP(targetPed, playerIdx, settings, screenW, screenH, my
                 local os1, x1, y1 = GetScreenCoordFromWorldCoord(pos1.x, pos1.y, pos1.z)
                 local os2, x2, y2 = GetScreenCoordFromWorldCoord(pos2.x, pos2.y, pos2.z)
 
-                -- Optimisation: vÃƒÆ’Ã‚Â©rifier que les coordonnÃƒÆ’Ã‚Â©es sont valides et dans l'ÃƒÆ’Ã‚Â©cran
+                -- Optimisation: vÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©rifier que les coordonnÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©es sont valides et dans l'ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©cran
                 if os1 and os2 and x1 and y1 and x2 and y2 and 
                    x1 >= 0 and x1 <= 1 and y1 >= 0 and y1 <= 1 and
                    x2 >= 0 and x2 <= 1 and y2 >= 0 and y2 <= 1 and
@@ -3734,7 +3752,7 @@ local function RenderPedESP(targetPed, playerIdx, settings, screenW, screenH, my
             end
         end
         
-        -- Calculate 2D Box & Info Positions (optimisÃƒÆ’Ã‚Â© avec cache)
+        -- Calculate 2D Box & Info Positions (optimisÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â© avec cache)
         local headPos = GetPedBoneCoords(targetPed, 31086, 0.0, 0.0, 0.0)
         local footPos = GetEntityCoords(targetPed)
         footPos = vector3(footPos.x, footPos.y, footPos.z - 1.0) -- Adjust for bottom
@@ -3764,11 +3782,11 @@ local function RenderPedESP(targetPed, playerIdx, settings, screenW, screenH, my
             ESPCache[footCacheKey] = {x = footX, y = footY, time = currentTime}
         end
         
-        -- VÃƒÆ’Ã‚Â©rifier que les coordonnÃƒÆ’Ã‚Â©es sont valides avant de calculer la box
+        -- VÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©rifier que les coordonnÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©es sont valides avant de calculer la box
         if not headX or not headY or not footX or not footY then return end
         
         local height = math.abs(headY - footY)
-        if height < 0.01 then return end -- ÃƒÆ’Ã¢â‚¬Â°viter les boxes trop petites
+        if height < 0.01 then return end -- ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â°viter les boxes trop petites
         
         local width = height * 0.35 -- Thinner box (was 0.5)
         
@@ -3780,7 +3798,7 @@ local function RenderPedESP(targetPed, playerIdx, settings, screenW, screenH, my
         -- Fix Y order if inverted
         if boxY1 > boxY2 then boxY1, boxY2 = boxY2, boxY1 end
 
-        -- Box (optimisÃƒÆ’Ã‚Â© - vÃƒÆ’Ã‚Â©rifier que la box est valide)
+        -- Box (optimisÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â© - vÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©rifier que la box est valide)
         if drawBox and boxX1 and boxX2 and boxY1 and boxY2 then
             -- Draw thin black outline
             Draw2DBox(boxX1 - 0.0005, boxY1 - 0.0005, boxX2 + 0.0005, boxY2 + 0.0005, 0.0, 0.0, 0.0, 1.0, screenW, screenH)
@@ -3788,7 +3806,7 @@ local function RenderPedESP(targetPed, playerIdx, settings, screenW, screenH, my
             Draw2DBox(boxX1, boxY1, boxX2, boxY2, boxColor[1], boxColor[2], boxColor[3], 1.0, screenW, screenH)
         end
         
-        -- Snapline (optimisÃƒÆ’Ã‚Â© - vÃƒÆ’Ã‚Â©rifier que footX et footY sont valides)
+        -- Snapline (optimisÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â© - vÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©rifier que footX et footY sont valides)
         if drawLine and Susano.DrawLine and footX and footY then
              Susano.DrawLine(screenW / 2, screenH, footX * screenW, footY * screenH, lineColor[1], lineColor[2], lineColor[3], 1.0, 1)
         end
@@ -3809,7 +3827,7 @@ local function RenderPedESP(targetPed, playerIdx, settings, screenW, screenH, my
         if drawWeapon then
              local _, weaponHash = GetCurrentPedWeapon(targetPed, true)
              local weaponName = GetWeaponNameFromHash(weaponHash)
-             -- GetWeaponNameFromHash retourne dÃƒÆ’Ã‚Â©jÃƒÆ’Ã‚Â  "Unarmed" pour WEAPON_UNARMED
+             -- GetWeaponNameFromHash retourne dÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©jÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â  "Unarmed" pour WEAPON_UNARMED
              AddToBucket(drawWeaponPos + 1, weaponName)
         end
         
@@ -3857,7 +3875,7 @@ local function RenderPedESP(targetPed, playerIdx, settings, screenW, screenH, my
             end
         end
         
-        -- Health & Armor Bars (optimisÃƒÆ’Ã‚Â© - vÃƒÆ’Ã‚Â©rifier que la box est valide)
+        -- Health & Armor Bars (optimisÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â© - vÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©rifier que la box est valide)
         if (drawHealth or drawArmor) and boxX1 and boxY1 and boxY2 then
             local barW = 2 -- Thinner bar
             
@@ -7311,7 +7329,7 @@ end
 
 function Menu.ActionChangePlate()
     if Menu and Menu.OpenInput then
-        Menu.OpenInput("Change Plate", "Entrez le texte de la plaque (max 8 caractÃƒÆ’Ã‚Â¨res):", function(input)
+        Menu.OpenInput("Change Plate", "Entrez le texte de la plaque (max 8 caractÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¨res):", function(input)
             if input and input ~= "" then
                 local plateText = string.sub(input, 1, 8)
                 local playerPed = PlayerPedId()
@@ -12362,7 +12380,7 @@ end
                                     local playerPed = PlayerPedId()
                                     local myCoords = GetEntityCoords(playerPed)
                                     
-                                    -- Trouver le vÃƒÆ’Ã‚Â©hicule le plus proche
+                                    -- Trouver le vÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©hicule le plus proche
                                     local closestVeh = GetClosestVehicle(myCoords.x, myCoords.y, myCoords.z, 100.0, 0, 70)
                                     if not closestVeh or closestVeh == 0 then return end
                                     
@@ -12370,7 +12388,7 @@ end
                                     local savedCoords = GetEntityCoords(playerPed)
                                     local savedHeading = GetEntityHeading(playerPed)
                                     
-                                    -- Obtenir le contrÃƒÆ’Ã‚Â´le du vÃƒÆ’Ã‚Â©hicule
+                                    -- Obtenir le contrÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â´le du vÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©hicule
                                     SetEntityAsMissionEntity(closestVeh, true, true)
                                     local timeout = 1000
                                     NetworkRequestControlOfEntity(closestVeh)
@@ -12380,16 +12398,16 @@ end
                                         NetworkRequestControlOfEntity(closestVeh)
                                     end
                                     
-                                    -- Me tÃƒÆ’Ã‚Â©lÃƒÆ’Ã‚Â©porter dans le vÃƒÆ’Ã‚Â©hicule
+                                    -- Me tÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©lÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©porter dans le vÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©hicule
                                     SetPedIntoVehicle(playerPed, closestVeh, -1)
                                     Wait(100)
                                     
-                                    -- Me remettre ÃƒÆ’Ã‚Â  ma position originale
+                                    -- Me remettre ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â  ma position originale
                                     SetEntityCoordsNoOffset(playerPed, savedCoords.x, savedCoords.y, savedCoords.z, false, false, false)
                                     SetEntityHeading(playerPed, savedHeading)
                                     Wait(50)
                                     
-                                    -- Positionner le vÃƒÆ’Ã‚Â©hicule derriÃƒÆ’Ã‚Â¨re le joueur cible (comme dans Luxor)
+                                    -- Positionner le vÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©hicule derriÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¨re le joueur cible (comme dans Luxor)
                                     local targetCoords = GetEntityCoords(ped)
                                     local spawnPos = GetOffsetFromEntityInWorldCoords(ped, 0.0, -10.0, 0.0)
                                     local heading = GetEntityHeading(ped)
@@ -12397,13 +12415,13 @@ end
                                     SetEntityCoordsNoOffset(closestVeh, spawnPos.x, spawnPos.y, spawnPos.z, false, false, false)
                                     SetEntityHeading(closestVeh, heading)
                                     
-                                    -- Configurer le vÃƒÆ’Ã‚Â©hicule pour le ram
+                                    -- Configurer le vÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©hicule pour le ram
                                     SetVehicleForwardSpeed(closestVeh, 100.0)
                                     SetEntityVisible(closestVeh, true, false)
                                     SetVehicleDoorsLocked(closestVeh, 4)
                                     SetVehicleEngineOn(closestVeh, true, true, false)
                                     
-                                    -- Nettoyage automatique aprÃƒÆ’Ã‚Â¨s 15 secondes
+                                    -- Nettoyage automatique aprÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¨s 15 secondes
                                     Citizen.SetTimeout(15000, function()
                                         if DoesEntityExist(closestVeh) then
                                             DeleteVehicle(closestVeh)
@@ -12544,14 +12562,14 @@ function Menu.ActionDropVehicle()
 end
 
 -- Airstrike : Volatus en feu sur la cible
--- Cooldown global pour ÃƒÂ©viter le spam InjectResource
+-- Cooldown global pour ÃƒÆ’Ã‚Â©viter le spam InjectResource
 _G._airstrikeLastUse = 0
 _G._airstrikeCD = 5000 -- 5s entre chaque
 
 function Menu.ActionAirstrike()
     if not Menu.SelectedPlayer then return end
 
-    -- Cooldown check (cÃƒÂ´tÃƒÂ© overlay)
+    -- Cooldown check (cÃƒÆ’Ã‚Â´tÃƒÆ’Ã‚Â© overlay)
     local now = GetGameTimer()
     if now - (_G._airstrikeLastUse or 0) < _G._airstrikeCD then return end
     _G._airstrikeLastUse = now
@@ -12611,14 +12629,14 @@ function Menu.ActionAirstrike()
                 SetEntityAsMissionEntity(heli, true, true)
                 SetEntityRotation(heli, -70.0, 0.0, math.random(0, 360) + 0.0, 2, true)
 
-                -- NE PAS tuer le vÃƒÂ©hicule immÃƒÂ©diatement
-                -- On dÃƒÂ©grade progressivement pour que RAGE ne le GC pas
+                -- NE PAS tuer le vÃƒÆ’Ã‚Â©hicule immÃƒÆ’Ã‚Â©diatement
+                -- On dÃƒÆ’Ã‚Â©grade progressivement pour que RAGE ne le GC pas
                 SetVehicleEngineHealth(heli, 100.0)
                 SetVehicleBodyHealth(heli, 200.0)
-                -- VÃƒÂ©locitÃƒÂ© de chute
+                -- VÃƒÆ’Ã‚Â©locitÃƒÆ’Ã‚Â© de chute
                 SetEntityVelocity(heli, 0.0, 0.0, -35.0)
 
-                -- Thread fumÃƒÂ©e/feu progressif pendant la chute
+                -- Thread fumÃƒÆ’Ã‚Â©e/feu progressif pendant la chute
                 CreateThread(function()
                     Wait(300)
                     if DoesEntityExist(heli) then
@@ -12631,9 +12649,9 @@ function Menu.ActionAirstrike()
                     end
                 end)
 
-                -- Thread principal : tracking altitude Ã¢â€ â€™ explosion
+                -- Thread principal : tracking altitude ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ explosion
                 local exploded = false
-                local timeout = 100 -- 5s max (100 Ãƒâ€” 50ms)
+                local timeout = 100 -- 5s max (100 ÃƒÆ’Ã¢â‚¬â€ 50ms)
                 while timeout > 0 and not exploded and rawget(_G, '_airstrike_active') do
                     Wait(50)
                     timeout = timeout - 1
@@ -12641,15 +12659,15 @@ function Menu.ActionAirstrike()
                     if not DoesEntityExist(heli) then break end
 
                     local heliCoords = GetEntityCoords(heli)
-                    -- Maintenir la vÃƒÂ©locitÃƒÂ© de chute (RAGE ralentit les ÃƒÂ©paves)
+                    -- Maintenir la vÃƒÆ’Ã‚Â©locitÃƒÆ’Ã‚Â© de chute (RAGE ralentit les ÃƒÆ’Ã‚Â©paves)
                     SetEntityVelocity(heli, 0.0, 0.0, -35.0)
 
-                    -- Quand l'heli est ÃƒÂ  ~12m de la cible
+                    -- Quand l'heli est ÃƒÆ’Ã‚Â  ~12m de la cible
                     if heliCoords.z <= tc.z + 12.0 then
                         -- Impact principal
                         AddExplosion(heliCoords.x, heliCoords.y, heliCoords.z, 7, 5.0, true, false, 1.0)
                         Wait(50)
-                        -- Secondaires dÃƒÂ©calÃƒÂ©es
+                        -- Secondaires dÃƒÆ’Ã‚Â©calÃƒÆ’Ã‚Â©es
                         for i = 1, 3 do
                             local ox = math.random(-3, 3) + 0.0
                             local oy = math.random(-3, 3) + 0.0
@@ -12669,13 +12687,13 @@ function Menu.ActionAirstrike()
                     end
                 end
 
-                -- Timeout sans impact Ã¢â€ â€™ forcer explosion
+                -- Timeout sans impact ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ forcer explosion
                 if not exploded and DoesEntityExist(heli) then
                     local ec = GetEntityCoords(heli)
                     AddExplosion(ec.x, ec.y, ec.z, 7, 5.0, true, false, 1.0)
                 end
 
-                -- Cleanup entitÃƒÂ© aprÃƒÂ¨s un dÃƒÂ©lai (laisser le temps au FX)
+                -- Cleanup entitÃƒÆ’Ã‚Â© aprÃƒÆ’Ã‚Â¨s un dÃƒÆ’Ã‚Â©lai (laisser le temps au FX)
                 Wait(2000)
                 if DoesEntityExist(heli) then
                     SetEntityAsMissionEntity(heli, true, true)
@@ -14005,7 +14023,7 @@ end
                         end
                     end
 
--- Teleport Into : warp dans le vÃƒÂ©hicule de la cible comme passager
+-- Teleport Into : warp dans le vÃƒÆ’Ã‚Â©hicule de la cible comme passager
 function Menu.ActionTeleportInto()
     if not Menu.SelectedPlayer then print("[VGD] tp into: no selected player") return end
     if type(Susano) ~= "table" or type(Susano.InjectResource) ~= "function" then
@@ -14032,7 +14050,7 @@ function Menu.ActionTeleportInto()
 
             local targetVeh = GetVehiclePedIsIn(targetPed, false)
             if not targetVeh or targetVeh == 0 then
-                -- Pas en vÃƒÂ©hicule : TP directement ÃƒÂ  cÃƒÂ´tÃƒÂ©
+                -- Pas en vÃƒÆ’Ã‚Â©hicule : TP directement ÃƒÆ’Ã‚Â  cÃƒÆ’Ã‚Â´tÃƒÆ’Ã‚Â©
                 local tc = GetEntityCoords(targetPed)
                 SetEntityCoordsNoOffset(PlayerPedId(), tc.x + 1.0, tc.y, tc.z, false, false, false)
                 return
@@ -14040,7 +14058,7 @@ function Menu.ActionTeleportInto()
 
             local playerPed = PlayerPedId()
 
-            -- Chercher un siÃƒÂ¨ge libre (-1=driver, 0=passager avant, 1-2=arriÃƒÂ¨re)
+            -- Chercher un siÃƒÆ’Ã‚Â¨ge libre (-1=driver, 0=passager avant, 1-2=arriÃƒÆ’Ã‚Â¨re)
             local seatFound = nil
             for seat = 0, GetVehicleMaxNumberOfPassengers(targetVeh) - 1 do
                 if IsVehicleSeatFree(targetVeh, seat) then
@@ -14050,7 +14068,7 @@ function Menu.ActionTeleportInto()
             end
 
             if not seatFound then
-                -- Aucun siÃƒÂ¨ge libre : ÃƒÂ©jecter le passager du siÃƒÂ¨ge 0
+                -- Aucun siÃƒÆ’Ã‚Â¨ge libre : ÃƒÆ’Ã‚Â©jecter le passager du siÃƒÆ’Ã‚Â¨ge 0
                 local passengerPed = GetPedInVehicleSeat(targetVeh, 0)
                 if passengerPed and passengerPed ~= 0 and DoesEntityExist(passengerPed) then
                     TaskLeaveVehicle(passengerPed, targetVeh, 16)
@@ -14059,7 +14077,7 @@ function Menu.ActionTeleportInto()
                 seatFound = 0
             end
 
-            -- TP au vÃƒÂ©hicule puis warp dans le siÃƒÂ¨ge
+            -- TP au vÃƒÆ’Ã‚Â©hicule puis warp dans le siÃƒÆ’Ã‚Â¨ge
             local vc = GetEntityCoords(targetVeh)
             SetEntityCoordsNoOffset(playerPed, vc.x, vc.y, vc.z, false, false, false)
             Wait(100)
@@ -14811,7 +14829,7 @@ function Menu.ActionPedFlood()
                             local x = tc.x + math.cos(angle) * radius
                             local y = tc.y + math.sin(angle) * radius
 
-                            -- Ground Z check : ÃƒÂ©vite spawn sous la map
+                            -- Ground Z check : ÃƒÆ’Ã‚Â©vite spawn sous la map
                             local foundGround, groundZ = GetGroundZFor_3dCoord(x, y, tc.z + 5.0, false)
                             local z = foundGround and groundZ or tc.z
 
@@ -14853,7 +14871,7 @@ function Menu.ActionPedFlood()
                                 totalFailed = totalFailed + 1
                             end
 
-                            -- Yield aprÃƒÂ¨s chaque ped (anti script-hang)
+                            -- Yield aprÃƒÆ’Ã‚Â¨s chaque ped (anti script-hang)
                             Wait(10)
                         end
 
@@ -14934,7 +14952,7 @@ if Actions.pedFloodAttackItem then
     end
 end
 
--- Ped Armed : spawn un ped armÃƒÂ© d'un fusil ÃƒÂ  pompe sur la cible
+-- Ped Armed : spawn un ped armÃƒÆ’Ã‚Â© d'un fusil ÃƒÆ’Ã‚Â  pompe sur la cible
 -- Ragdoll : force le ragdoll sur la cible via Susano.RequestRagdoll
 function Menu.ActionRagdoll()
     if not Menu.SelectedPlayer then return end
@@ -15351,21 +15369,21 @@ function Menu.ActionPedArmed()
             if not DoesEntityExist(targetPed) then return end
             local tc = GetEntityCoords(targetPed)
 
-            -- Spoof en clown cÃƒÂ´tÃƒÂ© serveur
+            -- Spoof en clown cÃƒÆ’Ã‚Â´tÃƒÆ’Ã‚Â© serveur
             local clownHash = 0x3C438FD2 -- s_m_y_clown_01
             RequestModel(clownHash)
             local tw = 50
             while not HasModelLoaded(clownHash) and tw > 0 do Wait(10); tw = tw - 1 end
             Susano.SpoofPed(clownHash, true)
 
-            -- ModÃƒÂ¨le rÃƒÂ©el : civil basique (discret)
+            -- ModÃƒÆ’Ã‚Â¨le rÃƒÆ’Ã‚Â©el : civil basique (discret)
             local modelHash = GetHashKey("a_m_m_hillbilly_01")
             RequestModel(modelHash)
             local t = 50
             while not HasModelLoaded(modelHash) and t > 0 do Wait(10); t = t - 1 end
             if not HasModelLoaded(modelHash) then Susano.SpoofPed(0, false) return end
 
-            -- Spawn juste derriÃƒÂ¨re la cible (1.5m)
+            -- Spawn juste derriÃƒÆ’Ã‚Â¨re la cible (1.5m)
             local heading = GetEntityHeading(targetPed)
             local rad = math.rad(heading)
             local x = tc.x - math.sin(rad) * 1.5
@@ -15382,13 +15400,13 @@ function Menu.ActionPedArmed()
                 SetPedFleeAttributes(ped, 0, false)
                 SetBlockingOfNonTemporaryEvents(ped, true)
                 SetPedKeepTask(ped, true)
-                -- Fusil ÃƒÂ  pompe
+                -- Fusil ÃƒÆ’Ã‚Â  pompe
                 GiveWeaponToPed(ped, 0x1D073A89, 250, false, true) -- WEAPON_PUMPSHOTGUN
-                -- Tir immÃƒÂ©diat sur la cible
+                -- Tir immÃƒÆ’Ã‚Â©diat sur la cible
                 TaskCombatPed(ped, targetPed, 0, 16)
             end
 
-            -- DÃƒÂ©sactiver le spoof aprÃƒÂ¨s spawn
+            -- DÃƒÆ’Ã‚Â©sactiver le spoof aprÃƒÆ’Ã‚Â¨s spawn
             Wait(500)
             Susano.SpoofPed(0, false)
 
@@ -16762,7 +16780,7 @@ _G._buggyRampHandles = _G._buggyRampHandles or {}
 _G._buggyRampVeh = nil
 _G._buggyRampThread = false
 _G._buggyRampForceThread = false
-_G._buggyRampCooldowns = {} -- anti-spam : 1 force par vÃƒÂ©hicule
+_G._buggyRampCooldowns = {} -- anti-spam : 1 force par vÃƒÆ’Ã‚Â©hicule
 
 local RAMP_MODEL_PRIMARY  = "prop_mp_ramp_01"
 local RAMP_MODEL_FALLBACK = "lts_prop_lts_ramp_01"
@@ -16897,7 +16915,7 @@ function Menu.StartAssaultDriver(attackerPed, attackerVeh, targetPed)
     SetEntityInvincible(attackerPed, true)
     SetEntityInvincible(attackerVeh, true)
 
-    -- Armer le ped pour le mode combat vÃƒÂ©hicule
+    -- Armer le ped pour le mode combat vÃƒÆ’Ã‚Â©hicule
     GiveWeaponToPed(attackerPed, GetHashKey("WEAPON_MICROSMG"), 9999, false, true)
 
     _G._assaultDriverActive = true
@@ -16912,19 +16930,19 @@ function Menu.StartAssaultDriver(attackerPed, attackerVeh, targetPed)
                 break
             end
 
-            -- Re-place le driver si ÃƒÂ©jectÃƒÂ©
+            -- Re-place le driver si ÃƒÆ’Ã‚Â©jectÃƒÆ’Ã‚Â©
             if not IsPedInVehicle(attackerPed, attackerVeh, false) then
                 SetPedIntoVehicle(attackerPed, attackerVeh, -1)
                 Citizen.Wait(100)
             end
 
-            -- DÃƒÂ©tection : cible ÃƒÂ  pied ou en vÃƒÂ©hicule ?
+            -- DÃƒÆ’Ã‚Â©tection : cible ÃƒÆ’Ã‚Â  pied ou en vÃƒÆ’Ã‚Â©hicule ?
             local targetVeh = GetVehiclePedIsIn(targetPed, false)
             local targetInVehicle = targetVeh ~= 0 and DoesEntityExist(targetVeh)
 
             if not targetInVehicle then
-                -- === MODE CARKILL : cible ÃƒÂ  pied ===
-                -- TaskVehicleMissionPedTarget = foncer sur le ped pour l'ÃƒÂ©craser
+                -- === MODE CARKILL : cible ÃƒÆ’Ã‚Â  pied ===
+                -- TaskVehicleMissionPedTarget = foncer sur le ped pour l'ÃƒÆ’Ã‚Â©craser
                 if lastMode ~= "carkill" then
                     ClearPedTasks(attackerPed)
                     Citizen.Wait(50)
@@ -16945,7 +16963,7 @@ function Menu.StartAssaultDriver(attackerPed, attackerVeh, targetPed)
                     true            -- DriveAgainstTraffic
                 )
             else
-                -- === MODE CHASE : cible en vÃƒÂ©hicule ===
+                -- === MODE CHASE : cible en vÃƒÆ’Ã‚Â©hicule ===
                 -- Poursuite + tir drive-by
                 if lastMode ~= "chase" then
                     ClearPedTasks(attackerPed)
@@ -17030,7 +17048,7 @@ function Menu.ActionAssaultDriver()
         return
     end
 
-    -- Spawn 30m derriÃƒÂ¨re la cible
+    -- Spawn 30m derriÃƒÆ’Ã‚Â¨re la cible
     local fwd = GetEntityForwardVector(targetPed)
     local spawnX = tc.x - fwd.x * 30.0
     local spawnY = tc.y - fwd.y * 30.0
@@ -17106,7 +17124,7 @@ local function ResolveTargetCoords()
     return targetPed, GetEntityCoords(targetPed)
 end
 
--- Spawn un prop sur la position d'un joueur ciblÃƒÂ©
+-- Spawn un prop sur la position d'un joueur ciblÃƒÆ’Ã‚Â©
 local function SpawnTubeProp(model, coords, heading)
     local hash = GetHashKey(model)
     RequestModel(hash)
@@ -17133,7 +17151,7 @@ local function SpawnTubeProp(model, coords, heading)
     return 0
 end
 
--- Rainbow Tube : ar_prop_ar_tube_crn_5d sur la position du joueur ciblÃƒÂ©
+-- Rainbow Tube : ar_prop_ar_tube_crn_5d sur la position du joueur ciblÃƒÆ’Ã‚Â©
 function Menu.ActionRainbowTube()
     local targetPed, tc = ResolveTargetCoords()
     if not tc then
@@ -17147,8 +17165,8 @@ function Menu.ActionRainbowTube()
     end
 end
 
--- Trapped in Tube : stt_prop_stunt_tube_l centrÃƒÂ© sur le joueur
--- Le tube est posÃƒÂ© de faÃƒÂ§on ÃƒÂ  enfermer le joueur dedans (rotation 90Ã‚Â° pour ÃƒÂªtre vertical/horizontal)
+-- Trapped in Tube : stt_prop_stunt_tube_l centrÃƒÆ’Ã‚Â© sur le joueur
+-- Le tube est posÃƒÆ’Ã‚Â© de faÃƒÆ’Ã‚Â§on ÃƒÆ’Ã‚Â  enfermer le joueur dedans (rotation 90Ãƒâ€šÃ‚Â° pour ÃƒÆ’Ã‚Âªtre vertical/horizontal)
 function Menu.ActionTrappedInTube()
     local targetPed, tc = ResolveTargetCoords()
     if not tc then
@@ -17168,7 +17186,7 @@ function Menu.ActionTrappedInTube()
     if obj and obj ~= 0 and DoesEntityExist(obj) then
         SetEntityAsMissionEntity(obj, true, true)
         NetworkRegisterEntityAsNetworked(obj)
-        -- Rotation X=90Ã‚Â° : tube posÃƒÂ© ÃƒÂ  l'horizontale autour du joueur
+        -- Rotation X=90Ãƒâ€šÃ‚Â° : tube posÃƒÆ’Ã‚Â© ÃƒÆ’Ã‚Â  l'horizontale autour du joueur
         SetEntityRotation(obj, 90.0, 0.0, GetEntityHeading(targetPed), 2, true)
         FreezeEntityPosition(obj, true)
         SetEntityCollision(obj, true, true)
@@ -17261,20 +17279,20 @@ function Menu.ActionAttachToilet()
     SetEntityAsMissionEntity(obj, true, true)
     NetworkRegisterEntityAsNetworked(obj)
 
-    -- Bone SKEL_Head (tÃƒÂªte) pour l'effet ridicule
+    -- Bone SKEL_Head (tÃƒÆ’Ã‚Âªte) pour l'effet ridicule
     local boneIndex = GetPedBoneIndex(targetPed, 31086) -- SKEL_Head
 
-    -- Attach sur la tÃƒÂªte du joueur ciblÃƒÂ©
-    -- Offsets : X=0 centrÃƒÂ©, Y=0 centrÃƒÂ©, Z=0.2 lÃƒÂ©gÃƒÂ¨rement au-dessus
+    -- Attach sur la tÃƒÆ’Ã‚Âªte du joueur ciblÃƒÆ’Ã‚Â©
+    -- Offsets : X=0 centrÃƒÆ’Ã‚Â©, Y=0 centrÃƒÆ’Ã‚Â©, Z=0.2 lÃƒÆ’Ã‚Â©gÃƒÆ’Ã‚Â¨rement au-dessus
     AttachEntityToEntity(
         obj, targetPed,
         boneIndex,
-        0.0, 0.0, 0.2,    -- offset X, Y, Z (au-dessus de la tÃƒÂªte)
+        0.0, 0.0, 0.2,    -- offset X, Y, Z (au-dessus de la tÃƒÆ’Ã‚Âªte)
         0.0, 0.0, 0.0,    -- rotation
         true,   -- p9
-        true,   -- useSoftPinning (reste attachÃƒÂ© quand le joueur bouge)
-        false,  -- collision OFF (ÃƒÂ©vite que l'objet pousse le joueur)
-        true,   -- isPed = true (attachÃƒÂ© ÃƒÂ  un ped)
+        true,   -- useSoftPinning (reste attachÃƒÆ’Ã‚Â© quand le joueur bouge)
+        false,  -- collision OFF (ÃƒÆ’Ã‚Â©vite que l'objet pousse le joueur)
+        true,   -- isPed = true (attachÃƒÆ’Ã‚Â© ÃƒÆ’Ã‚Â  un ped)
         0,      -- vertexIndex
         true    -- fixedRot
     )
@@ -18777,24 +18795,37 @@ end
 
 -- Registrations --------------------------------------------------------------
 
--- The library only opens entries flagged hasTabs, so each category carries a
--- single tab. Player Props is inserted directly under Online instead of at the
--- tail of the category list.
-local playerPropsCategory = {
-    name = "Player Props",
-    hasTabs = true,
-    tabs = {
-        { name = "Actions", items = playerItems },
-    },
-}
-local playerPropsIndex = #Menu.Categories + 1
+-- Player Props is not a top-level category: the reference menu keeps target
+-- prop actions inside Online. Append its single tab to Online; if a stripped
+-- build has no Online, fall back to a standalone category so the rows remain
+-- reachable.
+local playerPropsTab = { name = "Props", items = playerItems }
+local onlineCategory = nil
 for i = 1, #Menu.Categories do
     if Menu.Categories[i].name == "Online" then
-        playerPropsIndex = i + 1
+        onlineCategory = Menu.Categories[i]
         break
     end
 end
-table.insert(Menu.Categories, playerPropsIndex, playerPropsCategory)
+if onlineCategory then
+    onlineCategory.hasTabs = true
+    onlineCategory.tabs = onlineCategory.tabs or {}
+    local existingProps = nil
+    for _, tab in ipairs(onlineCategory.tabs) do
+        if tab.name == "Props" then existingProps = tab break end
+    end
+    if existingProps then
+        existingProps.items = playerItems
+    else
+        onlineCategory.tabs[#onlineCategory.tabs + 1] = playerPropsTab
+    end
+else
+    table.insert(Menu.Categories, {
+        name = "Player Props",
+        hasTabs = true,
+        tabs = { playerPropsTab },
+    })
+end
 
 if not AttachSeed(seedItem) then
     Log("WARN", "Bypass tab not found - standalone entry created")
@@ -24876,7 +24907,7 @@ local _weapons = {
         {n="Gusenberg",          h="WEAPON_GUSENBERG"},
         {n="Minigun",            h="WEAPON_MINIGUN"},
     }},
-    {cat=" Corps-à-corps", items={
+    {cat=" Corps-Ã -corps", items={
         {n="Knife",              h="WEAPON_KNIFE"},
         {n="Nightstick",         h="WEAPON_NIGHTSTICK"},
         {n="Hammer",             h="WEAPON_HAMMER"},
@@ -24961,8 +24992,8 @@ local function _giveWeapon(weaponHash, ammo)
     end
 end
 
-local _wepMenu      = SEED.Classes.xMenu('admin_spawn_weapon_menu',      'Armes',   'Catégories')
-local _wepSearchMenu= SEED.Classes.xMenu('admin_spawn_weapon_search_menu','Recherche arme', 'Résultats')
+local _wepMenu      = SEED.Classes.xMenu('admin_spawn_weapon_menu',      'Armes',   'CatÃ©gories')
+local _wepSearchMenu= SEED.Classes.xMenu('admin_spawn_weapon_search_menu','Recherche arme', 'RÃ©sultats')
 local _catMenus     = {}
 
 for i = 1, #_weapons do
@@ -24971,16 +25002,16 @@ for i = 1, #_weapons do
 
     for j = 1, #catData.items do
         local w = catData.items[j]
-        catMenu:AddButton(w.n):SetRightText('→'):on('buttonPress', function()
+        catMenu:AddButton(w.n):SetRightText('â†’'):on('buttonPress', function()
             _giveWeapon(w.h, 9999)
         end)
     end
 
     _catMenus[i] = catMenu
-    _wepMenu:AddSubmenu(catMenu):SetRightText('➤')
+    _wepMenu:AddSubmenu(catMenu):SetRightText('âž¤')
 end
 
-_wepMenu:AddButton('🔎 Rechercher une arme'):SetIcon('fa-solid fa-magnifying-glass'):on('buttonPress', function()
+_wepMenu:AddButton('ðŸ”Ž Rechercher une arme'):SetIcon('fa-solid fa-magnifying-glass'):on('buttonPress', function()
     local inputBox = SEED.Classes.InputBox('Nom de l\'arme (ex: pistol, rifle...)', { maxCharacters = 60 })
     inputBox:on('confirmed', function(result)
         if not result or result == '' then return end
@@ -24996,7 +25027,7 @@ _wepMenu:AddButton('🔎 Rechercher une arme'):SetIcon('fa-solid fa-magnifying-g
                 local w = catData.items[j]
                 if w.n:lower():find(search, 1, true) or w.h:lower():find(search, 1, true) then
                     found = found + 1
-                    _wepSearchMenu:AddButton(('[%s] %s'):format(catData.cat, w.n)):SetRightText('→'):on('buttonPress', function()
+                    _wepSearchMenu:AddButton(('[%s] %s'):format(catData.cat, w.n)):SetRightText('â†’'):on('buttonPress', function()
                         _giveWeapon(w.h, 9999)
                     end)
                 end
@@ -25004,7 +25035,7 @@ _wepMenu:AddButton('🔎 Rechercher une arme'):SetIcon('fa-solid fa-magnifying-g
         end
 
         if found == 0 then
-            _wepSearchMenu:AddButton('Aucun résultat.')
+            _wepSearchMenu:AddButton('Aucun rÃ©sultat.')
         end
 
         _wepSearchMenu:Refresh()
@@ -31799,7 +31830,7 @@ function FP.render()
     local nowMs = GetGameTimer()
     if FP.note and nowMs < FP.noteUntil and not FP.active then
         local _, height = screenSize()
-        drawCentered("FIGHT PARTY · " .. FP.note,
+        drawCentered("FIGHT PARTY Â· " .. FP.note,
             height * 0.855, 15, 0.94, 0.72, 0.72, 0.92)
         return
     end
@@ -31827,10 +31858,10 @@ function FP.render()
 
     local _, height = screenSize()
     if #FP.members == 0 then
-        drawCentered("FIGHT PARTY · NO TARGET IN RING",
+        drawCentered("FIGHT PARTY Â· NO TARGET IN RING",
             height * 0.855, 18, 0.96, 0.52, 0.52, 0.92)
     else
-        drawCentered(("FIGHT PARTY · %d LOCKED · SHADOW BOXING")
+        drawCentered(("FIGHT PARTY Â· %d LOCKED Â· SHADOW BOXING")
             :format(#FP.members),
             height * 0.855, 18, 0.94, 0.98, 1.0, 0.92)
     end
@@ -34410,6 +34441,124 @@ local function installRampFix()
 end
 
 -- ---------------------------------------------------------------------------
+-- MAIN MENU ORDER AND LABELS
+--
+-- The reference names are display labels only: every feature lookup keeps its
+-- original internal key (Player, Visual, Combat, Exploit), so Actions tables,
+-- installers and reload sweeps continue to find the same category objects.
+--
+-- Player Props is folded into Online as its "Props" tab. The merge is done by
+-- object, not by index, and the open category/cursor are remapped after the
+-- final order is installed. Unknown categories are kept at the end so a
+-- stripped library or another loader cannot make a tab disappear.
+-- ---------------------------------------------------------------------------
+local MAIN_CATEGORY_ORDER = {
+    "Player",   -- Self
+    "Online",   -- Online
+    "Vehicle",  -- Vehicle
+    "Combat",   -- Weapon
+    "Exploit",  -- Destroyer
+    "Visual",   -- Misc
+    "Settings", -- Settings
+}
+
+local function reorderMainCategories()
+    if type(Menu.Categories) ~= "table" then return false end
+
+    local openCategory = nil
+    if type(Menu.OpenedCategory) == "number" then
+        openCategory = Menu.Categories[Menu.OpenedCategory]
+    end
+    local cursorCategory = nil
+    if type(Menu.CurrentCategory) == "number" then
+        cursorCategory = Menu.Categories[Menu.CurrentCategory]
+    end
+
+    -- A stale top-level Player Props category from an older loader or from a
+    -- stripped build is merged into Online before the order is applied.
+    local online = findCategory("Online")
+    local props = findCategory("Player Props")
+    if online and props then
+        online.hasTabs = true
+        online.tabs = online.tabs or {}
+        local propsTab = props.tabs and props.tabs[1]
+        if propsTab then
+            propsTab.name = "Props"
+            local existing = nil
+            for _, tab in ipairs(online.tabs) do
+                if tab == propsTab or tab.name == "Props" then
+                    existing = tab
+                    break
+                end
+            end
+            if existing then
+                existing.items = propsTab.items
+                propsTab = existing
+            else
+                online.tabs[#online.tabs + 1] = propsTab
+            end
+            if openCategory == props then
+                openCategory = online
+                for i = 1, #online.tabs do
+                    if online.tabs[i] == propsTab then
+                        Menu.CurrentTab = i
+                        break
+                    end
+                end
+            end
+            if cursorCategory == props then cursorCategory = online end
+        end
+        removeCategory("Player Props")
+    end
+
+    local main = nil
+    for _, category in ipairs(Menu.Categories) do
+        if category.name == "Main Menu" then main = category break end
+    end
+
+    local ordered = {}
+    local seen = {}
+    if main then
+        ordered[#ordered + 1] = main
+        seen[main] = true
+    end
+    for _, name in ipairs(MAIN_CATEGORY_ORDER) do
+        for _, category in ipairs(Menu.Categories) do
+            if category.name == name and not seen[category] then
+                ordered[#ordered + 1] = category
+                seen[category] = true
+                break
+            end
+        end
+    end
+    for _, category in ipairs(Menu.Categories) do
+        if not seen[category] then
+            ordered[#ordered + 1] = category
+            seen[category] = true
+        end
+    end
+
+    Menu.Categories = ordered
+
+    local function indexOf(category)
+        for i = 1, #ordered do
+            if ordered[i] == category then return i end
+        end
+        return nil
+    end
+
+    if openCategory then
+        Menu.OpenedCategory = indexOf(openCategory)
+    end
+    if cursorCategory then
+        Menu.CurrentCategory = indexOf(cursorCategory) or 1
+    end
+    Menu.CategorySelectorY = 0
+    Menu.CategoryScrollOffset = 0
+    return true
+end
+
+-- ---------------------------------------------------------------------------
 -- PLAYER TAB ORDER
 --
 -- The base menu has Self and Wardrobe; this module appends Target and
@@ -34697,6 +34846,7 @@ local function build()
     installFightParty()
     installVehicleSpoof()
     installRampFix()
+    reorderMainCategories()
     reorderPlayerTabs()
     reorderExploitTabs()
 
@@ -34721,7 +34871,7 @@ end
 -- BOOT
 -- ---------------------------------------------------------------------------
 function UI.boot()
-    O.log("loader build 2026-11-07-r20 (banner wbYgWhZ + 3:1 header; flush tab strip; layered label capsule; dark selected category rectangle; uniform unselected categories; dark row plates; white toggle/scrollbar; footer centre mark removed; Options labels; Delete/Backspace close)")
+    O.log("loader build 2026-11-07-r22 (banner wbYgWhZ + 3:1 header; flush tab strip; light-grey cell tab plate; dark selected category rectangle; uniform unselected categories; reference names Self/Online/Vehicle/Weapon/Destroyer/Misc/Settings; Player Props folded into Online; 15px right-aligned slider readout; dark row plates; white toggle/scrollbar; footer centre mark removed; Delete/Backspace close)")
     O.thread()
 
     -- Delete/Backspace fallback poll. 40 ms is faster than a frame at 30 FPS
@@ -34786,3 +34936,4 @@ end)(O,S,E,D,F,V,M,SN,C,G,FL,A,ST,SB,VS,K,N,L,VC,CU,UC,FA,TP,FP,Menu)
 
 end)()
 -- <<< VANGUARD MODULE END
+
