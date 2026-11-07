@@ -113,11 +113,11 @@ local function replaceAllPlain(code, needle, replacement)
     return code, count
 end
 
--- Patch tag display [RISK] (red) / [DYNASTY] (violet) / [SEED] (neutral)
+-- Patch tag display [RISK] (red) / [DYNASTY] (purple) / [SEED] (green)
 LibraryCode = string.gsub(
     LibraryCode,
     'Menu%.DrawText%(textX, textY, item%.name, 19, Menu%.Colors%.TextWhite%.r / 255%.0, Menu%.Colors%.TextWhite%.g / 255%.0, Menu%.Colors%.TextWhite%.b / 255%.0, 1%.0%)',
-    'Menu.DrawText(textX, textY, item.name, 19, Menu.Colors.TextWhite.r / 255.0, Menu.Colors.TextWhite.g / 255.0, Menu.Colors.TextWhite.b / 255.0, 1.0); if (item.risk or item.dynasty or item.seed) and Susano and Susano.GetTextWidth then local _sc = 19 * (Menu.Scale or 1.0); local _ox = Susano.GetTextWidth(item.name, _sc); if item.risk then Menu.DrawText(textX + _ox, textY, "  [RISK]", 19, 1.0, 0.15, 0.15, 1.0); _ox = _ox + Susano.GetTextWidth("  [RISK]", _sc) end; if item.dynasty then Menu.DrawText(textX + _ox, textY, "  [DYNASTY]", 19, 0.6, 0.2, 1.0, 1.0); _ox = _ox + Susano.GetTextWidth("  [DYNASTY]", _sc) end; if item.seed then Menu.DrawText(textX + _ox, textY, "  [SEED]", 19, 0.78, 0.78, 0.80, 1.0) end end'
+    'Menu.DrawText(textX, textY, item.name, 19, Menu.Colors.TextWhite.r / 255.0, Menu.Colors.TextWhite.g / 255.0, Menu.Colors.TextWhite.b / 255.0, 1.0); if (item.risk or item.dynasty or item.seed) and Susano and Susano.GetTextWidth then local _sc = 19 * (Menu.Scale or 1.0); local _ox = Susano.GetTextWidth(item.name, _sc); if item.risk then Menu.DrawText(textX + _ox, textY, "  [RISK]", 19, 1.0, 0.15, 0.15, 1.0); _ox = _ox + Susano.GetTextWidth("  [RISK]", _sc) end; if item.dynasty then Menu.DrawText(textX + _ox, textY, "  [DYNASTY]", 19, 0.6, 0.2, 1.0, 1.0); _ox = _ox + Susano.GetTextWidth("  [DYNASTY]", _sc) end; if item.seed then Menu.DrawText(textX + _ox, textY, "  [SEED]", 19, 0.2, 1.0, 0.35, 1.0) end end'
 )
 
 -- ============================================
@@ -141,45 +141,11 @@ LibraryCode = string.gsub(
 )
 
 -- ============================================
--- PATCH: Double category chevron
--- ============================================
--- The reference list uses two chevrons. The main-list painter in loader.lua
--- draws the pair itself; this keeps the library fallback identical if that
--- painter is ever skipped.
-LibraryCode = replacePlain(
-    LibraryCode,
-    'Menu.DrawText(x + width - 30, textY, ">", 19, Menu.Colors.TextWhite.r / 255.0, Menu.Colors.TextWhite.g / 255.0, Menu.Colors.TextWhite.b / 255.0, 1.0)',
-    'Menu.DrawText(x + width - 40, textY, ">>", 19, Menu.Colors.TextWhite.r / 255.0, Menu.Colors.TextWhite.g / 255.0, Menu.Colors.TextWhite.b / 255.0, 1.0)'
-)
-
--- ============================================
--- PATCH: Section rules match the label white
--- ============================================
--- The section header text is full TextWhite. The two rules beside it were
--- drawn at alpha 100/255, which made Custody and the other headers look like
--- they belonged to a different plate. Use the exact same white and alpha.
-LibraryCode = replaceAllPlain(
-    LibraryCode,
-    "Menu.Colors.TextWhite.r / 255.0, Menu.Colors.TextWhite.g / 255.0, Menu.Colors.TextWhite.b / 255.0, 100 / 255.0,",
-    "Menu.Colors.TextWhite.r / 255.0, Menu.Colors.TextWhite.g / 255.0, Menu.Colors.TextWhite.b / 255.0, 1.0,"
-)
-LibraryCode = replaceAllPlain(
-    LibraryCode,
-    "Menu.DrawRect(leftBarX, math.floor(barY), leftBarWidth, barHeight, Menu.Colors.TextWhite.r, Menu.Colors.TextWhite.g, Menu.Colors.TextWhite.b, 100)",
-    "Menu.DrawRect(leftBarX, math.floor(barY), leftBarWidth, barHeight, Menu.Colors.TextWhite.r, Menu.Colors.TextWhite.g, Menu.Colors.TextWhite.b, 255)"
-)
-LibraryCode = replaceAllPlain(
-    LibraryCode,
-    "Menu.DrawRect(rightBarX, math.floor(barY), rightBarWidth, barHeight, Menu.Colors.TextWhite.r, Menu.Colors.TextWhite.g, Menu.Colors.TextWhite.b, 100)",
-    "Menu.DrawRect(rightBarX, math.floor(barY), rightBarWidth, barHeight, Menu.Colors.TextWhite.r, Menu.Colors.TextWhite.g, Menu.Colors.TextWhite.b, 255)"
-)
-
--- ============================================
 -- PATCH: Main-menu label alias
 -- ============================================
 -- Every feature lookup still uses the original category key. Only the row
--- labels shown in the main menu use the reference names: Self, Online,
--- Vehicle, Weapon, Destroyer, Misc, Settings. Internal names never change.
+-- labels shown in the main menu are decorated: "Self Options", "Online
+-- Options", "Player Props Options", and so on. Internal names never change.
 LibraryCode = replacePlain(
     LibraryCode,
     "            Menu.DrawText(textX, textY, category.name, 19, Menu.Colors.TextWhite.r / 255.0, Menu.Colors.TextWhite.g / 255.0, Menu.Colors.TextWhite.b / 255.0, 1.0)",
@@ -206,267 +172,28 @@ do
     end]],
         [[    if Susano and Susano.DrawRectFilled then
         Susano.DrawRectFilled(x, footerY, footerWidth, footerHeight,
-            0.180, 0.180, 0.190, 0.99,
-            footerRounding)
-        Susano.DrawRectFilled(x + 1, footerY + 1, footerWidth - 2, footerHeight - 2,
-            0.052, 0.052, 0.056, 0.99,
+            0.059, 0.059, 0.059, 0.98,
             footerRounding)
     else
-        Menu.DrawRoundedRect(x, footerY, footerWidth, footerHeight, 46, 46, 48, 252, footerRounding)
-        Menu.DrawRoundedRect(x + 1, footerY + 1, footerWidth - 2, footerHeight - 2, 13, 13, 14, 252, footerRounding)
+        Menu.DrawRoundedRect(x, footerY, footerWidth, footerHeight, 15, 15, 15, 250, footerRounding)
     end]]
     )
     LibraryCode = footerCode
 end
 
--- ============================================
--- PATCH: reference monochrome paint
--- ============================================
--- The supplied reference is anthracite and smoke-grey: no green accent, no
--- coloured selection plate. The menu chrome is repainted with the same
--- neutral values used by the tab override later in this file. The banner
--- stays a slot; its image is replaced by the operator, not by this patch.
-do
-    -- Header frame: keep the same 1px frame geometry, lower the contrast.
-    LibraryCode = replacePlain(
-        LibraryCode,
-        "                Susano.DrawRectFilled(x, y, width, height, 0.216, 0.216, 0.216, 0.98, bannerRadius)\n"
-            .. "                Susano.DrawRectFilled(x + 1, y + 1, width - 2, height - 2, 0.059, 0.059, 0.059, 0.98, bannerRadius)",
-        "                Susano.DrawRectFilled(x, y, width, height, 0.180, 0.180, 0.190, 0.99, bannerRadius)\n"
-            .. "                Susano.DrawRectFilled(x + 1, y + 1, width - 2, height - 2, 0.052, 0.052, 0.056, 0.99, bannerRadius)"
-    )
-
-    -- Menu body and the 1px outer frame.
-    LibraryCode = replacePlain(
-        LibraryCode,
-        "    local bgR, bgG, bgB = 0.059, 0.059, 0.059\n"
-            .. "    local bgAlpha = 0.98\n"
-            .. "    local menuRadius = 6\n"
-            .. "    local borderR, borderG, borderB = 0.216, 0.216, 0.216",
-        "    local bgR, bgG, bgB = 0.052, 0.052, 0.056\n"
-            .. "    local bgAlpha = 0.99\n"
-            .. "    local menuRadius = 6\n"
-            .. "    local borderR, borderG, borderB = 0.180, 0.180, 0.190"
-    )
-
-    -- The tab strip is a darker smoked plate, not pure black.
-    LibraryCode = replacePlain(
-        LibraryCode,
-        "                Susano.DrawRectFilled(x + 1, tabsY + 1, width - 2, menuBarH - 1, 0.0, 0.0, 0.0, 1.0, menuRadius)",
-        "                Susano.DrawRectFilled(x + 1, tabsY + 1, width - 2, menuBarH - 1, 0.052, 0.052, 0.056, 1.0, menuRadius)"
-    )
-
-    -- Scrollbar: same geometry, quieter track.
-    LibraryCode = replacePlain(
-        LibraryCode,
-        "        Susano.DrawRectFilled(scrollbarX, barY, scrollbarWidth, barH, 0.216, 0.216, 0.216, 0.85, barRadius)\n"
-            .. "        Susano.DrawRectFilled(scrollbarX + 1, barY + 1, scrollbarWidth - 2, barH - 2, 0.05, 0.05, 0.05, 0.92, barRadius)",
-        "        Susano.DrawRectFilled(scrollbarX, barY, scrollbarWidth, barH, 0.180, 0.180, 0.190, 0.85, barRadius)\n"
-            .. "        Susano.DrawRectFilled(scrollbarX + 1, barY + 1, scrollbarWidth - 2, barH - 2, 0.042, 0.042, 0.046, 0.92, barRadius)"
-    )
-
-    -- Row plate behind every actionable row. The selected plate is drawn on
-    -- top by the next replacement, so the unselected plate is the base layer.
-    LibraryCode = replacePlain(
-        LibraryCode,
-        "    if isSelected then\n        if Menu.SelectorY == 0 then",
-        [[    local _plateX = x + 6
-    local _plateW = width - 12
-    local _plateH = itemHeight - 8
-    local _plateY = itemY + math.floor((itemHeight - _plateH) / 2)
-    if Susano and Susano.DrawRectFilled then
-        Susano.DrawRectFilled(_plateX, _plateY, _plateW, _plateH, 0.135, 0.135, 0.145, 0.99, 5)
-        Susano.DrawRectFilled(_plateX + 1, _plateY + 1, _plateW - 2, _plateH - 2, 0.072, 0.072, 0.080, 1.0, 4)
-    else
-        Menu.DrawRoundedRect(_plateX, _plateY, _plateW, _plateH, 34, 34, 37, 252, 5)
-        Menu.DrawRoundedRect(_plateX + 1, _plateY + 1, _plateW - 2, _plateH - 2, 18, 18, 20, 255, 4)
-    end
-
-    if isSelected then
-        if Menu.SelectorY == 0 then]]
-    )
-
-    -- Selected item: dark glass, light rim, low white bloom. No accent fill.
-    LibraryCode = replacePlain(
-        LibraryCode,
-        [[        local baseR = (Menu.Colors.SelectedBg and Menu.Colors.SelectedBg.r) and (Menu.Colors.SelectedBg.r / 255.0) or 1.0
-        local baseG = (Menu.Colors.SelectedBg and Menu.Colors.SelectedBg.g) and (Menu.Colors.SelectedBg.g / 255.0) or 0.0
-        local baseB = (Menu.Colors.SelectedBg and Menu.Colors.SelectedBg.b) and (Menu.Colors.SelectedBg.b / 255.0) or 1.0
-
-        -- Barre de selection Korium avec bloom lumineux
-        local floatPad = 6
-        local selX = x + floatPad
-        local selW = width - (floatPad * 2)
-        local selH = itemHeight - 15
-        local selY = drawY + math.floor((itemHeight - selH) / 2)
-        local selRadius = 4
-        if Susano and Susano.DrawRectFilled then
-            Susano.DrawRectFilled(selX - 10, selY - 6, selW + 20, selH + 12, baseR, baseG, baseB, 0.07, selRadius + 8)
-            Susano.DrawRectFilled(selX - 5, selY - 3, selW + 10, selH + 6, baseR, baseG, baseB, 0.15, selRadius + 4)
-            Susano.DrawRectFilled(selX - 2, selY - 2, selW + 4, selH + 4, baseR, baseG, baseB, 0.22, selRadius + 1)
-            Susano.DrawRectFilled(selX, selY, selW, selH, 0.216, 0.216, 0.216, 0.98, selRadius)
-            Susano.DrawRectFilled(selX + 1, selY + 1, selW - 2, selH - 2, baseR, baseG, baseB, 0.85, selRadius)
-            Susano.DrawRectFilled(selX + 1, selY + 1, (selW - 2) * 0.5, selH - 2, baseR, baseG, baseB, 0.10, selRadius)
-        else
-            Menu.DrawRoundedRect(selX, selY, selW, selH, 55, 55, 55, 250, selRadius)
-            Menu.DrawRoundedRect(selX + 1, selY + 1, selW - 2, selH - 2, math.floor(baseR * 255), math.floor(baseG * 255), math.floor(baseB * 255), 217, selRadius)
-        end]],
-        [[        local baseR = 0.97
-        local baseG = 0.97
-        local baseB = 0.98
-
-        -- Dark glass plate with a light rim; no accent flood.
-        local floatPad = 6
-        local selX = x + floatPad
-        local selW = width - (floatPad * 2)
-        local selH = itemHeight - 8
-        local selY = drawY + math.floor((itemHeight - selH) / 2)
-        local selRadius = 5
-        if Susano and Susano.DrawRectFilled then
-            Susano.DrawRectFilled(selX - 8, selY - 5, selW + 16, selH + 10, baseR, baseG, baseB, 0.035, selRadius + 7)
-            Susano.DrawRectFilled(selX - 4, selY - 2, selW + 8, selH + 4, baseR, baseG, baseB, 0.050, selRadius + 3)
-            Susano.DrawRectFilled(selX, selY, selW, selH, 0.320, 0.320, 0.340, 1.0, selRadius)
-            Susano.DrawRectFilled(selX + 1, selY + 1, selW - 2, selH - 2, 0.095, 0.095, 0.105, 1.0, selRadius - 1)
-            Susano.DrawRectFilled(selX + 1, selY + 1, selW - 2, math.floor(selH * 0.5), 1.0, 1.0, 1.0, 0.035, selRadius - 1)
-        else
-            Menu.DrawRoundedRect(selX, selY, selW, selH, 82, 82, 87, 255, selRadius)
-            Menu.DrawRoundedRect(selX + 1, selY + 1, selW - 2, selH - 2, 24, 24, 27, 255, selRadius - 1)
-        end]]
-    )
-
-    -- Main-menu category row plate, same material as the item rows.
-    LibraryCode = replacePlain(
-        LibraryCode,
-        "            local itemY = startY + (displayIndex - 1) * itemHeight\n\n            if isSelected then",
-        [[            local itemY = startY + (displayIndex - 1) * itemHeight
-
-            local _plateX = x + 6
-            local _plateW = width - 12
-            local _plateH = itemHeight - 8
-            local _plateY = itemY + math.floor((itemHeight - _plateH) / 2)
-            if Susano and Susano.DrawRectFilled then
-                Susano.DrawRectFilled(_plateX, _plateY, _plateW, _plateH, 0.135, 0.135, 0.145, 0.99, 5)
-                Susano.DrawRectFilled(_plateX + 1, _plateY + 1, _plateW - 2, _plateH - 2, 0.072, 0.072, 0.080, 1.0, 4)
-            else
-                Menu.DrawRoundedRect(_plateX, _plateY, _plateW, _plateH, 34, 34, 37, 252, 5)
-                Menu.DrawRoundedRect(_plateX + 1, _plateY + 1, _plateW - 2, _plateH - 2, 18, 18, 20, 255, 4)
-            end
-
-            if isSelected then]]
-    )
-
-    -- Selected main-menu category: the same dark glass and light rim.
-    LibraryCode = replacePlain(
-        LibraryCode,
-        [[                local baseR = Menu.Colors.SelectedBg.r / 255.0
-                local baseG = Menu.Colors.SelectedBg.g / 255.0
-                local baseB = Menu.Colors.SelectedBg.b / 255.0
-
-                -- Barre de selection Korium avec bloom lumineux
-                local floatPad = 6
-                local selX = x + floatPad
-                local selW = width - (floatPad * 2)
-                local selH = itemHeight - 15
-                local selY = drawY + math.floor((itemHeight - selH) / 2)
-                local selRadius = 4
-                if Susano and Susano.DrawRectFilled then
-                    Susano.DrawRectFilled(selX - 10, selY - 6, selW + 20, selH + 12, baseR, baseG, baseB, 0.07, selRadius + 8)
-                    Susano.DrawRectFilled(selX - 5, selY - 3, selW + 10, selH + 6, baseR, baseG, baseB, 0.15, selRadius + 4)
-                    Susano.DrawRectFilled(selX - 2, selY - 2, selW + 4, selH + 4, baseR, baseG, baseB, 0.22, selRadius + 1)
-                    Susano.DrawRectFilled(selX, selY, selW, selH, 0.216, 0.216, 0.216, 0.98, selRadius)
-                    Susano.DrawRectFilled(selX + 1, selY + 1, selW - 2, selH - 2, baseR, baseG, baseB, 0.85, selRadius)
-                    Susano.DrawRectFilled(selX + 1, selY + 1, (selW - 2) * 0.5, selH - 2, baseR, baseG, baseB, 0.10, selRadius)
-                else
-                    Menu.DrawRoundedRect(selX, selY, selW, selH, 55, 55, 55, 250, selRadius)
-                    Menu.DrawRoundedRect(selX + 1, selY + 1, selW - 2, selH - 2, math.floor(baseR * 255), math.floor(baseG * 255), math.floor(baseB * 255), 217, selRadius)
-                end]],
-        [[                local baseR = 0.97
-                local baseG = 0.97
-                local baseB = 0.98
-
-                local floatPad = 6
-                local selX = x + floatPad
-                local selW = width - (floatPad * 2)
-                local selH = itemHeight - 8
-                local selY = drawY + math.floor((itemHeight - selH) / 2)
-                local selRadius = 5
-                if Susano and Susano.DrawRectFilled then
-                    Susano.DrawRectFilled(selX - 8, selY - 5, selW + 16, selH + 10, baseR, baseG, baseB, 0.035, selRadius + 7)
-                    Susano.DrawRectFilled(selX - 4, selY - 2, selW + 8, selH + 4, baseR, baseG, baseB, 0.050, selRadius + 3)
-                    Susano.DrawRectFilled(selX, selY, selW, selH, 0.320, 0.320, 0.340, 1.0, selRadius)
-                    Susano.DrawRectFilled(selX + 1, selY + 1, selW - 2, selH - 2, 0.095, 0.095, 0.105, 1.0, selRadius - 1)
-                    Susano.DrawRectFilled(selX + 1, selY + 1, selW - 2, math.floor(selH * 0.5), 1.0, 1.0, 1.0, 0.035, selRadius - 1)
-                else
-                    Menu.DrawRoundedRect(selX, selY, selW, selH, 82, 82, 87, 255, selRadius)
-                    Menu.DrawRoundedRect(selX + 1, selY + 1, selW - 2, selH - 2, 24, 24, 27, 255, selRadius - 1)
-                end]]
-    )
-
-    LibraryCode = replaceAllPlain(LibraryCode, "0.2, 0.2, 0.2, 0.95", "0.17, 0.17, 0.18, 0.95")
-    LibraryCode = replaceAllPlain(LibraryCode, "51, 51, 51, 242", "43, 43, 46, 242")
-
-    -- Toggle knob: white on the dark off-track, near-black on the white
-    -- on-track. The lerp tracks the same _toggleP as the track colour.
-    LibraryCode = replacePlain(
-        LibraryCode,
-        [[            Susano.DrawRectFilled(circleX, circleY, circleSize, circleSize,
-                0.0, 0.0, 0.0, 1.0,
-                circleSize / 2)]],
-        [[            local _knob = 1.0 - 0.94 * _toggleP
-            Susano.DrawRectFilled(circleX, circleY, circleSize, circleSize,
-                _knob, _knob, _knob, 1.0,
-                circleSize / 2)]]
-    )
-    LibraryCode = replacePlain(
-        LibraryCode,
-        [[            Menu.DrawRoundedRect(circleX, circleY, circleSize, circleSize,
-                0, 0, 0, 255,
-                circleSize / 2)]],
-        [[            local _knobF = math.floor((1.0 - 0.94 * _toggleP) * 255)
-            Menu.DrawRoundedRect(circleX, circleY, circleSize, circleSize,
-                _knobF, _knobF, _knobF, 255,
-                circleSize / 2)]]
-    )
-    LibraryCode = replaceAllPlain(
-        LibraryCode,
-        "            Susano.DrawRectFilled(circleX, circleY, circleSize, circleSize, 0.0, 0.0, 0.0, 1.0, circleSize / 2)",
-        [[            do
-                local _knob = 1.0 - 0.94 * _toggleP
-                Susano.DrawRectFilled(circleX, circleY, circleSize, circleSize, _knob, _knob, _knob, 1.0, circleSize / 2)
-            end]]
-    )
-    LibraryCode = replaceAllPlain(
-        LibraryCode,
-        "            Menu.DrawRoundedRect(circleX, circleY, circleSize, circleSize, 0, 0, 0, 255, circleSize / 2)",
-        [[            do
-                local _knobF = math.floor((1.0 - 0.94 * _toggleP) * 255)
-                Menu.DrawRoundedRect(circleX, circleY, circleSize, circleSize, _knobF, _knobF, _knobF, 255, circleSize / 2)
-            end]]
-    )
-
-    -- The library's no-banner fallback draws a 44 px white "P" over the dark
-    -- header. Keep the dark plate instead: a missing or slow banner must not
-    -- flash a placeholder letter across the top of the menu.
-    LibraryCode = replaceAllPlain(
-        LibraryCode,
-        'Menu.DrawText(logoX, logoY, "P", 44, 1.0, 1.0, 1.0, 1.0)',
-        "-- banner letter removed"
-    )
-end
-
--- Replace the library's initial banner
+-- The menu is green by default. Replace the library's initial cyan banner
 -- before the chunk starts its first download, so the first frame cannot flash
 -- or finish on the wrong image. The theme table below owns every later switch.
 LibraryCode = string.gsub(
     LibraryCode,
     'imageUrl%s*=%s*"[^"]*"',
-    'imageUrl = "https://i.imgur.com/wbYgWhZ.png"',
+    'imageUrl = "https://i.imgur.com/Ua3Qkk5.png"',
     1
 )
 
 -- Drop the library's own banner downloads. The theme patch below owns the
 -- requests and the per-URL cache; leaving the library's module-scope thread
--- alive would let a slow reply overwrite a selection made while it
+-- alive would let a slow green reply overwrite a Cyan selection made while it
 -- was still downloading. The library's ApplyTheme call is removed too: the
 -- replacement below is the only banner loader and already calls it.
 LibraryCode = string.gsub(
@@ -517,12 +244,6 @@ do
                 Susano.DrawImage(Menu.bannerTexture, drawX, drawY, drawW, drawH, 1, 1, 1, 1, imgRounding, _zoom, _zoom, 1 - _zoom, 1 - _zoom)
             end]]
     )
-
-    -- 3b. Keep the fitted banner vertically centred in the header frame.
-    --     The library's placement pads the image evenly on all sides, which
-    --     is the intended look; no drawY override is applied here. The old
-    --     bottom-anchor left a wide dark band above the image and a hairline
-    --     below it, so the banner read as off-centre.
 
     -- 4. Breathing bloom on both selection bars.
     LibraryCode = replaceAllPlain(
@@ -693,32 +414,6 @@ do
         local circleX = toggleX + 2 + (toggleWidth - circleSize - 4) * _toggleP]]
     )
 
-    -- 6c. Slider readout: the stock 11 px right-edge number is too small on
-    --      the 110% menu and sits well inside the row. Keep the same value
-    --      string, raise it to 15 px, right-align it to the row edge and use
-    --      the scaled width so multi-digit values (200, 500, 2000) do not
-    --      drift away from the right side.
-    LibraryCode = replacePlain(
-        LibraryCode,
-        [[        local valueText = string.format("%.0f", currentValue)
-        local valuePadding = 10
-        local valueX = sliderX + sliderWidth + valuePadding
-        local valueY = sliderY + (sliderHeight / 2) - 6
-        Menu.DrawText(valueX, valueY, valueText, 11, Menu.Colors.TextWhite.r / 255.0, Menu.Colors.TextWhite.g / 255.0, Menu.Colors.TextWhite.b / 255.0, 0.8)]],
-        [[        local valueText = string.format("%.0f", currentValue)
-        local valueSize = 15
-        local valueScale = Menu.Scale or 1.0
-        local valueRight = x + width - (10 * valueScale)
-        local valueWidth = #valueText * 8 * valueScale
-        if Susano and Susano.GetTextWidth then
-            local measured = Susano.GetTextWidth(valueText, valueSize * valueScale)
-            if type(measured) == "number" and measured > 0 then valueWidth = measured end
-        end
-        local valueX = valueRight - valueWidth
-        local valueY = itemY + (itemHeight / 2) - (valueSize * valueScale / 2)
-        Menu.DrawText(valueX, valueY, valueText, valueSize, Menu.Colors.TextWhite.r / 255.0, Menu.Colors.TextWhite.g / 255.0, Menu.Colors.TextWhite.b / 255.0, 1.0)]]
-    )
-
     -- 7. The "Smooth Menu" slider still owns Menu.SmoothFactor. The runtime
     --    writes a refresh-rate independent lerp to Menu.SmoothFactorFrame, so
     --    the scroll speed the operator chose stays the same at 60, 144 or
@@ -754,69 +449,6 @@ do
         "            local menuY = Menu.Position.y",
         "            local menuY = Menu.Position.y + (1.0 - ((Menu.Anim and Menu.Anim.ui) or 1.0)) * (Menu.MotionOffsetY or 24.0)"
     )
-
-    -- 10. Separator rules follow the label instead of sitting at a fixed
-    --     length. The label is measured at the same scaled size the renderer
-    --     uses, so the two rules start after the true text box and run to the
-    --     content insets. Short labels get longer rules, long labels get
-    --     shorter ones, and neither rule can overlap the glyphs.
-    LibraryCode = replacePlain(
-        LibraryCode,
-        [[        if item.separatorText then
-            local textY = itemY + itemHeight / 2 - 7
-            local textSize = 14
-
-            local textWidth = 0
-            if Susano and Susano.GetTextWidth then
-                textWidth = Susano.GetTextWidth(item.separatorText, textSize)
-            else
-                textWidth = string.len(item.separatorText) * 8
-            end]],
-        [[        if item.separatorText then
-            local textY = itemY + itemHeight / 2 - 7
-            local textSize = 14
-            local textScale = Menu.Scale or 1.0
-            local scaledTextSize = textSize * textScale
-
-            local textWidth = 0
-            if Susano and Susano.GetTextWidth then
-                textWidth = Susano.GetTextWidth(item.separatorText, scaledTextSize)
-            else
-                textWidth = string.len(item.separatorText) * 8 * textScale
-            end]]
-    )
-
-    LibraryCode = replacePlain(
-        LibraryCode,
-        [[            local barY = itemY + (itemHeight / 2)
-            local barSpacing = 8
-            local barMaxLength = 80
-            local barHeight = 1
-            local barRadius = 0.5
-
-            local leftBarX = textX - barSpacing - barMaxLength
-            local leftBarWidth = math.min(barMaxLength, textX - leftBarX - barSpacing)
-            if leftBarWidth > 0 and leftBarX >= x + 15 then]],
-        [[            local barY = itemY + (itemHeight / 2)
-            local barSpacing = 8 * textScale
-            local barHeight = 1
-            local barRadius = 0.5
-            local barInset = 15 * textScale
-
-            local leftBarX = x + barInset
-            local leftBarWidth = (textX - barSpacing) - leftBarX
-            if leftBarWidth > 0 then]]
-    )
-
-    LibraryCode = replacePlain(
-        LibraryCode,
-        [[            local rightBarX = textX + textWidth + barSpacing
-            local rightBarWidth = math.min(barMaxLength, (x + width - 15) - rightBarX)
-            if rightBarWidth > 0 and rightBarX + rightBarWidth <= x + width - 15 then]],
-        [[            local rightBarX = textX + textWidth + barSpacing
-            local rightBarWidth = (x + width - barInset) - rightBarX
-            if rightBarWidth > 0 then]]
-    )
 end
 
 local chunk, err = load(LibraryCode)
@@ -841,139 +473,12 @@ do
         local vgdHandleInput = Menu.HandleInput
         Menu.HandleInput = function()
             if Menu.__vgdDeleteTick and Menu.__vgdDeleteTick(true) then return end
-            local beforeOpen = Menu.OpenedCategory
-            local result = vgdHandleInput()
-            if beforeOpen ~= Menu.OpenedCategory
-                and type(Menu.OpenedCategory) == "number"
-                and type(Menu.Categories) == "table" then
-                local opened = Menu.Categories[Menu.OpenedCategory]
-                if opened and opened.name == "Search"
-                    and type(Menu.__vgdOpenSearch) == "function" then
-                    Menu.__vgdOpenSearch()
-                end
-            end
-            return result
+            return vgdHandleInput()
         end
         Menu.__vgdInputWrapped = true
         print("[Menu] delete hook: HandleInput wrapper installed")
     elseif type(Menu) == "table" then
         print("[Menu] delete hook: Menu.HandleInput missing; poll fallback only")
-    end
-end
-
--- ============================================
--- PATCH: held arrow repeats on sliders
--- ============================================
--- The stock library only reacts to the press edge, so a slider needs one tap
--- per unit. Holding left/right now repeats after a short delay, which makes
--- ranges such as Fight Party Radius usable. The first unit still comes from
--- the library's own edge handler; this wrapper only adds the later repeats, so
--- a quick tap behaves exactly as before.
-do
-    if type(Menu) == "table" and type(Menu.HandleInput) == "function"
-        and not Menu.__vgdSliderHold then
-        local baseHandleInput = Menu.HandleInput
-        local HOLD_DELAY_MS = 320
-        local HOLD_REPEAT_MS = 45
-        local rightSince, leftSince = nil, nil
-        local rightNext, leftNext = 0, 0
-
-        local function apiKeyDown(code)
-            if type(Susano) ~= "table" or type(Susano.GetAsyncKeyState) ~= "function" then
-                return false
-            end
-            local ok, down = pcall(Susano.GetAsyncKeyState, code)
-            return ok and (down == true or down == 1)
-        end
-
-        local function selectedSlider()
-            if Menu.Visible ~= true then return nil end
-            if Menu.IsLoading or not Menu.LoadingComplete then return nil end
-            if Menu.InputOpen or Menu.SelectingKey or Menu.SelectingBind or Menu.EditorMode then
-                return nil
-            end
-            local index = Menu.OpenedCategory
-            if type(index) ~= "number" or type(Menu.Categories) ~= "table" then
-                return nil
-            end
-            local category = Menu.Categories[index]
-            if not category or type(category.tabs) ~= "table" then return nil end
-            local tab = category.tabs[Menu.CurrentTab]
-            if not tab or type(tab.items) ~= "table" then return nil end
-            local item = tab.items[Menu.CurrentItem]
-            if type(item) ~= "table" or item.type ~= "slider" then return nil end
-            return item
-        end
-
-        local function stepSlider(item, direction)
-            local step = tonumber(item.step) or 1.0
-            local minValue = tonumber(item.min) or 0.0
-            local maxValue = tonumber(item.max) or 100.0
-            local current = tonumber(item.value) or minValue
-            local nextValue = current + step * direction
-            if nextValue < minValue then nextValue = minValue end
-            if nextValue > maxValue then nextValue = maxValue end
-            if nextValue == current then return end
-            item.value = nextValue
-            if item.name == "Smooth Menu" then
-                Menu.SmoothFactor = nextValue / 100.0
-            elseif item.name == "Menu Size" then
-                Menu.Scale = nextValue / 100.0
-            end
-            if type(item.onClick) == "function" then
-                pcall(item.onClick, nextValue)
-            end
-        end
-
-        Menu.HandleInput = function()
-            local result = baseHandleInput()
-
-            local item = selectedSlider()
-            if not item then
-                rightSince, leftSince = nil, nil
-                rightNext, leftNext = 0, 0
-                return result
-            end
-
-            local now = 0
-            if type(GetGameTimer) == "function" then
-                local ms = GetGameTimer()
-                if type(ms) == "number" then now = ms end
-            end
-
-            local right = apiKeyDown(0x27)
-            local left = apiKeyDown(0x25)
-
-            if right then
-                if not rightSince then
-                    rightSince = now
-                    rightNext = now + HOLD_DELAY_MS
-                elseif now >= rightNext then
-                    stepSlider(item, 1)
-                    rightNext = now + HOLD_REPEAT_MS
-                end
-            else
-                rightSince = nil
-                rightNext = 0
-            end
-
-            if left then
-                if not leftSince then
-                    leftSince = now
-                    leftNext = now + HOLD_DELAY_MS
-                elseif now >= leftNext then
-                    stepSlider(item, -1)
-                    leftNext = now + HOLD_REPEAT_MS
-                end
-            else
-                leftSince = nil
-                leftNext = 0
-            end
-
-            return result
-        end
-
-        Menu.__vgdSliderHold = true
     end
 end
 
@@ -1255,43 +760,25 @@ end
 -- VANGUARD THEME PATCH
 -- ============================================
 -- The library is downloaded at runtime, so its palette is not guaranteed to
--- match this build. White is the default and Cyan restores the reference
--- accent and its original banner. An unknown name falls back to White.
+-- match this build. Only two themes exist: Green (default, moss banner) and
+-- Cyan (sky banner). Each theme owns both its accent and its image; an unknown
+-- name falls back to Green instead of creating a third colour.
 do
     local themes = {
-        White = {
-            r = 255, g = 255, b = 255,
-            image = "https://i.imgur.com/wbYgWhZ.png",
-            headerHeight = 130,
+        Green = {
+            r = 76, g = 143, b = 88,
+            image = "https://i.imgur.com/Ua3Qkk5.png",
         },
         Cyan = {
             r = 104, g = 168, b = 203,
             image = "https://i.imgur.com/3HLMxX5.png",
-            headerHeight = 100,
         },
     }
 
     Menu.Banner = Menu.Banner or { enabled = true, height = 100 }
     Menu.Banner.enabled = true
-    -- White is 2173x724 (3:1) and keeps the 130 px header it was tuned for.
-    -- Cyan is 1032x252 (4.1:1): its header is set below to 100 px so the
-    -- shorter image fills the frame instead of leaving tall dark bars.
-    Menu.Banner.height = 130
-    if Menu.Position then
-        Menu.Position.headerHeight = 130
-        -- Tabs sit directly under the banner and the item plate starts
-        -- directly under the tabs. No spacer strips remain between panels.
-        Menu.Position.headerSpacing = 0
-        Menu.Position.mainMenuSpacing = 0
-    end
+    Menu.Banner.height = Menu.Banner.height or 100
     Menu.Colors = Menu.Colors or {}
-    Menu.Colors.TextWhite = { r = 245, g = 245, b = 245 }
-    Menu.Colors.BackgroundDark = { r = 10, g = 10, b = 12 }
-    Menu.Colors.FooterBlack = { r = 10, g = 10, b = 12 }
-    -- The reference tab strip is a prominent plate, not a hairline. 38 base
-    -- becomes 41.8 px at the default 1.10 scale, leaving room for the glyph
-    -- and the label without crowding the selected tab plate.
-    if Menu.Position then Menu.Position.mainMenuHeight = 38 end
     Menu.BannerCache = Menu.BannerCache or {}
     Menu.bannerRequest = Menu.bannerRequest or 0
     Menu.bannerLoadingUrl = nil
@@ -1354,29 +841,14 @@ do
     end
 
     function Menu.ApplyTheme(themeName)
-        local theme = themes[themeName] or themes.White
-        -- HeaderPink is the no-banner fallback only. Keep it anthracite so a
-        -- slow or missing banner never paints a bright slab over the frame.
-        Menu.Colors.HeaderPink = { r = 18, g = 18, b = 20 }
+        local theme = themes[themeName] or themes.Green
+        Menu.Colors.HeaderPink = { r = theme.r, g = theme.g, b = theme.b }
         Menu.Colors.SelectedBg = { r = theme.r, g = theme.g, b = theme.b }
         Menu.Banner.imageUrl = theme.image
-        if Menu.Position then
-            Menu.Position.headerHeight = theme.headerHeight or 130
-        end
-        Menu.Banner.height = theme.headerHeight or 130
         Menu.LoadBannerTexture(theme.image)
     end
 
-    Menu.Ui = {
-        tabBar       = { 0.052, 0.052, 0.056, 1.0 },
-        tabBarBorder = { 0.052, 0.052, 0.056, 1.0 },
-        tabIdleText  = { 0.620, 0.620, 0.650, 1.0 },
-        tabPill      = { 0.785, 0.785, 0.805, 1.0 },
-        tabPillEdge  = { 0.640, 0.640, 0.670, 1.0 },
-        tabText      = { 0.035, 0.035, 0.040, 1.0 },
-    }
-
-    Menu.ApplyTheme("White")
+    Menu.ApplyTheme("Green")
 end
 
 -- ============================================
@@ -1398,22 +870,71 @@ end
 -- ============================================
 -- ICON TEXTURE SYSTEM
 -- ============================================
--- Cache for the UI arrow/chevron textures. The footer centre mark is removed;
--- Menu.FooterLogoTex stays nil and the footer draws only wordmark + counter.
+-- Cache for the UI arrow/chevron textures. The footer logo is a separate
+-- Menu.FooterLogoTex loaded from the embedded transparent PNG.
 Menu.IconTextures = {}
 Menu.FooterLogoTex = nil
 Menu.FooterText = "" -- <<< CHANGE THIS to your menu name
 Menu.CategoryLabels = {
-    Player = "Self",
-    Online = "Online",
-    ["Player Props"] = "Props",
-    Visual = "Misc",
-    Combat = "Weapon",
-    Vehicle = "Vehicle",
-    Exploit = "Destroyer",
-    Settings = "Settings",
-    Search = "Search",
+    Player = "Self Options",
+    Online = "Online Options",
+    ["Player Props"] = "Player Props Options",
+    Visual = "Visual Options",
+    Combat = "Combat Options",
+    Vehicle = "Vehicle Options",
+    Exploit = "Exploit Options",
+    Settings = "Settings Options",
 }
+
+-- Footer logo URL (small square image, ideally 64x64 or 128x128 PNG)
+Menu.FooterLogoUrl = "https://i.imgur.com/jY5oSqw.png" -- <<< REPLACE with your logo URL
+
+-- Transparent 64x64 version of the same artwork: white RGB, alpha taken
+-- from the source luminance. Loaded from memory, so the opaque remote
+-- square is never sampled against the menu-coloured footer.
+Menu.FooterLogoData = [[
+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
+]]
 
 Menu.ArrowUpUrl = "https://i.imgur.com/CefzPfK.png"
 Menu.ArrowDownUrl = "https://i.imgur.com/cEtkALw.png"
@@ -1444,12 +965,64 @@ function Menu.LoadIconTexture(name, url)
     end)
 end
 
--- Init: load the UI arrow/chevron textures. The footer centre mark is removed.
+-- Load footer logo texture
+function Menu.LoadFooterLogo(url)
+    if not Susano or not Susano.LoadTextureFromBuffer then return end
+
+    -- Prefer the embedded transparent copy. The remote artwork is opaque black
+    -- and would leave a dark square on the menu-coloured footer. Decode inside
+    -- this function so the main chunk stays under Lua's 200-local limit.
+    if Menu.FooterLogoData and Menu.FooterLogoData ~= "" then
+        local alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+        local values = {}
+        for i = 1, #alphabet do values[alphabet:sub(i, i)] = i - 1 end
+        local data = Menu.FooterLogoData:gsub("%s+", "")
+        local out = {}
+        local i = 1
+        while i <= #data do
+            local c1 = values[data:sub(i, i)]
+            local c2 = values[data:sub(i + 1, i + 1)]
+            local c3 = values[data:sub(i + 2, i + 2)]
+            local c4 = values[data:sub(i + 3, i + 3)]
+            if c1 and c2 then
+                local v = c1 * 262144 + c2 * 4096 + (c3 or 0) * 64 + (c4 or 0)
+                out[#out + 1] = string.char(math.floor(v / 65536) % 256)
+                if c3 then out[#out + 1] = string.char(math.floor(v / 256) % 256) end
+                if c4 then out[#out + 1] = string.char(v % 256) end
+            end
+            i = i + 4
+        end
+        local ok, tex = pcall(Susano.LoadTextureFromBuffer, table.concat(out))
+        if ok and tex and tex ~= 0 then
+            Menu.FooterLogoTex = tex
+        end
+        -- The embedded copy is authoritative. Never fall back to the opaque
+        -- remote artwork: a missing logo is cleaner than a black tile.
+        return
+    end
+
+    if not url or url == "" or url:find("PLACEHOLDER") then return end
+    if not Susano.HttpGet then return end
+
+    CreateThread(function()
+        local ok, result = pcall(function()
+            local status, body = Susano.HttpGet(url)
+            if status == 200 and body and #body > 100 then
+                local texId = Susano.LoadTextureFromBuffer(body)
+                if texId and texId ~= 0 then
+                    Menu.FooterLogoTex = texId
+                    print("[Footer] Logo loaded (tex=" .. tostring(texId) .. ")")
+                end
+            end
+        end)
+    end)
+end
+
+-- Init: load the footer logo and the UI arrow/chevron textures
 function Menu.LoadAllIcons()
     if not Menu.Categories then return end
     CreateThread(function()
-        -- Footer centre mark removed on request; the plate keeps only the
-        -- wordmark and the page counter.
+        Menu.LoadFooterLogo(Menu.FooterLogoUrl)
         if Menu.ArrowUpUrl and Menu.ArrowUpUrl ~= "" then
             Menu.LoadIconTexture("_arrowUp", Menu.ArrowUpUrl)
         end
@@ -1467,7 +1040,7 @@ Menu.UpdatePlayerCount = function() end
 Menu.ShowSnowflakes = true -- sync avec Flocon value = true
 
 -- ============================================
--- DÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â°BUT DU CODE ORIGINAL (ligne 39 de l'ancien fichier)
+-- DÃƒÆ’Ã¢â‚¬Â°BUT DU CODE ORIGINAL (ligne 39 de l'ancien fichier)
 -- ============================================
 Menu.shooteyesEnabled = false
 Menu.magicbulletEnabled = false
@@ -1487,8 +1060,8 @@ Menu.WarpPressW = false
 -- ============================================
 -- STEALTH AUTO-SPOOF SYSTEM
 -- ============================================
--- Hooks enregistrÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©s une seule fois. ConditionnÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©s par flags.
--- Chaque feature toggle active/dÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©sactive ses flags automatiquement.
+-- Hooks enregistrÃƒÂ©s une seule fois. ConditionnÃƒÂ©s par flags.
+-- Chaque feature toggle active/dÃƒÂ©sactive ses flags automatiquement.
 
 _Stealth = {
     invincible = false,
@@ -1511,7 +1084,7 @@ local _fakeAmmo = {}
 do
     if type(Susano) == "table" and type(Susano.HookNative) == "function" then
 
-        -- GetPlayerInvincible ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ false
+        -- GetPlayerInvincible Ã¢â€ â€™ false
         Susano.HookNative(0xB721981B2B939E07, function(player)
             if _Stealth.invincible and player == PlayerId() then
                 return false, false
@@ -1519,7 +1092,7 @@ do
             return true
         end)
 
-        -- GetEntityHealth ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ 190-200
+        -- GetEntityHealth Ã¢â€ â€™ 190-200
         Susano.HookNative(0xEEF059FAD016D209, function(entity)
             if _Stealth.health and entity == PlayerPedId() then
                 return false, 190 + math.random(0, 10)
@@ -1527,7 +1100,7 @@ do
             return true
         end)
 
-        -- GetPlayerStamina ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ oscillation 45-98
+        -- GetPlayerStamina Ã¢â€ â€™ oscillation 45-98
         Susano.HookNative(0xCEFD02E1E6BC7AF0, function(player)
             if _Stealth.stamina and player == PlayerId() then
                 local now = GetGameTimer()
@@ -1542,7 +1115,7 @@ do
             return true
         end)
 
-        -- GetEntitySpeed ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ cap 6.5-8.0 m/s
+        -- GetEntitySpeed Ã¢â€ â€™ cap 6.5-8.0 m/s
         Susano.HookNative(0xD5037BA82E12416F, function(entity)
             if _Stealth.speed then
                 local ped = PlayerPedId()
@@ -1553,7 +1126,7 @@ do
             return true
         end)
 
-        -- GetAmmoInPedWeapon ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ fake count dÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©croissant
+        -- GetAmmoInPedWeapon Ã¢â€ â€™ fake count dÃƒÂ©croissant
 
         -- GetWeaponDamageModifier: the real per-weapon modifier field is what
         -- the engine uses to scale melee damage; the script getter is only a
@@ -1597,24 +1170,12 @@ do
     }
     if type(Susano) == "table" and type(Susano.OnTriggerServerEvent) == "function" then
         Susano.OnTriggerServerEvent(function(name, payload)
-            local outName, outPayload = name, payload
-            local rewrite = Menu.__vgd_onOutbound
-            if type(rewrite) == "function" then
-                local ok, nextName, nextPayload = pcall(rewrite, name, payload)
-                if ok then
-                    if nextName == false then return false end
-                    if type(nextName) == "string" then
-                        outName, outPayload = nextName, nextPayload or payload
-                    end
-                end
-            end
-
-            if not _Stealth.blockAC then return outName, outPayload end
-            local lower = string.lower(outName)
+            if not _Stealth.blockAC then return name, payload end
+            local lower = string.lower(name)
             for _, pat in ipairs(acPatterns) do
                 if string.find(lower, pat, 1, true) then return false end
             end
-            return outName, outPayload
+            return name, payload
         end)
     end
 end
@@ -2529,7 +2090,6 @@ Menu.Categories = {
             { name = "Throw Vehicle", type = "toggle", value = false },
             { name = "Tiny Player", type = "toggle", value = false },
             { name = "Big Weapon", type = "toggle", value = false },
-            { name = "FOV", type = "selector", options = {"Normal", "60", "70", "80", "90", "100", "110", "120"}, selected = 1 },
         }},
         { name = "Wardrobe", items = {
             { name = "Random Outfit", type = "action" },
@@ -2548,15 +2108,15 @@ Menu.Categories = {
             { name = "Loading players...", type = "action" }
         }},
         { name = "Troll", items = {
+            { name = "", isSeparator = true, separatorText = "Appearance" },
+            { name = "Copy Appearance", type = "action" },
+            
             { name = "", isSeparator = true, separatorText = "Attacks" },
-            { name = "Ban Player", type = "toggle", value = false, risk = true},
+            { name = "Ban Player [BETA]", type = "toggle", value = false, risk = true},
             { name = "Shoot Player", type = "action", risk = true},
             { name = "Ped Flood", type = "action", risk = true},
-            { name = "Launch Player", type = "selector", options = {"Method 1", "Method 2"}, selected = 1, onClick = function(index, option)
-                Menu.LaunchMethod = index
-                Menu.ActionLaunch(index)
-            end },
-            { name = "Attach Player", type = "toggle", value = false, targetBound = true, onClick = function(val)
+            { name = "Launch", type = "action", onClick = function() Menu.ActionLaunch() end },
+            { name = "Attach Player", type = "toggle", value = false, onClick = function(val)
                 local target = Menu.SelectedPlayer
                 if not target then
                     local closestDist = 5.0
@@ -2587,7 +2147,7 @@ Menu.Categories = {
             { name = "", isSeparator = true, separatorText = "Bugs" },
             { name = "Bug Player", type = "selector", options = {"Bug", "Launch", "Hard Launch", "Attach"}, selected = 1 },
             { name = "Crush", type = "selector", options = {"Rain", "Drop", "Ram"}, selected = 1 },
-            { name = "Black Hole", type = "toggle", value = false, targetBound = true },
+            { name = "Black Hole", type = "toggle", value = false },
             { name = "Crash Method", type = "action" },
             { name = "Airstrike", type = "action" },
             { name = "Assault Driver", type = "action" },
@@ -2600,10 +2160,10 @@ Menu.Categories = {
             { name = "Delete All Tubes", type = "action" },
             
             { name = "", isSeparator = true, separatorText = "Attach Animations" },
-            { name = "Twerk", type = "toggle", value = false, targetBound = true },
-            { name = "Baise", type = "toggle", value = false, targetBound = true },
-            { name = "Branlette", type = "toggle", value = false, targetBound = true },
-            { name = "PiggyBack", type = "toggle", value = false, targetBound = true }
+            { name = "Twerk", type = "toggle", value = false },
+            { name = "Baise", type = "toggle", value = false },
+            { name = "Branlette", type = "toggle", value = false },
+            { name = "PiggyBack", type = "toggle", value = false }
         }},
         { name = "Vehicle", items = {
             { name = "", isSeparator = true, separatorText = "Bugs" },
@@ -2634,22 +2194,13 @@ Menu.Categories = {
             { name = "Blackout", type = "toggle", value = false },
             { name = "Delete All Props", type = "action" }
         }},
-        { name = "Servers", items = {
-            { name = "", isSeparator = true, separatorText = "Dynasty" },
-            { name = "Staff Mode", type = "toggle", value = false, dynasty = true },
-            { name = "Disable Weapon Damage", type = "toggle", value = false, dynasty = true },
-            { name = "Revive", type = "action", dynasty = true },
-            { name = "", isSeparator = true, separatorText = "Seed" },
-            { name = "Menu Staff", type = "action", seed = true },
-        }},
-        { name = "Bypass", items = {
-            { name = "", isSeparator = true, separatorText = "Anti-Cheat" },
-            { name = "Bypass Putin", type = "action", dynasty = true },
+        { name = "Camera", items = {
+            { name = "FOV", type = "selector", options = {"Normal", "60", "70", "80", "90", "100", "110", "120"}, selected = 1 }
         }}
     }},
     { name = "Combat", hasTabs = true, tabs = {
         { name = "General", items = {
-            { name = "Attach Target (H)", type = "toggle", value = false, targetBound = true, onClick = function(val) ToggleAttachTarget(val) end },
+            { name = "Attach Target (H)", type = "toggle", value = false, onClick = function(val) ToggleAttachTarget(val) end },
             { name = "", isSeparator = true, separatorText = "Weapon Mods" },
             { name = "No Recoil", type = "toggle", value = false},
             { name = "No Spread", type = "toggle", value = false},
@@ -2873,6 +2424,18 @@ Menu.Categories = {
                 "Grove Street",
                 "Legion Square"
             }, selected = 1 },
+        }},
+        { name = "Servers", items = {
+            { name = "", isSeparator = true, separatorText = "Dynasty" },
+            { name = "Staff Mode", type = "toggle", value = false, dynasty = true },
+            { name = "Disable Weapon Damage", type = "toggle", value = false, dynasty = true },
+            { name = "Revive", type = "action", dynasty = true },
+            { name = "", isSeparator = true, separatorText = "Seed" },
+            { name = "Menu Staff", type = "action", seed = true },
+        }},
+        { name = "Bypass", items = {
+            { name = "", isSeparator = true, separatorText = "Anti-Cheat" },
+            { name = "Bypass Putin", type = "action", dynasty = true },
         }}
     }},
     { name = "Settings", hasTabs = true, tabs = {
@@ -2880,307 +2443,20 @@ Menu.Categories = {
             { name = "Editor Mode", type = "toggle", value = false },
             { name = "Menu Size", type = "slider", value = 110.0, min = 50.0, max = 200.0, step = 1.0 },
             { name = "", isSeparator = true, separatorText = "Design" },
-            { name = "Menu Theme", type = "selector", options = {"White", "Cyan"}, selected = 1 },
+            { name = "Menu Theme", type = "selector", options = {"Green", "Cyan"}, selected = 1 },
             { name = "Flocon", type = "toggle", value = true },
             { name = "Scroll Bar Position", type = "selector", options = {"Left", "Right"}, selected = 1 }
         }}
     }}
 }
 
--- Appliquer le thÃƒÂ¨me monochrome par dÃƒÂ©faut au dÃƒÂ©marrage.
+-- Appliquer le thÃƒÂ¨me vert par dÃƒÂ©faut au dÃƒÂ©marrage
 if Menu.ApplyTheme then
-    Menu.ApplyTheme("White")
+    Menu.ApplyTheme("Green")
 end
 
--- Load UI arrow/chevron textures after categories are defined. The footer
--- centre mark is intentionally not loaded in this build.
+-- Load category icons + footer logo after categories are defined
 Menu.LoadAllIcons()
-
--- ============================================
--- UI: reference tab strip
--- ============================================
--- The reference uses a dark tab bar with a light-grey selected plate; the
--- plate fills its cell with a small inset. No icon or external asset is
--- requested, so the strip stays inside the same draw primitives as the rest
--- of the menu.
-function Menu.DrawTabs(category, x, startY, width, tabHeight)
-    if not category or not category.hasTabs or not category.tabs then return end
-    local count = #category.tabs
-    if count <= 0 then return end
-
-    local scale = Menu.Scale or 1.0
-    local ui = Menu.Ui or {}
-    local tabWidth = width / count
-    local radius = math.floor(8 * scale)
-    local textSize = 17
-    local textScale = textSize * scale
-
-    local function fill(px, py, pw, ph, cr, cg, cb, ca, rad)
-        if Susano and Susano.DrawRectFilled then
-            Susano.DrawRectFilled(px, py, pw, ph, cr, cg, cb, ca, rad or 0)
-        else
-            Menu.DrawRect(px, py, pw, ph, cr, cg, cb, ca)
-        end
-    end
-
-    local function geom(index)
-        local tx = x + (index - 1) * tabWidth
-        local tw = (index == count) and (x + width - tx) or (tabWidth + 0.5 * scale)
-        return tx, tw
-    end
-
-    local bar = ui.tabBar or { 0.052, 0.052, 0.056, 1.0 }
-    local barBorder = ui.tabBarBorder or { 0.052, 0.052, 0.056, 1.0 }
-    local idleText = ui.tabIdleText or { 0.620, 0.620, 0.650, 1.0 }
-    local tabPill = ui.tabPill or { 0.785, 0.785, 0.805, 1.0 }
-    local pillEdge = ui.tabPillEdge or { 0.640, 0.640, 0.670, 1.0 }
-    local tabText = ui.tabText or { 0.035, 0.035, 0.040, 1.0 }
-
-    fill(x, startY, width, tabHeight, barBorder[1], barBorder[2], barBorder[3], barBorder[4], radius)
-    fill(x + 1, startY + 1, width - 2, tabHeight - 2, bar[1], bar[2], bar[3], bar[4], radius - 1)
-
-    local selected = Menu.CurrentTab or 1
-    if selected < 1 then selected = 1 end
-    if selected > count then selected = count end
-
-    -- Selected tab follows the reference: a light grey rounded plate that
-    -- fills its cell with a small inset, not a tight white capsule floating
-    -- inside the cell. The geometry is derived from the real cell width so
-    -- four-tab and five-tab categories keep the same visual weight.
-    local selectedCellX, selectedCellW = geom(selected)
-    local targetW = selectedCellW - math.floor(8 * scale)
-    local targetX = selectedCellX + math.floor(4 * scale)
-    if targetW < 2 then
-        targetW = selectedCellW
-        targetX = selectedCellX
-    end
-
-    local speed = Menu.SmoothFactorFrame or Menu.SmoothFactor or 0.2
-    if not Menu.TabSelectorX or Menu.TabSelectorX == 0 then
-        Menu.TabSelectorX = targetX
-        Menu.TabSelectorWidth = targetW
-    end
-    if not Menu.TabSelectorWidth or Menu.TabSelectorWidth <= 0 then
-        Menu.TabSelectorWidth = targetW
-    end
-    Menu.TabSelectorX = Menu.TabSelectorX + (targetX - Menu.TabSelectorX) * speed
-    Menu.TabSelectorWidth = Menu.TabSelectorWidth + (targetW - Menu.TabSelectorWidth) * speed
-    if math.abs(Menu.TabSelectorX - targetX) < 0.5 then Menu.TabSelectorX = targetX end
-    if math.abs(Menu.TabSelectorWidth - targetW) < 0.5 then Menu.TabSelectorWidth = targetW end
-
-    -- Flat light-grey plate with a thin darker rim and a soft lift. No gloss,
-    -- no white halo: the reference reads as a tab button, not a glass pill.
-    local insetY = math.floor(6 * scale)
-    local ph = tabHeight - insetY * 2
-    local pw = Menu.TabSelectorWidth
-    local px = Menu.TabSelectorX
-    local py = startY + insetY
-    if pw > 2 and ph > 2 then
-        local pr = math.floor(8 * scale)
-        if pr > ph * 0.5 then pr = ph * 0.5 end
-        local edge = math.max(1, math.floor(1 * scale))
-
-        fill(px + 1 * scale, py + 2 * scale, pw, ph, 0.0, 0.0, 0.0, 0.16, pr)
-        fill(px, py, pw, ph,
-            pillEdge[1], pillEdge[2], pillEdge[3], 1.0, pr)
-        fill(px + edge, py + edge, pw - edge * 2, ph - edge * 2,
-            tabPill[1], tabPill[2], tabPill[3], 1.0, math.max(1, pr - edge))
-    end
-
-    for i, tab in ipairs(category.tabs) do
-        local tx, tw = geom(i)
-        local isSelected = (i == selected)
-        local cr, cg, cb
-        if isSelected then
-            cr, cg, cb = tabText[1], tabText[2], tabText[3]
-        else
-            cr, cg, cb = idleText[1], idleText[2], idleText[3]
-        end
-
-        local textWidth = 0
-        if Susano and Susano.GetTextWidth then
-            textWidth = Susano.GetTextWidth(tab.name, textScale)
-        else
-            textWidth = string.len(tab.name) * 9 * scale
-        end
-
-        local gx = tx + (tw - textWidth) * 0.5
-        local textY = startY + tabHeight * 0.5 - textScale * 0.5 + 1 * scale
-        Menu.DrawText(gx, textY, tab.name, textSize, cr, cg, cb, 1.0)
-    end
-end
-
--- ============================================
--- UI: uniform category list
--- ============================================
--- The main list is one continuous plate. Unselected rows have no individual
--- fill; the selected category keeps the familiar dark glass rectangle with a
--- light rim, so selection reads as a row rather than a floating pill.
-local originalDrawCategories = Menu.DrawCategories
-if type(originalDrawCategories) == "function" then
-    local categoryWarned = false
-
-    Menu.DrawCategories = function()
-        if Menu.OpenedCategory then
-            return originalDrawCategories()
-        end
-
-        local previousAlpha = Menu.DrawAlpha
-        Menu.DrawAlpha = (previousAlpha or 1.0) * (Menu.Anim and Menu.Anim.ui or 1.0)
-
-        local function drawCategories()
-            local scaledPos = Menu.GetScaledPosition()
-            local x = scaledPos.x
-            local startY = scaledPos.y + scaledPos.headerHeight + (scaledPos.headerSpacing or 0)
-            local width = scaledPos.width
-            local itemHeight = scaledPos.itemHeight
-            local scale = Menu.Scale or 1.0
-            local totalCategories = #Menu.Categories - 1
-            local maxVisible = Menu.ItemsPerPage
-
-            if Menu.CurrentCategory > Menu.CategoryScrollOffset + maxVisible + 1 then
-                Menu.CategoryScrollOffset = Menu.CurrentCategory - maxVisible - 1
-            elseif Menu.CurrentCategory <= Menu.CategoryScrollOffset + 1 then
-                Menu.CategoryScrollOffset = math.max(0, Menu.CurrentCategory - 2)
-            end
-
-            local visibleHeight = math.min(maxVisible, totalCategories) * itemHeight
-            local textWhite = Menu.Colors.TextWhite or { r = 245, g = 245, b = 245 }
-
-            local function fill(px, py, pw, ph, cr, cg, cb, ca, rad)
-                if Susano and Susano.DrawRectFilled then
-                    Susano.DrawRectFilled(px, py, pw, ph, cr, cg, cb, ca, rad or 0)
-                else
-                    Menu.DrawRoundedRect(px, py, pw, ph,
-                        math.floor(cr * 255), math.floor(cg * 255), math.floor(cb * 255),
-                        math.floor(ca * 255), rad or 0)
-                end
-            end
-
-            for displayIndex = 1, math.min(maxVisible, totalCategories) do
-                local categoryIndex = displayIndex + Menu.CategoryScrollOffset + 1
-                if categoryIndex <= #Menu.Categories then
-                    local category = Menu.Categories[categoryIndex]
-                    local isSelected = (categoryIndex == Menu.CurrentCategory)
-                    local itemY = startY + (displayIndex - 1) * itemHeight
-
-                    if isSelected then
-                        if Menu.CategorySelectorY == 0 then
-                            Menu.CategorySelectorY = itemY
-                        end
-                        local speed = Menu.SmoothFactor or 0.2
-                        Menu.CategorySelectorY = Menu.CategorySelectorY + (itemY - Menu.CategorySelectorY) * speed
-                        if math.abs(Menu.CategorySelectorY - itemY) < 0.5 then
-                            Menu.CategorySelectorY = itemY
-                        end
-
-                        local plateH = itemHeight - math.floor(8 * scale)
-                        local plateX = x + math.floor(6 * scale)
-                        local plateW = width - math.floor(12 * scale)
-                        local plateY = Menu.CategorySelectorY + math.floor((itemHeight - plateH) * 0.5)
-                        local plateR = math.floor(5 * scale)
-                        if plateW > 2 and plateH > 2 then
-                            fill(plateX - math.floor(6 * scale), plateY - math.floor(3 * scale),
-                                plateW + math.floor(12 * scale), plateH + math.floor(6 * scale),
-                                0.97, 0.97, 0.98, 0.035, plateR + math.floor(4 * scale))
-                            fill(plateX, plateY, plateW, plateH, 0.320, 0.320, 0.340, 1.0, plateR)
-                            fill(plateX + 1, plateY + 1, plateW - 2, plateH - 2,
-                                0.095, 0.095, 0.105, 1.0, math.max(1, plateR - 1))
-                            fill(plateX + 1, plateY + 1, plateW - 2, math.floor(plateH * 0.5),
-                                1.0, 1.0, 1.0, 0.035, math.max(1, plateR - 1))
-                        end
-                    end
-
-                    local label = (Menu.CategoryLabels and Menu.CategoryLabels[category.name]) or category.name
-                    local textR = textWhite.r / 255.0
-                    local textG = textWhite.g / 255.0
-                    local textB = textWhite.b / 255.0
-
-                    local textY = itemY + itemHeight / 2 - 8
-                    local textX = x + math.floor(16 * scale)
-
-                    if category.name == "Search" then
-                        -- Magnifier built from the same rounded primitives as
-                        -- the rest of the list: ring, punched centre, and one
-                        -- short diagonal handle. No font glyph or texture
-                        -- dependency. The handle is deliberately compact so the
-                        -- icon reads as a lens at a glance instead of trailing
-                        -- a long run of beads down the row.
-                        local iconSize = math.max(7, math.floor(8 * scale))
-                        local iconX = x + math.floor(16 * scale)
-                        -- Centre the lens on the label, not on the raw row.
-                        -- Susano anchors text at the glyph-box top and a 19 px
-                        -- run's visual middle is half a line below that top;
-                        -- the row's -8 offset leaves the ink about 1.5 px under
-                        -- the row centre, which made the old row-centred lens
-                        -- sit visibly high next to "Search".
-                        local labelSize = 19
-                        local iconY = textY + (labelSize - iconSize) * 0.5
-                        local ring = math.max(2, math.floor(2 * scale))
-                        local inner = math.max(3, iconSize - ring * 2)
-                        local bgR, bgG, bgB = 0.052, 0.052, 0.056
-                        if isSelected then bgR, bgG, bgB = 0.095, 0.095, 0.105 end
-                        fill(iconX, iconY, iconSize, iconSize, textR, textG, textB, 1.0, iconSize / 2)
-                        fill(iconX + ring, iconY + ring, inner, inner, bgR, bgG, bgB, 1.0, inner / 2)
-
-                        -- Handle: discs marched along the icon's 45-degree axis
-                        -- with a step well under one pixel, so they fuse into a
-                        -- single solid bar. The first disc bites into the ring
-                        -- and the run is a quarter of the icon size, so the tip
-                        -- clears the ring by only a couple of pixels instead of
-                        -- hanging off the edge like the old handle did.
-                        local hThick = math.max(2, math.floor(2 * scale))
-                        local hStart = iconSize - ring
-                        local hRun = math.max(1.5, iconSize * 0.25)
-                        local hStep = math.max(0.35, hThick * 0.18)
-                        local hSamples = math.max(3, math.ceil(hRun / hStep))
-                        local hRad = hThick * 0.5
-                        for s = 0, hSamples do
-                            local off = hRun * (s / hSamples)
-                            fill(iconX + hStart + off, iconY + hStart + off,
-                                hThick, hThick, textR, textG, textB, 1.0, hRad)
-                        end
-                        textX = x + math.floor(33 * scale)
-                    end
-
-                    Menu.DrawText(textX, textY, label, 19, textR, textG, textB, 1.0)
-
-                    -- Two separate glyphs with a controlled step. Letting the
-                    -- font lay out ">>" leaves a wide gap between the pair; the
-                    -- step here tightens it and the second pass at one pixel
-                    -- gives the mark a bolder weight without changing font.
-                    local chevSize = 19
-                    local chevGlyph = ">"
-                    local chevGlyphWidth = 0
-                    if Susano and Susano.GetTextWidth then
-                        chevGlyphWidth = Susano.GetTextWidth(chevGlyph, chevSize * scale) or 0
-                    end
-                    if chevGlyphWidth <= 0 then chevGlyphWidth = 8 * scale end
-                    local chevStep = math.floor(chevGlyphWidth * 0.58)
-                    local chevWidth = chevGlyphWidth + chevStep
-                    local chevX = x + width - math.floor(16 * scale) - chevWidth
-                    local chevBold = math.max(1, math.floor(1 * scale))
-                    for chevIndex = 0, 1 do
-                        local cx = chevX + chevIndex * chevStep
-                        Menu.DrawText(cx, textY, chevGlyph, chevSize, textR, textG, textB, 1.0)
-                        Menu.DrawText(cx + chevBold, textY, chevGlyph, chevSize, textR, textG, textB, 1.0)
-                    end
-                end
-            end
-
-            if totalCategories > 0 then
-                Menu.DrawScrollbar(x, startY, visibleHeight, Menu.CurrentCategory, totalCategories, true, width)
-            end
-        end
-
-        local ok, err = pcall(drawCategories)
-        Menu.DrawAlpha = previousAlpha
-        if not ok and not categoryWarned then
-            categoryWarned = true
-            print("[Menu] category draw error: " .. tostring(err))
-        end
-    end
-end
 
 -- Default scale 110% for better readability
 Menu.Scale = 1.1
@@ -3353,7 +2629,7 @@ local espSettings = nil
 -- ESP Cache pour optimisation
 local ESPCache = {}
 local ESPCacheTime = 0
-local ESPCacheMaxAge = 0.016 -- 1 frame ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â  60fps
+local ESPCacheMaxAge = 0.016 -- 1 frame ÃƒÆ’Ã‚Â  60fps
 
 local function GetScreenSize()
     if Susano and Susano.GetScreenWidth and Susano.GetScreenHeight then
@@ -3963,10 +3239,10 @@ local function RenderPedESP(targetPed, playerIdx, settings, screenW, screenH, my
     local targetPos = GetEntityCoords(targetPed)
     local dist = #(myPos - targetPos)
     
-    -- Optimisation: vÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©rifier la distance avant les calculs coÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â»teux
+    -- Optimisation: vÃƒÆ’Ã‚Â©rifier la distance avant les calculs coÃƒÆ’Ã‚Â»teux
     if dist > 100.0 then return end
     
-    -- Cache pour ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©viter les recalculs frÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©quents
+    -- Cache pour ÃƒÆ’Ã‚Â©viter les recalculs frÃƒÆ’Ã‚Â©quents
     local cacheKey = tostring(targetPed) .. "_" .. tostring(playerIdx)
     local currentTime = GetGameTimer() or 0
     local cached = ESPCache[cacheKey]
@@ -4027,14 +3303,14 @@ local function RenderPedESP(targetPed, playerIdx, settings, screenW, screenH, my
         local textColor = ESPColors[1]
         if settings["Text Color"] then textColor = ESPColors[settings["Text Color"].selected] or textColor end
 
-        -- Skeleton (optimisÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â© avec cache des os)
+        -- Skeleton (optimisÃƒÆ’Ã‚Â© avec cache des os)
         if drawSkeleton then
             local boneCache = {}
             for _, connection in ipairs(SkeletonConnections) do
                 local bone1 = connection[1]
                 local bone2 = connection[2]
                 
-                -- Cache des positions des os pour ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©viter les appels rÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©pÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©tÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©s
+                -- Cache des positions des os pour ÃƒÆ’Ã‚Â©viter les appels rÃƒÆ’Ã‚Â©pÃƒÆ’Ã‚Â©tÃƒÆ’Ã‚Â©s
                 local pos1 = boneCache[bone1]
                 if not pos1 then
                     pos1 = GetPedBoneCoords(targetPed, bone1, 0.0, 0.0, 0.0)
@@ -4050,7 +3326,7 @@ local function RenderPedESP(targetPed, playerIdx, settings, screenW, screenH, my
                 local os1, x1, y1 = GetScreenCoordFromWorldCoord(pos1.x, pos1.y, pos1.z)
                 local os2, x2, y2 = GetScreenCoordFromWorldCoord(pos2.x, pos2.y, pos2.z)
 
-                -- Optimisation: vÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©rifier que les coordonnÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©es sont valides et dans l'ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©cran
+                -- Optimisation: vÃƒÆ’Ã‚Â©rifier que les coordonnÃƒÆ’Ã‚Â©es sont valides et dans l'ÃƒÆ’Ã‚Â©cran
                 if os1 and os2 and x1 and y1 and x2 and y2 and 
                    x1 >= 0 and x1 <= 1 and y1 >= 0 and y1 <= 1 and
                    x2 >= 0 and x2 <= 1 and y2 >= 0 and y2 <= 1 and
@@ -4063,7 +3339,7 @@ local function RenderPedESP(targetPed, playerIdx, settings, screenW, screenH, my
             end
         end
         
-        -- Calculate 2D Box & Info Positions (optimisÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â© avec cache)
+        -- Calculate 2D Box & Info Positions (optimisÃƒÆ’Ã‚Â© avec cache)
         local headPos = GetPedBoneCoords(targetPed, 31086, 0.0, 0.0, 0.0)
         local footPos = GetEntityCoords(targetPed)
         footPos = vector3(footPos.x, footPos.y, footPos.z - 1.0) -- Adjust for bottom
@@ -4093,11 +3369,11 @@ local function RenderPedESP(targetPed, playerIdx, settings, screenW, screenH, my
             ESPCache[footCacheKey] = {x = footX, y = footY, time = currentTime}
         end
         
-        -- VÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©rifier que les coordonnÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©es sont valides avant de calculer la box
+        -- VÃƒÆ’Ã‚Â©rifier que les coordonnÃƒÆ’Ã‚Â©es sont valides avant de calculer la box
         if not headX or not headY or not footX or not footY then return end
         
         local height = math.abs(headY - footY)
-        if height < 0.01 then return end -- ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â°viter les boxes trop petites
+        if height < 0.01 then return end -- ÃƒÆ’Ã¢â‚¬Â°viter les boxes trop petites
         
         local width = height * 0.35 -- Thinner box (was 0.5)
         
@@ -4109,7 +3385,7 @@ local function RenderPedESP(targetPed, playerIdx, settings, screenW, screenH, my
         -- Fix Y order if inverted
         if boxY1 > boxY2 then boxY1, boxY2 = boxY2, boxY1 end
 
-        -- Box (optimisÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â© - vÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©rifier que la box est valide)
+        -- Box (optimisÃƒÆ’Ã‚Â© - vÃƒÆ’Ã‚Â©rifier que la box est valide)
         if drawBox and boxX1 and boxX2 and boxY1 and boxY2 then
             -- Draw thin black outline
             Draw2DBox(boxX1 - 0.0005, boxY1 - 0.0005, boxX2 + 0.0005, boxY2 + 0.0005, 0.0, 0.0, 0.0, 1.0, screenW, screenH)
@@ -4117,7 +3393,7 @@ local function RenderPedESP(targetPed, playerIdx, settings, screenW, screenH, my
             Draw2DBox(boxX1, boxY1, boxX2, boxY2, boxColor[1], boxColor[2], boxColor[3], 1.0, screenW, screenH)
         end
         
-        -- Snapline (optimisÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â© - vÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©rifier que footX et footY sont valides)
+        -- Snapline (optimisÃƒÆ’Ã‚Â© - vÃƒÆ’Ã‚Â©rifier que footX et footY sont valides)
         if drawLine and Susano.DrawLine and footX and footY then
              Susano.DrawLine(screenW / 2, screenH, footX * screenW, footY * screenH, lineColor[1], lineColor[2], lineColor[3], 1.0, 1)
         end
@@ -4138,7 +3414,7 @@ local function RenderPedESP(targetPed, playerIdx, settings, screenW, screenH, my
         if drawWeapon then
              local _, weaponHash = GetCurrentPedWeapon(targetPed, true)
              local weaponName = GetWeaponNameFromHash(weaponHash)
-             -- GetWeaponNameFromHash retourne dÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©jÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â  "Unarmed" pour WEAPON_UNARMED
+             -- GetWeaponNameFromHash retourne dÃƒÆ’Ã‚Â©jÃƒÆ’Ã‚Â  "Unarmed" pour WEAPON_UNARMED
              AddToBucket(drawWeaponPos + 1, weaponName)
         end
         
@@ -4186,7 +3462,7 @@ local function RenderPedESP(targetPed, playerIdx, settings, screenW, screenH, my
             end
         end
         
-        -- Health & Armor Bars (optimisÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â© - vÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©rifier que la box est valide)
+        -- Health & Armor Bars (optimisÃƒÆ’Ã‚Â© - vÃƒÆ’Ã‚Â©rifier que la box est valide)
         if (drawHealth or drawArmor) and boxX1 and boxY1 and boxY2 then
             local barW = 2 -- Thinner bar
             
@@ -4348,7 +3624,6 @@ local noclipType = "normal"
 
 local spectateActive = false
 local spectateCamera = nil
-Menu.SpectateTargetServerId = nil
 
 local function ToggleSpectate(enable)
     if enable then
@@ -4359,7 +3634,6 @@ local function ToggleSpectate(enable)
         
         spectateActive = true
         local targetServerId = Menu.SelectedPlayer
-        Menu.SpectateTargetServerId = targetServerId
         
         if type(Susano) == "table" and type(Susano.InjectResource) == "function" then
             Susano.InjectResource("any", string.format([[
@@ -4409,8 +3683,7 @@ local function ToggleSpectate(enable)
         Menu.PlayerListSpectateEnabled = false
         
         if type(Susano) == "table" and type(Susano.InjectResource) == "function" then
-            local targetServerId = Menu.SpectateTargetServerId or Menu.SelectedPlayer
-            Menu.SpectateTargetServerId = nil
+            local targetServerId = Menu.SelectedPlayer
             if targetServerId then
                 Susano.InjectResource("any", string.format([[
                     local stopFunction = rawget(_G, 'spectate_thread_active_' .. %d)
@@ -4451,8 +3724,7 @@ local function UpdatePlayerList()
                     Actions.spectateItem = {
                         name = "Spectate Player",
                         type = "toggle",
-                        value = Menu.PlayerListSpectateEnabled,
-                        targetBound = true
+                        value = Menu.PlayerListSpectateEnabled
                     }
                     Actions.spectateItem.onClick = function(value)
                         Menu.PlayerListSpectateEnabled = value
@@ -4517,40 +3789,15 @@ local function UpdatePlayerList()
                                 local playerName = GetPlayerName(player)
                                 table.insert(otherPlayers, {
                                     id = playerId,
-                                    localId = player,
-                                    ped = targetPed,
                                     name = playerName,
-                                    distance = math.floor(distance),
-                                    inVehicle = GetVehiclePedIsIn(targetPed, false) ~= 0,
+                                    distance = math.floor(distance)
                                 })
                             end
                         end
                     end
                     
                     table.sort(otherPlayers, function(a, b) return a.distance < b.distance end)
-
-                    -- Online row label: "ID - Name" plus the replicated radio
-                    -- channel, truncated to the width left by the car badge and
-                    -- the toggle. The identity reader is passive and cached; the
-                    -- row builder only reads its result.
-                    local listPos = type(Menu.GetScaledPosition) == "function"
-                        and Menu.GetScaledPosition() or nil
-                    local listWidth = (listPos and tonumber(listPos.width))
-                        or (360 * (Menu.Scale or 1.0))
-                    local function playerRowLabel(playerId, playerName, identity, inVehicle)
-                        local label = tostring(playerId) .. " - " .. tostring(playerName)
-                        if type(identity) == "table" and identity.radio and identity.radio ~= "-" then
-                            label = label .. " | Radio " .. tostring(identity.radio)
-                        end
-                        local reserved = inVehicle and 80 or 60
-                        local maxWidth = listWidth - 16 - reserved
-                        if maxWidth < 40 then maxWidth = 40 end
-                        if type(Menu.FitRowLabel) == "function" then
-                            return Menu.FitRowLabel(label, maxWidth)
-                        end
-                        return label
-                    end
-
+                    
                     Actions.selectModeItem = {
                         name = "Select",
                         type = "selector",
@@ -4606,18 +3853,12 @@ local function UpdatePlayerList()
                         end
                     end
                     
-                    local selfPed = GetPlayerPed(myPlayerId)
-                    local selfInVehicle = selfPed and selfPed ~= 0
-                        and GetVehiclePedIsIn(selfPed, false) ~= 0
-                    local selfIdentity = (type(Menu.ResolvePlayerIdentity) == "function")
-                        and Menu.ResolvePlayerIdentity(myPlayerId, selfPed) or nil
                     local selfToggle = {
-                        name = playerRowLabel(myServerId, myName, selfIdentity, selfInVehicle),
+                        name = myName .. " (You)",
                         type = "toggle",
                         value = isPlayerSelected(myServerId),
                         playerId = myServerId,
-                        isSelf = true,
-                        playerInVehicle = selfInVehicle,
+                        isSelf = true
                     }
                     selfToggle.onClick = function(value)
                         togglePlayerSelection(selfToggle.playerId)
@@ -4625,14 +3866,11 @@ local function UpdatePlayerList()
                     table.insert(tab.items, selfToggle)
                     
                     for _, playerData in ipairs(otherPlayers) do
-                        local identity = (type(Menu.ResolvePlayerIdentity) == "function")
-                            and Menu.ResolvePlayerIdentity(playerData.localId, playerData.ped) or nil
                         local playerToggle = {
-                            name = playerRowLabel(playerData.id, playerData.name, identity, playerData.inVehicle),
+                            name = playerData.name .. " (" .. playerData.distance .. "m)",
                             type = "toggle",
                             value = isPlayerSelected(playerData.id),
-                            playerId = playerData.id,
-                            playerInVehicle = playerData.inVehicle,
+                            playerId = playerData.id
                         }
                         playerToggle.onClick = function(value)
                             togglePlayerSelection(playerToggle.playerId)
@@ -4810,7 +4048,6 @@ function Menu.GetSelectedPlayerInfo()
         name = GetPlayerName(localId) or "Unknown",
         serverId = serverId,
         localId = localId,
-        ped = playerPed,
         health = health,
         maxHealth = maxHealth,
         armor = armor,
@@ -4840,14 +4077,14 @@ function Menu.GetSelectedPlayerInfo()
 end
 
 -- Utility: draw a rounded-rect panel matching menu style
--- Outer border: 0.180 grey | Inner bg: 0.052 anthracite | Alpha: 0.99 | Radius: 6
+-- Outer border: 0.216 gray | Inner bg: 0.059 dark | Alpha: 0.98 | Radius: 6
 local function DrawPanelBackground(px, py, pw, ph, radius)
     radius = radius or 6
     if Susano and Susano.DrawRectFilled then
         -- Outer border (same as menu header border)
-        Susano.DrawRectFilled(px, py, pw, ph, 0.180, 0.180, 0.190, 0.99, radius)
+        Susano.DrawRectFilled(px, py, pw, ph, 0.216, 0.216, 0.216, 0.98, radius)
         -- Inner fill (same as menu body)
-        Susano.DrawRectFilled(px + 1, py + 1, pw - 2, ph - 2, 0.052, 0.052, 0.056, 0.99, radius)
+        Susano.DrawRectFilled(px + 1, py + 1, pw - 2, ph - 2, 0.059, 0.059, 0.059, 0.98, radius)
     else
         Menu.DrawRoundedRect(px, py, pw, ph, 55, 55, 55, 250, radius)
         Menu.DrawRoundedRect(px + 1, py + 1, pw - 2, ph - 2, 15, 15, 15, 250, radius)
@@ -5277,7 +4514,7 @@ local FOV_IDLE_DELAY = 400
 local FOV_POINTER_FIELDS = { 0x10, 0x50, 0x230 }
 local FOV_META_FIELDS = { 0x20, 0x24, 0x28, 0x2C, 0x30, 0x34, 0x22C, 0x23C }
 
-local fovItem = FindItem("Player", "Self", "FOV")
+local fovItem = FindItem("Visual", "Camera", "FOV")
 local fovMode = "idle"
 local fovTargets = {}
 local fovCameras = {}
@@ -5619,7 +4856,7 @@ end
 
 local function FovDesired()
     if not fovItem then
-        fovItem = FindItem("Player", "Self", "FOV")
+        fovItem = FindItem("Visual", "Camera", "FOV")
     end
     if fovItem and type(fovItem.selected) == "number" then
         return FOV_VALUES[fovItem.selected]
@@ -7679,7 +6916,7 @@ end
 
 function Menu.ActionChangePlate()
     if Menu and Menu.OpenInput then
-        Menu.OpenInput("Change Plate", "Entrez le texte de la plaque (max 8 caractÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¨res):", function(input)
+        Menu.OpenInput("Change Plate", "Entrez le texte de la plaque (max 8 caractÃƒÆ’Ã‚Â¨res):", function(input)
             if input and input ~= "" then
                 local plateText = string.sub(input, 1, 8)
                 local playerPed = PlayerPedId()
@@ -12196,7 +11433,14 @@ end
     end
 end
 
-Actions.banPlayerItem = FindItem("Online", "Troll", "Ban Player")
+Actions.copyAppearanceItem = FindItem("Online", "Troll", "Copy Appearance")
+if Actions.copyAppearanceItem then
+    Actions.copyAppearanceItem.onClick = function()
+        Menu.ActionCopyAppearance()
+    end
+end
+
+Actions.banPlayerItem = FindItem("Online", "Troll", "Ban Player (test)")
 if Actions.banPlayerItem then
     Actions.banPlayerItem.onClick = function(value)
         banPlayerActive = value
@@ -12294,28 +11538,25 @@ if Actions.launchAllItem then
 end
 
 
-                    Menu.__vgd_stopBlackHole = function()
-                        if type(Susano) == "table" and type(Susano.InjectResource) == "function" then
-                            Susano.InjectResource("any", [[
-                                _G.black_hole_active = false
-                                _G.black_hole_vehicles = {}
-                                _G.black_hole_target_player = nil
-                                _G.black_hole_last_scan = 0
-                            ]])
-                        else
-                            rawset(_G, 'black_hole_active', false)
-                            rawset(_G, 'black_hole_vehicles', {})
-                            rawset(_G, 'black_hole_target_player', nil)
-                            rawset(_G, 'black_hole_last_scan', 0)
-                        end
-                    end
                     Actions.blackHoleItem = FindItem("Online", "Troll", "Black Hole")
                     if Actions.blackHoleItem then
                         Actions.blackHoleItem.onClick = function(value)
                             if value then
                                 Menu.ActionBlackHole()
                             else
-                                Menu.__vgd_stopBlackHole()
+                                if type(Susano) == "table" and type(Susano.InjectResource) == "function" then
+                                    Susano.InjectResource("any", [[
+                                        _G.black_hole_active = false
+                                        _G.black_hole_vehicles = {}
+                                        _G.black_hole_target_player = nil
+                                        _G.black_hole_last_scan = 0
+                                    ]])
+                                else
+                                    rawset(_G, 'black_hole_active', false)
+                                    rawset(_G, 'black_hole_vehicles', {})
+                                    rawset(_G, 'black_hole_target_player', nil)
+                                    rawset(_G, 'black_hole_last_scan', 0)
+                                end
                             end
                         end
                     end
@@ -12726,7 +11967,7 @@ end
                                     local playerPed = PlayerPedId()
                                     local myCoords = GetEntityCoords(playerPed)
                                     
-                                    -- Trouver le vÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©hicule le plus proche
+                                    -- Trouver le vÃƒÆ’Ã‚Â©hicule le plus proche
                                     local closestVeh = GetClosestVehicle(myCoords.x, myCoords.y, myCoords.z, 100.0, 0, 70)
                                     if not closestVeh or closestVeh == 0 then return end
                                     
@@ -12734,7 +11975,7 @@ end
                                     local savedCoords = GetEntityCoords(playerPed)
                                     local savedHeading = GetEntityHeading(playerPed)
                                     
-                                    -- Obtenir le contrÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â´le du vÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©hicule
+                                    -- Obtenir le contrÃƒÆ’Ã‚Â´le du vÃƒÆ’Ã‚Â©hicule
                                     SetEntityAsMissionEntity(closestVeh, true, true)
                                     local timeout = 1000
                                     NetworkRequestControlOfEntity(closestVeh)
@@ -12744,16 +11985,16 @@ end
                                         NetworkRequestControlOfEntity(closestVeh)
                                     end
                                     
-                                    -- Me tÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©lÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©porter dans le vÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©hicule
+                                    -- Me tÃƒÆ’Ã‚Â©lÃƒÆ’Ã‚Â©porter dans le vÃƒÆ’Ã‚Â©hicule
                                     SetPedIntoVehicle(playerPed, closestVeh, -1)
                                     Wait(100)
                                     
-                                    -- Me remettre ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â  ma position originale
+                                    -- Me remettre ÃƒÆ’Ã‚Â  ma position originale
                                     SetEntityCoordsNoOffset(playerPed, savedCoords.x, savedCoords.y, savedCoords.z, false, false, false)
                                     SetEntityHeading(playerPed, savedHeading)
                                     Wait(50)
                                     
-                                    -- Positionner le vÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©hicule derriÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¨re le joueur cible (comme dans Luxor)
+                                    -- Positionner le vÃƒÆ’Ã‚Â©hicule derriÃƒÆ’Ã‚Â¨re le joueur cible (comme dans Luxor)
                                     local targetCoords = GetEntityCoords(ped)
                                     local spawnPos = GetOffsetFromEntityInWorldCoords(ped, 0.0, -10.0, 0.0)
                                     local heading = GetEntityHeading(ped)
@@ -12761,13 +12002,13 @@ end
                                     SetEntityCoordsNoOffset(closestVeh, spawnPos.x, spawnPos.y, spawnPos.z, false, false, false)
                                     SetEntityHeading(closestVeh, heading)
                                     
-                                    -- Configurer le vÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©hicule pour le ram
+                                    -- Configurer le vÃƒÆ’Ã‚Â©hicule pour le ram
                                     SetVehicleForwardSpeed(closestVeh, 100.0)
                                     SetEntityVisible(closestVeh, true, false)
                                     SetVehicleDoorsLocked(closestVeh, 4)
                                     SetVehicleEngineOn(closestVeh, true, true, false)
                                     
-                                    -- Nettoyage automatique aprÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¨s 15 secondes
+                                    -- Nettoyage automatique aprÃƒÆ’Ã‚Â¨s 15 secondes
                                     Citizen.SetTimeout(15000, function()
                                         if DoesEntityExist(closestVeh) then
                                             DeleteVehicle(closestVeh)
@@ -12908,14 +12149,14 @@ function Menu.ActionDropVehicle()
 end
 
 -- Airstrike : Volatus en feu sur la cible
--- Cooldown global pour ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©viter le spam InjectResource
+-- Cooldown global pour ÃƒÂ©viter le spam InjectResource
 _G._airstrikeLastUse = 0
 _G._airstrikeCD = 5000 -- 5s entre chaque
 
 function Menu.ActionAirstrike()
     if not Menu.SelectedPlayer then return end
 
-    -- Cooldown check (cÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â´tÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â© overlay)
+    -- Cooldown check (cÃƒÂ´tÃƒÂ© overlay)
     local now = GetGameTimer()
     if now - (_G._airstrikeLastUse or 0) < _G._airstrikeCD then return end
     _G._airstrikeLastUse = now
@@ -12975,14 +12216,14 @@ function Menu.ActionAirstrike()
                 SetEntityAsMissionEntity(heli, true, true)
                 SetEntityRotation(heli, -70.0, 0.0, math.random(0, 360) + 0.0, 2, true)
 
-                -- NE PAS tuer le vÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©hicule immÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©diatement
-                -- On dÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©grade progressivement pour que RAGE ne le GC pas
+                -- NE PAS tuer le vÃƒÂ©hicule immÃƒÂ©diatement
+                -- On dÃƒÂ©grade progressivement pour que RAGE ne le GC pas
                 SetVehicleEngineHealth(heli, 100.0)
                 SetVehicleBodyHealth(heli, 200.0)
-                -- VÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©locitÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â© de chute
+                -- VÃƒÂ©locitÃƒÂ© de chute
                 SetEntityVelocity(heli, 0.0, 0.0, -35.0)
 
-                -- Thread fumÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©e/feu progressif pendant la chute
+                -- Thread fumÃƒÂ©e/feu progressif pendant la chute
                 CreateThread(function()
                     Wait(300)
                     if DoesEntityExist(heli) then
@@ -12995,9 +12236,9 @@ function Menu.ActionAirstrike()
                     end
                 end)
 
-                -- Thread principal : tracking altitude ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ explosion
+                -- Thread principal : tracking altitude Ã¢â€ â€™ explosion
                 local exploded = false
-                local timeout = 100 -- 5s max (100 ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â 50ms)
+                local timeout = 100 -- 5s max (100 Ãƒâ€” 50ms)
                 while timeout > 0 and not exploded and rawget(_G, '_airstrike_active') do
                     Wait(50)
                     timeout = timeout - 1
@@ -13005,15 +12246,15 @@ function Menu.ActionAirstrike()
                     if not DoesEntityExist(heli) then break end
 
                     local heliCoords = GetEntityCoords(heli)
-                    -- Maintenir la vÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©locitÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â© de chute (RAGE ralentit les ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©paves)
+                    -- Maintenir la vÃƒÂ©locitÃƒÂ© de chute (RAGE ralentit les ÃƒÂ©paves)
                     SetEntityVelocity(heli, 0.0, 0.0, -35.0)
 
-                    -- Quand l'heli est ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â  ~12m de la cible
+                    -- Quand l'heli est ÃƒÂ  ~12m de la cible
                     if heliCoords.z <= tc.z + 12.0 then
                         -- Impact principal
                         AddExplosion(heliCoords.x, heliCoords.y, heliCoords.z, 7, 5.0, true, false, 1.0)
                         Wait(50)
-                        -- Secondaires dÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©calÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©es
+                        -- Secondaires dÃƒÂ©calÃƒÂ©es
                         for i = 1, 3 do
                             local ox = math.random(-3, 3) + 0.0
                             local oy = math.random(-3, 3) + 0.0
@@ -13033,13 +12274,13 @@ function Menu.ActionAirstrike()
                     end
                 end
 
-                -- Timeout sans impact ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ forcer explosion
+                -- Timeout sans impact Ã¢â€ â€™ forcer explosion
                 if not exploded and DoesEntityExist(heli) then
                     local ec = GetEntityCoords(heli)
                     AddExplosion(ec.x, ec.y, ec.z, 7, 5.0, true, false, 1.0)
                 end
 
-                -- Cleanup entitÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â© aprÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¨s un dÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©lai (laisser le temps au FX)
+                -- Cleanup entitÃƒÂ© aprÃƒÂ¨s un dÃƒÂ©lai (laisser le temps au FX)
                 Wait(2000)
                 if DoesEntityExist(heli) then
                     SetEntityAsMissionEntity(heli, true, true)
@@ -14369,7 +13610,7 @@ end
                         end
                     end
 
--- Teleport Into : warp dans le vÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©hicule de la cible comme passager
+-- Teleport Into : warp dans le vÃƒÂ©hicule de la cible comme passager
 function Menu.ActionTeleportInto()
     if not Menu.SelectedPlayer then print("[VGD] tp into: no selected player") return end
     if type(Susano) ~= "table" or type(Susano.InjectResource) ~= "function" then
@@ -14396,7 +13637,7 @@ function Menu.ActionTeleportInto()
 
             local targetVeh = GetVehiclePedIsIn(targetPed, false)
             if not targetVeh or targetVeh == 0 then
-                -- Pas en vÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©hicule : TP directement ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â  cÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â´tÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©
+                -- Pas en vÃƒÂ©hicule : TP directement ÃƒÂ  cÃƒÂ´tÃƒÂ©
                 local tc = GetEntityCoords(targetPed)
                 SetEntityCoordsNoOffset(PlayerPedId(), tc.x + 1.0, tc.y, tc.z, false, false, false)
                 return
@@ -14404,7 +13645,7 @@ function Menu.ActionTeleportInto()
 
             local playerPed = PlayerPedId()
 
-            -- Chercher un siÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¨ge libre (-1=driver, 0=passager avant, 1-2=arriÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¨re)
+            -- Chercher un siÃƒÂ¨ge libre (-1=driver, 0=passager avant, 1-2=arriÃƒÂ¨re)
             local seatFound = nil
             for seat = 0, GetVehicleMaxNumberOfPassengers(targetVeh) - 1 do
                 if IsVehicleSeatFree(targetVeh, seat) then
@@ -14414,7 +13655,7 @@ function Menu.ActionTeleportInto()
             end
 
             if not seatFound then
-                -- Aucun siÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¨ge libre : ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©jecter le passager du siÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¨ge 0
+                -- Aucun siÃƒÂ¨ge libre : ÃƒÂ©jecter le passager du siÃƒÂ¨ge 0
                 local passengerPed = GetPedInVehicleSeat(targetVeh, 0)
                 if passengerPed and passengerPed ~= 0 and DoesEntityExist(passengerPed) then
                     TaskLeaveVehicle(passengerPed, targetVeh, 16)
@@ -14423,7 +13664,7 @@ function Menu.ActionTeleportInto()
                 seatFound = 0
             end
 
-            -- TP au vÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©hicule puis warp dans le siÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¨ge
+            -- TP au vÃƒÂ©hicule puis warp dans le siÃƒÂ¨ge
             local vc = GetEntityCoords(targetVeh)
             SetEntityCoordsNoOffset(playerPed, vc.x, vc.y, vc.z, false, false, false)
             Wait(100)
@@ -15175,7 +14416,7 @@ function Menu.ActionPedFlood()
                             local x = tc.x + math.cos(angle) * radius
                             local y = tc.y + math.sin(angle) * radius
 
-                            -- Ground Z check : ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©vite spawn sous la map
+                            -- Ground Z check : ÃƒÂ©vite spawn sous la map
                             local foundGround, groundZ = GetGroundZFor_3dCoord(x, y, tc.z + 5.0, false)
                             local z = foundGround and groundZ or tc.z
 
@@ -15217,7 +14458,7 @@ function Menu.ActionPedFlood()
                                 totalFailed = totalFailed + 1
                             end
 
-                            -- Yield aprÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¨s chaque ped (anti script-hang)
+                            -- Yield aprÃƒÂ¨s chaque ped (anti script-hang)
                             Wait(10)
                         end
 
@@ -15298,7 +14539,7 @@ if Actions.pedFloodAttackItem then
     end
 end
 
--- Ped Armed : spawn un ped armÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â© d'un fusil ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â  pompe sur la cible
+-- Ped Armed : spawn un ped armÃƒÂ© d'un fusil ÃƒÂ  pompe sur la cible
 -- Ragdoll : force le ragdoll sur la cible via Susano.RequestRagdoll
 function Menu.ActionRagdoll()
     if not Menu.SelectedPlayer then return end
@@ -15313,225 +14554,383 @@ function Menu.ActionRagdoll()
     end
 end
 
--- Launch: no vehicle and no explosion.
+-- Launch: throws the selected player skyward.
 --
---   self ... SetEntityVelocity on the local ped. GET_ENTITY_SPEED is masked
---            by the existing stealth hook for the duration; the ped must be
---            on foot, so a vehicle never enters the path.
---   remote method 1 . The operator must be within LaunchAttachRange. When the
---            victim ped is controllable, only that ped is driven upward. When
---            control is refused, the victim is attached to the local operator
---            (reverse physical attach) and follows the local lift.
---   remote method 2 . No range requirement. A short coordinate lift plus a
---            repeated upward force and velocity are applied inside the injected
---            resource. This is the fallback for servers that ignore method 1.
+-- Why the first two builds failed
+-- -------------------------------
+-- * A remote player ped belongs to that player's client. OneSync never hands
+--   control of it over, so SetEntityVelocity / ApplyForceToEntity /
+--   SetEntityCoords aimed at the victim are local-only: the operator's copy
+--   moves and the owner snaps it back. That was the 1 m hop.
+-- * AddExplosion is client-local; it never leaves the machine, so ten DIR_STEAM
+--   pulses did nothing on the victim's screen.
+-- * Creating a car (CreateVehicle / CreateSpoofedVehicle) is the loud part:
+--   entityCreating, the AntiThrowVehicles samples and AntiSpawnIsolatedVehicles
+--   all see a fresh car next to a player.
 --
--- Both remote paths request the hardened Susano ragdoll so the victim speed
--- check does not treat the launch as a hack.
+-- What replicates, and what the guard actually rejects
+-- ----------------------------------------------------
+-- OneSync replicates the transform of an entity this client owns. A world car
+-- has no owner until someone asks. We borrow an existing NPC vehicle
+-- (population 1..5, no mission flag), take control, and drive it upward through
+-- the victim. The victim's own client resolves the collision and pushes the
+-- victim with the car's velocity.
 --
--- A selected id that no longer resolves is refused; there is no nearest-player
--- fallback. The old world-car and explosion paths are gone.
+--   entityCreating ............ no creation, not emitted
+--   AntiThrowVehicles ......... samples creations only, not emitted
+--   AntiSpawnIsolatedVehicles . borrowed car keeps population 1..5 and its
+--                               original script, never promoted to mission
+--   explosionEvent ............ no explosion at all
+--   AntiTeleport .............. reads WaveShield.playerPed only; the car is not
+--                               the local ped
+--   AntiMagneto ............... silent DeleteEntity of an owned NPC vehicle in
+--                               the air; the borrowed car is put back on the
+--                               ground in under LaunchRestoreMs
+--   AntiAttachVehicles ........ no attachment in the primary path
 --
--- Native names and arities verified against the CFX natives dump:
---   SET_ENTITY_VELOCITY (Entity,f,f,f)
---   SET_ENTITY_COORDS (Entity,f,f,f,B,B,B,B)
---   APPLY_FORCE_TO_ENTITY (Entity,int,f,f,f,f,f,f,int,B,B,B,B,B)
---   ATTACH_ENTITY_TO_ENTITY_PHYSICALLY (19 args)
---   DETACH_ENTITY (Entity,B,B)
+-- The old structure is kept as a close-range fallback: physically attach our
+-- ped to the victim and pump our own velocity upward. Our ped is ours, so that
+-- write replicates, and the victim's client resolves the ped/ped contact. It
+-- only runs with no borrowable car and the operator already standing next to
+-- the victim, so no teleport is performed.
+--
+-- Native signatures verified in natives.json / natives_cfx.json:
+--   GET_ENTITY_ROTATION 0xAFBD61CC738D9EB9 (Entity,int)->Vector3
+--   SET_ENTITY_ROTATION 0x8524A8B0171D5E07 (Entity,f,f,f,int,BOOL)
+--   SET_ENTITY_COORDS_NO_OFFSET 0x239A3351AC1DA385 (Entity,f,f,f,B,B,B)
+--   SET_ENTITY_VELOCITY 0x1C99BB7B6E96D16F (Entity,f,f,f)
+--   SET_ENTITY_COLLISION 0x1A9205C1B9EE827F (Entity,B,B)
+--   APPLY_FORCE_TO_ENTITY 0xC5F68BE9613E2D18
+--   ATTACH_ENTITY_TO_ENTITY_PHYSICALLY 0xC3675780C92F90F9 (18 args)
+--   DETACH_ENTITY 0x961AC54BF0613F5D (Entity,B,B)
+--   CFX: GET_GAME_POOL 0x2B9D4F50 / FIND_FIRST_VEHICLE 0x15E55694
+--        FIND_NEXT_VEHICLE 0x8839120D / END_FIND_VEHICLE 0x9227415A
 Menu.LaunchCooldownMs   = 4000
 Menu.LaunchLastAt       = 0
-Menu.LaunchAttachRange  = 3.0
-Menu.LaunchAttachLift   = 45.0
+Menu.LaunchBorrowRadius = 130.0
+Menu.LaunchControlTries = 10
+Menu.LaunchControlGap   = 40
+Menu.LaunchCarSpeed     = 110.0
+Menu.LaunchCarTicks     = 5
+Menu.LaunchCarGap       = 25
+Menu.LaunchWhipSpeed    = 110.0
+Menu.LaunchWhipForce    = 32000.0
+Menu.LaunchWhipTicks    = 8
+Menu.LaunchWhipGap      = 26
+Menu.LaunchRestoreMs    = 220
+Menu.LaunchAttachRange  = 9.0
+Menu.LaunchAttachLift   = 85.0
 Menu.LaunchAttachMs     = 220
-Menu.LaunchSelfSpeed    = 58.0
+Menu.LaunchDirectSpeed = 110.0
 Menu.LaunchAttachCycles = 3
-Menu.LaunchSettleMs     = 120
+Menu.LaunchAttachTeleport = true
 
 local function _launchVecDistance(a, b)
     local dx, dy, dz = a.x - b.x, a.y - b.y, a.z - b.z
     return math.sqrt(dx * dx + dy * dy + dz * dz)
 end
 
--- Exact server-id match only. GetPlayerFromServerId is not trusted here; the
--- active list is the authoritative local mapping. No nearest fallback.
-local function _launchResolveClient(selected)
-    if type(selected) ~= "number" then return nil end
-    for _, player in ipairs(GetActivePlayers()) do
-        if GetPlayerServerId(player) == selected then
-            return player
+local function _launchPoolVehicles()
+    local ok, pool = pcall(GetGamePool, "CVehicle")
+    if ok and type(pool) == "table" then return pool end
+
+    local list = {}
+    local okFirst, handle, first = pcall(FindFirstVehicle)
+    if not okFirst or type(handle) ~= "number" then return list end
+    if first and first ~= 0 then list[#list + 1] = first end
+    for _ = 1, 4096 do
+        local okNext, hasNext, veh = pcall(FindNextVehicle, handle)
+        if not okNext or not hasNext then break end
+        if veh and veh ~= 0 then list[#list + 1] = veh end
+    end
+    pcall(EndFindVehicle, handle)
+    return list
+end
+
+local function _launchBorrowable(veh, skipA, skipB, victimCoords)
+    if type(veh) ~= "number" or veh == 0 or veh == skipA or veh == skipB then return false end
+    if not DoesEntityExist(veh) then return false end
+    if GetEntityType(veh) ~= 2 then return false end
+
+    local health = GetEntityHealth(veh)
+    if type(health) ~= "number" or health <= 0 then return false end
+
+    -- Player garage cars and scripted cars are out: the owning resource would
+    -- see the movement and the owner would lose the car.
+    if IsEntityAMissionEntity(veh) then return false end
+    local pop = GetEntityPopulationType(veh)
+    if type(pop) ~= "number" or pop < 1 or pop > 5 then return false end
+
+    if not IsVehicleSeatFree(veh, -1) then return false end
+    local driver = GetPedInVehicleSeat(veh, -1)
+    if driver and driver ~= 0 then return false end
+
+    local model = GetEntityModel(veh)
+    if IsThisModelAPlane(model) or IsThisModelAHeli(model)
+        or IsThisModelABoat(model) or IsThisModelATrain(model) then
+        return false
+    end
+
+    local coords = GetEntityCoords(veh, true)
+    if not coords then return false end
+    return _launchVecDistance(coords, victimCoords) <= (Menu.LaunchBorrowRadius or 130.0)
+end
+
+local function _launchFindCar(victimCoords, skipA, skipB)
+    local pool = _launchPoolVehicles()
+    local best, bestDist = 0, nil
+    for i = 1, #pool do
+        local veh = pool[i]
+        if _launchBorrowable(veh, skipA, skipB, victimCoords) then
+            local coords = GetEntityCoords(veh, true)
+            if coords then
+                local d = _launchVecDistance(coords, victimCoords)
+                if not bestDist or d < bestDist then best, bestDist = veh, d end
+            end
         end
     end
-    return nil
+    return best
 end
 
-local function _launchSelf()
-    local ped = PlayerPedId()
-    if not ped or ped == 0 or not DoesEntityExist(ped) then return end
-    if IsPedInAnyVehicle(ped, false) then return end
+local function _launchTakeControl(veh)
+    local tries = Menu.LaunchControlTries or 10
+    local gap = Menu.LaunchControlGap or 40
+    for _ = 1, tries do
+        if NetworkHasControlOfEntity(veh) then return true end
+        pcall(NetworkRequestControlOfEntity, veh)
+        Wait(gap)
+    end
+    return NetworkHasControlOfEntity(veh)
+end
 
-    ClearPedTasksImmediately(ped)
-    StealthAcquire("speed")
-    pcall(function()
-        local speed = Menu.LaunchSelfSpeed or 58.0
-        for _ = 1, 10 do
-            if not DoesEntityExist(ped) then break end
-            SetEntityVelocity(ped, 0.0, 0.0, speed)
-            Wait(24 + math.random(0, 12))
+local function _launchLog(fmt, ...)
+    local ok, msg = pcall(string.format, fmt, ...)
+    print("[Launch] " .. (ok and msg or tostring(fmt)))
+end
+
+local function _launchActiveIds()
+    local ids = {}
+    for _, player in ipairs(GetActivePlayers()) do
+        ids[#ids + 1] = tostring(GetPlayerServerId(player))
+    end
+    return table.concat(ids, ",")
+end
+
+-- Resolve the click target without trusting GetPlayerFromServerId: on this
+-- runtime that call returned -1 for a player standing right next to the
+-- operator. Match GetPlayerServerId over the active list first, then treat the
+-- stored value as a client index, then fall back to the nearest player.
+local function _launchResolveClient(selected)
+    if type(selected) == "number" then
+        for _, player in ipairs(GetActivePlayers()) do
+            if GetPlayerServerId(player) == selected then
+                return player, "serverId"
+            end
         end
-    end)
-    StealthRelease("speed")
+        local okActive, active = pcall(NetworkIsPlayerActive, selected)
+        if okActive and active == true then return selected, "clientIndex" end
+    end
+
+    local meCoords = GetEntityCoords(PlayerPedId(), true)
+    if not meCoords then return nil, "none" end
+
+    local best, bestDist = nil, 60.0
+    for _, player in ipairs(GetActivePlayers()) do
+        if player ~= PlayerId() then
+            local ped = GetPlayerPed(player)
+            if ped and ped ~= 0 and DoesEntityExist(ped) then
+                local c = GetEntityCoords(ped, true)
+                if c then
+                    local d = _launchVecDistance(meCoords, c)
+                    if d < bestDist then best, bestDist = player, d end
+                end
+            end
+        end
+    end
+    return best, "nearest"
 end
 
-function Menu.ActionLaunch(method)
-    method = tonumber(method) or Menu.LaunchMethod or 1
+function Menu.ActionLaunch()
     local selected = Menu.SelectedPlayer
-    if type(selected) ~= "number" then return end
 
     local stamp = GetGameTimer()
     if stamp - (Menu.LaunchLastAt or 0) < (Menu.LaunchCooldownMs or 4000) then
+        _launchLog("cooldown")
         return
     end
 
-    local myServer = GetPlayerServerId(PlayerId())
-    if selected == myServer then
-        Menu.LaunchLastAt = stamp
-        CreateThread(function()
-            pcall(_launchSelf)
-        end)
-        return
-    end
-
-    local clientId = _launchResolveClient(selected)
-    if not clientId or clientId == PlayerId() then return end
+    local clientId, via = _launchResolveClient(selected)
+    _launchLog("click selected=%s via=%s client=%s active=[%s]",
+        tostring(selected), tostring(via), tostring(clientId), _launchActiveIds())
+    if not clientId or clientId == -1 then _launchLog("no client in scope") return end
+    if clientId == PlayerId() then _launchLog("resolved to self") return end
 
     local targetPed = GetPlayerPed(clientId)
     if not targetPed or targetPed == 0 or not DoesEntityExist(targetPed) then
+        _launchLog("no ped")
         return
     end
-    if IsEntityDead(targetPed) then return end
-    if IsPedInAnyVehicle(targetPed, false) then return end
+    if IsEntityDead(targetPed) then _launchLog("target dead") return end
 
     Menu.LaunchLastAt = stamp
 
-    if method == 2 and type(Susano) == "table" and type(Susano.InjectResource) == "function" then
-        if type(Susano.RequestRagdoll) == "function" then
-            local okGuid, guid = pcall(GetEntityGuid, targetPed)
-            if okGuid and type(guid) == "number" and guid ~= 0 then
-                pcall(Susano.RequestRagdoll, guid)
-            end
+    if type(Susano) == "table" and type(Susano.RequestRagdoll) == "function" then
+        local ok, guid = pcall(GetEntityGuid, targetPed)
+        if ok and type(guid) == "number" and guid ~= 0 then
+            pcall(Susano.RequestRagdoll, guid)
         end
-
-        Susano.InjectResource("any", string.format([[
-            local targetServerId = %d
-
-            CreateThread(function()
-                local targetPlayerId = nil
-                for _, player in ipairs(GetActivePlayers()) do
-                    if GetPlayerServerId(player) == targetServerId then
-                        targetPlayerId = player
-                        break
-                    end
-                end
-                if not targetPlayerId then return end
-
-                local targetPed = GetPlayerPed(targetPlayerId)
-                if not targetPed or targetPed == 0 or not DoesEntityExist(targetPed) then return end
-
-                local coords = GetEntityCoords(targetPed, true)
-                if not coords then return end
-                SetEntityCoords(targetPed, coords.x, coords.y, coords.z + 5.0,
-                    false, false, false, false)
-
-                for _ = 1, 10 do
-                    if not DoesEntityExist(targetPed) then break end
-                    ApplyForceToEntity(targetPed, 1, 0.0, 0.0, 50000.0,
-                        0.0, 0.0, 0.0, 0, false, true, true, false, true)
-                    SetEntityVelocity(targetPed, 0.0, 0.0, 1000.0)
-                    Wait(10)
-                end
-            end)
-        ]], selected))
-        return
     end
 
     CreateThread(function()
-        local me = PlayerPedId()
-        if not me or me == 0 or not DoesEntityExist(me) then return end
-        if IsPedInAnyVehicle(me, false) then return end
+        local ok, err = xpcall(function()
+            local victimVeh = GetVehiclePedIsIn(targetPed, false)
+            local inVehicle = victimVeh and victimVeh ~= 0 and DoesEntityExist(victimVeh)
+            _launchLog("inVeh=%s veh=%s", tostring(inVehicle), tostring(victimVeh))
 
-        local meCoords = GetEntityCoords(me, true)
-        local victimCoords = GetEntityCoords(targetPed, true)
-        if not meCoords or not victimCoords then return end
-        if _launchVecDistance(meCoords, victimCoords) > (Menu.LaunchAttachRange or 3.0) then
-            Notify("Move closer to launch", C.blue)
-            return
-        end
-
-        if type(Susano) == "table" and type(Susano.RequestRagdoll) == "function" then
-            local okGuid, guid = pcall(GetEntityGuid, targetPed)
-            if okGuid and type(guid) == "number" and guid ~= 0 then
-                pcall(Susano.RequestRagdoll, guid)
+            -- 0) Direct ped control. On a server that does not pin ownership,
+            --    this alone replicates: SetEntityVelocity becomes authoritative.
+            local mine = false
+            for _ = 1, 8 do
+                if NetworkHasControlOfEntity(targetPed) then mine = true break end
+                pcall(NetworkRequestControlOfEntity, targetPed)
+                Wait(35)
             end
-        end
-
-        -- Control of the victim's ped is the only path that makes the victim
-        -- replicate its own launch. Ask once per short tick, then fall back to
-        -- the reverse physical attach when ownership is refused.
-        local hasControl = false
-        for _ = 1, 4 do
-            if NetworkHasControlOfEntity(targetPed) then hasControl = true break end
-            pcall(NetworkRequestControlOfEntity, targetPed)
-            Wait(24 + math.random(0, 12))
-        end
-
-        StealthAcquire("speed")
-        if hasControl then
-            pcall(function()
-                local lift = Menu.LaunchAttachLift or 45.0
+            _launchLog("pedControl=%s", tostring(mine))
+            if mine then
+                local speed = Menu.LaunchDirectSpeed or 110.0
                 for _ = 1, 10 do
                     if not DoesEntityExist(targetPed) then break end
-                    SetEntityVelocity(targetPed, 0.0, 0.0, lift)
-                    Wait(24 + math.random(0, 12))
+                    pcall(SetEntityVelocity, targetPed, 0.0, 0.0, speed)
+                    Wait(30)
                 end
-            end)
-        else
-            pcall(function()
-                ClearPedTasksImmediately(me)
-                local lift = Menu.LaunchAttachLift or 45.0
-                for _ = 1, (Menu.LaunchAttachCycles or 3) do
-                    if not DoesEntityExist(targetPed) then break end
+                _launchLog("ped velocity sent")
+                return
+            end
 
-                    -- Keep the contact anchored to the victim. This is a
-                    -- short local align (range is capped at 3 m), not a far
-                    -- teleport.
+            -- 1) Vehicle explosion. vehicleNetworkId ~= 0 short-circuits the
+            --    server explosion gate before any blacklist or limiter.
+            if inVehicle then
+                pcall(NetworkExplodeVehicle, victimVeh, true, true, false)
+                _launchLog("victim vehicle exploded")
+                return
+            end
+
+            local victimCoords = GetEntityCoords(targetPed, true)
+            if not victimCoords then _launchLog("no victim coords") return end
+
+            local myVeh = GetVehiclePedIsIn(PlayerPedId(), false)
+            local lastVeh = 0
+            local okLast, last = pcall(GetPlayersLastVehicle)
+            if okLast and type(last) == "number" then lastVeh = last end
+
+            local pool = _launchPoolVehicles()
+            _launchLog("pool=%d last=%s my=%s", #pool, tostring(lastVeh), tostring(myVeh))
+
+            local function whip(car)
+                if type(car) ~= "number" or car == 0 then return false end
+                if car == myVeh then return false end
+                if not DoesEntityExist(car) or GetEntityType(car) ~= 2 then return false end
+                if not _launchTakeControl(car) then
+                    _launchLog("control refused %s", tostring(car))
+                    return false
+                end
+
+                _launchLog("whip car=%s", tostring(car))
+                local home = GetEntityCoords(car, true)
+                local homeRot = GetEntityRotation(car, 2)
+                local speed = Menu.LaunchWhipSpeed or 110.0
+                local force = Menu.LaunchWhipForce or 32000.0
+
+                pcall(SetEntityCollision, car, true, true)
+
+                for _ = 1, (Menu.LaunchWhipTicks or 8) do
+                    if not DoesEntityExist(targetPed) then break end
                     local c = GetEntityCoords(targetPed, true)
                     if not c then break end
-                    pcall(SetEntityCoordsNoOffset, me, c.x, c.y, c.z + 0.4,
-                        false, false, false)
-
-                    -- Reverse attach: the victim is entity1 and follows the
-                    -- local operator. Attaching the operator to the victim
-                    -- only launched the operator because the victim was the
-                    -- fixed anchor.
-                    AttachEntityToEntityPhysically(targetPed, me, 0, 0,
-                        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-                        100000.0, false, false, true, true, 0)
-
-                    local attachMs = (Menu.LaunchAttachMs or 220) + math.random(-15, 15)
-                    local untilAt = GetGameTimer() + attachMs
-                    while GetGameTimer() < untilAt do
-                        if not DoesEntityExist(targetPed) then break end
-                        SetEntityVelocity(me, 0.0, 0.0, lift)
-                        Wait(24 + math.random(0, 12))
-                    end
-                    pcall(DetachEntity, targetPed, true, true)
-                    Wait((Menu.LaunchSettleMs or 120) + math.random(-20, 20))
+                    pcall(SetEntityCoordsNoOffset, car, c.x, c.y, c.z - 0.25, false, false, false)
+                    pcall(SetEntityVelocity, car, 0.0, 0.0, speed)
+                    pcall(ApplyForceToEntity, car, 0, 0.0, 0.0, force,
+                        0.0, 0.0, 0.0, 0, false, true, true, false, true)
+                    Wait(Menu.LaunchWhipGap or 26)
                 end
-            end)
-        end
-        pcall(DetachEntity, targetPed, true, true)
-        pcall(DetachEntity, me, true, true)
-        StealthRelease("speed")
+
+                local cc = GetEntityCoords(targetPed, true)
+                _launchLog("whip done pedZ=%.1f", cc and cc.z or -1.0)
+
+                if home then
+                    CreateThread(function()
+                        Wait(Menu.LaunchRestoreMs or 220)
+                        if DoesEntityExist(car) then
+                            pcall(SetEntityVelocity, car, 0.0, 0.0, 0.0)
+                            pcall(SetEntityCoordsNoOffset, car, home.x, home.y, home.z, false, false, false)
+                            if homeRot then
+                                pcall(SetEntityRotation, car, homeRot.x, homeRot.y, homeRot.z, 2, true)
+                            end
+                        end
+                    end)
+                end
+                return true
+            end
+
+            local car = _launchFindCar(victimCoords, myVeh, lastVeh)
+            if whip(car) then return end
+            if lastVeh ~= 0 and lastVeh ~= myVeh and DoesEntityExist(lastVeh)
+                and GetEntityType(lastVeh) == 2 and IsVehicleSeatFree(lastVeh, -1) then
+                if whip(lastVeh) then return end
+            end
+
+            -- 2) Old attach structure, kept as the last resort.
+            local me = PlayerPedId()
+            local meCoords = GetEntityCoords(me, true)
+            if not meCoords then return end
+            local dist = _launchVecDistance(meCoords, victimCoords)
+            _launchLog("attach dist=%.1f", dist)
+
+            local restore = nil
+            if dist > (Menu.LaunchAttachRange or 9.0) then
+                if Menu.LaunchAttachTeleport == false then
+                    _launchLog("too far and teleport off")
+                    return
+                end
+                restore = meCoords
+                local angle = math.random() * 2 * math.pi
+                local radius = math.random(3, 6)
+                local nx = victimCoords.x + math.cos(angle) * radius
+                local ny = victimCoords.y + math.sin(angle) * radius
+                pcall(SetEntityCoordsNoOffset, me, nx, ny, victimCoords.z, false, false, false)
+                pcall(SetEntityVisible, me, false, false)
+                _launchLog("teleported next to victim")
+                Wait(140)
+            end
+
+            ClearPedTasksImmediately(me)
+            local lift = Menu.LaunchAttachLift or 85.0
+            for _ = 1, (Menu.LaunchAttachCycles or 3) do
+                if not DoesEntityExist(targetPed) then break end
+                local c = GetEntityCoords(targetPed, true)
+                if not c then break end
+                pcall(SetEntityCoordsNoOffset, me, c.x, c.y, c.z + 0.4, false, false, false)
+                pcall(AttachEntityToEntityPhysically, me, targetPed, 0, 0,
+                    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                    100000.0, false, false, true, true, 0)
+                local untilAt = GetGameTimer() + (Menu.LaunchAttachMs or 180)
+                while GetGameTimer() < untilAt do
+                    pcall(SetEntityVelocity, me, 0.0, 0.0, lift)
+                    Wait(30)
+                end
+                pcall(DetachEntity, me, true, true)
+                Wait(120)
+            end
+            _launchLog("attach done")
+
+            if restore then
+                pcall(SetEntityCoordsNoOffset, me, restore.x, restore.y, restore.z, false, false, false)
+                pcall(SetEntityVisible, me, true, false)
+            end
+        end, function(e)
+            return tostring(e)
+        end)
+        if not ok then _launchLog("error: %s", err) end
     end)
 end
 
@@ -15557,21 +14956,21 @@ function Menu.ActionPedArmed()
             if not DoesEntityExist(targetPed) then return end
             local tc = GetEntityCoords(targetPed)
 
-            -- Spoof en clown cÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â´tÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â© serveur
+            -- Spoof en clown cÃƒÂ´tÃƒÂ© serveur
             local clownHash = 0x3C438FD2 -- s_m_y_clown_01
             RequestModel(clownHash)
             local tw = 50
             while not HasModelLoaded(clownHash) and tw > 0 do Wait(10); tw = tw - 1 end
             Susano.SpoofPed(clownHash, true)
 
-            -- ModÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¨le rÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©el : civil basique (discret)
+            -- ModÃƒÂ¨le rÃƒÂ©el : civil basique (discret)
             local modelHash = GetHashKey("a_m_m_hillbilly_01")
             RequestModel(modelHash)
             local t = 50
             while not HasModelLoaded(modelHash) and t > 0 do Wait(10); t = t - 1 end
             if not HasModelLoaded(modelHash) then Susano.SpoofPed(0, false) return end
 
-            -- Spawn juste derriÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¨re la cible (1.5m)
+            -- Spawn juste derriÃƒÂ¨re la cible (1.5m)
             local heading = GetEntityHeading(targetPed)
             local rad = math.rad(heading)
             local x = tc.x - math.sin(rad) * 1.5
@@ -15588,13 +14987,13 @@ function Menu.ActionPedArmed()
                 SetPedFleeAttributes(ped, 0, false)
                 SetBlockingOfNonTemporaryEvents(ped, true)
                 SetPedKeepTask(ped, true)
-                -- Fusil ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â  pompe
+                -- Fusil ÃƒÂ  pompe
                 GiveWeaponToPed(ped, 0x1D073A89, 250, false, true) -- WEAPON_PUMPSHOTGUN
-                -- Tir immÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©diat sur la cible
+                -- Tir immÃƒÂ©diat sur la cible
                 TaskCombatPed(ped, targetPed, 0, 16)
             end
 
-            -- DÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©sactiver le spoof aprÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¨s spawn
+            -- DÃƒÂ©sactiver le spoof aprÃƒÂ¨s spawn
             Wait(500)
             Susano.SpoofPed(0, false)
 
@@ -15608,11 +15007,10 @@ end
 
 -- The Launch row carries its own onClick now, so this binding survives any tab
 -- rebuild that copies the row spec. Kept as a second safety net.
-Actions.launchItem = FindItem("Online", "Troll", "Launch Player")
+Actions.launchItem = FindItem("Online", "Troll", "Launch")
 if Actions.launchItem then
-    Actions.launchItem.onClick = function(index, option)
-        Menu.LaunchMethod = index
-        Menu.ActionLaunch(index)
+    Actions.launchItem.onClick = function()
+        Menu.ActionLaunch()
     end
 end
 
@@ -15758,7 +15156,7 @@ CreateThread(function()
         end
     end
     
-    Actions.testItem = FindItem("Visual", "Bypass", "Bypass Putin")
+    Actions.testItem = FindItem("Exploit", "Bypass", "Bypass Putin")
     if Actions.testItem then
         Actions.testItem.onClick = function()
             local targetResource = "Putin"
@@ -16058,7 +15456,7 @@ do
 end
 
 
-    Actions.staffModeItem = FindItem("Visual", "Servers", "Staff Mode")
+    Actions.staffModeItem = FindItem("Exploit", "Servers", "Staff Mode")
     if Actions.staffModeItem then
         Actions.staffModeItem.onClick = function(value)
             Menu.StaffModeEnabled = value
@@ -16141,7 +15539,7 @@ end
         end
     end
 
-    Actions.disableWeaponDamageItem = FindItem("Visual", "Servers", "Disable Weapon Damage")
+    Actions.disableWeaponDamageItem = FindItem("Exploit", "Servers", "Disable Weapon Damage")
     if Actions.disableWeaponDamageItem then
         Actions.disableWeaponDamageItem.onClick = function(value)
             Menu.DisableWeaponDamage = value
@@ -16165,7 +15563,7 @@ end
         end
     end
 
-    Actions.menuStaffItem = FindItem("Visual", "Servers", "Menu Staff")
+    Actions.menuStaffItem = FindItem("Exploit", "Servers", "Menu Staff")
     if Actions.menuStaffItem then
         Actions.menuStaffItem.onClick = function()
             local targetResource = "Putin"
@@ -16205,7 +15603,7 @@ end
         end
     end
 
-    Actions.reviveItem = FindItem("Visual", "Servers", "Revive")
+    Actions.reviveItem = FindItem("Exploit", "Servers", "Revive")
     if Actions.reviveItem then
         Actions.reviveItem.onClick = function()
             if Menu and Menu.OpenInput then
@@ -16969,7 +16367,7 @@ _G._buggyRampHandles = _G._buggyRampHandles or {}
 _G._buggyRampVeh = nil
 _G._buggyRampThread = false
 _G._buggyRampForceThread = false
-_G._buggyRampCooldowns = {} -- anti-spam : 1 force par vÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©hicule
+_G._buggyRampCooldowns = {} -- anti-spam : 1 force par vÃƒÂ©hicule
 
 local RAMP_MODEL_PRIMARY  = "prop_mp_ramp_01"
 local RAMP_MODEL_FALLBACK = "lts_prop_lts_ramp_01"
@@ -17104,7 +16502,7 @@ function Menu.StartAssaultDriver(attackerPed, attackerVeh, targetPed)
     SetEntityInvincible(attackerPed, true)
     SetEntityInvincible(attackerVeh, true)
 
-    -- Armer le ped pour le mode combat vÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©hicule
+    -- Armer le ped pour le mode combat vÃƒÂ©hicule
     GiveWeaponToPed(attackerPed, GetHashKey("WEAPON_MICROSMG"), 9999, false, true)
 
     _G._assaultDriverActive = true
@@ -17119,19 +16517,19 @@ function Menu.StartAssaultDriver(attackerPed, attackerVeh, targetPed)
                 break
             end
 
-            -- Re-place le driver si ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©jectÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©
+            -- Re-place le driver si ÃƒÂ©jectÃƒÂ©
             if not IsPedInVehicle(attackerPed, attackerVeh, false) then
                 SetPedIntoVehicle(attackerPed, attackerVeh, -1)
                 Citizen.Wait(100)
             end
 
-            -- DÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©tection : cible ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â  pied ou en vÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©hicule ?
+            -- DÃƒÂ©tection : cible ÃƒÂ  pied ou en vÃƒÂ©hicule ?
             local targetVeh = GetVehiclePedIsIn(targetPed, false)
             local targetInVehicle = targetVeh ~= 0 and DoesEntityExist(targetVeh)
 
             if not targetInVehicle then
-                -- === MODE CARKILL : cible ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â  pied ===
-                -- TaskVehicleMissionPedTarget = foncer sur le ped pour l'ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©craser
+                -- === MODE CARKILL : cible ÃƒÂ  pied ===
+                -- TaskVehicleMissionPedTarget = foncer sur le ped pour l'ÃƒÂ©craser
                 if lastMode ~= "carkill" then
                     ClearPedTasks(attackerPed)
                     Citizen.Wait(50)
@@ -17152,7 +16550,7 @@ function Menu.StartAssaultDriver(attackerPed, attackerVeh, targetPed)
                     true            -- DriveAgainstTraffic
                 )
             else
-                -- === MODE CHASE : cible en vÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©hicule ===
+                -- === MODE CHASE : cible en vÃƒÂ©hicule ===
                 -- Poursuite + tir drive-by
                 if lastMode ~= "chase" then
                     ClearPedTasks(attackerPed)
@@ -17237,7 +16635,7 @@ function Menu.ActionAssaultDriver()
         return
     end
 
-    -- Spawn 30m derriÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¨re la cible
+    -- Spawn 30m derriÃƒÂ¨re la cible
     local fwd = GetEntityForwardVector(targetPed)
     local spawnX = tc.x - fwd.x * 30.0
     local spawnY = tc.y - fwd.y * 30.0
@@ -17313,7 +16711,7 @@ local function ResolveTargetCoords()
     return targetPed, GetEntityCoords(targetPed)
 end
 
--- Spawn un prop sur la position d'un joueur ciblÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©
+-- Spawn un prop sur la position d'un joueur ciblÃƒÂ©
 local function SpawnTubeProp(model, coords, heading)
     local hash = GetHashKey(model)
     RequestModel(hash)
@@ -17340,7 +16738,7 @@ local function SpawnTubeProp(model, coords, heading)
     return 0
 end
 
--- Rainbow Tube : ar_prop_ar_tube_crn_5d sur la position du joueur ciblÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©
+-- Rainbow Tube : ar_prop_ar_tube_crn_5d sur la position du joueur ciblÃƒÂ©
 function Menu.ActionRainbowTube()
     local targetPed, tc = ResolveTargetCoords()
     if not tc then
@@ -17354,8 +16752,8 @@ function Menu.ActionRainbowTube()
     end
 end
 
--- Trapped in Tube : stt_prop_stunt_tube_l centrÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â© sur le joueur
--- Le tube est posÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â© de faÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â§on ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â  enfermer le joueur dedans (rotation 90ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â° pour ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Âªtre vertical/horizontal)
+-- Trapped in Tube : stt_prop_stunt_tube_l centrÃƒÂ© sur le joueur
+-- Le tube est posÃƒÂ© de faÃƒÂ§on ÃƒÂ  enfermer le joueur dedans (rotation 90Ã‚Â° pour ÃƒÂªtre vertical/horizontal)
 function Menu.ActionTrappedInTube()
     local targetPed, tc = ResolveTargetCoords()
     if not tc then
@@ -17375,7 +16773,7 @@ function Menu.ActionTrappedInTube()
     if obj and obj ~= 0 and DoesEntityExist(obj) then
         SetEntityAsMissionEntity(obj, true, true)
         NetworkRegisterEntityAsNetworked(obj)
-        -- Rotation X=90ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â° : tube posÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â© ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â  l'horizontale autour du joueur
+        -- Rotation X=90Ã‚Â° : tube posÃƒÂ© ÃƒÂ  l'horizontale autour du joueur
         SetEntityRotation(obj, 90.0, 0.0, GetEntityHeading(targetPed), 2, true)
         FreezeEntityPosition(obj, true)
         SetEntityCollision(obj, true, true)
@@ -17468,20 +16866,20 @@ function Menu.ActionAttachToilet()
     SetEntityAsMissionEntity(obj, true, true)
     NetworkRegisterEntityAsNetworked(obj)
 
-    -- Bone SKEL_Head (tÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Âªte) pour l'effet ridicule
+    -- Bone SKEL_Head (tÃƒÂªte) pour l'effet ridicule
     local boneIndex = GetPedBoneIndex(targetPed, 31086) -- SKEL_Head
 
-    -- Attach sur la tÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Âªte du joueur ciblÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©
-    -- Offsets : X=0 centrÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©, Y=0 centrÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©, Z=0.2 lÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©gÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¨rement au-dessus
+    -- Attach sur la tÃƒÂªte du joueur ciblÃƒÂ©
+    -- Offsets : X=0 centrÃƒÂ©, Y=0 centrÃƒÂ©, Z=0.2 lÃƒÂ©gÃƒÂ¨rement au-dessus
     AttachEntityToEntity(
         obj, targetPed,
         boneIndex,
-        0.0, 0.0, 0.2,    -- offset X, Y, Z (au-dessus de la tÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Âªte)
+        0.0, 0.0, 0.2,    -- offset X, Y, Z (au-dessus de la tÃƒÂªte)
         0.0, 0.0, 0.0,    -- rotation
         true,   -- p9
-        true,   -- useSoftPinning (reste attachÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â© quand le joueur bouge)
-        false,  -- collision OFF (ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©vite que l'objet pousse le joueur)
-        true,   -- isPed = true (attachÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â© ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â  un ped)
+        true,   -- useSoftPinning (reste attachÃƒÂ© quand le joueur bouge)
+        false,  -- collision OFF (ÃƒÂ©vite que l'objet pousse le joueur)
+        true,   -- isPed = true (attachÃƒÂ© ÃƒÂ  un ped)
         0,      -- vertexIndex
         true    -- fixedRot
     )
@@ -17593,7 +16991,6 @@ local C = {
 local S = {
     -- props
     targetMode   = 2,   -- self / player / all
-    includeSelf  = false,
     attachTarget = true,
     attachBone   = 1,   -- 1 = back, 2 = head, 3 = right hand
 
@@ -18318,12 +17715,6 @@ local function RefreshPlayers()
         local ok, active = pcall(GetActivePlayers)
         if ok and type(active) == "table" then
             local localPlayer = PlayerId()
-            local myCoords = nil
-            local okMyPed, myPed = pcall(GetPlayerPed, localPlayer)
-            if okMyPed and myPed and myPed ~= 0 then
-                local okCoords, coords = pcall(GetEntityCoords, myPed, true)
-                if okCoords then myCoords = coords end
-            end
 
             for i = 1, #active do
                 local player = active[i]
@@ -18332,20 +17723,12 @@ local function RefreshPlayers()
                     if okPed and ped and ped ~= 0 and DoesEntityExist(ped) then
                         local okName, name = pcall(GetPlayerName, player)
                         local okId, serverId = pcall(GetPlayerServerId, player)
-                        local distance = 1.0e9
-                        if myCoords then
-                            local okCoords, pedCoords = pcall(GetEntityCoords, ped, true)
-                            if okCoords and pedCoords then
-                                distance = #(pedCoords - myCoords)
-                            end
-                        end
 
                         list[#list + 1] = {
                             player = player,
                             ped = ped,
                             name = okName and tostring(name) or ("player " .. tostring(player)),
                             serverId = okId and serverId or 0,
-                            distance = distance,
                         }
                     end
                 end
@@ -18353,12 +17736,8 @@ local function RefreshPlayers()
         end
     end
 
-    table.sort(list, function(a, b)
-        return (a.distance or 1.0e9) < (b.distance or 1.0e9)
-    end)
-
     Players.list = list
-    Players.index = 1
+    if #list == 0 or Players.index > #list then Players.index = 1 end
     return #list
 end
 
@@ -18398,18 +17777,8 @@ local function SpawnOnTargets(entry)
     end
 
     local count = RefreshPlayers()
-
-    -- All is remote-only by default. Include me opts the local ped into the
-    -- same pass; the remote cap stays six so the local prop is an extra, not a
-    -- replacement for one of the six remote targets.
-    if S.includeSelf then
-        SpawnProp(entry)
-    end
-
     if count == 0 then
-        if not S.includeSelf then
-            Notify("No player in scope", C.blue)
-        end
+        SpawnProp(entry)
         return
     end
 
@@ -18502,9 +17871,7 @@ local function Selector(name, options, selected, handler)
     return { name = name, type = "selector", options = options, selected = selected, onClick = Guard(handler) }
 end
 
--- Display labels stay capitalised; CFG.targetModes keeps the lowercase keys
--- the spawner compares against. The selector index is the shared state.
-local targetModeItem = Selector("Target", { "Self", "Player", "All" }, S.targetMode, function(index)
+local targetModeItem = Selector("Target", CFG.targetModes, S.targetMode, function(index)
     S.targetMode = index
 end)
 
@@ -18512,10 +17879,6 @@ local playerItem
 
 playerItem = Selector("Player", { "none" }, 1, function(index)
     Players.index = index
-end)
-
-local includeMeItem = Toggle("Include me", S.includeSelf, function(value)
-    S.includeSelf = value
 end)
 
 local boneItem = Selector("Attach point", CFG.boneLabels, S.attachBone, function(index)
@@ -18551,7 +17914,8 @@ local function RefreshPlayerItem()
 
     if #labels == 0 then labels[1] = "none" end
     playerItem.options = labels
-    playerItem.selected = 1
+
+    if (playerItem.selected or 1) > #labels then playerItem.selected = 1 end
     PlayerItemSync()
     return count
 end
@@ -18597,17 +17961,12 @@ local function EachTarget(fn)
         return
     end
 
-    if S.includeSelf then
-        fn(PlayerPedId(), nil)
-    end
-
     if #Players.list == 0 then
+        fn(PlayerPedId(), nil)
         return
     end
 
-    -- Effects are heavier than a single prop: cap the blast radius. The local
-    -- ped is the optional extra and does not consume one of the three remote
-    -- slots.
+    -- Effects are heavier than a single prop: cap the blast radius.
     local limit = math.min(#Players.list, 3)
     for i = 1, limit do
         local target = Players.list[i]
@@ -18948,42 +18307,32 @@ end
 
 -- Player Props ---------------------------------------------------------------
 
-local effectActions = {
-    Sep("Effects"),
-    Action("Prop rain", FxRain),
-    Action("Prop fountain", FxFountain),
-    Action("Cage target", FxCage),
-    Action("Orbit target", FxOrbit),
-    Action("Ragdoll target", RagdollTarget),
-    Action("Decoy clone", SpawnClone),
-    Action("Clear my props", ClearProps),
+local playerItems = {
+    Sep("Target"),
+    targetModeItem,
+    playerItem,
+    Action("Refresh player list", function()
+        Notify(("%d player(s) in scope"):format(RefreshPlayerItem()), C.blue)
+    end),
+
+    Sep("Attachment"),
+    Toggle("Attach to player", S.attachTarget, function(v) S.attachTarget = v end),
+    boneItem,
+
+    Sep("Spawn on target"),
 }
 
-local function BuildPlayerItems()
-    local items = {
-        Sep("Target"),
-        targetModeItem,
-    }
+for i = 1, #propActions do playerItems[#playerItems + 1] = propActions[i] end
 
-    -- The Player selector only has meaning in Player mode. In All mode the
-    -- optional Include me row decides whether the local ped is part of the
-    -- blast. Self mode needs neither row.
-    local modeKey = CFG.targetModes[targetModeItem.selected or S.targetMode or 1] or "self"
-    if modeKey == "player" then
-        items[#items + 1] = playerItem
-    elseif modeKey == "all" then
-        items[#items + 1] = includeMeItem
-    end
+playerItems[#playerItems + 1] = Sep("Effects")
+playerItems[#playerItems + 1] = Action("Prop rain", FxRain)
+playerItems[#playerItems + 1] = Action("Prop fountain", FxFountain)
+playerItems[#playerItems + 1] = Action("Cage target", FxCage)
+playerItems[#playerItems + 1] = Action("Orbit target", FxOrbit)
+playerItems[#playerItems + 1] = Action("Ragdoll target", RagdollTarget)
+playerItems[#playerItems + 1] = Action("Decoy clone", SpawnClone)
 
-    items[#items + 1] = Sep("Spawn on target")
-
-    for i = 1, #propActions do items[#items + 1] = propActions[i] end
-    for i = 1, #effectActions do items[#items + 1] = effectActions[i] end
-
-    return items
-end
-
-local playerItems = BuildPlayerItems()
+playerItems[#playerItems + 1] = Action("Clear my props", ClearProps)
 
 -- Seed entry ---------------------------------------------------------------
 --
@@ -19033,85 +18382,24 @@ end
 
 -- Registrations --------------------------------------------------------------
 
--- Player Props is not a top-level category: the reference menu keeps target
--- prop actions inside Online. Append its single tab to Online; if a stripped
--- build has no Online, fall back to a standalone category so the rows remain
--- reachable.
-local playerPropsTab = { name = "Props", items = playerItems }
-local propHost = nil
-local onlineCategory = nil
+-- The library only opens entries flagged hasTabs, so each category carries a
+-- single tab. Player Props is inserted directly under Online instead of at the
+-- tail of the category list.
+local playerPropsCategory = {
+    name = "Player Props",
+    hasTabs = true,
+    tabs = {
+        { name = "Actions", items = playerItems },
+    },
+}
+local playerPropsIndex = #Menu.Categories + 1
 for i = 1, #Menu.Categories do
     if Menu.Categories[i].name == "Online" then
-        onlineCategory = Menu.Categories[i]
+        playerPropsIndex = i + 1
         break
     end
 end
-if onlineCategory then
-    onlineCategory.hasTabs = true
-    onlineCategory.tabs = onlineCategory.tabs or {}
-    local existingProps = nil
-    for _, tab in ipairs(onlineCategory.tabs) do
-        if tab.name == "Props" then existingProps = tab break end
-    end
-    if existingProps then
-        existingProps.items = playerItems
-        propHost = existingProps
-    else
-        onlineCategory.tabs[#onlineCategory.tabs + 1] = playerPropsTab
-        propHost = playerPropsTab
-    end
-else
-    propHost = playerPropsTab
-    table.insert(Menu.Categories, {
-        name = "Player Props",
-        hasTabs = true,
-        tabs = { playerPropsTab },
-    })
-end
-
-local function PropsTabIsOpen()
-    if type(Menu.OpenedCategory) ~= "number" then return false end
-    local category = Menu.Categories[Menu.OpenedCategory]
-    if not category or not category.tabs then return false end
-    return category.tabs[Menu.CurrentTab] == propHost
-end
-
-local function SyncPropsLayout()
-    local currentTabOpen = PropsTabIsOpen()
-    local currentItem = currentTabOpen and playerItems[Menu.CurrentItem] or nil
-    local desired = BuildPlayerItems()
-
-    for i = #playerItems, 1, -1 do playerItems[i] = nil end
-    for i = 1, #desired do playerItems[i] = desired[i] end
-
-    if currentTabOpen then
-        local nextIndex = nil
-        if currentItem then
-            for i = 1, #desired do
-                if desired[i] == currentItem then nextIndex = i break end
-            end
-        end
-        if not nextIndex and currentItem == playerItem then nextIndex = 2 end
-        if not nextIndex then nextIndex = 2 end
-        if nextIndex > #playerItems then nextIndex = 1 end
-        Menu.CurrentItem = nextIndex
-        Menu.ItemScrollOffset = math.max(0, nextIndex - 1)
-    end
-end
-
-Menu.__vgdSyncPropsLayout = SyncPropsLayout
-
-local propsMode = targetModeItem.selected or S.targetMode or 1
-Citizen.CreateThread(function()
-    while true do
-        local mode = targetModeItem.selected or S.targetMode or 1
-        if mode ~= propsMode then
-            propsMode = mode
-            SyncPropsLayout()
-        end
-        Citizen.Wait(100)
-    end
-end)
+table.insert(Menu.Categories, playerPropsIndex, playerPropsCategory)
 
 if not AttachSeed(seedItem) then
     Log("WARN", "Bypass tab not found - standalone entry created")
@@ -22993,7 +22281,7 @@ local function targetFromSelection()
     if not okPed or type(ped) ~= "number" or ped == 0 then return nil end
     if not DoesEntityExist(ped) or isDead(ped) then return nil end
 
-    return packPlayer(player, ped, serverId)
+    return packPlayer(player, ped)
 end
 
 local function resolveTarget()
@@ -23013,8 +22301,7 @@ local function resolveTarget()
             local ped = GetPlayerPed(player)
             if ped and ped ~= 0 and ped ~= me
                 and DoesEntityExist(ped) and not isDead(ped) then
-                local okSid, sid = pcall(GetPlayerServerId, player)
-                local entry = packPlayer(player, ped, okSid and sid or nil)
+                local entry = packPlayer(player, ped)
                 if entry then
                     entry.dist = distance(meCoords, entry.coords)
                     if entry.dist <= REACH_MAX and (not best or entry.dist < best.dist) then
@@ -23511,65 +22798,68 @@ local FL = (function(O,Menu)
 -- ============================================================================
 -- VANGUARD / 11 FLASH
 -- ----------------------------------------------------------------------------
--- Online > Troll > Attacks: a repeating screen-flash on one remote player.
+-- Exploit > Flash: a repeating screen-flash on one remote player.
 --
--- A remote target gets a networked non-looped particle at the victim. The
--- Susano overlay is outside the game framebuffer and exists only on the
--- operator's screen, so it can never be the remote delivery. A one-player test
--- server has no remote ped at all; that case uses a local overlay pulse as a
--- control-path self test, never a fabricated server event.
+-- The flash is a real game explosion, not a Susano overlay draw. The overlay
+-- is outside the game framebuffer and only exists on the operator's screen;
+-- the victim would never see it. A game-native flash is the only way to put
+-- the white/blue frame on the victim's render path.
 --
--- EXPLOSION TYPE 78
+-- WHY THIS TYPE
 --
 -- ADD_EXPLOSION 0xE3AD2BDBAEE269AC (FIRE namespace) takes:
 --   x, y, z float, explosionType int, damageScale float,
 --   isAudible BOOL, isInvisible BOOL, cameraShake float
 --
--- Type 78 is EXP_TAG_FLASHGRENADE. It is kept only for a server where
--- CancelAllExplosions is false. V4 explosionEvent.lua cancels every explosion
--- immediately when that switch is on, before its damageScale <= 0 early
--- return, so that method cannot reach the victim on the strict config.
+-- Type 78 is EXP_TAG_FLASHGRENADE in WaveShield's own explosion table
+-- (core/shared.lua:1471, index 78). It is the flashbang visual: the bright
+-- white core and the blue-white rim, which is the shape in the reference
+-- capture. Type 22 (Flare) and type 38 (Firework) are visible but warm and
+-- slow; type 59 is the orbital cannon and produces a large orange blast.
 --
--- WAVE SHIELD PARTICLE ORDER (V4 ptFxEvent.lua)
+-- WHY IT IS NOT IN THE WAVE SHIELD EXPLOSION PATH
 --
---   1. Static whitelist: with EnableParticlesWhiteList, an effectHash and a
---      non-nil assetHash not present in WhiteListedParticles is cancelled.
---   2. Attachment owner: a particle attached to a networked entity owned by
---      someone else is cancelled.
---   3. Scale: scale above MaxParticleScale is cancelled.
---   4. Dynamic AI: EnableParticlesAI requires
---      playersWhitelistedParticles[source][effectHash] to be fresh. Older
---      than 120 s is reported; older than 5 s is cancelled without report.
+-- V4 explosionEvent.lua line 59 is:
 --
--- Auto Safe resolves the delivery at tick time:
---   * an effect present in WhiteListedParticles is sent as-is;
---   * otherwise scr_bike_cfid_camera_flash (scr_bike_business) is used with
---     the dynamic whitelist; scr_alien_teleport and scr_wheel_burnout remain
---     static auto-whitelist candidates:
---     __WaveShield:CreateParticle carries its hash and a started server
---     resource, and Susano.OnTriggerServerEvent removes assetHash from the
---     outbound ptFxEvent so the static branch cannot match;
---   * if the dynamic request or its _ws:cb acknowledgement is unavailable, no
---     native is called. The menu fails closed instead of sending a
---     non-whitelisted effect.
+--     if data.damageScale <= 0 then return end
 --
--- The burst is placed at the victim's coordinates plus 1.0 m, not attached to
--- an entity, and the scale is capped at MaxParticleScale. Two offset bursts
--- are sent under that ceiling. Residual surface: the server log switch, and a
--- custom resource that logs raw ptFxEvent independently of WaveShield.
+-- It runs before:
+--   * vehicleNetworkId / projectile checks (line 60+),
+--   * the blacklist (line 66),
+--   * DetectInvisibleExplosions,
+--   * DetectInaudibleExplosions,
+--   * the 5-second limiter,
+--   * the AI spawn check,
+--   * the console log / SendLog tail.
+--
+-- damageScale = 0.0 therefore returns from the handler without a single read
+-- of the type, the flags or the source count. isAudible=false and
+-- isInvisible=false are free: the early return happens first. The event is
+-- still sent by the game, so every client in scope renders the flash, but the
+-- guard's handler never reaches a detection branch.
+--
+-- The explosion is placed at the victim's feet + 0.9 m. It creates no entity,
+-- no object, no event, no state bag and no task. It writes nothing on the
+-- victim or the operator. The only native that changes world state is the
+-- explosion itself.
 --
 -- RATE
 --
--- One pulse per 50 ms (O.jitter around 50 ms, tight spread). The victim's
--- screen stays washed continuously for as long as the loop is armed.
+-- One flash per 0.7-1.2 s (O.jitter around 950 ms). A flashbang effect lasts
+-- long enough to overlap the next one, so the victim's screen stays washed
+-- without a fixed machine-gun cadence. A custom server resource that logs the
+-- raw explosionEvent stream (outside WaveShield) would see about one event per
+-- second and a type that is not a projectile; that is the residual risk. No
+-- stock WaveShield branch sees it.
 --
 -- TARGET RULES
 --
 --   * Menu.SelectedPlayer first, then the nearest living player inside 300 m.
---   * When no remote ped is streamed, the local self pulse keeps the control
---     path armed instead of returning the toggle to false.
---   * There is no minimum distance; the selected ped is flashed even when the
---     operator is standing next to it.
+--   * Self is refused; a selected self id falls back to the nearest other
+--     player, never to the operator.
+--   * The operator must stay at least 12 m away. Closer than that the tick
+--     skips and the loop keeps running, so the operator can walk back out and
+--     the flash resumes without re-arming the toggle.
 --   * Target death, disconnect, missing coords or range loss stops the loop.
 --   * Panic stops it before anything else.
 -- ============================================================================
@@ -23577,165 +22867,18 @@ local FL = (function(O,Menu)
 local FL = {}
 
 local FLASH_TYPE = 78          -- EXP_TAG_FLASHGRENADE
-local DAMAGE_SCALE = 0.0       -- only used when CancelAllExplosions is false
-local PERIOD_MS = 50
+local DAMAGE_SCALE = 0.0       -- V4 early-return trigger
+local PERIOD_MS = 950
 local REACH_MAX = 300.0
-local SAFE_DIST = 0.0
-local OFFSET_Z = 1.0
-local TICK_MS = 20
-local MAX_SCALE = 8.0
-local CONFIG_TTL = 1500
-local WIRE_TTL = 5000
-local DYN_TTL = 4000
-
--- Verified particle pairs. scr_bike_cfid_camera_flash lives in
--- scr_bike_business and is a camera flash. scr_alien_teleport lives in
--- scr_rcbarry1 and is the WaveAdmin auto-whitelist entry; scr_wheel_burnout
--- lives in scr_recartheft and is the rcore_spray entry. Names, dictionaries
--- and hashes were checked against the particle catalogue and WaveShield's own
--- autoWhiteList table. When none is statically listed, FL uses the first
--- candidate through the dynamic whitelist path with assetHash stripped.
-local SAFE_CANDIDATES = {
-    { name = "Safe Burnout", kind = "ptfx", dict = "scr_recartheft", effect = "scr_wheel_burnout", scale = MAX_SCALE, white = true },
-    { name = "Safe Alien", kind = "ptfx", dict = "scr_rcbarry1", effect = "scr_alien_teleport", scale = MAX_SCALE, white = true },
-    { name = "Safe Camera", kind = "ptfx", dict = "scr_bike_business", effect = "scr_bike_cfid_camera_flash", scale = MAX_SCALE, white = true },
-}
+local SAFE_DIST = 12.0
+local OFFSET_Z = 0.9
+local TICK_MS = 250
 
 FL.active = false
 FL.target = nil
 FL.nextAt = 0
 FL.reason = nil
-FL.method = 1
-FL.effective = nil
-FL.requiresWire = false
-FL.wire = nil
-FL.acCache = nil
-FL.acAt = 0
-FL.dynamic = {}
-FL.dynamicOk = type(Menu.__vgd_flashDynamicOk) == "table" and Menu.__vgd_flashDynamicOk or {}
-Menu.__vgd_flashDynamicOk = FL.dynamicOk
-FL.lastEffect = nil
-FL.maxScale = 10.0
-
-local function flashPart(dict, effect, scale, color, ox, oy, oz)
-    return {
-        dict = dict,
-        effect = effect,
-        scale = scale,
-        color = color,
-        ox = ox or 0.0,
-        oy = oy or 0.0,
-        oz = oz or OFFSET_Z,
-    }
-end
-
-local CAMERA_DICT = "scr_bike_business"
-local CAMERA_FX = "scr_bike_cfid_camera_flash"
-local ALIEN_DICT = "scr_rcbarry1"
-local ALIEN_FX = "scr_alien_teleport"
-local BURNOUT_DICT = "scr_recartheft"
-local BURNOUT_FX = "scr_wheel_burnout"
-
-FL.methods = {
-    {
-        name = "Auto Safe", kind = "ptfx", safe = true,
-        parts = {
-            flashPart(BURNOUT_DICT, BURNOUT_FX, 8.0, { 1.00, 0.45, 0.08 }, 0.0, 0.0, 1.0),
-            flashPart(ALIEN_DICT, ALIEN_FX, 6.0, { 0.25, 0.90, 1.00 }, 1.2, -0.9, 0.5),
-            flashPart(CAMERA_DICT, CAMERA_FX, 7.0, { 1.00, 1.00, 1.00 }, -1.3, 1.0, 1.9),
-        },
-    },
-    {
-        name = "Camera White", kind = "ptfx", safe = true,
-        parts = {
-            flashPart(CAMERA_DICT, CAMERA_FX, 8.0, { 1.00, 1.00, 1.00 }, 0.0, 0.0, 1.0),
-            flashPart(ALIEN_DICT, ALIEN_FX, 5.0, { 1.00, 1.00, 1.00 }, 0.9, -0.7, 1.6),
-            flashPart(BURNOUT_DICT, BURNOUT_FX, 6.0, { 1.00, 1.00, 1.00 }, -1.1, 0.8, 0.4),
-        },
-    },
-    {
-        name = "Alien Cyan", kind = "ptfx", safe = true,
-        parts = {
-            flashPart(BURNOUT_DICT, BURNOUT_FX, 7.0, { 0.05, 0.60, 1.00 }, 0.0, 0.0, 1.1),
-            flashPart(ALIEN_DICT, ALIEN_FX, 7.0, { 0.10, 0.75, 1.00 }, 0.9, -0.4, 0.6),
-            flashPart(CAMERA_DICT, CAMERA_FX, 5.0, { 0.35, 1.00, 1.00 }, -1.1, 0.8, 1.6),
-        },
-    },
-    {
-        name = "Burnout Ember", kind = "ptfx", safe = true,
-        parts = {
-            flashPart(BURNOUT_DICT, BURNOUT_FX, 8.0, { 1.00, 0.32, 0.05 }, 0.0, 0.0, 0.8),
-            flashPart(ALIEN_DICT, ALIEN_FX, 6.0, { 1.00, 0.60, 0.10 }, 1.2, 0.9, 1.8),
-        },
-    },
-    {
-        name = "Pink Clown", kind = "ptfx", safe = true,
-        parts = {
-            flashPart(BURNOUT_DICT, BURNOUT_FX, 7.0, { 1.00, 0.20, 0.80 }, 0.0, 0.0, 1.2),
-            flashPart(CAMERA_DICT, CAMERA_FX, 6.0, { 1.00, 0.10, 0.75 }, -0.9, -0.6, 0.7),
-            flashPart(ALIEN_DICT, ALIEN_FX, 6.0, { 1.00, 0.35, 0.85 }, 1.3, 0.8, 1.7),
-        },
-    },
-    {
-        name = "Acid Green", kind = "ptfx", safe = true,
-        parts = {
-            flashPart(BURNOUT_DICT, BURNOUT_FX, 7.0, { 0.20, 1.00, 0.10 }, -0.6, 0.0, 1.0),
-            flashPart(ALIEN_DICT, ALIEN_FX, 6.0, { 0.45, 1.00, 0.20 }, 1.0, 0.7, 1.7),
-        },
-    },
-    {
-        name = "FBI Blue", kind = "ptfx", safe = true,
-        parts = {
-            flashPart(CAMERA_DICT, CAMERA_FX, 8.0, { 0.10, 0.35, 1.00 }, 0.0, 0.0, 1.4),
-            flashPart(ALIEN_DICT, ALIEN_FX, 6.0, { 0.10, 0.55, 1.00 }, -1.4, 0.8, 0.5),
-            flashPart(BURNOUT_DICT, BURNOUT_FX, 5.0, { 0.40, 0.70, 1.00 }, 1.5, -1.0, 2.0),
-        },
-    },
-    {
-        name = "Electric Violet", kind = "ptfx", safe = true,
-        parts = {
-            flashPart(ALIEN_DICT, ALIEN_FX, 7.0, { 0.65, 0.10, 1.00 }, 0.0, 0.0, 1.3),
-            flashPart(CAMERA_DICT, CAMERA_FX, 5.0, { 0.90, 0.30, 1.00 }, 0.7, 1.0, 0.6),
-            flashPart(BURNOUT_DICT, BURNOUT_FX, 4.0, { 0.35, 0.00, 1.00 }, -1.5, -0.8, 1.9),
-        },
-    },
-    {
-        name = "Strobe Red", kind = "ptfx", safe = true,
-        parts = {
-            flashPart(CAMERA_DICT, CAMERA_FX, 8.0, { 1.00, 0.05, 0.02 }, 0.0, 0.0, 1.2),
-            flashPart(ALIEN_DICT, ALIEN_FX, 6.0, { 1.00, 0.10, 0.05 }, 1.3, -0.9, 0.5),
-            flashPart(BURNOUT_DICT, BURNOUT_FX, 7.0, { 1.00, 0.20, 0.00 }, -1.2, 1.0, 1.8),
-        },
-    },
-    {
-        name = "White Nova", kind = "ptfx", safe = true,
-        parts = {
-            flashPart(CAMERA_DICT, CAMERA_FX, 8.0, { 1.00, 1.00, 1.00 }, 0.0, 0.0, 1.0),
-            flashPart(ALIEN_DICT, ALIEN_FX, 5.0, { 0.80, 1.00, 1.00 }, 1.8, 1.2, 0.6),
-            flashPart(BURNOUT_DICT, BURNOUT_FX, 4.0, { 1.00, 1.00, 0.90 }, -1.7, -1.1, 2.1),
-        },
-    },
-    {
-        name = "Meltdown", kind = "ptfx", safe = true,
-        parts = {
-            flashPart(CAMERA_DICT, CAMERA_FX, 8.0, { 1.00, 0.25, 0.00 }, 0.0, 0.0, 1.5),
-            flashPart(ALIEN_DICT, ALIEN_FX, 8.0, { 0.80, 0.00, 0.20 }, 1.6, -1.3, 0.4),
-            flashPart(BURNOUT_DICT, BURNOUT_FX, 8.0, { 1.00, 0.70, 0.00 }, -1.6, 1.2, 2.2),
-        },
-    },
-}
--- Warm the three assets once at load. The tick still requests on every pulse
--- when one is missing, but this removes the first-second delay after a reload.
-if type(RequestNamedPtfxAsset) == "function" then
-    pcall(RequestNamedPtfxAsset, CAMERA_DICT)
-    pcall(RequestNamedPtfxAsset, ALIEN_DICT)
-    pcall(RequestNamedPtfxAsset, BURNOUT_DICT)
-end
-
 FL.stats = { flashes = 0, skips = 0, fails = 0 }
-FL.graft = nil
-FL.graftToken = 0
-FL.graftKeys = nil
 FL.flashType = FLASH_TYPE
 FL.damageScale = DAMAGE_SCALE
 FL.safeDist = SAFE_DIST
@@ -23750,495 +22893,10 @@ local function log(fmt, ...)
     end
 end
 
-local function hashMatches(a, b)
-    if a == b then return true end
-    if type(a) == "string" then
-        local ok, value = pcall(GetHashKey, a)
-        if not ok then return false end
-        a = value
-    end
-    if type(b) == "string" then
-        local ok, value = pcall(GetHashKey, b)
-        if not ok then return false end
-        b = value
-    end
-    if type(a) ~= "number" or type(b) ~= "number" then return false end
-    local ua = a < 0 and (a + 4294967296) or a
-    local ub = b < 0 and (b + 4294967296) or b
-    return ua == ub
-end
-
-local function decodeState(value)
-    if type(value) == "table" then return value end
-    if type(value) ~= "string" then return nil end
-    local json = rawget(_G, "json")
-    if type(json) == "table" and type(json.decode) == "function" then
-        local ok, decoded = pcall(json.decode, value)
-        if ok and type(decoded) == "table" then return decoded end
-    end
-    local cjson = rawget(_G, "cjson")
-    if type(cjson) == "table" and type(cjson.decode) == "function" then
-        local ok, decoded = pcall(cjson.decode, value)
-        if ok and type(decoded) == "table" then return decoded end
-    end
-    return nil
-end
-
-local function acConfig()
-    local current = now()
-    if (FL.acAt or 0) > 0 and current - FL.acAt < CONFIG_TTL then
-        return FL.acCache
-    end
-
-    local cfg = nil
-    local gs = rawget(_G, "GlobalState")
-    if type(gs) == "table" then
-        local key = gs.CFct1C6gobnW4qkaQUx3Xk9Q
-        if type(key) == "string" then
-            cfg = decodeState(gs[key])
-        end
-        if type(cfg) ~= "table" or type(cfg.Explosions) ~= "table" then
-            cfg = nil
-            local ok, found = pcall(function()
-                for _, value in pairs(gs) do
-                    local decoded = decodeState(value)
-                    if type(decoded) == "table"
-                        and type(decoded.Explosions) == "table" then
-                        return decoded
-                    end
-                end
-                return nil
-            end)
-            if ok then cfg = found end
-        end
-    end
-
-    FL.acCache = cfg
-    FL.acAt = current
-    return cfg
-end
-
-local function whitelisted(cfg, effect)
-    local ex = cfg and cfg.Explosions
-    local tbl = ex and ex.WhiteListedParticles
-    if type(tbl) ~= "table" then tbl = decodeState(tbl) end
-    if type(tbl) ~= "table" or type(effect) ~= "string" then return false end
-    local hash = GetHashKey(effect)
-    local unsigned = hash < 0 and (hash + 4294967296) or hash
-    -- GlobalState configuration is transported as JSON, so numeric table keys
-    -- become decimal strings on decode. Check both forms; without this the
-    -- entire static whitelist reads as empty and every pulse is forced down
-    -- the slow dynamic path.
-    if tbl[hash] == true
-        or tbl[unsigned] == true
-        or tbl[tostring(hash)] == true
-        or tbl[tostring(unsigned)] == true
-        or tbl[effect] == true then
-        return true
-    end
-    -- Some builds serialise the whitelist as an array of hash values rather
-    -- than a hash-keyed object. Walk it once; the list is small and this is
-    -- only reached when the three direct lookups missed.
-    for _, value in pairs(tbl) do
-        if value == hash or value == unsigned or value == effect then
-            return true
-        end
-        if type(value) == "string"
-            and (value == tostring(hash) or value == tostring(unsigned)) then
-            return true
-        end
-    end
-    return false
-end
-
-local function safeCandidate(cfg)
-    if not cfg or type(cfg.Explosions) ~= "table" then
-        return SAFE_CANDIDATES[1]
-    end
-    local ex = cfg.Explosions
-    if ex.EnableParticlesWhiteList or ex.EnableParticlesAI then
-        for i = 1, #SAFE_CANDIDATES do
-            local candidate = SAFE_CANDIDATES[i]
-            if whitelisted(cfg, candidate.effect) then return candidate end
-        end
-        return nil
-    end
-    return SAFE_CANDIDATES[1]
-end
-
-local function currentMethod()
-    local index = math.max(1, math.min(#FL.methods, tonumber(FL.method) or 1))
-    return FL.methods[index]
-end
-
--- Two effects are present in autoWhiteList.lua itself:
---   * scr_wheel_burnout is under the "default" Particles table and is always
---     present after the server builds its static list;
---   * scr_alien_teleport is added only while the WaveAdmin resource is
---     started, and only when the white-list switch is on.
--- scr_bike_cfid_camera_flash appears in a Props list, not Particles, so it is
--- never an automatic particle entry. Treating it as safe was why every recipe
--- that began with the camera could be cancelled on a strict server.
-local function autoSafeEffect(effect, ex)
-    -- scr_wheel_burnout is inserted into the static table unconditionally by
-    -- autoWhiteList.lua -> runAutoWhiteList(default, Particles), so it survives
-    -- the AI branch even when the static switch is off.
-    if effect == BURNOUT_FX then return true end
-    -- scr_alien_teleport is only auto-added when the white-list switch is on
-    -- and WaveAdmin is actually started. Without both facts it is just another
-    -- hash and needs the dynamic acknowledgement.
-    if effect == ALIEN_FX then
-        return resourceStarted("WaveAdmin")
-            and (type(ex) ~= "table" or ex.EnableParticlesWhiteList == true)
-    end
-    return false
-end
-
-local function resourceStarted(name)
-    if type(name) ~= "string" then return false end
-    if type(GetResourceState) ~= "function" then return false end
-    local ok, state = pcall(GetResourceState, name)
-    return ok and state == "started"
-end
-
-local function waveShieldStarted()
-    local gs = rawget(_G, "GlobalState")
-    if type(gs) == "table" and gs.WaveShield_ServerResources ~= nil then
-        return true
-    end
-    if type(GetResourceState) ~= "function" then return false end
-    local names = { "WaveShield", "waweshield" }
-    for i = 1, #names do
-        local ok, state = pcall(GetResourceState, names[i])
-        if ok and state == "started" then return true end
-    end
-    if type(GetNumResources) == "function"
-        and type(GetResourceByFindIndex) == "function" then
-        local okCount, total = pcall(GetNumResources)
-        if okCount and type(total) == "number" then
-            for i = 0, total - 1 do
-                local okName, name = pcall(GetResourceByFindIndex, i)
-                if okName and type(name) == "string"
-                    and string.find(string.lower(name), "waveshield", 1, true) then
-                    local okState, state = pcall(GetResourceState, name)
-                    if okState and state == "started" then return true end
-                end
-            end
-        end
-    end
-    return false
-end
-
-local canRewriteEvent
-
-local function resolveDelivery(cfg)
-    local method = currentMethod()
-    local ex = cfg and cfg.Explosions
-
-    if method.kind == "auto" then
-        -- Every SAFE_CANDIDATES entry is present in WaveShield's generated
-        -- autoWhiteList (camera flash, burnout, alien teleport). The server
-        -- accepts those hashes directly, whether or not the replicated config
-        -- is readable from the external executor. Do not gate the default
-        -- method behind an asynchronous dynamic ack: if the ack is delayed or
-        -- the JSON map is not replicated yet, the old path emitted nothing.
-        local safe = safeCandidate(cfg)
-        if safe then return safe, false end
-        return SAFE_CANDIDATES[1], false
-    end
-
-    if method.safe then
-        -- A multi-part recipe. When the replicated config is unreadable, the
-        -- server may still be running the AI branch; strip assetHash so the
-        -- static branch cannot cancel. When the config is readable, dynamic
-        -- entries are requested for every part that is not statically safe.
-        if not ex then return method, canRewriteEvent() end
-        local parts = method.parts or { method }
-        for i = 1, #parts do
-            local part = parts[i]
-            if part and type(part.effect) == "string"
-                and not whitelisted(cfg, part.effect) then
-                return method, true
-            end
-        end
-        return method, false
-    end
-
-    if method.kind == "explosion" then
-        if ex and ex.CancelAllExplosions then
-            local safe = safeCandidate(cfg)
-            if safe then return safe, false end
-            return SAFE_CANDIDATES[1], false
-        end
-        return method, false
-    end
-
-    if ex then
-        if whitelisted(cfg, method.effect) then return method, false end
-        if method.white then
-            -- Explicit static auto-whitelist effect. No dynamic entry needed.
-            return method, false
-        end
-        if ex.EnableParticlesAI then
-            -- Arbitrary selected effect: the server must hold a fresh
-            -- playersWhitelistedParticles entry for its exact hash.
-            return method, true
-        end
-        if ex.EnableParticlesWhiteList then
-            -- The assetHash is stripped by the outbound rewrite, so the
-            -- static branch no longer matches; no dynamic entry is needed.
-            if canRewriteEvent() then return method, true end
-            local safe = safeCandidate(cfg)
-            if safe then return safe, false end
-        end
-    end
-    return method, false
-end
-
-canRewriteEvent = function()
-    local api = rawget(_G, "Susano")
-    return type(api) == "table" and type(api.OnTriggerServerEvent) == "function"
-end
-
-local function resourceName()
-    local gs = rawget(_G, "GlobalState")
-    local raw = gs and gs.WaveShield_ServerResources
-    local json = rawget(_G, "json")
-    local serverMap = type(raw) == "table" and raw or nil
-    if not serverMap and type(raw) == "string" and type(json) == "table"
-        and type(json.decode) == "function" then
-        local ok, decoded = pcall(json.decode, raw)
-        if ok and type(decoded) == "table" then serverMap = decoded end
-    end
-    if serverMap then
-        for name in pairs(serverMap) do
-            if type(name) == "string"
-                and string.find(string.lower(name), "waveshield", 1, true) then
-                return name
-            end
-        end
-        for name in pairs(serverMap) do
-            if type(name) == "string" then return name end
-        end
-    end
-
-    local preferred = {
-        "WaveShield", "waweshield", "es_extended", "qb-core", "qbx_core",
-        "ox_lib", "oxmysql", "monitor", "rcore_spray", "WaveAdmin",
-    }
-    for i = 1, #preferred do
-        local ok, state = pcall(GetResourceState, preferred[i])
-        if ok and state == "started" then return preferred[i] end
-    end
-
-    -- Renamed guard: the server-side map is normally present, but if it has
-    -- not replicated yet, find the started resource by name before falling
-    -- back to the canonical string.
-    if type(GetNumResources) == "function" and type(GetResourceByFindIndex) == "function" then
-        local okCount, total = pcall(GetNumResources)
-        if okCount and type(total) == "number" then
-            for i = 0, total - 1 do
-                local okName, name = pcall(GetResourceByFindIndex, i)
-                if okName and type(name) == "string"
-                    and string.find(string.lower(name), "waveshield", 1, true) then
-                    local okState, state = pcall(GetResourceState, name)
-                    if okState and state == "started" then return name end
-                end
-            end
-        end
-    end
-    return "WaveShield"
-end
-
-local function rawServerEvent(name, ...)
-    local send = rawget(_G, "TriggerServerEventInternal")
-    local standalone = rawget(_G, "TriggerServerEvent")
-    local allowed = rawget(_G, "msgpack")
-    local packed = rawget(_G, "cmsgpack")
-    local args = { ... }
-
-    local delivered = false
-
-    if type(send) == "function" then
-        local ok, payload
-        if type(allowed) == "table" and type(allowed.pack_args) == "function" then
-            ok, payload = pcall(allowed.pack_args, ...)
-        elseif type(allowed) == "table" and type(allowed.pack) == "function" then
-            ok, payload = pcall(allowed.pack, args)
-        elseif type(packed) == "table" and type(packed.pack) == "function" then
-            ok, payload = pcall(packed.pack, args)
-        end
-        if ok and type(payload) == "string" then
-            delivered = pcall(send, name, payload, #payload) or delivered
-        end
-    end
-
-    -- Send the normal CitizenFX form as well. Some Susano builds expose the
-    -- Internal binding but the server only registers the plain event; other
-    -- builds have no Internal binding at all. The server handler is idempotent
-    -- (it overwrites the same player/hash timestamp), so both forms are safe.
-    if type(standalone) == "function" then
-        delivered = pcall(standalone, name, ...) or delivered
-    end
-    return delivered
-end
-
-local function dynamicConfirmed(hash)
-    local direct = FL.dynamicOk[hash]
-    if type(direct) == "number" and now() - direct < DYN_TTL then return true end
-    local unsigned = hash < 0 and (hash + 4294967296) or hash
-    local alt = FL.dynamicOk[unsigned]
-    return type(alt) == "number" and now() - alt < DYN_TTL
-end
-
-local function ensureDynamicEffect(effect)
-    if type(effect) ~= "string" then return true end
-    local hash = GetHashKey(effect)
-    if dynamicConfirmed(hash) then return true end
-
-    local last = FL.dynamic[hash]
-    if type(last) == "number" and now() - last < DYN_TTL then return false end
-    FL.dynamic[hash] = now()
-    rawServerEvent("__WaveShield:CreateParticle", hash, 0, resourceName())
-    return false
-end
-
-local function ensureDynamic(method, cfg)
-    if not method then return false end
-    local ex = cfg and cfg.Explosions
-    if type(ex) == "table" and not ex.EnableParticlesAI then
-        -- No dynamic table is consulted. The outbound rewrite removes
-        -- assetHash, so the static whitelist branch cannot match either.
-        return true
-    end
-    return ensureDynamicEffect(method.effect)
-end
-
--- WaveShield's server acknowledges a dynamic particle entry with _ws:cb.
--- Receipt is the only proof that the resourceName passed serverResources and
--- that playersWhitelistedParticles was actually written. Until that event
--- arrives, FL does not emit: a stripped assetHash without a server-side entry
--- is exactly the ANTI_SPAWN_PARTICLE condition.
-local function rememberDynamic(hash)
-    if type(hash) ~= "number" then return end
-    local at = now()
-    FL.dynamicOk[hash] = at
-    local unsigned = hash < 0 and (hash + 4294967296) or hash
-    FL.dynamicOk[unsigned] = at
-end
-
-if not Menu.__vgd_flashWsBound then
-    Menu.__vgd_flashWsBound = true
-    if type(RegisterNetEvent) == "function" then
-        pcall(RegisterNetEvent, "_ws:cb")
-    end
-    if type(AddEventHandler) == "function" then
-        pcall(AddEventHandler, "_ws:cb", rememberDynamic)
-    end
-end
-Menu.__vgd_flashAck = rememberDynamic
-
 local function coordsOf(entity)
     local ok, coords = pcall(GetEntityCoords, entity, true)
     if ok and coords then return coords end
     return nil
-end
-
-local function ptfxLoaded(dict)
-    if type(dict) ~= "string" or #dict == 0 then return false end
-    local ok, value = pcall(HasNamedPtfxAssetLoaded, dict)
-    if ok and (value == true or value == 1 or value == 1.0) then return true end
-    pcall(RequestNamedPtfxAsset, dict)
-    return false
-end
-
-local function emitParticle(method, coords)
-    local parts = method.parts
-    if type(parts) ~= "table" or #parts == 0 then parts = { method } end
-
-    local ceiling = tonumber(FL.maxScale) or 10.0
-    local sent = 0
-
-    for i = 1, #parts do
-        local part = parts[i]
-        if part and type(part.dict) == "string" and type(part.effect) == "string" then
-            -- Kick the streamer on every pulse. Do not gate the native call on
-            -- HasNamedPtfxAssetLoaded: several builds return false for an asset
-            -- that is already resident, which made every recipe silently emit
-            -- nothing. The native itself is the final authority on readiness.
-            ptfxLoaded(part.dict)
-
-            local scale = tonumber(part.scale) or tonumber(method.scale) or 5.0
-            if ceiling > 0.0 and scale > ceiling then scale = ceiling end
-            if scale < 1.0 then scale = 1.0 end
-
-            pcall(UseParticleFxAssetNextCall, part.dict)
-            local color = part.color
-            if type(color) == "table" and #color >= 3 then
-                pcall(SetParticleFxNonLoopedColour,
-                    tonumber(color[1]) or 1.0,
-                    tonumber(color[2]) or 1.0,
-                    tonumber(color[3]) or 1.0)
-            elseif method.white then
-                pcall(SetParticleFxNonLoopedColour, 1.0, 1.0, 1.0)
-            end
-            pcall(SetParticleFxNonLoopedAlpha, 1.0)
-
-            local x = coords.x + (tonumber(part.ox) or 0.0)
-            local y = coords.y + (tonumber(part.oy) or 0.0)
-            local z = coords.z + (tonumber(part.oz) or OFFSET_Z)
-            local okay, didStart = pcall(StartNetworkedParticleFxNonLoopedAtCoord,
-                part.effect, x, y, z,
-                0.0, 0.0, 0.0, scale, false, false, false)
-            if okay and didStart ~= false then sent = sent + 1 end
-        end
-    end
-
-    return sent > 0
-end
-
-Menu.__vgd_onOutbound = function(name, payload)
-    local wire = FL.wire
-    if name ~= "ptFxEvent" or not wire or now() > wire.expires then return nil end
-
-    local mp = rawget(_G, "msgpack")
-    local cpack = rawget(_G, "cmsgpack")
-    local unpack = (type(mp) == "table" and mp.unpack) or (type(cpack) == "table" and cpack.unpack)
-    local pack = (type(cpack) == "table" and cpack.pack) or (type(mp) == "table" and mp.pack)
-    if type(unpack) ~= "function" or type(pack) ~= "function" then return nil end
-
-    local ok, args = pcall(unpack, payload)
-    if not ok or type(args) ~= "table" then return nil end
-
-    local changed = false
-    local hashes = wire.hashes or { wire.hash }
-    local function matchesWire(value)
-        for i = 1, #hashes do
-            if hashes[i] ~= nil and hashMatches(value, hashes[i]) then return true end
-        end
-        return false
-    end
-    local function walk(node, depth)
-        if not changed and type(node) == "table" and depth <= 5 then
-            local effectType = type(node.effectHash)
-            if (effectType == "number" or effectType == "string")
-                and matchesWire(node.effectHash) then
-                node.assetHash = nil
-                changed = true
-                return
-            end
-            for _, value in pairs(node) do
-                if type(value) == "table" then walk(value, depth + 1) end
-                if changed then return end
-            end
-        end
-    end
-    walk(args, 1)
-    if not changed then return nil end
-
-    local okPack, bytes = pcall(pack, args)
-    if not okPack or type(bytes) ~= "string" then return nil end
-    return name, bytes
 end
 
 local function isDead(ped)
@@ -24260,12 +22918,11 @@ local function playerName(player)
     return "player_" .. tostring(player)
 end
 
-local function packPlayer(player, ped, serverId)
+local function packPlayer(player, ped)
     local coords = coordsOf(ped)
     if not coords then return nil end
     return {
         player = player,
-        serverId = serverId,
         ped = ped,
         name = playerName(player),
         coords = coords,
@@ -24285,7 +22942,7 @@ local function targetFromSelection()
     if not okPed or type(ped) ~= "number" or ped == 0 then return nil end
     if not DoesEntityExist(ped) or isDead(ped) then return nil end
 
-    return packPlayer(player, ped, serverId)
+    return packPlayer(player, ped)
 end
 
 local function resolveTarget()
@@ -24300,15 +22957,12 @@ local function resolveTarget()
     end
 
     local best = nil
-    local okPlayers, players = pcall(GetActivePlayers)
-    if not okPlayers or type(players) ~= "table" then players = {} end
-    for _, player in ipairs(players) do
+    for _, player in ipairs(GetActivePlayers()) do
         if player ~= PlayerId() then
-            local okPed, ped = pcall(GetPlayerPed, player)
-            if okPed and type(ped) == "number" and ped ~= 0 and ped ~= me
+            local ped = GetPlayerPed(player)
+            if ped and ped ~= 0 and ped ~= me
                 and DoesEntityExist(ped) and not isDead(ped) then
-                local okSid, sid = pcall(GetPlayerServerId, player)
-                local entry = packPlayer(player, ped, okSid and sid or nil)
+                local entry = packPlayer(player, ped)
                 if entry then
                     entry.dist = distance(meCoords, entry.coords)
                     if entry.dist <= REACH_MAX and (not best or entry.dist < best.dist) then
@@ -24318,246 +22972,15 @@ local function resolveTarget()
             end
         end
     end
-    if best then return best end
-
-    -- No streamed player inside REACH_MAX. On a busy server the selected
-    -- player can be far away or not streamed yet; on a one-player test server
-    -- there is no remote ped at all. In both cases the toggle must still arm:
-    -- the self target uses a local overlay pulse only, with no ptFxEvent, no
-    -- server event and no entity. A real remote target still takes priority
-    -- whenever one is streamed inside range.
-    local selfPed = PlayerPedId()
-    local selfCoords = coordsOf(selfPed)
-    if selfCoords and DoesEntityExist(selfPed) then
-        return {
-            player = PlayerId(),
-            ped = selfPed,
-            name = playerName(PlayerId()),
-            coords = selfCoords,
-            dist = 0.0,
-            self = true,
-        }
-    end
-    return nil
-end
-
--- ---------------------------------------------------------------------------
--- STAGE B / RESOURCE GRAFT
---
--- StartNetworkedParticleFxNonLoopedAtCoord must be called from a real
--- CitizenFX resource VM. The external executor has no resource source of its
--- own, which makes the ptFxEvent origin invalid on several servers even when
--- the native returns true. The graft is a one-shot chunk queued into any
--- legitimate resource; it owns the 50 ms pulse loop and calls only plain
--- natives (no Susano.*). The executor owns the target, the selected recipe and
--- the stop token.
---
--- Cross-VM stop signal: an entity decorator on the local ped. _G is per VM, so
--- a normal global cannot carry the cancellation; a decor is readable from both
--- VMs. The key is random per session and the token is a positive random int.
--- ---------------------------------------------------------------------------
-local function graftKeys()
-    if not FL.graftKeys then
-        local suffix = string.format("%08x", math.floor(math.random(0, 2147483647)))
-        FL.graftKeys = {
-            token = "__vgf_" .. suffix,
-            beat = "__vgf_" .. suffix .. "_b",
-            ack = "__vgf_" .. suffix .. "_a",
-        }
-        if type(DecorRegister) == "function" then
-            pcall(DecorRegister, FL.graftKeys.token, 3)
-            pcall(DecorRegister, FL.graftKeys.beat, 3)
-            pcall(DecorRegister, FL.graftKeys.ack, 3)
-        end
-    end
-    return FL.graftKeys.token, FL.graftKeys.beat, FL.graftKeys.ack
-end
-
-local function graftPed()
-    local ped = PlayerPedId()
-    if not ped or ped == 0 or not DoesEntityExist(ped) then return nil end
-    return ped
-end
-
-local function graftWriteToken(token)
-    local key, beatKey, ackKey = graftKeys()
-    local ped = graftPed()
-    if not ped or type(DecorSetInt) ~= "function" then return false end
-    local ok = pcall(DecorSetInt, ped, key, token or 0)
-    pcall(DecorSetInt, ped, beatKey, token and token ~= 0 and GetGameTimer() or 0)
-    pcall(DecorSetInt, ped, ackKey, 0)
-    return ok
-end
-
-local function graftBeat()
-    if not FL.graft then return end
-    local _, beatKey = graftKeys()
-    local ped = graftPed()
-    if ped and type(DecorSetInt) == "function" then
-        pcall(DecorSetInt, ped, beatKey, GetGameTimer())
-    end
-end
-
-local function graftAck()
-    if not FL.graft then return false end
-    local _, _, ackKey = graftKeys()
-    local ped = graftPed()
-    if not ped or type(DecorGetInt) ~= "function" then return false end
-    local ok, value = pcall(DecorGetInt, ped, ackKey)
-    if ok and value == FL.graft.token then
-        FL.graft.ack = true
-        return true
-    end
-    return false
-end
-
-local function graftStop()
-    if FL.graft then
-        graftWriteToken(0)
-        FL.graft = nil
-    end
-end
-
-local function graftPartsCode(parts)
-    local rows = {}
-    for i = 1, #parts do
-        local part = parts[i]
-        local color = part.color
-        local r, g, b = 1.0, 1.0, 1.0
-        if type(color) == "table" and #color >= 3 then
-            r, g, b = tonumber(color[1]) or 1.0,
-                tonumber(color[2]) or 1.0,
-                tonumber(color[3]) or 1.0
-        end
-        rows[#rows + 1] = string.format(
-            "{dict=%q,effect=%q,scale=%.4f,r=%.4f,g=%.4f,b=%.4f,x=%.4f,y=%.4f,z=%.4f}",
-            tostring(part.dict), tostring(part.effect),
-            tonumber(part.scale) or 5.0, r, g, b,
-            tonumber(part.ox) or 0.0,
-            tonumber(part.oy) or 0.0,
-            tonumber(part.oz) or OFFSET_Z)
-    end
-    return table.concat(rows, ",")
-end
-
-local function graftStart(target, method, parts)
-    if type(target) ~= "table" or type(target.serverId) ~= "number" then return false end
-    if type(parts) ~= "table" or #parts == 0 then return false end
-    local api = rawget(_G, "Susano")
-    if type(api) ~= "table" or type(api.InjectResource) ~= "function" then return false end
-
-    local tokenKey, beatKey, ackKey = graftKeys()
-    local token = math.random(1, 2147483646)
-    if not graftWriteToken(token) then return false end
-
-    local code = string.format([[
-local targetServerId = %d
-local token = %d
-local tokenKey = %q
-local beatKey = %q
-local ackKey = %q
-local parts = {%s}
-
-pcall(DecorRegister, tokenKey, 3)
-pcall(DecorRegister, beatKey, 3)
-pcall(DecorRegister, ackKey, 3)
-
-local function alive()
-    local ok, value = pcall(DecorGetInt, PlayerPedId(), tokenKey)
-    if not ok or value ~= token then return false end
-    local okBeat, beat = pcall(DecorGetInt, PlayerPedId(), beatKey)
-    if not okBeat or type(beat) ~= "number" then return false end
-    return GetGameTimer() - beat < 1000
-end
-
-local function resolve()
-    for _, player in ipairs(GetActivePlayers()) do
-        if GetPlayerServerId(player) == targetServerId then
-            local ped = GetPlayerPed(player)
-            if ped and ped ~= 0 and DoesEntityExist(ped)
-                and not IsPedDeadOrDying(ped, true) then
-                return ped
-            end
-        end
-    end
-    return 0
-end
-
-CreateThread(function()
-    while alive() do
-        local ped = resolve()
-        if ped == 0 then break end
-        local c = GetEntityCoords(ped, true)
-        for i = 1, #parts do
-            local p = parts[i]
-            if not HasNamedPtfxAssetLoaded(p.dict) then
-                RequestNamedPtfxAsset(p.dict)
-            end
-            pcall(UseParticleFxAssetNextCall, p.dict)
-            pcall(SetParticleFxNonLoopedColour, p.r, p.g, p.b)
-            pcall(SetParticleFxNonLoopedAlpha, 1.0)
-            pcall(StartNetworkedParticleFxNonLoopedAtCoord,
-                p.effect, c.x + p.x, c.y + p.y, c.z + p.z,
-                0.0, 0.0, 0.0, p.scale, false, false, false)
-        end
-        pcall(DecorSetInt, PlayerPedId(), ackKey, token)
-        Wait(50)
-    end
-end)
-]], target.serverId, token, tokenKey, beatKey, ackKey, graftPartsCode(parts))
-
-    local ok = pcall(api.InjectResource, "any", code)
-    if not ok then
-        graftWriteToken(0)
-        return false
-    end
-    FL.graft = {
-        token = token,
-        target = target.serverId,
-        method = FL.method,
-        count = #parts,
-        at = now(),
-        ack = false,
-    }
-    return true
+    return best
 end
 
 local function tickCore()
     if not FL.active then return end
 
-    local function localPulse()
-        FL.localOnly = true
-        Menu.__vgd_flashLocalUntil = now() + 170
-        FL.stats.flashes = FL.stats.flashes + 1
-        local spread = (type(O) == "table" and type(O.jitter) == "function") and 0.25 or 0.0
-        local base = (type(O) == "table" and type(O.jitter) == "function")
-            and O.jitter(PERIOD_MS, spread) or PERIOD_MS
-        FL.nextAt = now() + base
-    end
-
     local t = FL.target
     if not t then
-        local okTarget, retry = pcall(resolveTarget)
-        if okTarget then FL.target = retry end
-        t = okTarget and retry or nil
-        if not t then
-            graftStop()
-            if now() < FL.nextAt then return end
-            localPulse()
-            return
-        end
-    end
-
-    if t.self then
-        graftStop()
-        if now() < FL.nextAt then return end
-        local selfCoords = coordsOf(t.ped)
-        if not selfCoords then
-            localPulse()
-            return
-        end
-        t.coords = selfCoords
-        localPulse()
+        FL.stop("no target")
         return
     end
 
@@ -24582,147 +23005,16 @@ local function tickCore()
         return
     end
 
-    if SAFE_DIST > 0.0 and t.dist < SAFE_DIST then
+    if t.dist < SAFE_DIST then
         FL.stats.skips = FL.stats.skips + 1
         return
     end
 
     if now() < FL.nextAt then return end
 
-    if type(Menu) == "table" and type(Menu.__vgd_flashMethodRow) == "table" then
-        local selected = Menu.__vgd_flashMethodRow.selected
-        if type(selected) == "number" then FL.method = selected end
-    end
-
-    local cfg = acConfig()
-    local ex = cfg and cfg.Explosions
-    local maxScale = tonumber(ex and ex.MaxParticleScale) or 10.0
-    if maxScale < 1.0 then maxScale = 10.0 end
-    FL.maxScale = maxScale
-
-    local effective, needsWire = resolveDelivery(cfg)
-    FL.effective = effective
-    FL.requiresWire = needsWire
-    FL.lastEffect = effective and effective.effect or nil
-    FL.wire = nil
-
-    local emitted
-    if effective and effective.kind == "explosion" then
-        emitted = pcall(AddExplosion, coords.x, coords.y, coords.z + OFFSET_Z,
-            FLASH_TYPE, DAMAGE_SCALE, false, false, 0.0)
-    elseif effective then
-        local parts = effective.parts or { effective }
-        local wireHashes = {}
-        local graftParts = {}
-        local allowedParts = {}
-        local assumeAI = not ex and waveShieldStarted()
-        local strictAI = (ex and ex.EnableParticlesAI == true) or assumeAI
-
-        -- Never let an unacknowledged hash reach a strict AI server, but never
-        -- let the whole loop go silent either. scr_wheel_burnout is in the
-        -- unconditional default auto whitelist, so every recipe keeps at least
-        -- that part while the other parts wait for their dynamic _ws:cb ack.
-        for i = 1, #parts do
-            local part = parts[i]
-            if part and type(part.effect) == "string" then
-                local hash = GetHashKey(part.effect)
-                local isWhite = whitelisted(cfg, part.effect)
-                local isAuto = autoSafeEffect(part.effect, ex)
-                local confirmed = dynamicConfirmed(hash)
-
-                if strictAI and not isWhite and not confirmed then
-                    -- Fire the request regardless; the reply unlocks the part.
-                    ensureDynamicEffect(part.effect)
-                end
-
-                if not strictAI or isWhite or isAuto or confirmed then
-                    wireHashes[#wireHashes + 1] = hash
-                    graftParts[#graftParts + 1] = part
-                    allowedParts[#allowedParts + 1] = part
-                end
-            end
-        end
-
-        if #allowedParts == 0 then
-            local safe = safeCandidate(cfg) or SAFE_CANDIDATES[1]
-            if safe then
-                local safeHash = GetHashKey(safe.effect)
-                local safeWhite = whitelisted(cfg, safe.effect)
-                local safeAuto = autoSafeEffect(safe.effect, ex)
-                local safeConfirmed = dynamicConfirmed(safeHash)
-                if strictAI and not safeWhite and not safeConfirmed then
-                    ensureDynamicEffect(safe.effect)
-                end
-                if not strictAI or safeWhite or safeAuto or safeConfirmed then
-                    wireHashes[1] = safeHash
-                    graftParts[1] = safe
-                    allowedParts[1] = safe
-                end
-            end
-        end
-
-        if #allowedParts == 0 then
-            emitted = false
-        else
-            local active = effective
-            if #allowedParts ~= #parts then
-                active = {
-                    parts = allowedParts,
-                    scale = effective.scale,
-                    kind = effective.kind,
-                }
-            end
-
-            if canRewriteEvent() and #wireHashes > 0 then
-                FL.wire = { hashes = wireHashes, expires = now() + WIRE_TTL }
-            end
-
-            if FL.graft and (FL.graft.target ~= t.serverId
-                or FL.graft.method ~= FL.method
-                or FL.graft.count ~= #graftParts) then
-                graftStop()
-            end
-
-            if FL.graft then
-                graftBeat()
-                if not FL.graft.ack then
-                    graftAck()
-                    if not FL.graft.ack and now() - FL.graft.at > 1500 then
-                        graftStop()
-                        FL.graftFailAt = now()
-                    end
-                end
-            end
-
-            local grafted = false
-            local canGraft = not FL.graftFailAt
-                or now() - FL.graftFailAt > 5000
-            if #graftParts > 0 and canGraft then
-                if FL.graft then
-                    grafted = true
-                else
-                    grafted = graftStart(t, effective, graftParts)
-                end
-            end
-
-            if grafted and FL.graft and FL.graft.ack then
-                emitted = true
-            else
-                -- Until the graft acknowledges, keep the executor-side native
-                -- as a parallel first pulse. If the host VM never runs the
-                -- chunk, the menu still emits instead of going silent for the
-                -- watchdog window; if it does run, the acknowledgement stops
-                -- this branch.
-                emitted = emitParticle(active, coords)
-            end
-        end
-    else
-        emitted = false
-    end
-
-    if emitted == nil then
-        return
-    elseif emitted then
+    local ok = pcall(AddExplosion, coords.x, coords.y, coords.z + OFFSET_Z,
+        FLASH_TYPE, DAMAGE_SCALE, false, false, 0.0)
+    if ok then
         FL.stats.flashes = FL.stats.flashes + 1
     else
         FL.stats.fails = FL.stats.fails + 1
@@ -24745,30 +23037,19 @@ end
 function FL.start()
     if FL.active then return true end
 
-    -- Arm the toggle before target resolution. A transient native failure,
-    -- an unstreamed player or a ped handle that is not ready yet must never
-    -- leave the operator with a row that refuses to turn on. The tick retries
-    -- resolution and falls back to the local overlay pulse when needed.
-    FL.active = true
-    FL.reason = nil
-    Menu.__vgd_flashLocalUntil = 0
-
-    local okTarget, target = pcall(resolveTarget)
-    if not okTarget then
-        log("target resolve error: %s", tostring(target))
-        target = nil
+    local target = resolveTarget()
+    if not target then
+        FL.stats.fails = FL.stats.fails + 1
+        log("no living player inside %.0f m", REACH_MAX)
+        return false
     end
-    FL.target = target
-    FL.localOnly = not target or target.self == true
 
+    FL.active = true
+    FL.target = target
+    FL.reason = nil
     FL.nextAt = now() + ((type(O) == "table" and type(O.int) == "function")
         and O.int(0, TICK_MS) or 0)
-    if target then
-        log("start on %s (%.0f m)%s", target.name, target.dist,
-            target.self and " [local test]" or "")
-    else
-        log("start in local test mode (no target yet)")
-    end
+    log("start on %s (%.0f m)", target.name, target.dist)
     return true
 end
 
@@ -24776,61 +23057,17 @@ function FL.stop(reason)
     if FL.active then
         log("stop (%s)", tostring(reason or "request"))
     end
-    graftStop()
     FL.active = false
     FL.target = nil
     FL.reason = reason
-    FL.wire = nil
-    FL.requiresWire = false
-    FL.effective = nil
-    FL.localOnly = false
-    Menu.__vgd_flashLocalUntil = 0
 end
 
 function FL.status()
     if not FL.active then return "Flash idle" end
     local t = FL.target
     if not t then return "Flash idle" end
-    if t.self or FL.localOnly then
-        return ("Flash local | test | %d"):format(FL.stats.flashes)
-    end
     return ("Flash %s | %.0f m | %d"):format(t.name, t.dist or 0.0, FL.stats.flashes)
 end
-
--- Local self-test pulse. A one-player test server has no remote ped to hit,
--- so the toggle still has to prove that the loop is alive. This draw goes
--- through the Susano overlay, which is outside the game framebuffer and is
--- never sent to the server. It exists only on the operator's screen while a
--- self target is active; the remote path never reaches this branch.
-local function flashSelfDraw()
-    local previous = Menu.__vgd_flashPrevOnRender
-    if type(previous) == "function" then pcall(previous) end
-    local untilAt = tonumber(Menu.__vgd_flashLocalUntil) or 0
-    local current = now()
-    if untilAt <= current or type(Menu.DrawRect) ~= "function" then return end
-    local alpha = math.floor(255 * math.max(0.0, math.min(1.0, (untilAt - current) / 170.0)))
-    local screenW, screenH = 1920, 1080
-    local api = rawget(_G, "Susano")
-    if type(api) == "table" and type(api.GetScreenWidth) == "function" then
-        local ok, width = pcall(api.GetScreenWidth)
-        if ok and type(width) == "number" and width > 0 then screenW = width end
-    end
-    if type(api) == "table" and type(api.GetScreenHeight) == "function" then
-        local ok, height = pcall(api.GetScreenHeight)
-        if ok and type(height) == "number" and height > 0 then screenH = height end
-    end
-    Menu.DrawRect(0, 0, screenW, screenH, 255, 255, 255, alpha)
-end
-
-if not Menu.__vgd_flashOnRender then
-    Menu.__vgd_flashOnRender = true
-    Menu.__vgd_flashPrevOnRender = Menu.OnRender
-    Menu.OnRender = flashSelfDraw
-end
-
--- Internal smoke seam. It is not a menu row and never calls a native by
--- itself; the scheduled task remains the only production caller.
-Menu.__vgd_flashTick = FL.tick
 
 -- One low-frequency scheduler task. The task keeps running while idle; it
 -- returns immediately unless FL.active, so no thread churn per toggle.
@@ -26244,7 +24481,7 @@ local _weapons = {
         {n="Gusenberg",          h="WEAPON_GUSENBERG"},
         {n="Minigun",            h="WEAPON_MINIGUN"},
     }},
-    {cat=" Corps-ÃƒÂ -corps", items={
+    {cat=" Corps-à-corps", items={
         {n="Knife",              h="WEAPON_KNIFE"},
         {n="Nightstick",         h="WEAPON_NIGHTSTICK"},
         {n="Hammer",             h="WEAPON_HAMMER"},
@@ -26329,8 +24566,8 @@ local function _giveWeapon(weaponHash, ammo)
     end
 end
 
-local _wepMenu      = SEED.Classes.xMenu('admin_spawn_weapon_menu',      'Armes',   'CatÃƒÂ©gories')
-local _wepSearchMenu= SEED.Classes.xMenu('admin_spawn_weapon_search_menu','Recherche arme', 'RÃƒÂ©sultats')
+local _wepMenu      = SEED.Classes.xMenu('admin_spawn_weapon_menu',      'Armes',   'Catégories')
+local _wepSearchMenu= SEED.Classes.xMenu('admin_spawn_weapon_search_menu','Recherche arme', 'Résultats')
 local _catMenus     = {}
 
 for i = 1, #_weapons do
@@ -26339,16 +24576,16 @@ for i = 1, #_weapons do
 
     for j = 1, #catData.items do
         local w = catData.items[j]
-        catMenu:AddButton(w.n):SetRightText('Ã¢â€ â€™'):on('buttonPress', function()
+        catMenu:AddButton(w.n):SetRightText('→'):on('buttonPress', function()
             _giveWeapon(w.h, 9999)
         end)
     end
 
     _catMenus[i] = catMenu
-    _wepMenu:AddSubmenu(catMenu):SetRightText('Ã¢Å¾Â¤')
+    _wepMenu:AddSubmenu(catMenu):SetRightText('➤')
 end
 
-_wepMenu:AddButton('Ã°Å¸â€Å½ Rechercher une arme'):SetIcon('fa-solid fa-magnifying-glass'):on('buttonPress', function()
+_wepMenu:AddButton('🔎 Rechercher une arme'):SetIcon('fa-solid fa-magnifying-glass'):on('buttonPress', function()
     local inputBox = SEED.Classes.InputBox('Nom de l\'arme (ex: pistol, rifle...)', { maxCharacters = 60 })
     inputBox:on('confirmed', function(result)
         if not result or result == '' then return end
@@ -26364,7 +24601,7 @@ _wepMenu:AddButton('Ã°Å¸â€Å½ Rechercher une arme'):SetIcon('fa-solid 
                 local w = catData.items[j]
                 if w.n:lower():find(search, 1, true) or w.h:lower():find(search, 1, true) then
                     found = found + 1
-                    _wepSearchMenu:AddButton(('[%s] %s'):format(catData.cat, w.n)):SetRightText('Ã¢â€ â€™'):on('buttonPress', function()
+                    _wepSearchMenu:AddButton(('[%s] %s'):format(catData.cat, w.n)):SetRightText('→'):on('buttonPress', function()
                         _giveWeapon(w.h, 9999)
                     end)
                 end
@@ -26372,7 +24609,7 @@ _wepMenu:AddButton('Ã°Å¸â€Å½ Rechercher une arme'):SetIcon('fa-solid 
         end
 
         if found == 0 then
-            _wepSearchMenu:AddButton('Aucun rÃƒÂ©sultat.')
+            _wepSearchMenu:AddButton('Aucun résultat.')
         end
 
         _wepSearchMenu:Refresh()
@@ -31745,40 +29982,39 @@ local TP = (function(O,Menu)
 -- ============================================================================
 -- VANGUARD / 26 TARGET PANEL
 -- ----------------------------------------------------------------------------
--- Right-hand player dossier, rebuilt to the reference layout:
+-- Right-hand target card, rebuilt to the compact reference layout:
 --
---   Jon Jones                  106
---   [icon] Character             -
---   [icon] Phone        6021463948
---   [icon] Radio                 1
---   [icon] Job           Rekrut · LSPD
---   [icon] Group              user
---   ----------------------------
---   [icon] Health               55 |
---   [icon] Armor                 0 |
---   ----------------------------
---   [icon] Distance           1.7m
---   [icon] Vehicle      ccbuffalo4
---   [icon] Weapon      Combatpistol
---   [icon] Speed         1.8 km/h
+--   ------------------------------
+--             Target Name
+--   Server ID                 155
+--   Distance                86.8m
+--   Health                     90 |
+--   Armor                       0 |
+--   Weapon              Carbine Rifle
+--   Vehicles             On Foot
+--   Building                  Yes
+--   Alive                   Alive
+--   Speed                2.0 km/h
+--   Friend                     No
+--   ------------------------------
 --
--- Everything here is a read-only drawing pass over values that already exist
--- on this client: the selected player's entity, and the state bags the server
--- chose to replicate. No native is hooked, no event is sent, no resource is
--- injected and no entity is written. The overlay is rendered outside the game
--- framebuffer, so an in-game screenshot cannot capture it. The card therefore
--- adds zero detection surface: it changes nothing the guard can observe.
+-- No kicker, no id pill, no sections, no separator lines, no footer and no
+-- status pill. One flat near-black card, one centred name, ten label/value
+-- rows. Health and armour use a four-pixel vertical gauge on the right edge;
+-- every other value is right-aligned to the card's own margin.
 --
--- Identity fields (Character / Phone / Radio / Job / Group) are framework data.
--- A client only sees them when the server replicates them through a state bag
--- (QBox and most modern frameworks do). When a field is not replicated the
--- card shows "-", exactly like the reference card's empty Character value. The
--- reader never writes the bag and never asks the server for anything.
+-- The card is a pure drawing pass. It reads nothing from the world and writes
+-- nothing back: every value comes from the table Menu.GetSelectedPlayerInfo
+-- already builds once per frame. No native handle is allocated here, so the
+-- card cannot alter an entity, send a net event or trip a server-side check.
 --
--- Health and armour use the same vertical micro-gauge as the reference: a
--- filled tick on the right edge. Every other value is right-aligned to the
--- card's own margin. The card flips to the left of the menu when it would
--- leave the screen and clamps at the bottom edge.
+-- Placement is unchanged: the card sits to the right of the menu at the menu's
+-- own top edge, flips to the left when it would leave the screen, clears a
+-- right-side scrollbar, and clamps at the bottom edge.
+--
+-- Palette is deliberately flat: near-black body, one light grey for labels,
+-- pure white for values, warm sand for the weapon, mint for health and azure
+-- for armour. Nothing else uses colour.
 -- ============================================================================
 
 local TP = {}
@@ -31788,38 +30024,33 @@ local TP = {}
 -- the menu's right column instead of a second, darker window.
 local BORDER_R, BORDER_G, BORDER_B = 0.216, 0.216, 0.216
 local BODY_R, BODY_G, BODY_B = 0.059, 0.059, 0.059
-local LABEL_R, LABEL_G, LABEL_B = 0.720, 0.740, 0.780
+local LABEL_R, LABEL_G, LABEL_B = 0.760, 0.775, 0.800
 local VALUE_R, VALUE_G, VALUE_B = 1.000, 1.000, 1.000
 local HEAD_R, HEAD_G, HEAD_B = 0.970, 0.975, 0.985
-local ID_R, ID_G, ID_B = 0.560, 0.580, 0.610
-local ICON_R, ICON_G, ICON_B = 0.470, 0.620, 0.830
+local WEAPON_R, WEAPON_G, WEAPON_B = 0.850, 0.665, 0.435
 local TRACK_R, TRACK_G, TRACK_B = 0.155, 0.165, 0.180
-local HEALTH_R, HEALTH_G, HEALTH_B = 0.380, 0.760, 0.900
-local ARMOR_R, ARMOR_G, ARMOR_B = 0.420, 0.580, 0.920
-local DIV_R, DIV_G, DIV_B = 0.180, 0.190, 0.210
+local HEALTH_R, HEALTH_G, HEALTH_B = 0.240, 0.860, 0.400
+local ARMOR_R, ARMOR_G, ARMOR_B = 0.360, 0.630, 0.960
 
--- The reference card is narrower than the menu. The ratio keeps the card as a
--- right column at every scale; the min/max stop it collapsing or swallowing
--- the screen on ultrawide resolutions.
-local WIDTH_RATIO = 0.78
-local WIDTH_MIN = 264
-local WIDTH_MAX = 336
+-- The first pass copied the reference type scale too literally: 12.5 px rows
+-- are unreadable on a 1080p overlay. The row type now sits one full step below
+-- the menu's own 19 px items and the card widens slightly to keep the labels
+-- and values on one line. The layout is unchanged.
+local WIDTH_RATIO = 0.74
+local WIDTH_MIN = 258
+local WIDTH_MAX = 318
 
 -- Logical sizes, multiplied by Menu.Scale on the way to the overlay. At the
--- default 110 % scale rows render at 24.2 px with 16.5 px type.
+-- default 110 % scale rows render at 24.2 px with 17.6 px type.
 local PAD_X = 14
 local PAD_Y = 12
-local HEADER_HEIGHT = 36
+local HEADER_HEIGHT = 34
 local ROW_HEIGHT = 22
 local FONT_HEADER = 18
-local FONT_ID = 15
-local FONT_ROW = 15
-local ICON_SIZE = 14
-local ICON_GAP = 10
+local FONT_ROW = 16
 local BAR_WIDTH = 5
 local BAR_HEIGHT = 14
-local BAR_GAP = 9
-local DIV_GAP = 12
+local BAR_GAP = 8
 local RADIUS = 3
 
 local function clamp01(value)
@@ -31869,14 +30100,6 @@ local function fillRect(x, y, width, height, r, g, b, a, radius)
     end
 end
 
--- Thin stroke for the icon outlines. Susano.DrawLine takes pixel coordinates
--- and a pixel thickness, so the caller passes final sizes.
-local function line(x1, y1, x2, y2, thickness, r, g, b, a)
-    if Susano and type(Susano.DrawLine) == "function" then
-        pcall(Susano.DrawLine, x1, y1, x2, y2, r, g, b, a or 1.0, thickness)
-    end
-end
-
 -- Menu.DrawText applies Menu.Scale itself, so callers pass logical sizes and
 -- logical coordinates. The overlay primitive is Susano.DrawText.
 local function text(x, y, value, size, r, g, b, a)
@@ -31898,8 +30121,8 @@ local function textWidth(value, size, scale)
 end
 
 -- Byte offsets of every UTF-8 character boundary, with a final sentinel at
--- #value + 1. Player names and job labels are arbitrary UTF-8; cutting at a
--- byte boundary would leave an invalid sequence and could drop the whole line.
+-- #value + 1. Player names are arbitrary UTF-8; cutting at a byte boundary
+-- would leave an invalid sequence and could drop the whole line.
 local function utf8Offsets(value)
     local offsets = { 1 }
     local index = 1
@@ -31958,748 +30181,23 @@ end
 
 -- Menu.DrawText places the top of the glyph box at y. The menu centres its
 -- 19 px rows with a -8 offset, which is 0.421 of the row size; reuse that for
--- every row so labels, values, icons and gauges share one optical centre.
+-- every row so labels, values and gauges share one optical centre.
 local function centeredTextY(centerY, size, scale)
     return centerY - size * 0.421 * scale
 end
 
--- ---------------------------------------------------------------------------
--- ICON TEXTURES
---
--- The glyphs are Google Material Icons rendered once to 64 x 64 white PNGs and
--- embedded here as base64. They are decoded locally and uploaded through
--- Susano.LoadTextureFromBuffer, the same primitive the menu already uses for
--- its banner. No HTTP request, no file, no external asset and no game native:
--- the bytes never leave this script. The texture is tinted per use, so the
--- panel glyphs stay one steel blue and the list car keeps the reference red.
---
--- The primitive fallbacks below stay in place. If a build refuses the texture
--- upload, the card still draws the same layout with vector glyphs instead of
--- dropping the icon row.
--- ---------------------------------------------------------------------------
-local B64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
-local B64_VALUE = {}
-for index = 1, #B64_ALPHABET do
-    B64_VALUE[B64_ALPHABET:sub(index, index)] = index - 1
-end
-
-local function decodeBase64(value)
-    local out = {}
-    local index = 1
-    while index <= #value do
-        local c1 = value:sub(index, index)
-        local c2 = value:sub(index + 1, index + 1)
-        local c3 = value:sub(index + 2, index + 2)
-        local c4 = value:sub(index + 3, index + 3)
-        local n = (B64_VALUE[c1] or 0) * 262144
-            + (B64_VALUE[c2] or 0) * 4096
-            + (B64_VALUE[c3] or 0) * 64
-            + (B64_VALUE[c4] or 0)
-        out[#out + 1] = string.char(math.floor(n / 65536) % 256)
-        if c3 ~= "=" then
-            out[#out + 1] = string.char(math.floor(n / 256) % 256)
-        end
-        if c4 ~= "=" then
-            out[#out + 1] = string.char(n % 256)
-        end
-        index = index + 4
+-- The menu has no friend list today. Accept a plain set (friends[id] = true)
+-- or an array of server ids if one is added later; otherwise the honest
+-- answer is No.
+local function isFriend(serverId)
+    if serverId == nil or not Menu then return false end
+    local friends = Menu.Friends
+    if type(friends) ~= "table" then return false end
+    if friends[serverId] then return true end
+    for i = 1, #friends do
+        if friends[i] == serverId then return true end
     end
-    return table.concat(out)
-end
-
-local ICON_B64 = {
-    character = table.concat({
-        "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",
-    }),
-    phone = table.concat({
-        "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",
-        "gg==",
-    }),
-    radio = table.concat({
-        "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAGaElEQVR42u2bSYhcVRSGv/OqqtOd",
-        "SEbjhMQYcdaEBCVxwkSQGKJoXLgSJxKiC90JKnGAgLh0CuIm4kI3GiOhUQlxQEhECYhm1MQxCSIh",
-        "I2bo7qr6Xbxz9VpWV1VXV3fVC33h0a9u17t1z3/OPfODsTE2Om5IMkkWfZ4gaZak/JlOdCIpieZm",
-        "S3pZ0n5JH0maFL57JhGdizkrqUvSckmfSzoiaUDpKEuafaYQnkgqSMpFc3MkvS5pj6Sj+u8o+d9V",
-        "krozKQVOdF5SIZobL2mFpE8k/SaprwrhAz5flHRY0oywXiv2lR9pEQcS/51+Myv6/HXAA8CNwMXA",
-        "1OixMiCgBBgQADsKbABOheVbsUcbKW4DOUAR0VOBe4ClwJXAFdHvywkPxHdFy20G1gNbgL3AITMr",
-        "t2qv1mJu54DEzPqj+QXA3cAC4GpgevRYMeJ6EknkQef2JuB7M9s5UlJqLSA855svBc5Img4sBm4D",
-        "5gFzokdKTnAYhej+C+Az4Btgq5kdin4nD5Rbyf2mAYi4bWY2EM3fANwC3OTn++xIxIvRfSzi+53T",
-        "XwFbzGx7BdFywtVWCXCiDchVEH1uRPAi53gYA9F9kJQg+puBr/1sbzKzExX6o9RqbjcFQKTJFW/I",
-        "Nfk8J3oxMCUS8aDBrcLS/AJsdW5/bGa7YwcoHI+R4vaQAHBOmJmVornzgGtdoS0D5kaP9DnnchXr",
-        "ngZ2OOGbgA8jy9AziF5omW6uZFxDAEhKIoXWBVzmhN8B3Ad0V4h4LN4Ax9xk/eBErzOz4+10uQeT",
-        "qloSMBW4xEX8fgcgmKxiRHS1NfYC7wMfuOMyEeiJnh0NES8DfwEHYmvSqATMAR4FVjihgdtWRcQ7",
-        "eRwB1gGvmtm2hgCQdDPQC0yKzmaliDdy9kqRZ9eOERRwAhwAlprZdzUB8EhrFzDDN55kiNuDMSJ4",
-        "md8CC2ITThWuLgOmOdFZJ56IDoBLgSX1osFrfM6qKJSsjaRCygvusG2oBcA50YNBdH4F1roTM77D",
-        "wUiAkx5iPwLMjOgwl+6aEpCrOD8hMlsP7AwuagcDEPZ3FXCXA6AaR76hhIiAopmVlXoUonOzTjIz",
-        "SWrY18gPUZEk7ZKAKCb5n8MTMSXsr2EFnpk8uxPZcvDzGUqqBte8EKXPzgK2mdnBZrPEWaq0XA+8",
-        "6ESXgX5gAvCkK+l8MxYqSwBM8fC7ktPThpPdSjIEwICH2SWPKE/4ff9I6wADuiSNA3KS2uUHFKKE",
-        "i6L7gu+tAJR9f12ttAJ9wD4z62uzEvyzwrb/46j53vqi7+6LPzcLQEDwQuAJSX/4kWmXKzyvIpsc",
-        "9n6vpAsiJVgGzvd919UN+Qb0w0XAcx0Y5YV6woN+NaXn8g2mlgbamNiI/fzCIMqxNAhASSt0QAKM",
-        "qxEnjEq9sY5yLIy2J6go71/r/x0/8sOsJ/SR5v2DWep2bmQmk5RvgusAx4HdpIXMXZ6EmEZa/b2d",
-        "NKc4/kwEQKTJxWfMbGMNm70SeN7NEVnIm9UbRef+u8ASM9vo7S5W7TKzN4GFnkXKPAADLinvAU95",
-        "6Jkzs6KZqdrl8fuPpB0hv7eypWW0ASi7UvsdeMPMDkjKxwXTOkmMPcBq1xnWiSAkDYi+gLeAL/m3",
-        "kjuUXqG3SWuFmTsCcWVoiydF80NNinol5lM3lx0nBfUAyJPW1Q436+V5qmq7m0qyBkCoC/Q1WSEK",
-        "SvHQcBMX7QAgcLtnOL52tEaSRQBK7tVNrJGXr7m+t9FdTprMpNPc5EYA6HECklB8Gcr6bjIX+jrK",
-        "EgBE+beHgRne3FRotIHSzAa8U3RuVv2AAMB84DFJPWbW741Ttd4ByJtZSdJk4CVgcmRWMxkMlUj7",
-        "hQ5JesXMTvvZjrlqbveLQNHbZV8Abu1kV7jRjFDJubgKmCTpHTPbUcPuzwdWAg9V1OczGw7nolrc",
-        "08AiSWtJ+wCPuY3vdpDmA8tJ63jFTq8+5avUAFRDEkKFdoFfZU+MnCZ96WFmRRRZoLMapvrqAbA7",
-        "UlTVTFZoPQv9wDnSbow4eCr7dwodRHjwYXbXswK9pK+mUEdx5UiLFKFQEvcTdnWQtldF02RvTQDM",
-        "7CdgjQcu1oDiCsjmOlTRBRpOAmucvpqNkomHvc8Cj5PW35OMVZHjZE6ZtIr8mpmtjpvAa7XKBhBm",
-        "AXeSvtzUk0EATvmZ7zWzn6sRPzbGBvwNSZcSe4fqV/YAAAAASUVORK5CYII=",
-    }),
-    job = table.concat({
-        "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAADPElEQVR42u2bz48MURDHPzU9ywrr",
-        "R4iLi5OEEJZ/QCJBHFwccBInEf+AA3f/gIgbJxxcJC4u/gISIdi9OYkfMclOZJeZ7q/DVEeb7V4z",
-        "Mmtne6qSTmfy3qv36vOq6r2Z1EBIyESLrYZSSWZmkrQXOAMcAKaHmE/AEvAWeGpmH3KdYw2guEhJ",
-        "14HLwHZgCmgMCSADOkALuGdmt/rnGCuR1JBkkjZKuilpQaOTBUk3JE37HI1xBGD+npXU8oV3/Ukl",
-        "dST99PdKT94nLYyX65wtzjUKaY5q980sk7QJOOVun/W5/b/uWh4O24GTkt6b2WI+51gAKBi5DTgC",
-        "pEBSaO8CbWBxgDm7wCZgxvuaPykw63Msjip/NUccCU1gS8F4+UI/AQ+Bd34apBXjE8/++4ELwJ6C",
-        "jsR1N0e94FFL0ue+BnwBHpjZiwFD6hhwog9Av+6xBVAFZbOkxI/ETkW/vG3zahi7lgAEZGaWevJK",
-        "V0imqaTMx6wNAD9nG0NclhIf06zob0BT0pS/K9fjbYPoSQa8D+STZWWnRrPE+Ckz6/jRM6h0fOxH",
-        "T2Jl7Z9db2cAPZ8r+i0BHwfQU5VbctvKr8KSmmbWlXQUOAfs83j8mxeYk54GDgK7+pJg2+/1Lfes",
-        "Krh52w7//jDTlwS/Am8chA0QJgK+A/PAYzN7mdu4DICkxOPvKnAJOOpJqQ7SAV4C983sTm5rmQec",
-        "B+74DuQDNURCMg+rRslOdIcIq6p8krmeYdZjhY1sAVfN7FGZB+wEngOHgJ8VhqxXycFtAF4Dx83s",
-        "W//9/DSw2zvXyfiiR2Vu42lKvqDMOqE6GV4GYoPnt2UAthVuX0Z9f/1K3NZlAOq882WeMHFGr0wi",
-        "AASAABAAAkAACAABIAAEgAAQAAJAAAgAASAABIAAEAACQAAIAAEgAASAABAAJgWAJshulQFY4ncR",
-        "k2psdFasZSwCmKdXxZ3VeOczt3GuDMAzegWNebGiarb7+R842m7rnwDM7D29mv5shVpd1nF9UF4l",
-        "9tDM5korRf3zbeAssBXYyH8qW19FSYEfwALwBLgGqKpStOHuchG4AhymV6/bWMcx3wZeAXeBBz1n",
-        "tzrnuZCQkCHkF+Sx1bcpicgAAAAAAElFTkSuQmCC",
-    }),
-    group = table.concat({
-        "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAEyklEQVR42u2ZO4xVVRSGv3XnwSOg",
-        "oEyGBBUkYoOMjYmvRNFYEIMUJhp7Q2kjDxF6g2CF9iRUVjY+CkIwQRI1oTFIAYVKokQ0YGScGWbm",
-        "3vPb/CfZOZ577pmRCQH2n5ycM3uvvfZaa6+9HncgIyMjIyMjIyMjIyMjIyMjI+PWQ1Ik3xOSjkm6",
-        "KGlG0k1/H5M0UbfmrlBe0nJJByTNqj9mTbP8rjCCpJA0ImmZpE+sZCGpV6N8z3My7TKvjTvZAEN+",
-        "75Y0JanbR/nUCF3T7k553InKd/wek3TWCs5rMEqas5LGUl5LgU5bZeyOo35GWghVntxLwASgZGzQ",
-        "OgHbgO0VXrdSPgCG27hxRPSAomGuCQ8Dq4FeW4N7r/uAR5ZavuE2zCWtBl4FHvXUL8AXEfGPpE5E",
-        "FDXLy+C1wifaa+kBYdoAVlZ4/efkLd8qYCewyVM/A19FxGTLQ2q8wxOSvpQ0ndzTKY9ta1g/4vce",
-        "r+kmUb4JhWklaU/Kq88+2yzLVMJj2mMTi4ohvlMh6TFJ5xLGc35KXJC0YYAB3pR0w4q1NUAh6W9J",
-        "bzQZQNIGy9BPvnPWIVobwcTlc8iMZirpq0g2OnK7soCkI4niRSWdzvj7UKrTQlx/vaSTZjbfkLcv",
-        "92O8lHWAFbrcwG/ecyclre9nyCa3WAWsM000pNHxhvnC7nsCOO4gGHUR22NhmuPACa8tGoLleIMO",
-        "4bl11mXBdcA0cL00eAPd7/3mI0JANyJmgb3AwYZ02PHcQWCv13TNo9YJgKtNzuz3NWBqMTV8SHo/",
-        "aVKKmmAlSUcX0BBFTTc4k3aDKW0Lvh9VZEllK5uuA63vf00c2CzpTMOdvVQGqiZD/s9mKhrmxyxD",
-        "P5yRtHmxqbAMYFscSG64d5+TNCnpG0mb2grusRWS1khaZ+HH/Yx5bI1poq0hJG2yLJOW7aZlPSlp",
-        "y6CGKgadQHkHJb0MPOOgdC4iTvVx9SgrQ0krgQeBzcCzru+3Ag8B9yeVaBf4G/gVuACcB74FfgKu",
-        "RcR0coqqiwuSXgGeciz5LiJOV3VobQAr0nEg67V118RYG6zs68BrwPo+UV+ViF0XYD8HPgPOR8Rv",
-        "bZSq82SgqFsTNYoPRUS3MvaAG5pRD88BN4C/UqZOWzuB94Cnk2jc9V7Vpxq1q89wQvc98KF7kPmK",
-        "fGvdPKXyTQLXK/INA710LOpOUdIK4EngceAJu/C4m5OeFfoY+NT0pUKHgX2JEJ0k9y8qDnq/IlHu",
-        "KHCgvAre+y3gHRtsyCn8qq/Qj8Al4IeImOnrPUn62SXpuKQrA0rWFyvr9ydlaZuSd6GYT8rv/ZW9",
-        "Xxiw9op12tWYYiXtq3RVs37mXaLOurw85Ra5XLc1UbzQ0qFIDLE12X+1ZepZxq7pZis/wk5J2ltb",
-        "CUraDnxgN59L3G40ca0yWJ22m5V4GxgZUDbfCpSl8giwOxmfAb5O9h+yzKX8hXVaCRxOvTeNvO96",
-        "Ual4p6G8vFhmB7vTDs91WHqE99pRurKD9sWGsr2TGGII2FNngOdbKFEy/zPN+8DGJT75OiNsBNIC",
-        "6Y8WfUvH88/VGWDtApSYq/y9/Db88Dw6QKYm462tM8Dd8a+oBf4a3uEexz1vgIyMjIyMjIyMjIyM",
-        "jIyMjIx7Dv8CU/2cGN2s160AAAAASUVORK5CYII=",
-    }),
-    health = table.concat({
-        "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",
-    }),
-    armor = table.concat({
-        "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAACl0lEQVR42u2bv2uTQRyHP99qjdIM",
-        "da4gnTSgSJ3sVujo6Ojgj45iR8V/QB2dFR20g+JYlBZq0RaKQy2Ioi4BNTrGVgoJljaPywldat+k",
-        "1/e9S+4DGQJv7n2f5w5yd+/3pJSUwgKcAE72IvgYMA203GcaGOt26H7gIrDCzllx1/R3E/ggcAOo",
-        "kT0195vBmMGHgXvAOp1n3bUxHBP4KPAc2MRfNl2bo6FCHwAuAEvsf5bcvfpCAC8Dk0CV/FN19y4X",
-        "AT4E3AVWKT6r7lmG8gAfAZ4AG4SXDfdsI76hDTgPzBNP5t0z2258lkHAZ0mxTle/mFllrwKIeSJm",
-        "Zv9l7FOPJwlIApKAJCAJSAKSgCQgCUgCkoAkIAnYaUUcMV/Lh4BmxAKavS6g4UNAPWIBv3wI+B6x",
-        "gG8+BHztdQEfIxbwwYeA5YgFLPt4L3BE0pqkQ5HB/5F01MyaexoBroE3Efb+693g25kKv4hQwMss",
-        "F5kyvg12f4exrB22JB03s59eRoBraDai3p/NAt/uavBBRALuZ73QlP01eZ+bE1QCh/8k6ZSZ4XUE",
-        "mFlL0u0Iev9OVvi2RsC/YihJ7ySdCRT+vaSzrrPkfUfIzLYkTQbc+9fbge9oS8zMFiRNBQj/2MwW",
-        "2+ZRh+WvbqFxLBD4mqTTZvZbeWyKmtmapEvKsOemfPb9LncCLw8VZLcCqAi7qYKrRZ8VCP9UAZTL",
-        "HgZeFQA/B5QUSLH0QE6F0tsLpgcUWMV4GZjJAX6mkALpNo7FPNpH+IfAQUVwaGICaHgEbwATiuzI",
-        "TAVY9AC/AFSkOM8NGXAV+NEBeA24kqXiOwYRJeBaxpMlVXdtSeq+s4MGjANTQH0bdN0ddhjPu8et",
-        "yINWks65r2/dUjslJef8BTpad6ItSEHnAAAAAElFTkSuQmCC",
-    }),
-    distance = table.concat({
-        "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAEMUlEQVR42u1bPWhUQRD+nrkE4SSF",
-        "gaiJZSSSoI0oRKNIsBcTohZeAsFWOzsN2qaM2qiFYieC2ienhTYRGyVHDoMR5c4f0ELujM3dZ5ER",
-        "wrn7dt/dvp8kb6pjbnd2dnZ3/h+QwtYGL45FSQ4D6GtAL3ue93JLSJ3kff4P9+PgZdtWfwKpAFIB",
-        "pFYgEqXXDeAkgGEAAwAOA+hsGPYLwGsABQAvAbzwPO/7Rtb0HSRzJOdJ1hgcaiTnhEb7Rtp4huQl",
-        "kiW6g5LQzCR988dJLjE8WBInKnEbbyM50+RVb+ZpzJBsS4QSJNkF4BGAEYvhXwAsAFgGUAJQFXwW",
-        "QK+4x0cA7LGglQcw7nnezzhPvpdkwXBiKySvk9wfgO5+mfPRQHuRZG+cm//gw9xnkhOtKC5RqBNC",
-        "SwcfIhcCyS7Dyd8kmXW43g6h6XcTdkZp5vIaRqokR0Nce4zkb83a864Uo4mJGQ0DP0kORbD+UVlL",
-        "BTNR2Pma5uSHInyCRzU3oRaan0CynWRRI/mxGJTwmI+zlAljwcuaBWcD0smSPE3yqii2W/L7dFDF",
-        "6aMYL4UR2JQ1pi5rSaOH5B2Sqz7afFXG9ASwDp81sUO7SwFMahjOWc4/S7ISwN2tkBy3pD3RCm+2",
-        "AshrPLyMxdwrJOtN+Px1klcszbLKY5xzlszQaP5py5OvtxD41G1ugrjNKovQ7UIA5zXM9Vu8+YqD",
-        "6K9i0gkSO6jgrIuc4DEFrux5XtEw74ZEea1CFsB135DW85Yk0myEYRcCGFTgFkymDsAFh4YoZ2Ft",
-        "VDwNmAhnGspVFxVjDilw7w10TwHY7lAA24XmM58xywrcYU3F6d6/Mtx6Ld4HYNKSobLh/4MhOH8H",
-        "DAIoKXCdmj29kMxz03WBquH/XSEIYHeLPEVaGAmj3kAkqDJkUkhfQ+D1W4s8+StBUSIPFGPOKKo4",
-        "Jl/9bQgCeGf4X5UW+wXgiaXCDOQGP7GI+P44TIWvmswgyafNuMM2T2BRgTticEyqAB46PP2HQtMP",
-        "VDwV4naFq5vBFc4DqCvw5wy3oAxgqkXtTQBTQssPzitwdbH3WyIcXlFliZOUEDkX8DlUbK5vlAkR",
-        "XUrsU8CU2F2DdViVMT0B8ou6lFhH0pOi10jelqTotUQnRS3S4qFVg3z4GY00LS6LnkhIYWRIo1Nq",
-        "JI9v9tLYUGylsXVm53mMxdFqrMVRy/L4rOPyeFZo6qAgnSqRKqG9GgdkvYnMOWiQyCWuQaJBCDYt",
-        "MtOm2KGBbr/MWTHQLrS6eVdNUo+x1glqk0tckKRquaFJqgfAPonqbByh51hrkvoBJKM5Muo2ueQ1",
-        "TYqfUAxx88XQ7bwjj/GyJnZoFspCs32jNUtPSijdbLN0Xmh0YBO0y49grc44iLVqk6pd/o2k4F4B",
-        "yG/odvn0oymkn8ykAkgFgPSjqfTT2RQSDn8BTLa3dUFZAtIAAAAASUVORK5CYII=",
-    }),
-    vehicle = table.concat({
-        "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",
-        "AAAAAElFTkSuQmCC",
-    }),
-    weapon = table.concat({
-        "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAA00lEQVR42u2YSQ6EMAwEcYv/fzlz",
-        "mSMSngXT2FVnkOKineBsGwAAAAAAAAAAzCIyD6211uHLEeFQxNH6smvT9ASIFvgi+o8pLtEG6lp8",
-        "tgZ1LT5bS3QXcNYinAIIQAACEICAwexTzvuPEuAy5lbMA/plkOgwDMWVg0ZlIW02wXhTJVuuMa2S",
-        "IOcerdiH1O2Co0TAPxaS/bpXp2B3PZ7GngLMAhNngTv/OuX8B0gLdBTgNmSRgMn9TwIQgIBaAY7X",
-        "bJq8AdICCEAAAuR2BUYCEABQyQucaER3HIL4xwAAAABJRU5ErkJggg==",
-    }),
-    speed = table.concat({
-        "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",
-    }),
-}
-
-local ICON_TEXTURES = {}
-
-local function loadIconTextures()
-    if not Susano or type(Susano.LoadTextureFromBuffer) ~= "function" then
-        return
-    end
-    for name, encoded in pairs(ICON_B64) do
-        local ok, png = pcall(decodeBase64, encoded)
-        if ok and type(png) == "string" and #png > 8 then
-            local okTex, texture = pcall(Susano.LoadTextureFromBuffer, png)
-            if okTex and type(texture) == "number" and texture ~= 0 then
-                ICON_TEXTURES[name] = texture
-            end
-        end
-    end
-end
-
--- Load once at module start, outside the render path. A failed upload simply
--- leaves the table empty and the vector fallback takes over.
-pcall(loadIconTextures)
-
--- ---------------------------------------------------------------------------
--- ICONS
---
--- The Material glyphs above are uploaded once at module start and drawn as
--- tinted textures. The vector routines below are the fallback for builds that
--- refuse the upload: same 0..1 boxes, same optical size, so a missing texture
--- never shifts the layout. Nothing here calls a game native or fetches a URL.
--- ---------------------------------------------------------------------------
-local function drawIcon(name, x, y, size, cr, cg, cb)
-    if size <= 0 then return end
-    local ir, ig, ib = cr or ICON_R, cg or ICON_G, cb or ICON_B
-
-    -- Material texture first: one tinted draw call instead of a primitive
-    -- cluster. The texture is white with alpha, so r/g/b is the whole colour.
-    local texture = ICON_TEXTURES[name]
-    if texture and Susano and type(Susano.DrawImage) == "function" then
-        local ok = pcall(Susano.DrawImage, texture, x, y, size, size, ir, ig, ib, 1.0, 0)
-        if ok then return end
-    end
-
-    -- Filled cell in the icon colour.
-    local function R(u, v, w, h, rad)
-        fillRect(x + u * size, y + v * size, w * size, h * size,
-            ir, ig, ib, 1.0, (rad or 0.0) * size)
-    end
-
-    -- Cut-out in the card body colour. Drawn at the body's own alpha so the
-    -- icon does not read as a slightly different square over the card.
-    local function C(u, v, w, h, rad)
-        fillRect(x + u * size, y + v * size, w * size, h * size,
-            BODY_R, BODY_G, BODY_B, 0.98, (rad or 0.0) * size)
-    end
-
-    local function L(u1, v1, u2, v2, weight)
-        line(x + u1 * size, y + v1 * size, x + u2 * size, y + v2 * size,
-            math.max(1.0, size * (weight or 0.10)), ir, ig, ib, 1.0)
-    end
-
-    if name == "character" then
-        -- Head + shoulders.
-        R(0.34, 0.06, 0.32, 0.32, 0.16)
-        R(0.14, 0.46, 0.72, 0.46, 0.14)
-
-    elseif name == "phone" then
-        -- Handset body with a screen cut-out and a home key.
-        R(0.30, 0.04, 0.40, 0.92, 0.08)
-        C(0.36, 0.14, 0.28, 0.60, 0.02)
-        C(0.44, 0.80, 0.12, 0.07, 0.03)
-
-    elseif name == "radio" then
-        -- Walkie-talkie: body, screen, speaker grille, antenna.
-        R(0.28, 0.30, 0.44, 0.62, 0.06)
-        C(0.34, 0.38, 0.32, 0.14, 0.02)
-        C(0.36, 0.58, 0.28, 0.10, 0.02)
-        L(0.64, 0.32, 0.78, 0.04, 0.10)
-
-    elseif name == "job" then
-        -- Briefcase: handle, body, latch.
-        R(0.36, 0.10, 0.28, 0.14, 0.03)
-        C(0.41, 0.14, 0.18, 0.07, 0.02)
-        R(0.08, 0.30, 0.84, 0.56, 0.08)
-        C(0.44, 0.48, 0.12, 0.12, 0.02)
-
-    elseif name == "group" then
-        -- Three overlapping figures.
-        R(0.08, 0.18, 0.20, 0.20, 0.10)
-        R(0.72, 0.18, 0.20, 0.20, 0.10)
-        R(0.02, 0.42, 0.32, 0.38, 0.10)
-        R(0.66, 0.42, 0.32, 0.38, 0.10)
-        R(0.36, 0.06, 0.28, 0.28, 0.14)
-        R(0.28, 0.36, 0.44, 0.44, 0.14)
-
-    elseif name == "health" then
-        -- Two lobes plus a stepped triangle: a filled heart without rotation.
-        R(0.14, 0.16, 0.38, 0.38, 0.19)
-        R(0.48, 0.16, 0.38, 0.38, 0.19)
-        local rows = 7
-        for i = 0, rows - 1 do
-            local t = i / (rows - 1)
-            local w = 0.76 * (1.0 - t)
-            R(0.5 - w * 0.5, 0.44 + t * 0.46, w, 0.46 / rows + 0.006, 0.0)
-        end
-
-    elseif name == "armor" then
-        -- Shield: wide crown tapering to a point.
-        R(0.14, 0.08, 0.72, 0.34, 0.10)
-        R(0.18, 0.34, 0.64, 0.24, 0.02)
-        R(0.28, 0.56, 0.44, 0.20, 0.02)
-        R(0.40, 0.74, 0.20, 0.14, 0.02)
-
-    elseif name == "distance" then
-        -- Map pin: round head with a hole and a stepped tip.
-        R(0.26, 0.04, 0.48, 0.48, 0.24)
-        C(0.41, 0.19, 0.18, 0.18, 0.09)
-        local rows = 5
-        for i = 0, rows - 1 do
-            local t = i / (rows - 1)
-            local w = 0.36 * (1.0 - t)
-            R(0.5 - w * 0.5, 0.50 + t * 0.40, w, 0.40 / rows + 0.010, 0.0)
-        end
-
-    elseif name == "vehicle" then
-        -- Side profile: body, cabin, two ringed wheels.
-        R(0.06, 0.42, 0.88, 0.24, 0.05)
-        R(0.24, 0.28, 0.46, 0.20, 0.05)
-        R(0.14, 0.60, 0.22, 0.22, 0.11)
-        C(0.19, 0.65, 0.12, 0.12, 0.06)
-        R(0.64, 0.60, 0.22, 0.22, 0.11)
-        C(0.69, 0.65, 0.12, 0.12, 0.06)
-
-    elseif name == "weapon" then
-        -- Pistol: slide, muzzle, grip, trigger notch.
-        R(0.04, 0.30, 0.86, 0.20, 0.03)
-        R(0.88, 0.34, 0.10, 0.12, 0.02)
-        R(0.50, 0.48, 0.20, 0.42, 0.04)
-        C(0.54, 0.46, 0.12, 0.10, 0.03)
-
-    elseif name == "speed" then
-        -- Gauge: stroked arc, needle and hub.
-        L(0.14, 0.62, 0.20, 0.34, 0.10)
-        L(0.20, 0.34, 0.36, 0.18, 0.10)
-        L(0.36, 0.18, 0.64, 0.18, 0.10)
-        L(0.64, 0.18, 0.80, 0.34, 0.10)
-        L(0.80, 0.34, 0.86, 0.62, 0.10)
-        L(0.50, 0.54, 0.72, 0.28, 0.09)
-        R(0.42, 0.46, 0.16, 0.16, 0.08)
-    end
-end
-
--- Solid car silhouette for the player-list badge. The list row background is
--- not the card body, so this glyph uses no cut-outs: it is one flat colour and
--- reads at a glance without depending on what is behind it.
-local function drawVehicleBadge(x, y, size, r, g, b)
-    if size <= 0 then return end
-
-    -- Same Material car texture as the card, tinted with the caller's colour.
-    -- One draw call per row; the primitive car below is the upload-failure path.
-    local texture = ICON_TEXTURES.vehicle
-    if texture and Susano and type(Susano.DrawImage) == "function" then
-        local ok = pcall(Susano.DrawImage, texture, x, y, size, size, r, g, b, 1.0, 0)
-        if ok then return end
-    end
-
-    fillRect(x + 0.06 * size, y + 0.44 * size, 0.88 * size, 0.24 * size,
-        r, g, b, 1.0, 0.05 * size)
-    fillRect(x + 0.24 * size, y + 0.30 * size, 0.46 * size, 0.20 * size,
-        r, g, b, 1.0, 0.05 * size)
-    fillRect(x + 0.14 * size, y + 0.62 * size, 0.20 * size, 0.20 * size,
-        r, g, b, 1.0, 0.10 * size)
-    fillRect(x + 0.66 * size, y + 0.62 * size, 0.20 * size, 0.20 * size,
-        r, g, b, 1.0, 0.10 * size)
-end
-
--- ---------------------------------------------------------------------------
--- IDENTITY (Character / Phone / Radio / Job / Group)
---
--- These five fields are framework data, not game entities. A client can only
--- see them when the server replicates them through a state bag. The reader is
--- strictly passive: Player(localId).state and Entity(ped).state are read once
--- per cache window and never written, so no event leaves the client and no
--- resource is touched. When the server does not replicate a field the card
--- shows "-", exactly like the reference card's empty Character value.
---
--- Reading .state deserialises the whole bag, so the result is cached per
--- player instead of being rebuilt every frame. The Online list asks for the
--- radio channel of every row, and the panel asks for the selected player, so
--- both share this cache. Creation time carries a random jitter: without it,
--- every entry created in the first frame would expire in the same frame and
--- cause a periodic state-read spike.
--- ---------------------------------------------------------------------------
-local IDENTITY_TTL = 2000
-local identityCache = {}
-
--- Resolve a runtime global at call time. The executor may expose its globals
--- after the chunk loads, so capturing Player/Entity at import would freeze a
--- nil and turn every identity row into a silent no-op.
-local function globalFunction(name)
-    local fn = rawget(_G, name)
-    if type(fn) == "function" then return fn end
-    local ok, value = pcall(function() return _G[name] end)
-    if ok and type(value) == "function" then return value end
-    return nil
-end
-
-local function stateBag(kind, handle)
-    if type(handle) ~= "number" or handle <= 0 then return nil end
-    local fn = globalFunction(kind)
-    if not fn then return nil end
-    local ok, state = pcall(function() return fn(handle).state end)
-    if ok and state ~= nil then return state end
-    return nil
-end
-
-local function stateValue(bag, key)
-    if bag == nil then return nil end
-    local ok, value = pcall(function() return bag[key] end)
-    if ok then return value end
-    return nil
-end
-
-local function firstState(bag, keys)
-    if bag == nil then return nil end
-    for index = 1, #keys do
-        local value = stateValue(bag, keys[index])
-        if value ~= nil then return value end
-    end
-    return nil
-end
-
-local function asText(value)
-    if type(value) == "string" then
-        if value ~= "" then return value end
-        return nil
-    end
-    if type(value) == "number" then return tostring(value) end
-    if type(value) == "boolean" then return value and "Yes" or "No" end
-    return nil
-end
-
-local function characterText(value)
-    if type(value) == "table" then
-        local first = value.firstName or value.firstname or value.first_name
-        local last = value.lastName or value.lastname or value.last_name
-        if first or last then
-            local parts = {}
-            if type(first) == "string" and first ~= "" then parts[#parts + 1] = first end
-            if type(last) == "string" and last ~= "" then parts[#parts + 1] = last end
-            if #parts > 0 then return table.concat(parts, " ") end
-        end
-        local name = value.name or value.fullName or value.fullname
-        if type(name) == "string" and name ~= "" then return name end
-        return nil
-    end
-    return asText(value)
-end
-
-local function jobText(value)
-    if type(value) == "string" then
-        if value ~= "" then return value end
-        return nil
-    end
-    if type(value) ~= "table" then return nil end
-
-    local label = value.label or value.jobLabel or value.job_label
-        or value.name or value.job or value.title
-    local grade = value.grade or value.gradeLevel or value.grade_level
-        or value.jobGrade or value.job_grade
-
-    local gradeName = nil
-    local level = nil
-    if type(grade) == "table" then
-        gradeName = grade.name or grade.label or grade.gradeLabel or grade.grade_name
-        level = grade.level or grade.grade or grade.value
-    elseif type(grade) == "string" then
-        gradeName = grade
-    elseif type(grade) == "number" then
-        level = grade
-        gradeName = value.gradeLabel or value.grade_label or value.gradeName
-    end
-
-    label = asText(label)
-    gradeName = asText(gradeName)
-
-    if gradeName and label then return gradeName .. " · " .. label end
-    if label then
-        local numeric = tonumber(level)
-        if numeric and numeric > 0 then return label .. " · " .. tostring(numeric) end
-        return label
-    end
-    if gradeName then return gradeName end
-    return nil
-end
-
-local function resolveIdentity(localId, playerPed)
-    local empty = { character = "-", phone = "-", radio = "-", job = "-", group = "-" }
-    if type(localId) ~= "number" then return empty end
-
-    local now = 0
-    if type(GetGameTimer) == "function" then
-        local ok, value = pcall(GetGameTimer)
-        if ok and type(value) == "number" then now = value end
-    end
-
-    local cached = identityCache[localId]
-    if cached and (now - cached.at) < IDENTITY_TTL then
-        return cached.data
-    end
-
-    local playerBag = stateBag("Player", localId)
-    local entityBag = stateBag("Entity", playerPed)
-
-    local function first(keys)
-        local value = firstState(playerBag, keys)
-        if value == nil then value = firstState(entityBag, keys) end
-        return value
-    end
-
-    -- Character: a table with first/last name, a plain name, or split keys.
-    local character = characterText(first({
-        "charName", "characterName", "character", "charinfo", "charInfo", "identity",
-    }))
-    if not character then
-        local first = asText(firstState(playerBag, { "firstName", "firstname", "first_name" }))
-            or asText(firstState(entityBag, { "firstName", "firstname", "first_name" }))
-        local last = asText(firstState(playerBag, { "lastName", "lastname", "last_name" }))
-            or asText(firstState(entityBag, { "lastName", "lastname", "last_name" }))
-        if first or last then
-            local joined = table.concat({ first or "", last or "" }, " ")
-            if joined ~= "" and joined ~= " " then character = joined end
-        end
-    end
-
-    -- Phone: direct key, or the phone field of a replicated charinfo table.
-    local phone = asText(first({ "phone", "phoneNumber", "phone_number", "phoneNr", "telephone" }))
-    if not phone then
-        local charinfo = first({ "charinfo", "charInfo", "identity" })
-        if type(charinfo) == "table" then phone = asText(charinfo.phone) end
-    end
-
-    -- Radio: number, channel string, boolean, or a voice table.
-    local radio = first({ "radio", "radioChannel", "radiochannel", "radio_channel", "currentRadio" })
-    if radio == nil then
-        local voice = first({ "voice", "voiceData" })
-        if type(voice) == "table" then radio = voice.radio or voice.channel end
-    end
-    if radio == true then
-        radio = "On"
-    elseif radio == false or radio == nil then
-        radio = "-"
-    else
-        radio = asText(radio)
-        if not radio then
-            radio = "-"
-        else
-            local numeric = tonumber(radio)
-            if numeric and numeric <= 0 then radio = "-" end
-        end
-    end
-
-    -- Job: a table (label + grade table/number) or split label/grade keys.
-    local job = jobText(first({ "job", "jobData", "occupation" }))
-    if not job then
-        local jobLabel = first({ "jobLabel", "job_label", "jobName", "job_name" })
-        local jobGrade = first({ "jobGrade", "jobgrade", "job_grade", "grade" })
-        if jobLabel ~= nil or jobGrade ~= nil then
-            job = jobText({ label = jobLabel, grade = jobGrade })
-        end
-    end
-
-    -- Group: permission string, rank, or a table with a name.
-    local group = first({
-        "group", "permission", "permissions", "rank", "admin",
-        "userGroup", "usergroup", "user_group",
-    })
-    if type(group) == "table" then group = group.name or group.group or group.label end
-    if type(group) == "boolean" then group = group and "admin" or "user" end
-    group = asText(group)
-
-    local data = {
-        character = character or "-",
-        phone = phone or "-",
-        radio = radio or "-",
-        job = job or "-",
-        group = group or "-",
-    }
-
-    identityCache[localId] = {
-        at = now - math.random(0, IDENTITY_TTL - 1),
-        data = data,
-    }
-    return data
-end
-
--- The Online list builder asks for the radio channel of every row through this
--- function. It is the same passive reader the card uses, so there is exactly
--- one place that touches a state bag.
-Menu.ResolvePlayerIdentity = resolveIdentity
-
--- The Online list needs the same width-aware truncation the card uses for its
--- values, but with the menu's 19 px row type. Exposing the helper keeps one
--- text-measurement path instead of a second byte-count approximation.
-Menu.FitRowLabel = function(value, maxWidth)
-    return fitText(value, maxWidth, 19, Menu.Scale or 1.0)
+    return false
 end
 
 function Menu.DrawPlayerInfoPanel()
@@ -32745,21 +30243,18 @@ function Menu.DrawPlayerInfoPanel()
     local padY = PAD_Y * scale
     local headerHeight = HEADER_HEIGHT * scale
     local rowHeight = ROW_HEIGHT * scale
-    local divGap = DIV_GAP * scale
-    local iconSize = ICON_SIZE * scale
-    local iconGap = ICON_GAP * scale
     local barWidth = BAR_WIDTH * scale
     local barHeight = BAR_HEIGHT * scale
     local barGap = BAR_GAP * scale
 
-    local identityRows = 5
-    local vitalRows = 2
-    local contextRows = 4
+    local innerWidth = panelWidth - padX * 2
+    local cx = panelX + padX
+    local innerRight = panelX + panelWidth - padX
 
-    local panelHeight = padY + headerHeight + divGap
-        + identityRows * rowHeight + divGap
-        + vitalRows * rowHeight + divGap
-        + contextRows * rowHeight + padY
+    -- The card height is fixed by the ten rows, not by the target's state:
+    -- sitting in a vehicle changes only the Vehicles and Speed values.
+    local rows = 10
+    local panelHeight = padY + headerHeight + rows * rowHeight + padY
 
     local panelY = math.max(8, sp.y)
     if panelY + panelHeight > screenHeight - 8 then
@@ -32785,47 +30280,89 @@ function Menu.DrawPlayerInfoPanel()
     fillRect(panelX + 1, panelY + 1, panelWidth - 2, panelHeight - 2,
         BODY_R, BODY_G, BODY_B, 0.98, radius)
 
-    local innerWidth = panelWidth - padX * 2
-    local cx = panelX + padX
-    local innerRight = panelX + panelWidth - padX
+    -- Header: the player name alone, centred, one line, no kicker and no
+    -- badge. Truncation happens before centring so an ellipsised name still
+    -- sits on the card's axis.
+    local name = tostring(info.name or "Unknown")
+    local headerCenterY = panelY + padY + headerHeight * 0.5
+    local shownName = fitText(name, innerWidth, FONT_HEADER, scale)
+    local nameWidth = textWidth(shownName, FONT_HEADER, scale)
+    text(panelX + (panelWidth - nameWidth) * 0.5,
+        centeredTextY(headerCenterY, FONT_HEADER, scale),
+        shownName, FONT_HEADER,
+        HEAD_R, HEAD_G, HEAD_B, 1.0)
 
-    local cy = panelY + padY
+    -- Values. distanceExact/speedExact are collected by the loader; the floor
+    -- fields stay as fallbacks so an older info table still renders.
+    local health = finite(info.health, 0)
+    local healthMax = finite(info.maxHealth, 0)
+    local healthPercent = healthMax > 0 and clamp01(health / healthMax) or 0.0
+    local armor = finite(info.armor, 0)
+    local armorPercent = clamp01(armor / 100.0)
+    local distance = finite(info.distanceExact, finite(info.distance, 0))
+    local speed = finite(info.speedExact, finite(info.speed, 0))
+    local alive = info.isAlive ~= false and health > 0
+    local building = info.inBuilding == true
+    local friend = isFriend(info.serverId)
 
-    local function divider(y)
-        fillRect(cx, y, innerWidth, math.max(1.0, scale),
-            DIV_R, DIV_G, DIV_B, 0.42, 0.0)
-    end
+    local model = tostring(info.vehicle or "On Foot")
 
-    local function sectionGap()
-        cy = cy + divGap * 0.5
-        divider(cy)
-        cy = cy + divGap * 0.5
-    end
+    local entries = {
+        {
+            label = "Server ID",
+            value = info.serverId ~= nil and tostring(whole(info.serverId)) or "?",
+        },
+        { label = "Distance", value = ("%.1fm"):format(distance) },
+        {
+            label = "Health",
+            value = tostring(whole(health)),
+            gauge = { percent = healthPercent, r = HEALTH_R, g = HEALTH_G, b = HEALTH_B },
+        },
+        {
+            label = "Armor",
+            value = tostring(whole(armor)),
+            gauge = { percent = armorPercent, r = ARMOR_R, g = ARMOR_G, b = ARMOR_B },
+        },
+        {
+            label = "Weapon",
+            value = tostring(info.weapon or "Unarmed"),
+            r = WEAPON_R, g = WEAPON_G, b = WEAPON_B,
+        },
+        { label = "Vehicles", value = model },
+        { label = "Building", value = building and "Yes" or "No" },
+        { label = "Alive", value = alive and "Alive" or "Dead" },
+        { label = "Speed", value = ("%.1f km/h"):format(speed) },
+        { label = "Friend", value = friend and "Yes" or "No" },
+    }
 
-    local function drawRow(centerY, icon, label, value, valueRight, gauge)
-        drawIcon(icon, cx, centerY - iconSize * 0.5, iconSize)
-
-        local labelX = cx + iconSize + iconGap
+    local rowsTop = panelY + padY + headerHeight
+    for index = 1, #entries do
+        local entry = entries[index]
+        local centerY = rowsTop + (index - 0.5) * rowHeight
         local textY = centeredTextY(centerY, FONT_ROW, scale)
 
-        text(labelX, textY, label, FONT_ROW, LABEL_R, LABEL_G, LABEL_B, 1.0)
+        text(cx, textY, entry.label, FONT_ROW,
+            LABEL_R, LABEL_G, LABEL_B, 1.0)
 
-        local effectiveRight = valueRight
-        if gauge then effectiveRight = effectiveRight - barWidth - barGap end
+        local valueRight = innerRight
+        local gauge = entry.gauge
+        if gauge then
+            valueRight = innerRight - barWidth - barGap
+        end
 
-        local labelWidth = textWidth(label, FONT_ROW, scale)
-        local maxValueWidth = effectiveRight - (labelX + labelWidth + 10 * scale)
+        local labelWidth = textWidth(entry.label, FONT_ROW, scale)
+        local maxValueWidth = valueRight - (cx + labelWidth + 10 * scale)
         if maxValueWidth < 0 then maxValueWidth = 0 end
-        local shownValue = fitText(value, maxValueWidth, FONT_ROW, scale)
+        local shownValue = fitText(entry.value, maxValueWidth, FONT_ROW, scale)
         local valueWidth = textWidth(shownValue, FONT_ROW, scale)
 
-        text(effectiveRight - valueWidth, textY, shownValue, FONT_ROW,
-            VALUE_R, VALUE_G, VALUE_B, 1.0)
+        text(valueRight - valueWidth, textY, shownValue, FONT_ROW,
+            entry.r or VALUE_R, entry.g or VALUE_G, entry.b or VALUE_B, 1.0)
 
         if gauge then
-            -- Vertical micro-gauge: a five-pixel track on the right edge,
-            -- filled from the bottom. Health 55 % reads as a half blue tick;
-            -- armour 0 leaves only the dark track.
+            -- Vertical micro-gauge: a four-pixel track on the right edge,
+            -- filled from the bottom. Health 90 % reads as a nearly full
+            -- green tick; armour 0 leaves only the dark track.
             local barX = innerRight - barWidth
             local barY = centerY - barHeight * 0.5
             fillRect(barX, barY, barWidth, barHeight,
@@ -32838,134 +30375,6 @@ function Menu.DrawPlayerInfoPanel()
             end
         end
     end
-
-    -- Header: player name on the left, server id on the right, both centred on
-    -- the same line. Truncation happens before drawing so an ellipsised name
-    -- never collides with the id.
-    local name = tostring(info.name or "Unknown")
-    local idText = info.serverId ~= nil and tostring(whole(info.serverId)) or "?"
-    local idWidth = textWidth(idText, FONT_ID, scale)
-    local nameMax = innerWidth - idWidth - 12 * scale
-    if nameMax < 0 then nameMax = innerWidth end
-    local shownName = fitText(name, nameMax, FONT_HEADER, scale)
-
-    local headerCenter = cy + headerHeight * 0.5
-    text(cx, centeredTextY(headerCenter, FONT_HEADER, scale), shownName,
-        FONT_HEADER, HEAD_R, HEAD_G, HEAD_B, 1.0)
-    text(innerRight - idWidth, centeredTextY(headerCenter, FONT_ID, scale), idText,
-        FONT_ID, ID_R, ID_G, ID_B, 1.0)
-
-    cy = cy + headerHeight
-    sectionGap()
-
-    -- Section 1: identity. All five values come from the passive state-bag
-    -- reader; missing fields fall back to "-" and never trigger a request.
-    local identity = resolveIdentity(info.localId, info.ped)
-    local identityData = {
-        { icon = "character", label = "Character", value = identity.character },
-        { icon = "phone",     label = "Phone",     value = identity.phone },
-        { icon = "radio",     label = "Radio",     value = identity.radio },
-        { icon = "job",       label = "Job",       value = identity.job },
-        { icon = "group",     label = "Group",     value = identity.group },
-    }
-    for index = 1, #identityData do
-        local row = identityData[index]
-        drawRow(cy + (index - 0.5) * rowHeight, row.icon, row.label,
-            row.value, innerRight, nil)
-    end
-    cy = cy + identityRows * rowHeight
-    sectionGap()
-
-    -- Section 2: vitals. Ped health is stored on a 0..maxHealth scale where
-    -- 100 is the "downed" floor on a 200 max; subtract that floor so the
-    -- readout and the gauge share the same 0..100 meaning as the reference.
-    local health = finite(info.health, 0)
-    local healthMax = finite(info.maxHealth, 0)
-    local hpFloor = (healthMax > 100) and 100 or 0
-    local hpSpan = math.max(1, healthMax - hpFloor)
-    local shownHealth = math.max(0, health - hpFloor)
-    local healthPercent = clamp01(shownHealth / hpSpan)
-
-    local armor = finite(info.armor, 0)
-    local armorPercent = clamp01(armor / 100.0)
-
-    local vitals = {
-        {
-            icon = "health", label = "Health", value = tostring(whole(shownHealth)),
-            gauge = { percent = healthPercent, r = HEALTH_R, g = HEALTH_G, b = HEALTH_B },
-        },
-        {
-            icon = "armor", label = "Armor", value = tostring(whole(armor)),
-            gauge = { percent = armorPercent, r = ARMOR_R, g = ARMOR_G, b = ARMOR_B },
-        },
-    }
-    for index = 1, #vitals do
-        local row = vitals[index]
-        drawRow(cy + (index - 0.5) * rowHeight, row.icon, row.label,
-            row.value, innerRight, row.gauge)
-    end
-    cy = cy + vitalRows * rowHeight
-    sectionGap()
-
-    -- Section 3: live context, all from the entity the target already owns.
-    local distance = finite(info.distanceExact, finite(info.distance, 0))
-    local speed = finite(info.speedExact, finite(info.speed, 0))
-    local contextData = {
-        { icon = "distance", label = "Distance", value = ("%.1fm"):format(distance) },
-        { icon = "vehicle",  label = "Vehicle",  value = tostring(info.vehicle or "On Foot") },
-        { icon = "weapon",   label = "Weapon",   value = tostring(info.weapon or "Unarmed") },
-        { icon = "speed",    label = "Speed",    value = ("%.1f km/h"):format(speed) },
-    }
-    for index = 1, #contextData do
-        local row = contextData[index]
-        drawRow(cy + (index - 0.5) * rowHeight, row.icon, row.label,
-            row.value, innerRight, nil)
-    end
-end
-
--- ---------------------------------------------------------------------------
--- PLAYER LIST BADGE
---
--- The Online > Player List rows already carry the selected player's id and
--- name. The list also needs two at-a-glance markers from the reference: the
--- radio channel appended to the name, and a car badge when the target is in a
--- vehicle. The radio is written into the row name by the list builder; the car
--- badge is drawn here, after the base row, so it sits between the name and the
--- toggle. The wrapper only reads item fields that the list builder set; it
--- writes nothing and calls no native.
--- ---------------------------------------------------------------------------
-if type(Menu) == "table" and type(Menu.DrawItem) == "function"
-    and Menu.__vgd_playerRowWrapped ~= Menu.DrawItem then
-    local baseDrawItem = Menu.DrawItem
-    local wrapped
-
-    wrapped = function(x, itemY, width, itemHeight, item, isSelected)
-        baseDrawItem(x, itemY, width, itemHeight, item, isSelected)
-
-        if type(item) ~= "table" or item.isSeparator or not item.playerInVehicle then
-            return
-        end
-
-        local scale = Menu.Scale or 1.0
-        local badgeSize = math.min(itemHeight * 0.34, 15 * scale)
-        -- The base toggle occupies the last 52 px (36 px pill + 16 px margin).
-        -- The badge sits 8 px to its left, clear of the toggle and the name.
-        -- It uses the same steel blue as the card icons so the list reads as
-        -- one surface instead of carrying a second accent colour.
-        local badgeX = x + width - 52 - 8 - badgeSize
-        local badgeY = itemY + (itemHeight - badgeSize) * 0.5
-        -- The base row fades with Menu.ContentEase during a category swap.
-        -- The badge is drawn after that wrapper restores DrawAlpha, so re-apply
-        -- the same multiplier here or the car would hang at full opacity while
-        -- its row fades.
-        local previousAlpha = Menu.DrawAlpha
-        Menu.DrawAlpha = (previousAlpha or 1.0) * (Menu.ContentEase or 1.0)
-        drawVehicleBadge(badgeX, badgeY, badgeSize, ICON_R, ICON_G, ICON_B)
-        Menu.DrawAlpha = previousAlpha
-    end
-
-    Menu.DrawItem = wrapped
-    Menu.__vgd_playerRowWrapped = wrapped
 end
 
 return TP
@@ -33995,7 +31404,7 @@ function FP.render()
     local nowMs = GetGameTimer()
     if FP.note and nowMs < FP.noteUntil and not FP.active then
         local _, height = screenSize()
-        drawCentered("FIGHT PARTY | " .. FP.note,
+        drawCentered("FIGHT PARTY · " .. FP.note,
             height * 0.855, 15, 0.94, 0.72, 0.72, 0.92)
         return
     end
@@ -34023,10 +31432,10 @@ function FP.render()
 
     local _, height = screenSize()
     if #FP.members == 0 then
-        drawCentered("FIGHT PARTY | NO TARGET IN RING",
+        drawCentered("FIGHT PARTY · NO TARGET IN RING",
             height * 0.855, 18, 0.96, 0.52, 0.52, 0.92)
     else
-        drawCentered(("FIGHT PARTY | %d LOCKED | SHADOW BOXING")
+        drawCentered(("FIGHT PARTY · %d LOCKED · SHADOW BOXING")
             :format(#FP.members),
             height * 0.855, 18, 0.94, 0.98, 1.0, 0.92)
     end
@@ -34500,7 +31909,7 @@ Menu.__vgd_watchDelete = deleteTick
 -- entry applies a global profile to another vendor's resource.
 -- ---------------------------------------------------------------------------
 local function installBypassProfiles()
-    local tab = findTab("Visual", "Bypass")
+    local tab = findTab("Exploit", "Bypass")
     if not tab then return false end
 
     -- Replace the whole tab. This also removes old combined entries left
@@ -34694,12 +32103,12 @@ local function installSeed()
 
     -- Keep the historical Exploit tab as a fallback for a stripped build or a
     -- stale menu table; the normal path is the dedicated Servers tab.
-    tab = findTab("Visual", "Servers") or tab
+    tab = findTab("Exploit", "Servers") or tab
     tab.items = tab.items or {}
 
-    local seed = findItem("Visual", "Servers", "Menu Staff")
+    local seed = findItem("Exploit", "Servers", "Menu Staff")
     if not seed then
-        seed = findItem("Visual", "Servers", "Menu Staff [SEED]")
+        seed = findItem("Exploit", "Servers", "Menu Staff [SEED]")
     end
     if not seed then
         seed = findItem("Exploit", "Exploit", "Menu Staff")
@@ -34712,8 +32121,8 @@ local function installSeed()
         tab.items[#tab.items + 1] = seed
     end
 
-    -- The base renderer appends the [SEED] tag in neutral grey. Keeping the tag
-    -- out of the name avoids a second duplicate.
+    -- The base renderer appends the [SEED] tag in green. Keeping the tag out
+    -- of the name avoids a second white duplicate.
     seed.name = "Menu Staff"
     seed.seed = true
     seed.type = "action"
@@ -35005,6 +32414,7 @@ local function installLockPlayer()
         { name = "", isSeparator = true, separatorText = "Hold Left Ctrl to ram" },
         row,
         speedRow,
+        { name = "", isSeparator = true, separatorText = "Selected player first, then nearest living" },
     }
     return true
 end
@@ -35485,117 +32895,35 @@ end
 Menu.__vgd_installSink = installSink
 
 -- ---------------------------------------------------------------------------
--- ONLINE > TROLL > ATTACKS > FLASH
+-- EXPLOIT > FLASH
 --
--- Flash lives with the other player-directed attacks. The installer removes
--- the old Exploit > Flash tab and any earlier Troll copy before inserting the
--- rows immediately below the Attacks separator. The selected row is restored
--- by object first and by label second, so a reload with Troll open keeps the
--- cursor on the row the operator was using.
---
--- The method selector is only a preference. FL resolves the actual delivery
--- channel at tick time from the server's particle configuration: a native
--- whitelisted effect when one is available, otherwise the safe particle plus
--- the dynamic whitelist path. No row promises a channel the server cancels.
+-- One toggle, no target row: FL takes Menu.SelectedPlayer, then the nearest
+-- living player inside 300 m. The flash itself is a game explosion of type 78
+-- (EXP_TAG_FLASHGRENADE) with damageScale 0.0, which returns from the V4
+-- explosion handler at line 59 before any detection branch. The tab is
+-- separate from the Exploit tab so the Fight Party surface stays on the first
+-- page; Flash is one click away.
 -- ---------------------------------------------------------------------------
 local function installFlash()
-    local troll = findTab("Online", "Troll")
-    if not troll then return false end
-    troll.items = troll.items or {}
+    local category = findCategory("Exploit")
+    if not category then return false end
+    category.tabs = category.tabs or {}
 
-    local online = findCategory("Online")
-    local trollOpen = online
-        and type(Menu.OpenedCategory) == "number"
-        and type(Menu.Categories) == "table"
-        and Menu.Categories[Menu.OpenedCategory] == online
-        and type(Menu.CurrentTab) == "number"
-        and online.tabs
-        and online.tabs[Menu.CurrentTab] == troll
-
-    local selected = nil
-    if trollOpen and type(Menu.CurrentItem) == "number" then
-        selected = troll.items[Menu.CurrentItem]
-    end
-
-    -- Remove the retired Exploit tab, including an open copy. Clamp the
-    -- Exploit cursor only when Exploit is the visible category.
-    local exploit = findCategory("Exploit")
-    if exploit and type(exploit.tabs) == "table" then
-        local exploitOpen = type(Menu.OpenedCategory) == "number"
-            and type(Menu.Categories) == "table"
-            and Menu.Categories[Menu.OpenedCategory] == exploit
-        for i = #exploit.tabs, 1, -1 do
-            if exploit.tabs[i] and exploit.tabs[i].name == "Flash" then
-                table.remove(exploit.tabs, i)
-            end
-        end
-        if exploitOpen then
-            local tabCount = #exploit.tabs
-            if tabCount < 1 then
-                Menu.CurrentTab = 1
-            else
-                local current = tonumber(Menu.CurrentTab) or 1
-                if current < 1 then current = 1 end
-                if current > tabCount then current = tabCount end
-                Menu.CurrentTab = current
-                local activeTab = exploit.tabs[current]
-                local itemCount = activeTab and type(activeTab.items) == "table"
-                    and #activeTab.items or 0
-                if itemCount < 1 then
-                    Menu.CurrentItem = 1
-                else
-                    local currentItem = tonumber(Menu.CurrentItem) or 1
-                    if currentItem < 1 then currentItem = 1 end
-                    if currentItem > itemCount then currentItem = itemCount end
-                    Menu.CurrentItem = currentItem
-                end
-            end
+    for i = #category.tabs, 1, -1 do
+        local entry = category.tabs[i]
+        if entry and entry.name == "Flash" then
+            table.remove(category.tabs, i)
         end
     end
-
-    -- Sweep every historical label before inserting. "Method" and
-    -- "Flash loop" are the labels used by the retired Exploit tab; the new
-    -- names are explicit so they cannot collide with another Troll row.
-    for i = #troll.items, 1, -1 do
-        local item = troll.items[i]
-        local drop = item.name == "Flash Method"
-            or item.name == "Flash Loop"
-            or item.name == "Method"
-            or item.name == "Flash loop"
-            or (item.isSeparator and item.separatorText == "Flash")
-        if drop then table.remove(troll.items, i) end
-    end
-
-    local methodOptions = {}
-    for i = 1, #FL.methods do
-        methodOptions[i] = FL.methods[i].name
-    end
-    local selectedMethod = math.max(1, math.min(#FL.methods, tonumber(FL.method) or 1))
-
-    local methodRow = {
-        name = "Flash Method",
-        type = "selector",
-        options = methodOptions,
-        selected = selectedMethod,
-        onClick = function(index)
-            FL.method = math.max(1, math.min(#FL.methods, tonumber(index) or 1))
-            local current = Menu.__vgd_flashMethodRow
-            if type(current) == "table" then current.selected = FL.method end
-        end,
-    }
 
     local toggle
     toggle = {
-        name = "Flash Loop",
+        name = "Flash loop",
         type = "toggle",
         value = FL.active == true,
         onClick = function(value)
             local active
             if value then
-                local methodRowNow = Menu.__vgd_flashMethodRow
-                if type(methodRowNow) == "table" and type(methodRowNow.selected) == "number" then
-                    FL.method = math.max(1, math.min(#FL.methods, methodRowNow.selected))
-                end
                 active = FL.start()
             else
                 FL.stop("operator")
@@ -35606,48 +32934,21 @@ local function installFlash()
         end,
     }
 
-    local insertAt = 1
-    for i = 1, #troll.items do
-        local item = troll.items[i]
-        if item.isSeparator and item.separatorText == "Attacks" then
-            insertAt = i + 1
-            break
-        end
-    end
-    table.insert(troll.items, insertAt, methodRow)
-    table.insert(troll.items, insertAt + 1, toggle)
+    local tab = {
+        name = "Flash",
+        items = {
+            {
+                name = "",
+                isSeparator = true,
+                separatorText = "Screen",
+            },
+            toggle,
+        },
+    }
 
+    table.insert(category.tabs, 2, tab)
     Menu.__vgd_flashRow = toggle
-    Menu.__vgd_flashMethodRow = methodRow
-    Menu.__vgd_flashTab = nil
-
-    if trollOpen then
-        local restored = false
-        if selected then
-            for i = 1, #troll.items do
-                if troll.items[i] == selected then
-                    Menu.CurrentItem = i
-                    restored = true
-                    break
-                end
-            end
-        end
-        if not restored and selected and selected.name then
-            for i = 1, #troll.items do
-                if troll.items[i].name == selected.name then
-                    Menu.CurrentItem = i
-                    restored = true
-                    break
-                end
-            end
-        end
-        if not restored then
-            local currentItem = tonumber(Menu.CurrentItem) or 1
-            if currentItem < 1 then currentItem = 1 end
-            if currentItem > #troll.items then currentItem = #troll.items end
-            Menu.CurrentItem = math.max(1, currentItem)
-        end
-    end
+    Menu.__vgd_flashTab = tab
 
     if not Menu.__vgd_flashSync and type(O) == "table" and type(O.every) == "function" then
         Menu.__vgd_flashSync = true
@@ -35655,11 +32956,6 @@ local function installFlash()
             local row = Menu.__vgd_flashRow
             if row and row.value ~= FL.active then
                 row.value = FL.active
-            end
-            local method = Menu.__vgd_flashMethodRow
-            if method and type(method.selected) == "number"
-                and method.selected ~= FL.method then
-                FL.method = math.max(1, math.min(#FL.methods, method.selected))
             end
         end)
     end
@@ -36719,381 +34015,6 @@ local function installRampFix()
 end
 
 -- ---------------------------------------------------------------------------
--- SEARCH CATEGORY
---
--- Search is an eighth main-menu page, not a filter on another page. It scans
--- the live category tables every time a query is submitted, so rows added by
--- another installer are searchable without a rebuild. A result is an action
--- that focuses the original row; it never clones the row, so the feature keeps
--- one state object and one set of callbacks.
--- ---------------------------------------------------------------------------
-function Menu.__vgdInstallSearch()
-    local existing = findCategory("Search")
-    local tab = existing and existing.tabs and existing.tabs[1]
-
-    local function focusItem(category, targetTab, targetItem)
-        for categoryIndex, candidate in ipairs(Menu.Categories or {}) do
-            if candidate == category then
-                for tabIndex, tabCandidate in ipairs(candidate.tabs or {}) do
-                    if tabCandidate == targetTab then
-                        for itemIndex, itemCandidate in ipairs(tabCandidate.items or {}) do
-                            if itemCandidate == targetItem then
-                                Menu.CurrentCategory = categoryIndex
-                                Menu.OpenedCategory = categoryIndex
-                                Menu.CurrentTab = tabIndex
-                                Menu.CurrentItem = itemIndex
-                                Menu.ItemScrollOffset = math.max(0, itemIndex - 1)
-                                Menu.CategorySelectorY = 0
-                                Menu.CategoryScrollOffset = 0
-                                return true
-                            end
-                        end
-                    end
-                end
-            end
-        end
-        return false
-    end
-
-    local function applySearch(query)
-        local searchAction = tab.items and tab.items[1]
-        if not (searchAction and searchAction.name == "Search features..."
-            and type(searchAction.onClick) == "function") then
-            searchAction = {
-                name = "Search features...",
-                type = "action",
-                onClick = function()
-                    if type(Menu.__vgdOpenSearch) == "function" then Menu.__vgdOpenSearch() end
-                end,
-            }
-        end
-        local rows = { searchAction }
-        local clean = tostring(query or "")
-        clean = clean:gsub("^%s+", ""):gsub("%s+$", "")
-        local needle = string.lower(clean)
-
-        if needle == "" then
-            rows[#rows + 1] = { name = "Type a name, then press Enter", type = "action" }
-        else
-            for _, category in ipairs(Menu.Categories or {}) do
-                if category.name ~= "Main Menu" and category.name ~= "Search" then
-                    local categoryLabel = (Menu.CategoryLabels and Menu.CategoryLabels[category.name]) or category.name
-                    for _, targetTab in ipairs(category.tabs or {}) do
-                        for _, targetItem in ipairs(targetTab.items or {}) do
-                            local itemName = targetItem.name
-                            if targetItem.type and not targetItem.isSeparator
-                                and type(itemName) == "string" and itemName ~= ""
-                                and string.find(string.lower(itemName), needle, 1, true) then
-                                local categoryRef, tabRef, itemRef = category, targetTab, targetItem
-                                rows[#rows + 1] = {
-                                    name = itemName .. "  [" .. categoryLabel .. " / " .. targetTab.name .. "]",
-                                    type = "action",
-                                    onClick = function()
-                                        focusItem(categoryRef, tabRef, itemRef)
-                                    end,
-                                }
-                            end
-                        end
-                    end
-                end
-            end
-            if #rows == 1 then
-                rows[#rows + 1] = { name = "No feature found", type = "action" }
-            end
-        end
-        tab.items = rows
-        Menu.CurrentItem = 1
-        Menu.ItemScrollOffset = 0
-    end
-
-    local function showResultsPage()
-        for categoryIndex, category in ipairs(Menu.Categories or {}) do
-            if category.name == "Search" then
-                Menu.CurrentCategory = categoryIndex
-                Menu.OpenedCategory = categoryIndex
-                Menu.CurrentTab = 1
-                Menu.CurrentItem = 1
-                Menu.ItemScrollOffset = 0
-                Menu.CategorySelectorY = 0
-                Menu.CategoryScrollOffset = 0
-                return true
-            end
-        end
-        return false
-    end
-
-    local function openSearch()
-        if type(Menu.OpenInput) ~= "function" then return false end
-        Menu.OpenInput("Search", "Feature name:", function(query)
-            applySearch(query)
-            showResultsPage()
-        end)
-        return true
-    end
-
-    tab = tab or { name = "Search", items = {} }
-    tab.name = "Search"
-    tab.items = {
-        { name = "Search features...", type = "action", onClick = openSearch }
-    }
-    Menu.__vgdOpenSearch = openSearch
-    Menu.__vgdApplySearch = applySearch
-
-    if existing then
-        existing.hasTabs = true
-        existing.tabs = existing.tabs or {}
-        existing.tabs[1] = tab
-        return true
-    end
-
-    addCategory({
-        name = "Search",
-        hasTabs = true,
-        tabs = { tab },
-    })
-    return true
-end
-
--- ---------------------------------------------------------------------------
--- TARGET-BOUND TOGGLES
---
--- A toggle that acts on Menu.SelectedPlayer is owned by that player, not by
--- the menu. When the selected server id changes, or the player stops being
--- live, every target-bound row is switched off and its release callback runs.
--- The row value is reset before the callback so a failed release cannot leave
--- the UI claiming the feature is active. Attachments are keyed by player; the
--- table is cleared as well so a returning player cannot inherit the old one.
--- ---------------------------------------------------------------------------
-function Menu.__vgdTargetAvailable(serverId)
-    local wanted = tonumber(serverId)
-    if not wanted then return false end
-    if type(GetActivePlayers) ~= "function" then return false end
-
-    for _, player in ipairs(GetActivePlayers()) do
-        if GetPlayerServerId(player) == wanted then
-            local ped = GetPlayerPed(player)
-            return ped ~= nil and ped ~= 0 and DoesEntityExist(ped)
-        end
-    end
-    return false
-end
-
-function Menu.__vgdResetTargetFeatures(reason)
-    local reset = 0
-    local blackHoleReset = false
-
-    for _, category in ipairs(Menu.Categories or {}) do
-        for _, tab in ipairs(category.tabs or {}) do
-            for _, item in ipairs(tab.items or {}) do
-                if item.targetBound
-                    and (item.type == "toggle" or item.type == "toggle_selector")
-                    and item.value == true then
-                    item.value = false
-                    if item.name == "Black Hole" then blackHoleReset = true end
-                    if type(item.onClick) == "function" then
-                        pcall(item.onClick, false)
-                    end
-                    reset = reset + 1
-                end
-            end
-        end
-    end
-
-    if type(AttachAnims) == "table" and type(AttachAnims.stop) == "function" then
-        pcall(AttachAnims.stop)
-    end
-    if type(attachedPlayers) == "table" then
-        for key in pairs(attachedPlayers) do attachedPlayers[key] = nil end
-    end
-    if attachTargetActive then pcall(ToggleAttachTarget, false) end
-    if Menu.PlayerListSpectateEnabled then pcall(ToggleSpectate, false) end
-    if not blackHoleReset and type(Menu.__vgd_stopBlackHole) == "function" then
-        pcall(Menu.__vgd_stopBlackHole)
-    end
-
-    if reset > 0 and type(O) == "table" and type(O.log) == "function" then
-        O.log("target: reset %d target-bound toggle(s) (%s)", reset, tostring(reason or "change"))
-    end
-    return reset
-end
-
-Menu.ResetTargetFeatures = Menu.__vgdResetTargetFeatures
-
-function Menu.__vgdStartTargetWatch()
-    if Menu.__vgdTargetWatch then return false end
-    Menu.__vgdTargetWatch = true
-
-    local lastTarget = Menu.SelectedPlayer
-    local missingAt = nil
-    local invalidated = false
-
-    CreateThread(function()
-        while true do
-            Wait(250)
-            local current = Menu.SelectedPlayer
-
-            if current ~= lastTarget then
-                if lastTarget ~= nil then Menu.__vgdResetTargetFeatures("target changed") end
-                lastTarget = current
-                missingAt = nil
-                invalidated = false
-            end
-
-            if current ~= nil then
-                if Menu.__vgdTargetAvailable(current) then
-                    missingAt = nil
-                    invalidated = false
-                else
-                    if not invalidated then
-                        invalidated = true
-                        missingAt = GetGameTimer()
-                        Menu.__vgdResetTargetFeatures("target unavailable")
-                    end
-                    if missingAt and (GetGameTimer() - missingAt) >= 1500 then
-                        local gone = current
-                        if Menu.SelectedPlayer == gone then Menu.SelectedPlayer = nil end
-                        if type(Menu.SelectedPlayers) == "table" then
-                            for i = #Menu.SelectedPlayers, 1, -1 do
-                                if Menu.SelectedPlayers[i] == gone then
-                                    table.remove(Menu.SelectedPlayers, i)
-                                end
-                            end
-                        end
-                        lastTarget = nil
-                        missingAt = nil
-                        invalidated = false
-                    end
-                end
-            else
-                missingAt = nil
-                invalidated = false
-            end
-        end
-    end)
-
-    return true
-end
-
--- ---------------------------------------------------------------------------
--- MAIN MENU ORDER AND LABELS
---
--- The reference names are display labels only: every feature lookup keeps its
--- original internal key (Player, Visual, Combat, Exploit), so Actions tables,
--- installers and reload sweeps continue to find the same category objects.
---
--- Player Props is folded into Online as its "Props" tab. The merge is done by
--- object, not by index, and the open category/cursor are remapped after the
--- final order is installed. Unknown categories are kept at the end so a
--- stripped library or another loader cannot make a tab disappear.
--- ---------------------------------------------------------------------------
-local MAIN_CATEGORY_ORDER = {
-    "Player",   -- Self
-    "Online",   -- Online
-    "Vehicle",  -- Vehicle
-    "Combat",   -- Weapon
-    "Exploit",  -- Destroyer
-    "Visual",   -- Misc
-    "Settings", -- Settings
-    "Search",   -- Search
-}
-
-local function reorderMainCategories()
-    if type(Menu.Categories) ~= "table" then return false end
-
-    local openCategory = nil
-    if type(Menu.OpenedCategory) == "number" then
-        openCategory = Menu.Categories[Menu.OpenedCategory]
-    end
-    local cursorCategory = nil
-    if type(Menu.CurrentCategory) == "number" then
-        cursorCategory = Menu.Categories[Menu.CurrentCategory]
-    end
-
-    -- A stale top-level Player Props category from an older loader or from a
-    -- stripped build is merged into Online before the order is applied.
-    local online = findCategory("Online")
-    local props = findCategory("Player Props")
-    if online and props then
-        online.hasTabs = true
-        online.tabs = online.tabs or {}
-        local propsTab = props.tabs and props.tabs[1]
-        if propsTab then
-            propsTab.name = "Props"
-            local existing = nil
-            for _, tab in ipairs(online.tabs) do
-                if tab == propsTab or tab.name == "Props" then
-                    existing = tab
-                    break
-                end
-            end
-            if existing then
-                existing.items = propsTab.items
-                propsTab = existing
-            else
-                online.tabs[#online.tabs + 1] = propsTab
-            end
-            if openCategory == props then
-                openCategory = online
-                for i = 1, #online.tabs do
-                    if online.tabs[i] == propsTab then
-                        Menu.CurrentTab = i
-                        break
-                    end
-                end
-            end
-            if cursorCategory == props then cursorCategory = online end
-        end
-        removeCategory("Player Props")
-    end
-
-    local main = nil
-    for _, category in ipairs(Menu.Categories) do
-        if category.name == "Main Menu" then main = category break end
-    end
-
-    local ordered = {}
-    local seen = {}
-    if main then
-        ordered[#ordered + 1] = main
-        seen[main] = true
-    end
-    for _, name in ipairs(MAIN_CATEGORY_ORDER) do
-        for _, category in ipairs(Menu.Categories) do
-            if category.name == name and not seen[category] then
-                ordered[#ordered + 1] = category
-                seen[category] = true
-                break
-            end
-        end
-    end
-    for _, category in ipairs(Menu.Categories) do
-        if not seen[category] then
-            ordered[#ordered + 1] = category
-            seen[category] = true
-        end
-    end
-
-    Menu.Categories = ordered
-
-    local function indexOf(category)
-        for i = 1, #ordered do
-            if ordered[i] == category then return i end
-        end
-        return nil
-    end
-
-    if openCategory then
-        Menu.OpenedCategory = indexOf(openCategory)
-    end
-    if cursorCategory then
-        Menu.CurrentCategory = indexOf(cursorCategory) or 1
-    end
-    Menu.CategorySelectorY = 0
-    Menu.CategoryScrollOffset = 0
-    return true
-end
-
--- ---------------------------------------------------------------------------
 -- PLAYER TAB ORDER
 --
 -- The base menu has Self and Wardrobe; this module appends Target and
@@ -37169,22 +34090,22 @@ end
 -- EXPLOIT TAB ORDER
 --
 -- The base Exploit surface is the collapsed "Exploit" tab. Servers is defined
--- with the category; Voice and Bypass are added by their installers. Append
--- order is not display order. Keep the operator-facing order stable:
+-- with the category; Voice, Flash and Bypass are added by their installers.
+-- Append order is not display order. Keep the operator-facing order stable:
 --
---   Exploit | Servers | Voice | Bypass
+--   Exploit | Servers | Voice | Flash | Bypass
 --
 -- Exploit stays first because installCrasher() also treats it as the home
--- tab; the new server and voice surfaces follow it. Flash moved to
--- Online > Troll > Attacks, so no Flash tab belongs here. Unknown tabs are
--- left after the known ones in their original order, so a future base tab is
--- not silently deleted.
+-- tab; the new server and voice surfaces follow it. Unknown tabs are left
+-- after the known ones in their original order, so a future base tab is not
+-- silently deleted.
 -- ---------------------------------------------------------------------------
 local EXPLOIT_TAB_ORDER = {
     Exploit = 1,
     Servers = 2,
     Voice = 3,
-    Bypass = 4,
+    Flash = 4,
+    Bypass = 5,
 }
 
 local function reorderExploitTabs()
@@ -37381,11 +34302,8 @@ local function build()
     installFightParty()
     installVehicleSpoof()
     installRampFix()
-    Menu.__vgdInstallSearch()
-    reorderMainCategories()
     reorderPlayerTabs()
     reorderExploitTabs()
-    Menu.__vgdStartTargetWatch()
 
     -- Re-check after the new categories are installed. This catches a stale
     -- category that was appended while the old menu table was still alive.
@@ -37408,7 +34326,7 @@ end
 -- BOOT
 -- ---------------------------------------------------------------------------
 function UI.boot()
-    O.log("loader build 2026-11-07-r44 (Flash moved to Online > Troll > Attacks with Auto Safe and ten explicit methods; the selected method is read live; the WaveShield V4 particle configuration is read from GlobalState and delivery uses the first native-whitelisted safe effect or a dynamic-whitelisted safe particle with assetHash stripped on ptFxEvent; particle scale is capped at MaxParticleScale and each pulse sends two networked bursts with no minimum range; a one-player test server gets a local Susano overlay pulse instead of a fabricated server event; the retired Exploit Flash tab is removed; Search magnifier handle rebuilt as a fused diagonal instead of three dots; White keeps the wbYgWhZ banner and Cyan restores its original 3HLMxX5 banner; Online Props Player row sorts the player list by distance and always targets the nearest player; Launch Player selector offers Method 1 and Method 2; Method 1 drives the victim ped directly when control is available and otherwise reverse-attaches the victim to the local ped within 3 m; Method 2 uses a range-free injected coordinate lift plus repeated upward force and velocity for servers that ignore Method 1; launch has no vehicle or explosion; hardened Susano ragdoll keeps the victim speed check lenient; self launch uses 58 m/s with GET_ENTITY_SPEED masked by the stealth hook; velocity and settle waits carry jitter; tight bold category chevrons; Troll Appearance section and Copy Appearance row removed; All mode Include me toggle adds the local ped alongside remote targets; Props Player row hidden in Self and All modes; attachment rows Attach to player and Attach point removed; target labels Self/Player/All; automatic player refresh sorts by distance and selects nearest; manual Refresh player list removed; Ban Player beta suffix removed; Servers and Bypass tabs moved from Destroyer to Misc; FOV moved from Visual/Camera to Self under Big Weapon; theme banners bottom-anchored flush on the category plate; White uses wbYgWhZ and Cyan uses 3HLMxX5; White/Cyan theme selector; White 3:1 header and Cyan 4.1:1 header; flush tab strip; light-grey cell tab plate; dark selected category rectangle; uniform unselected categories; reference names Self/Online/Vehicle/Weapon/Destroyer/Misc/Settings/Search; Search category opens the prompt directly and lands on results; compact magnifier; tight bold category chevron pair; full-white section rules fitted to the label width; Target keeps only the Ctrl hint; Player Props folded into Online; 15px right-aligned slider readout; target-bound toggles reset on target change/unload; dark row plates; white toggle/scrollbar; footer centre mark removed; Delete/Backspace close)")
+    O.log("loader build 2026-11-07-r16 (main-menu Options labels; Delete/Backspace close; Exploit Servers + Voice tabs; Menu Staff seed after Dynasty Revive)")
     O.thread()
 
     -- Delete/Backspace fallback poll. 40 ms is faster than a frame at 30 FPS
@@ -37473,4 +34391,3 @@ end)(O,S,E,D,F,V,M,SN,C,G,FL,A,ST,SB,VS,K,N,L,VC,CU,UC,FA,TP,FP,Menu)
 
 end)()
 -- <<< VANGUARD MODULE END
-
