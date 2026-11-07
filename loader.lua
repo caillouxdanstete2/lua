@@ -1266,17 +1266,20 @@ do
         White = {
             r = 255, g = 255, b = 255,
             image = "https://i.imgur.com/wbYgWhZ.png",
+            headerHeight = 130,
         },
         Cyan = {
             r = 104, g = 168, b = 203,
             image = "https://i.imgur.com/3HLMxX5.png",
+            headerHeight = 100,
         },
     }
 
     Menu.Banner = Menu.Banner or { enabled = true, height = 100 }
     Menu.Banner.enabled = true
-    -- The supplied banner is 2173x724 (3:1). Match the header to that ratio so
-    -- the image fills the frame edge-to-edge instead of sitting in dark bars.
+    -- White is 2173x724 (3:1) and keeps the 130 px header it was tuned for.
+    -- Cyan is 1032x252 (4.1:1): its header is set below to 100 px so the
+    -- shorter image fills the frame instead of leaving tall dark bars.
     Menu.Banner.height = 130
     if Menu.Position then
         Menu.Position.headerHeight = 130
@@ -1361,6 +1364,10 @@ do
         Menu.Colors.HeaderPink = { r = 18, g = 18, b = 20 }
         Menu.Colors.SelectedBg = { r = theme.r, g = theme.g, b = theme.b }
         Menu.Banner.imageUrl = theme.image
+        if Menu.Position then
+            Menu.Position.headerHeight = theme.headerHeight or 130
+        end
+        Menu.Banner.height = theme.headerHeight or 130
         Menu.LoadBannerTexture(theme.image)
     end
 
@@ -1594,12 +1601,24 @@ do
     }
     if type(Susano) == "table" and type(Susano.OnTriggerServerEvent) == "function" then
         Susano.OnTriggerServerEvent(function(name, payload)
-            if not _Stealth.blockAC then return name, payload end
-            local lower = string.lower(name)
+            local outName, outPayload = name, payload
+            local rewrite = Menu.__vgd_onOutbound
+            if type(rewrite) == "function" then
+                local ok, nextName, nextPayload = pcall(rewrite, name, payload)
+                if ok then
+                    if nextName == false then return false end
+                    if type(nextName) == "string" then
+                        outName, outPayload = nextName, nextPayload or payload
+                    end
+                end
+            end
+
+            if not _Stealth.blockAC then return outName, outPayload end
+            local lower = string.lower(outName)
             for _, pat in ipairs(acPatterns) do
                 if string.find(lower, pat, 1, true) then return false end
             end
-            return name, payload
+            return outName, outPayload
         end)
     end
 end
@@ -3086,8 +3105,11 @@ if type(originalDrawCategories) == "function" then
 
                     if category.name == "Search" then
                         -- Magnifier built from the same rounded primitives as
-                        -- the rest of the list: ring, punched centre, diagonal
-                        -- handle. No font glyph or texture dependency.
+                        -- the rest of the list: ring, punched centre, and one
+                        -- short diagonal handle. No font glyph or texture
+                        -- dependency. The handle is deliberately compact so the
+                        -- icon reads as a lens at a glance instead of trailing
+                        -- a long run of beads down the row.
                         local iconSize = math.max(7, math.floor(8 * scale))
                         local iconX = x + math.floor(16 * scale)
                         local iconY = itemY + math.floor((itemHeight - iconSize) * 0.5)
@@ -3097,14 +3119,23 @@ if type(originalDrawCategories) == "function" then
                         if isSelected then bgR, bgG, bgB = 0.095, 0.095, 0.105 end
                         fill(iconX, iconY, iconSize, iconSize, textR, textG, textB, 1.0, iconSize / 2)
                         fill(iconX + ring, iconY + ring, inner, inner, bgR, bgG, bgB, 1.0, inner / 2)
-                        local handle = math.max(2, math.floor(1.8 * scale))
-                        local handleSteps = math.max(3, math.floor(4 * scale))
-                        local handleStep = math.max(1, math.floor(handle * 0.55))
-                        for step = 0, handleSteps do
-                            local offset = step * handleStep
-                            fill(iconX + iconSize - math.floor(ring * 0.5) + offset,
-                                iconY + iconSize - math.floor(ring * 0.5) + offset,
-                                handle, handle, textR, textG, textB, 1.0, math.max(1, handle * 0.35))
+
+                        -- Handle: discs marched along the icon's 45-degree axis
+                        -- with a step well under one pixel, so they fuse into a
+                        -- single solid bar. The first disc bites into the ring
+                        -- and the run is a quarter of the icon size, so the tip
+                        -- clears the ring by only a couple of pixels instead of
+                        -- hanging off the edge like the old handle did.
+                        local hThick = math.max(2, math.floor(2 * scale))
+                        local hStart = iconSize - ring
+                        local hRun = math.max(1.5, iconSize * 0.25)
+                        local hStep = math.max(0.35, hThick * 0.18)
+                        local hSamples = math.max(3, math.ceil(hRun / hStep))
+                        local hRad = hThick * 0.5
+                        for s = 0, hSamples do
+                            local off = hRun * (s / hSamples)
+                            fill(iconX + hStart + off, iconY + hStart + off,
+                                hThick, hThick, textR, textG, textB, 1.0, hRad)
                         end
                         textX = x + math.floor(33 * scale)
                     end
@@ -23441,65 +23472,55 @@ local FL = (function(O,Menu)
 -- ============================================================================
 -- VANGUARD / 11 FLASH
 -- ----------------------------------------------------------------------------
--- Exploit > Flash: a repeating screen-flash on one remote player.
+-- Online > Troll > Attacks: a repeating screen-flash on one remote player.
 --
--- The flash is either a networked particle asset or a real game explosion,
--- never a Susano overlay draw. The overlay is outside the game framebuffer and
--- only exists on the operator's screen; the victim would never see it. A
--- game-native flash is the only way to put the white/blue frame on the victim's
--- render path.
+-- The flash is a networked non-looped particle at the victim, never a Susano
+-- overlay draw. The overlay is outside the game framebuffer and only exists on
+-- the operator's screen; the victim would never see it. A game-native particle
+-- is the only way to put the white/blue frame on the victim's render path.
 --
--- Particle methods use the asset names supplied for this build. The clown
--- entries in scr_rcbarry2 are tinted pure white with
--- SET_PARTICLE_FX_NON_LOOPED_COLOUR before the networked burst; the stun,
--- electric, taser and FBI entries are already white or blue-white.
---
--- WHY THIS TYPE
+-- EXPLOSION TYPE 78
 --
 -- ADD_EXPLOSION 0xE3AD2BDBAEE269AC (FIRE namespace) takes:
 --   x, y, z float, explosionType int, damageScale float,
 --   isAudible BOOL, isInvisible BOOL, cameraShake float
 --
--- Type 78 is EXP_TAG_FLASHGRENADE in WaveShield's own explosion table
--- (core/shared.lua:1471, index 78). It is the flashbang visual: the bright
--- white core and the blue-white rim, which is the shape in the reference
--- capture. Type 22 (Flare) and type 38 (Firework) are visible but warm and
--- slow; type 59 is the orbital cannon and produces a large orange blast.
+-- Type 78 is EXP_TAG_FLASHGRENADE. It is kept only for a server where
+-- CancelAllExplosions is false. V4 explosionEvent.lua cancels every explosion
+-- immediately when that switch is on, before its damageScale <= 0 early
+-- return, so that method cannot reach the victim on the strict config.
 --
--- WHY IT IS NOT IN THE WAVE SHIELD EXPLOSION PATH
+-- WAVE SHIELD PARTICLE ORDER (V4 ptFxEvent.lua)
 --
--- V4 explosionEvent.lua line 59 is:
+--   1. Static whitelist: with EnableParticlesWhiteList, an effectHash and a
+--      non-nil assetHash not present in WhiteListedParticles is cancelled.
+--   2. Attachment owner: a particle attached to a networked entity owned by
+--      someone else is cancelled.
+--   3. Scale: scale above MaxParticleScale is cancelled.
+--   4. Dynamic AI: EnableParticlesAI requires
+--      playersWhitelistedParticles[source][effectHash] to be fresh. Older
+--      than 120 s is reported; older than 5 s is cancelled without report.
 --
---     if data.damageScale <= 0 then return end
+-- Auto Safe resolves the delivery at tick time:
+--   * an effect present in WhiteListedParticles is sent as-is;
+--   * otherwise core / exp_stun_grenade is used with the dynamic whitelist:
+--     __WaveShield:CreateParticle carries its hash and a started server
+--     resource, and Susano.OnTriggerServerEvent removes assetHash from the
+--     outbound ptFxEvent so the static branch cannot match;
+--   * if the dynamic request or its _ws:cb acknowledgement is unavailable, no
+--     native is called. The menu fails closed instead of sending a
+--     non-whitelisted effect.
 --
--- It runs before:
---   * vehicleNetworkId / projectile checks (line 60+),
---   * the blacklist (line 66),
---   * DetectInvisibleExplosions,
---   * DetectInaudibleExplosions,
---   * the 5-second limiter,
---   * the AI spawn check,
---   * the console log / SendLog tail.
---
--- damageScale = 0.0 therefore returns from the handler without a single read
--- of the type, the flags or the source count. isAudible=false and
--- isInvisible=false are free: the early return happens first. The event is
--- still sent by the game, so every client in scope renders the flash, but the
--- guard's handler never reaches a detection branch.
---
--- The explosion is placed at the victim's feet + 0.9 m. It creates no entity,
--- no object, no event, no state bag and no task. It writes nothing on the
--- victim or the operator. The only native that changes world state is the
--- explosion itself.
+-- The burst is placed at the victim's coordinates plus 1.0 m, not attached to
+-- an entity, and the scale is capped at MaxParticleScale. Two offset bursts
+-- are sent under that ceiling. Residual surface: the server log switch, and a
+-- custom resource that logs raw ptFxEvent independently of WaveShield.
 --
 -- RATE
 --
--- One flash per 0.7-1.2 s (O.jitter around 950 ms). A flashbang effect lasts
+-- One pulse per 0.7-1.2 s (O.jitter around 950 ms). A flashbang effect lasts
 -- long enough to overlap the next one, so the victim's screen stays washed
--- without a fixed machine-gun cadence. A custom server resource that logs the
--- raw explosionEvent stream (outside WaveShield) would see about one event per
--- second and a type that is not a projectile; that is the residual risk. No
--- stock WaveShield branch sees it.
+-- without a fixed machine-gun cadence.
 --
 -- TARGET RULES
 --
@@ -23515,27 +23536,53 @@ local FL = (function(O,Menu)
 local FL = {}
 
 local FLASH_TYPE = 78          -- EXP_TAG_FLASHGRENADE
-local DAMAGE_SCALE = 0.0       -- V4 early-return trigger
+local DAMAGE_SCALE = 0.0       -- only used when CancelAllExplosions is false
 local PERIOD_MS = 950
 local REACH_MAX = 300.0
 local SAFE_DIST = 0.0
-local OFFSET_Z = 0.9
+local OFFSET_Z = 1.0
 local TICK_MS = 250
+local MAX_SCALE = 8.0
+local CONFIG_TTL = 1500
+local WIRE_TTL = 5000
+local DYN_TTL = 4000
+
+-- The first candidate uses the base core particle dictionary and stays
+-- available even when no server resource has added an entry to the static
+-- whitelist. The second is the verified reference dict/effect pair from
+-- WaveShield's own auto-whitelist. When neither is statically listed, FL uses
+-- the first candidate through the dynamic whitelist path with assetHash
+-- stripped; a missing dict is never used as the fallback.
+local SAFE_CANDIDATES = {
+    { name = "Safe Stun", kind = "ptfx", dict = "core", effect = "exp_stun_grenade", scale = MAX_SCALE, white = false },
+    { name = "Safe Burnout", kind = "ptfx", dict = "scr_recartheft", effect = "scr_wheel_burnout", scale = MAX_SCALE, white = true },
+}
 
 FL.active = false
 FL.target = nil
 FL.nextAt = 0
 FL.reason = nil
 FL.method = 1
+FL.effective = nil
+FL.requiresWire = false
+FL.wire = nil
+FL.acCache = nil
+FL.acAt = 0
+FL.dynamic = {}
+FL.dynamicOk = type(Menu.__vgd_flashDynamicOk) == "table" and Menu.__vgd_flashDynamicOk or {}
+Menu.__vgd_flashDynamicOk = FL.dynamicOk
+FL.lastEffect = nil
+FL.maxScale = 10.0
 FL.methods = {
-    { name = "Clown Particle", kind = "ptfx", dict = "scr_rcbarry2", effect = "scr_clown_appears", scale = 2.0, white = true },
-    { name = "Clown Burst", kind = "ptfx", dict = "scr_rcbarry2", effect = "scr_exp_clown", scale = 2.0, white = true },
-    { name = "Clown Death", kind = "ptfx", dict = "scr_rcbarry2", effect = "scr_clown_death", scale = 2.0, white = true },
-    { name = "Stun Grenade", kind = "ptfx", dict = "core", effect = "exp_stun_grenade", scale = 1.8 },
-    { name = "Electric Arc", kind = "ptfx", dict = "core", effect = "ent_amb_elec_crackle", scale = 2.0 },
-    { name = "Taser Flash", kind = "ptfx", dict = "core", effect = "muz_stun_gun", scale = 2.0 },
-    { name = "FBI Flash", kind = "ptfx", dict = "des_fib_floor", effect = "ent_ray_fbi5a_ramp_explosion", scale = 2.0 },
-    { name = "Agency Arc", kind = "ptfx", dict = "scr_agencyheistb", effect = "scr_agency3b_elec_box", scale = 2.0 },
+    { name = "Auto Safe", kind = "auto" },
+    { name = "Clown Particle", kind = "ptfx", dict = "scr_rcbarry2", effect = "scr_clown_appears", scale = MAX_SCALE, white = true },
+    { name = "Clown Burst", kind = "ptfx", dict = "scr_rcbarry2", effect = "scr_exp_clown", scale = MAX_SCALE, white = true },
+    { name = "Clown Death", kind = "ptfx", dict = "scr_rcbarry2", effect = "scr_clown_death", scale = MAX_SCALE, white = true },
+    { name = "Stun Grenade", kind = "ptfx", dict = "core", effect = "exp_stun_grenade", scale = MAX_SCALE },
+    { name = "Electric Arc", kind = "ptfx", dict = "core", effect = "ent_amb_elec_crackle", scale = MAX_SCALE },
+    { name = "Taser Flash", kind = "ptfx", dict = "core", effect = "muz_stun_gun", scale = MAX_SCALE },
+    { name = "FBI Flash", kind = "ptfx", dict = "des_fib_floor", effect = "ent_ray_fbi5a_ramp_explosion", scale = MAX_SCALE },
+    { name = "Agency Arc", kind = "ptfx", dict = "scr_agencyheistb", effect = "scr_agency3b_elec_box", scale = MAX_SCALE },
     { name = "Explosion", kind = "explosion" },
 }
 FL.stats = { flashes = 0, skips = 0, fails = 0 }
@@ -23553,15 +23600,222 @@ local function log(fmt, ...)
     end
 end
 
-local function coordsOf(entity)
-    local ok, coords = pcall(GetEntityCoords, entity, true)
-    if ok and coords then return coords end
-    return nil
+local function hashMatches(a, b)
+    if a == b then return true end
+    if type(a) == "string" then
+        local ok, value = pcall(GetHashKey, a)
+        if not ok then return false end
+        a = value
+    end
+    if type(b) == "string" then
+        local ok, value = pcall(GetHashKey, b)
+        if not ok then return false end
+        b = value
+    end
+    if type(a) ~= "number" or type(b) ~= "number" then return false end
+    local ua = a < 0 and (a + 4294967296) or a
+    local ub = b < 0 and (b + 4294967296) or b
+    return ua == ub
+end
+
+local function acConfig()
+    local current = now()
+    if FL.acCache ~= nil and current - FL.acAt < CONFIG_TTL then
+        return FL.acCache
+    end
+
+    local cfg = nil
+    local gs = rawget(_G, "GlobalState")
+    if type(gs) == "table" then
+        local key = gs.CFct1C6gobnW4qkaQUx3Xk9Q
+        if type(key) == "string" then
+            cfg = gs[key]
+        end
+        if type(cfg) ~= "table" or type(cfg.Explosions) ~= "table" then
+            cfg = nil
+            local ok, found = pcall(function()
+                for _, value in pairs(gs) do
+                    if type(value) == "table" and type(value.Explosions) == "table" then
+                        return value
+                    end
+                end
+                return nil
+            end)
+            if ok then cfg = found end
+        end
+    end
+
+    FL.acCache = cfg
+    FL.acAt = current
+    return cfg
+end
+
+local function whitelisted(cfg, effect)
+    local ex = cfg and cfg.Explosions
+    local tbl = ex and ex.WhiteListedParticles
+    if type(tbl) ~= "table" or type(effect) ~= "string" then return false end
+    local hash = GetHashKey(effect)
+    local unsigned = hash < 0 and (hash + 4294967296) or hash
+    return tbl[hash] == true or tbl[unsigned] == true or tbl[effect] == true
+end
+
+local function safeCandidate(cfg)
+    if not cfg or type(cfg.Explosions) ~= "table" then
+        return SAFE_CANDIDATES[1]
+    end
+    local ex = cfg.Explosions
+    if ex.EnableParticlesWhiteList or ex.EnableParticlesAI then
+        for i = 1, #SAFE_CANDIDATES do
+            local candidate = SAFE_CANDIDATES[i]
+            if whitelisted(cfg, candidate.effect) then return candidate end
+        end
+        return nil
+    end
+    return SAFE_CANDIDATES[1]
 end
 
 local function currentMethod()
     local index = math.max(1, math.min(#FL.methods, tonumber(FL.method) or 1))
     return FL.methods[index]
+end
+
+local function resolveDelivery(cfg)
+    local method = currentMethod()
+    local ex = cfg and cfg.Explosions
+
+    if method.kind == "auto" then
+        local safe = safeCandidate(cfg)
+        if safe then return safe, false end
+        return SAFE_CANDIDATES[1], true
+    end
+
+    if method.kind == "explosion" then
+        if ex and ex.CancelAllExplosions then
+            local safe = safeCandidate(cfg)
+            if safe then return safe, false end
+            return SAFE_CANDIDATES[1], true
+        end
+        return method, false
+    end
+
+    if ex then
+        if whitelisted(cfg, method.effect) then return method, false end
+        local safe = safeCandidate(cfg)
+        if safe then return safe, false end
+        if ex.EnableParticlesWhiteList or ex.EnableParticlesAI then
+            return method, true
+        end
+    end
+    return method, false
+end
+
+local function canRewriteEvent()
+    local api = rawget(_G, "Susano")
+    return type(api) == "table" and type(api.OnTriggerServerEvent) == "function"
+end
+
+local function resourceName()
+    local gs = rawget(_G, "GlobalState")
+    local raw = gs and gs.WaveShield_ServerResources
+    local json = rawget(_G, "json")
+    if type(raw) == "string" and type(json) == "table"
+        and type(json.decode) == "function" then
+        local ok, serverMap = pcall(json.decode, raw)
+        if ok and type(serverMap) == "table" then
+            for name in pairs(serverMap) do
+                if type(name) == "string"
+                    and string.find(string.lower(name), "waveshield", 1, true) then
+                    return name
+                end
+            end
+            for name in pairs(serverMap) do
+                if type(name) == "string" then return name end
+            end
+        end
+    end
+
+    local preferred = {
+        "WaveShield", "waweshield", "es_extended", "qb-core", "qbx_core",
+        "ox_lib", "oxmysql", "monitor", "rcore_spray", "WaveAdmin",
+    }
+    for i = 1, #preferred do
+        local ok, state = pcall(GetResourceState, preferred[i])
+        if ok and state == "started" then return preferred[i] end
+    end
+    return "WaveShield"
+end
+
+local function rawServerEvent(name, ...)
+    local send = rawget(_G, "TriggerServerEventInternal")
+    local allowed = rawget(_G, "msgpack")
+    local packed = rawget(_G, "cmsgpack")
+    if type(send) ~= "function" then return false end
+    local args = { ... }
+    local ok, payload
+    if type(allowed) == "table" and type(allowed.pack_args) == "function" then
+        ok, payload = pcall(allowed.pack_args, ...)
+    elseif type(allowed) == "table" and type(allowed.pack) == "function" then
+        ok, payload = pcall(allowed.pack, args)
+    elseif type(packed) == "table" and type(packed.pack) == "function" then
+        ok, payload = pcall(packed.pack, args)
+    else
+        return false
+    end
+    if not ok or type(payload) ~= "string" then return false end
+    return (pcall(send, name, payload, #payload))
+end
+
+local function dynamicConfirmed(hash)
+    local direct = FL.dynamicOk[hash]
+    if type(direct) == "number" and now() - direct < DYN_TTL then return true end
+    local unsigned = hash < 0 and (hash + 4294967296) or hash
+    local alt = FL.dynamicOk[unsigned]
+    return type(alt) == "number" and now() - alt < DYN_TTL
+end
+
+local function ensureDynamic(method, cfg)
+    if not method or not cfg or type(cfg.Explosions) ~= "table" then return false end
+    local ex = cfg.Explosions
+    if not ex.EnableParticlesAI and not ex.EnableParticlesWhiteList then return false end
+    if type(method.effect) ~= "string" then return false end
+    local hash = GetHashKey(method.effect)
+    if dynamicConfirmed(hash) then return true end
+
+    local last = FL.dynamic[hash]
+    if type(last) == "number" and now() - last < DYN_TTL then return false end
+    FL.dynamic[hash] = now()
+    rawServerEvent("__WaveShield:CreateParticle", hash, 0, resourceName())
+    return false
+end
+
+-- WaveShield's server acknowledges a dynamic particle entry with _ws:cb.
+-- Receipt is the only proof that the resourceName passed serverResources and
+-- that playersWhitelistedParticles was actually written. Until that event
+-- arrives, FL does not emit: a stripped assetHash without a server-side entry
+-- is exactly the ANTI_SPAWN_PARTICLE condition.
+local function rememberDynamic(hash)
+    if type(hash) ~= "number" then return end
+    local at = now()
+    FL.dynamicOk[hash] = at
+    local unsigned = hash < 0 and (hash + 4294967296) or hash
+    FL.dynamicOk[unsigned] = at
+end
+
+if not Menu.__vgd_flashWsBound then
+    Menu.__vgd_flashWsBound = true
+    if type(RegisterNetEvent) == "function" then
+        pcall(RegisterNetEvent, "_ws:cb")
+    end
+    if type(AddEventHandler) == "function" then
+        pcall(AddEventHandler, "_ws:cb", rememberDynamic)
+    end
+end
+Menu.__vgd_flashAck = rememberDynamic
+
+local function coordsOf(entity)
+    local ok, coords = pcall(GetEntityCoords, entity, true)
+    if ok and coords then return coords end
+    return nil
 end
 
 local function emitParticle(method, coords)
@@ -23576,21 +23830,68 @@ local function emitParticle(method, coords)
     end
     if not loaded then return nil end
 
-    pcall(UseParticleFxAssetNextCall, method.dict)
-    if method.white then
-        pcall(SetParticleFxNonLoopedColour, 1.0, 1.0, 1.0)
+    local scale = tonumber(method.scale) or 5.0
+    local ceiling = tonumber(FL.maxScale) or 10.0
+    if ceiling > 0.0 and scale > ceiling then scale = ceiling end
+    if scale < 1.0 then scale = 1.0 end
+
+    local sent = 0
+    local ox = math.random(-18, 18) / 100.0
+    local oy = math.random(-18, 18) / 100.0
+    local oz = math.random(0, 12) / 100.0
+
+    for i = 1, 2 do
+        pcall(UseParticleFxAssetNextCall, method.dict)
+        if method.white then
+            pcall(SetParticleFxNonLoopedColour, 1.0, 1.0, 1.0)
+        end
+        local x = coords.x + (i == 1 and 0.0 or ox)
+        local y = coords.y + (i == 1 and 0.0 or oy)
+        local z = coords.z + OFFSET_Z + (i == 1 and 0.0 or oz)
+        local okay = pcall(StartNetworkedParticleFxNonLoopedAtCoord,
+            method.effect, x, y, z,
+            0.0, 0.0, 0.0, scale, false, false, false, false)
+        if okay then sent = sent + 1 end
     end
 
-    local okay = pcall(StartNetworkedParticleFxNonLoopedAtCoord,
-        method.effect, coords.x, coords.y, coords.z + OFFSET_Z,
-        0.0, 0.0, 0.0, method.scale or 1.5, false, false, false, false)
-    if okay then return true end
+    return sent > 0
+end
 
-    -- Last-resort local burst: still shows the chosen effect on this client
-    -- when the installed executor lacks the networked variant.
-    return pcall(StartParticleFxNonLoopedAtCoord,
-        method.effect, coords.x, coords.y, coords.z + OFFSET_Z,
-        0.0, 0.0, 0.0, method.scale or 1.5, false, false, false, false)
+Menu.__vgd_onOutbound = function(name, payload)
+    local wire = FL.wire
+    if name ~= "ptFxEvent" or not wire or now() > wire.expires then return nil end
+
+    local mp = rawget(_G, "msgpack")
+    local cpack = rawget(_G, "cmsgpack")
+    local unpack = (type(mp) == "table" and mp.unpack) or (type(cpack) == "table" and cpack.unpack)
+    local pack = (type(cpack) == "table" and cpack.pack) or (type(mp) == "table" and mp.pack)
+    if type(unpack) ~= "function" or type(pack) ~= "function" then return nil end
+
+    local ok, args = pcall(unpack, payload)
+    if not ok or type(args) ~= "table" then return nil end
+
+    local changed = false
+    local function walk(node, depth)
+        if not changed and type(node) == "table" and depth <= 5 then
+            local effectType = type(node.effectHash)
+            if (effectType == "number" or effectType == "string")
+                and hashMatches(node.effectHash, wire.hash) then
+                node.assetHash = nil
+                changed = true
+                return
+            end
+            for _, value in pairs(node) do
+                if type(value) == "table" then walk(value, depth + 1) end
+                if changed then return end
+            end
+        end
+    end
+    walk(args, 1)
+    if not changed then return nil end
+
+    local okPack, bytes = pcall(pack, args)
+    if not okPack or type(bytes) ~= "string" then return nil end
+    return name, bytes
 end
 
 local function isDead(ped)
@@ -23711,13 +24012,40 @@ local function tickCore()
         if type(selected) == "number" then FL.method = selected end
     end
 
-    local method = currentMethod()
+    local cfg = acConfig()
+    local ex = cfg and cfg.Explosions
+    local maxScale = tonumber(ex and ex.MaxParticleScale) or 10.0
+    if maxScale < 1.0 then maxScale = 10.0 end
+    FL.maxScale = maxScale
+
+    local effective, needsWire = resolveDelivery(cfg)
+    FL.effective = effective
+    FL.requiresWire = needsWire
+    FL.lastEffect = effective and effective.effect or nil
+    FL.wire = nil
+
     local emitted
-    if method.kind == "explosion" then
+    if effective and effective.kind == "explosion" then
         emitted = pcall(AddExplosion, coords.x, coords.y, coords.z + OFFSET_Z,
             FLASH_TYPE, DAMAGE_SCALE, false, false, 0.0)
+    elseif effective then
+        if needsWire then
+            if type(effective.effect) ~= "string" or not canRewriteEvent() then
+                FL.nextAt = now() + 120
+                return
+            end
+            if not ensureDynamic(effective, cfg) then
+                -- The server acknowledgement has not arrived yet, or the
+                -- request could not be sent. Do not call the native: a
+                -- non-whitelisted effect here is worse than no effect.
+                FL.nextAt = now() + 120
+                return
+            end
+            FL.wire = { hash = GetHashKey(effective.effect), expires = now() + WIRE_TTL }
+        end
+        emitted = emitParticle(effective, coords)
     else
-        emitted = emitParticle(method, coords)
+        emitted = false
     end
 
     if emitted == nil then
@@ -23768,6 +24096,9 @@ function FL.stop(reason)
     FL.active = false
     FL.target = nil
     FL.reason = reason
+    FL.wire = nil
+    FL.requiresWire = false
+    FL.effective = nil
 end
 
 function FL.status()
@@ -23776,6 +24107,10 @@ function FL.status()
     if not t then return "Flash idle" end
     return ("Flash %s | %.0f m | %d"):format(t.name, t.dist or 0.0, FL.stats.flashes)
 end
+
+-- Internal smoke seam. It is not a menu row and never calls a native by
+-- itself; the scheduled task remains the only production caller.
+Menu.__vgd_flashTick = FL.tick
 
 -- One low-frequency scheduler task. The task keeps running while idle; it
 -- returns immediately unless FL.active, so no thread churn per toggle.
@@ -33602,46 +33937,108 @@ end
 Menu.__vgd_installSink = installSink
 
 -- ---------------------------------------------------------------------------
--- EXPLOIT > FLASH
+-- ONLINE > TROLL > ATTACKS > FLASH
 --
--- One toggle and a method row: FL takes Menu.SelectedPlayer, then the nearest
--- living player inside 300 m. The particle methods use the networked non-looped
--- FX path at the victim; the legacy Explosion method uses type 78
--- (EXP_TAG_FLASHGRENADE) with damageScale 0.0, which returns from the V4
--- explosion handler at line 59 before any detection branch. The tab is
--- separate from the Exploit tab so the Fight Party surface stays on the first
--- page; Flash is one click away.
+-- Flash lives with the other player-directed attacks. The installer removes
+-- the old Exploit > Flash tab and any earlier Troll copy before inserting the
+-- rows immediately below the Attacks separator. The selected row is restored
+-- by object first and by label second, so a reload with Troll open keeps the
+-- cursor on the row the operator was using.
+--
+-- The method selector is only a preference. FL resolves the actual delivery
+-- channel at tick time from the server's particle configuration: a native
+-- whitelisted effect when one is available, otherwise the safe particle plus
+-- the dynamic whitelist path. No row promises a channel the server cancels.
 -- ---------------------------------------------------------------------------
 local function installFlash()
-    local category = findCategory("Exploit")
-    if not category then return false end
-    category.tabs = category.tabs or {}
+    local troll = findTab("Online", "Troll")
+    if not troll then return false end
+    troll.items = troll.items or {}
 
-    for i = #category.tabs, 1, -1 do
-        local entry = category.tabs[i]
-        if entry and entry.name == "Flash" then
-            table.remove(category.tabs, i)
+    local online = findCategory("Online")
+    local trollOpen = online
+        and type(Menu.OpenedCategory) == "number"
+        and type(Menu.Categories) == "table"
+        and Menu.Categories[Menu.OpenedCategory] == online
+        and type(Menu.CurrentTab) == "number"
+        and online.tabs
+        and online.tabs[Menu.CurrentTab] == troll
+
+    local selected = nil
+    if trollOpen and type(Menu.CurrentItem) == "number" then
+        selected = troll.items[Menu.CurrentItem]
+    end
+
+    -- Remove the retired Exploit tab, including an open copy. Clamp the
+    -- Exploit cursor only when Exploit is the visible category.
+    local exploit = findCategory("Exploit")
+    if exploit and type(exploit.tabs) == "table" then
+        local exploitOpen = type(Menu.OpenedCategory) == "number"
+            and type(Menu.Categories) == "table"
+            and Menu.Categories[Menu.OpenedCategory] == exploit
+        for i = #exploit.tabs, 1, -1 do
+            if exploit.tabs[i] and exploit.tabs[i].name == "Flash" then
+                table.remove(exploit.tabs, i)
+            end
         end
+        if exploitOpen then
+            local tabCount = #exploit.tabs
+            if tabCount < 1 then
+                Menu.CurrentTab = 1
+            else
+                local current = tonumber(Menu.CurrentTab) or 1
+                if current < 1 then current = 1 end
+                if current > tabCount then current = tabCount end
+                Menu.CurrentTab = current
+                local activeTab = exploit.tabs[current]
+                local itemCount = activeTab and type(activeTab.items) == "table"
+                    and #activeTab.items or 0
+                if itemCount < 1 then
+                    Menu.CurrentItem = 1
+                else
+                    local currentItem = tonumber(Menu.CurrentItem) or 1
+                    if currentItem < 1 then currentItem = 1 end
+                    if currentItem > itemCount then currentItem = itemCount end
+                    Menu.CurrentItem = currentItem
+                end
+            end
+        end
+    end
+
+    -- Sweep every historical label before inserting. "Method" and
+    -- "Flash loop" are the labels used by the retired Exploit tab; the new
+    -- names are explicit so they cannot collide with another Troll row.
+    for i = #troll.items, 1, -1 do
+        local item = troll.items[i]
+        local drop = item.name == "Flash Method"
+            or item.name == "Flash Loop"
+            or item.name == "Method"
+            or item.name == "Flash loop"
+            or (item.isSeparator and item.separatorText == "Flash")
+        if drop then table.remove(troll.items, i) end
     end
 
     local methodOptions = {}
     for i = 1, #FL.methods do
         methodOptions[i] = FL.methods[i].name
     end
+    local selectedMethod = math.max(1, math.min(#FL.methods, tonumber(FL.method) or 1))
 
     local methodRow = {
-        name = "Method",
+        name = "Flash Method",
         type = "selector",
         options = methodOptions,
-        selected = FL.method or 1,
+        selected = selectedMethod,
         onClick = function(index)
-            FL.method = index
+            FL.method = math.max(1, math.min(#FL.methods, tonumber(index) or 1))
+            local current = Menu.__vgd_flashMethodRow
+            if type(current) == "table" then current.selected = FL.method end
         end,
     }
 
     local toggle
     toggle = {
-        name = "Flash loop",
+        name = "Flash Loop",
         type = "toggle",
         value = FL.active == true,
         onClick = function(value)
@@ -33649,7 +34046,7 @@ local function installFlash()
             if value then
                 local methodRowNow = Menu.__vgd_flashMethodRow
                 if type(methodRowNow) == "table" and type(methodRowNow.selected) == "number" then
-                    FL.method = methodRowNow.selected
+                    FL.method = math.max(1, math.min(#FL.methods, methodRowNow.selected))
                 end
                 active = FL.start()
             else
@@ -33661,23 +34058,48 @@ local function installFlash()
         end,
     }
 
-    local tab = {
-        name = "Flash",
-        items = {
-            {
-                name = "",
-                isSeparator = true,
-                separatorText = "Screen",
-            },
-            methodRow,
-            toggle,
-        },
-    }
+    local insertAt = 1
+    for i = 1, #troll.items do
+        local item = troll.items[i]
+        if item.isSeparator and item.separatorText == "Attacks" then
+            insertAt = i + 1
+            break
+        end
+    end
+    table.insert(troll.items, insertAt, methodRow)
+    table.insert(troll.items, insertAt + 1, toggle)
 
-    table.insert(category.tabs, 2, tab)
     Menu.__vgd_flashRow = toggle
     Menu.__vgd_flashMethodRow = methodRow
-    Menu.__vgd_flashTab = tab
+    Menu.__vgd_flashTab = nil
+
+    if trollOpen then
+        local restored = false
+        if selected then
+            for i = 1, #troll.items do
+                if troll.items[i] == selected then
+                    Menu.CurrentItem = i
+                    restored = true
+                    break
+                end
+            end
+        end
+        if not restored and selected and selected.name then
+            for i = 1, #troll.items do
+                if troll.items[i].name == selected.name then
+                    Menu.CurrentItem = i
+                    restored = true
+                    break
+                end
+            end
+        end
+        if not restored then
+            local currentItem = tonumber(Menu.CurrentItem) or 1
+            if currentItem < 1 then currentItem = 1 end
+            if currentItem > #troll.items then currentItem = #troll.items end
+            Menu.CurrentItem = math.max(1, currentItem)
+        end
+    end
 
     if not Menu.__vgd_flashSync and type(O) == "table" and type(O.every) == "function" then
         Menu.__vgd_flashSync = true
@@ -33685,6 +34107,10 @@ local function installFlash()
             local row = Menu.__vgd_flashRow
             if row and row.value ~= FL.active then
                 row.value = FL.active
+            end
+            local method = Menu.__vgd_flashMethodRow
+            if method and type(FL.method) == "number" and method.selected ~= FL.method then
+                method.selected = FL.method
             end
         end)
     end
@@ -35194,22 +35620,22 @@ end
 -- EXPLOIT TAB ORDER
 --
 -- The base Exploit surface is the collapsed "Exploit" tab. Servers is defined
--- with the category; Voice, Flash and Bypass are added by their installers.
--- Append order is not display order. Keep the operator-facing order stable:
+-- with the category; Voice and Bypass are added by their installers. Append
+-- order is not display order. Keep the operator-facing order stable:
 --
---   Exploit | Servers | Voice | Flash | Bypass
+--   Exploit | Servers | Voice | Bypass
 --
 -- Exploit stays first because installCrasher() also treats it as the home
--- tab; the new server and voice surfaces follow it. Unknown tabs are left
--- after the known ones in their original order, so a future base tab is not
--- silently deleted.
+-- tab; the new server and voice surfaces follow it. Flash moved to
+-- Online > Troll > Attacks, so no Flash tab belongs here. Unknown tabs are
+-- left after the known ones in their original order, so a future base tab is
+-- not silently deleted.
 -- ---------------------------------------------------------------------------
 local EXPLOIT_TAB_ORDER = {
     Exploit = 1,
     Servers = 2,
     Voice = 3,
-    Flash = 4,
-    Bypass = 5,
+    Bypass = 4,
 }
 
 local function reorderExploitTabs()
@@ -35433,7 +35859,7 @@ end
 -- BOOT
 -- ---------------------------------------------------------------------------
 function UI.boot()
-    O.log("loader build 2026-11-07-r41 (Flash tab has a Method selector with Clown Particle, Clown Burst, Clown Death, Stun Grenade, Electric Arc, Taser Flash, FBI Flash, Agency Arc and Explosion; the selected method is read live and the particle loop uses networked non-looped FX at the victim with no minimum range; white clown variants use SET_PARTICLE_FX_NON_LOOPED_COLOUR; Search magnifier handle rebuilt as a fused diagonal instead of three dots; White keeps the wbYgWhZ banner and Cyan restores its original 3HLMxX5 banner; Online Props Player row sorts the player list by distance and always targets the nearest player; Launch Player selector offers Method 1 and Method 2; Method 1 drives the victim ped directly when control is available and otherwise reverse-attaches the victim to the local ped within 3 m; Method 2 uses a range-free injected coordinate lift plus repeated upward force and velocity for servers that ignore Method 1; launch has no vehicle or explosion; hardened Susano ragdoll keeps the victim speed check lenient; self launch uses 58 m/s with GET_ENTITY_SPEED masked by the stealth hook; velocity and settle waits carry jitter; tight bold category chevrons; Troll Appearance section and Copy Appearance row removed; All mode Include me toggle adds the local ped alongside remote targets; Props Player row hidden in Self and All modes; attachment rows Attach to player and Attach point removed; target labels Self/Player/All; automatic player refresh sorts by distance and selects nearest; manual Refresh player list removed; Ban Player beta suffix removed; Servers and Bypass tabs moved from Destroyer to Misc; FOV moved from Visual/Camera to Self under Big Weapon; theme banners bottom-anchored flush on the category plate; White uses wbYgWhZ and Cyan uses 3HLMxX5; White/Cyan theme selector; 3:1 header; flush tab strip; light-grey cell tab plate; dark selected category rectangle; uniform unselected categories; reference names Self/Online/Vehicle/Weapon/Destroyer/Misc/Settings/Search; Search category opens the prompt directly and lands on results; compact magnifier; tight bold category chevron pair; full-white section rules fitted to the label width; Target keeps only the Ctrl hint; Player Props folded into Online; 15px right-aligned slider readout; target-bound toggles reset on target change/unload; dark row plates; white toggle/scrollbar; footer centre mark removed; Delete/Backspace close)")
+    O.log("loader build 2026-11-07-r42 (Flash moved to Online > Troll > Attacks with Auto Safe and nine explicit methods; the selected method is read live; the WaveShield V4 particle configuration is read from GlobalState and delivery uses the first native-whitelisted safe effect or a dynamic-whitelisted core flash with assetHash stripped on ptFxEvent; particle scale is capped at MaxParticleScale and each pulse sends two networked bursts with no minimum range; the retired Exploit Flash tab is removed; Search magnifier handle rebuilt as a fused diagonal instead of three dots; White keeps the wbYgWhZ banner and Cyan restores its original 3HLMxX5 banner; Online Props Player row sorts the player list by distance and always targets the nearest player; Launch Player selector offers Method 1 and Method 2; Method 1 drives the victim ped directly when control is available and otherwise reverse-attaches the victim to the local ped within 3 m; Method 2 uses a range-free injected coordinate lift plus repeated upward force and velocity for servers that ignore Method 1; launch has no vehicle or explosion; hardened Susano ragdoll keeps the victim speed check lenient; self launch uses 58 m/s with GET_ENTITY_SPEED masked by the stealth hook; velocity and settle waits carry jitter; tight bold category chevrons; Troll Appearance section and Copy Appearance row removed; All mode Include me toggle adds the local ped alongside remote targets; Props Player row hidden in Self and All modes; attachment rows Attach to player and Attach point removed; target labels Self/Player/All; automatic player refresh sorts by distance and selects nearest; manual Refresh player list removed; Ban Player beta suffix removed; Servers and Bypass tabs moved from Destroyer to Misc; FOV moved from Visual/Camera to Self under Big Weapon; theme banners bottom-anchored flush on the category plate; White uses wbYgWhZ and Cyan uses 3HLMxX5; White/Cyan theme selector; White 3:1 header and Cyan 4.1:1 header; flush tab strip; light-grey cell tab plate; dark selected category rectangle; uniform unselected categories; reference names Self/Online/Vehicle/Weapon/Destroyer/Misc/Settings/Search; Search category opens the prompt directly and lands on results; compact magnifier; tight bold category chevron pair; full-white section rules fitted to the label width; Target keeps only the Ctrl hint; Player Props folded into Online; 15px right-aligned slider readout; target-bound toggles reset on target change/unload; dark row plates; white toggle/scrollbar; footer centre mark removed; Delete/Backspace close)")
     O.thread()
 
     -- Delete/Backspace fallback poll. 40 ms is faster than a frame at 30 FPS
