@@ -459,7 +459,7 @@ end
 local Menu = chunk()
 
 -- ============================================
--- PATCH: Delete / Suppr closes the menu
+-- PATCH: Delete / Suppr / Backspace closes the menu
 -- ============================================
 -- The library calls Menu.HandleInput() by field on every render frame, so
 -- replacing the field is independent of the downloaded text. The check is a
@@ -31761,19 +31761,22 @@ end
 --
 -- The library toggles the menu with the key the operator configured in
 -- Settings (Menu.SelectedKey); there is no hard-coded M. Physical Delete /
--- Suppr (VK_DELETE = 0x2E) is a second, independent key:
+-- Suppr (VK_DELETE = 0x2E) is a second, independent key. The key directly
+-- above Enter is Backspace (VK_BACK = 0x08) on most layouts; it gets the same
+-- main-page close so the operator does not have to guess which physical key
+-- the menu expects.
 --
---   * inside a category it takes the library's Backspace path: a top-level
+--   * inside a category Delete takes the library's Backspace path: a top-level
 --     autoOpen group first returns to its first tab, any other category goes
---     back to the main page and resets the cursor;
---   * on the main page it closes the menu, which is the one action the
+--     back to the main page and resets the cursor. Backspace is left to the
+--     library's own navigation branch so its behavior does not change;
+--   * on the main page both keys close the menu, which is the one action the
 --     library's own Backspace branch cannot reach.
 --
--- One edge per press: holding the key never repeats. The key is tracked while
--- the menu is closed, so opening the menu while Delete is already held does
--- not immediately close what the operator just opened. The key is ignored
--- while a key/bind/input capture is open, and while Delete itself is the menu
--- toggle.
+-- One edge per press: holding a key never repeats. Both keys are tracked while
+-- the menu is closed, so opening the menu while one is already held does not
+-- immediately close what the operator just opened. A key is ignored while a
+-- key/bind/input capture is open, and while that same key is the menu toggle.
 --
 -- Two callers, one function: the HandleInput wrapper installed in loader.lua
 -- calls it on the library's own frame loop (frame-accurate, catches a fast tap
@@ -31803,6 +31806,15 @@ local function hideMenu(fromFrame)
 end
 
 local deleteHeld = false
+local backspaceHeld = false
+
+local function readKeyEdge(key, held)
+    local ok, down, pressed = pcall(Susano.GetAsyncKeyState, key)
+    if not ok then return false, held end
+    down = down == true or down == 1
+    pressed = pressed == true or pressed == 1
+    return pressed or (down and not held), down
+end
 
 local function deleteTick(fromFrame)
     if type(Menu) ~= "table" then return false end
@@ -31810,20 +31822,37 @@ local function deleteTick(fromFrame)
         return false
     end
 
-    local ok, down, pressed = pcall(Susano.GetAsyncKeyState, 0x2E)
-    if not ok then return false end
-    down = down == true or down == 1
-    pressed = pressed == true or pressed == 1
+    -- Read both close keys on every frame, even while the menu is hidden, so a
+    -- key held before opening cannot immediately close the menu. The held flags
+    -- are independent: one key cannot consume the other key's edge.
+    local deleteEdge, deleteDown = readKeyEdge(0x2E, deleteHeld)
+    local backEdge, backDown = readKeyEdge(0x08, backspaceHeld)
+    deleteHeld = deleteDown
+    backspaceHeld = backDown
 
-    -- The physical edge is tracked even while the menu is closed. If Delete is
-    -- already held when the menu opens, the first tick must not act on it.
-    local edge = pressed or (down and not deleteHeld)
-    deleteHeld = down
+    local key
+    if deleteEdge then
+        key = 0x2E
+    elseif backEdge then
+        key = 0x08
+    else
+        return false
+    end
 
-    if not edge then return false end
     if Menu.Visible ~= true then return false end
     if Menu.SelectingKey or Menu.SelectingBind or Menu.InputOpen then return false end
-    if Menu.SelectedKey == 0x2E then return false end
+    if Menu.SelectedKey == key then return false end
+
+    if key == 0x08 then
+        -- The library owns Backspace inside a category. Leave that branch
+        -- untouched and only add the main-page close the library lacks.
+        if Menu.OpenedCategory ~= nil then return false end
+        if type(O) == "table" and type(O.log) == "function" then
+            O.log("delete: backspace close")
+        end
+        return hideMenu(fromFrame)
+    end
+
     if type(O) == "table" and type(O.log) == "function" then
         O.log("delete: edge (category=%s)", tostring(Menu.OpenedCategory))
     end
@@ -34287,15 +34316,15 @@ end
 -- BOOT
 -- ---------------------------------------------------------------------------
 function UI.boot()
-    O.log("loader build 2026-11-07-r14 (Exploit Servers + Voice tabs; Menu Staff seed after Dynasty Revive; stable tab order)")
+    O.log("loader build 2026-11-07-r15 (Delete/Backspace close; Exploit Servers + Voice tabs; Menu Staff seed after Dynasty Revive; stable tab order)")
     O.thread()
 
-    -- Delete fallback poll. 40 ms is faster than a frame at 30 FPS and cheap
-    -- enough for a single GetAsyncKeyState call. The frame-accurate caller is
-    -- the hook loader.lua injects into Menu.HandleInput; this one keeps the
-    -- key working if the remote library ever loses that marker. Register it
-    -- before A.boot() so a protection arm error cannot leave the menu without
-    -- its close key.
+    -- Delete/Backspace fallback poll. 40 ms is faster than a frame at 30 FPS
+    -- and cheap enough for two GetAsyncKeyState calls. The frame-accurate
+    -- caller is the hook loader.lua injects into Menu.HandleInput; this one
+    -- keeps both close keys working if the remote library ever loses that
+    -- marker. Register it before A.boot() so a protection arm error cannot
+    -- leave the menu without its close keys.
     O.every("menuHide", 40, Menu.__vgdDeleteTick, 0)
 
     A.boot()
