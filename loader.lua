@@ -22993,7 +22993,7 @@ local function targetFromSelection()
     if not okPed or type(ped) ~= "number" or ped == 0 then return nil end
     if not DoesEntityExist(ped) or isDead(ped) then return nil end
 
-    return packPlayer(player, ped)
+    return packPlayer(player, ped, serverId)
 end
 
 local function resolveTarget()
@@ -23013,7 +23013,8 @@ local function resolveTarget()
             local ped = GetPlayerPed(player)
             if ped and ped ~= 0 and ped ~= me
                 and DoesEntityExist(ped) and not isDead(ped) then
-                local entry = packPlayer(player, ped)
+                local okSid, sid = pcall(GetPlayerServerId, player)
+                local entry = packPlayer(player, ped, okSid and sid or nil)
                 if entry then
                     entry.dist = distance(meCoords, entry.coords)
                     if entry.dist <= REACH_MAX and (not best or entry.dist < best.dist) then
@@ -23595,9 +23596,9 @@ local DYN_TTL = 4000
 -- autoWhiteList table. When none is statically listed, FL uses the first
 -- candidate through the dynamic whitelist path with assetHash stripped.
 local SAFE_CANDIDATES = {
-    { name = "Safe Camera", kind = "ptfx", dict = "scr_bike_business", effect = "scr_bike_cfid_camera_flash", scale = MAX_SCALE, white = true },
-    { name = "Safe Alien", kind = "ptfx", dict = "scr_rcbarry1", effect = "scr_alien_teleport", scale = MAX_SCALE, white = true },
     { name = "Safe Burnout", kind = "ptfx", dict = "scr_recartheft", effect = "scr_wheel_burnout", scale = MAX_SCALE, white = true },
+    { name = "Safe Alien", kind = "ptfx", dict = "scr_rcbarry1", effect = "scr_alien_teleport", scale = MAX_SCALE, white = true },
+    { name = "Safe Camera", kind = "ptfx", dict = "scr_bike_business", effect = "scr_bike_cfid_camera_flash", scale = MAX_SCALE, white = true },
 }
 
 FL.active = false
@@ -23639,9 +23640,9 @@ FL.methods = {
     {
         name = "Auto Safe", kind = "ptfx", safe = true,
         parts = {
-            flashPart(CAMERA_DICT, CAMERA_FX, 8.0, { 1.00, 1.00, 1.00 }, 0.0, 0.0, 1.0),
+            flashPart(BURNOUT_DICT, BURNOUT_FX, 8.0, { 1.00, 0.45, 0.08 }, 0.0, 0.0, 1.0),
             flashPart(ALIEN_DICT, ALIEN_FX, 6.0, { 0.25, 0.90, 1.00 }, 1.2, -0.9, 0.5),
-            flashPart(BURNOUT_DICT, BURNOUT_FX, 7.0, { 1.00, 0.45, 0.08 }, -1.3, 1.0, 1.9),
+            flashPart(CAMERA_DICT, CAMERA_FX, 7.0, { 1.00, 1.00, 1.00 }, -1.3, 1.0, 1.9),
         },
     },
     {
@@ -23655,8 +23656,9 @@ FL.methods = {
     {
         name = "Alien Cyan", kind = "ptfx", safe = true,
         parts = {
-            flashPart(ALIEN_DICT, ALIEN_FX, 7.0, { 0.10, 0.75, 1.00 }, 0.0, 0.0, 1.1),
-            flashPart(CAMERA_DICT, CAMERA_FX, 5.0, { 0.35, 1.00, 1.00 }, -1.1, 0.8, 0.4),
+            flashPart(BURNOUT_DICT, BURNOUT_FX, 7.0, { 0.05, 0.60, 1.00 }, 0.0, 0.0, 1.1),
+            flashPart(ALIEN_DICT, ALIEN_FX, 7.0, { 0.10, 0.75, 1.00 }, 0.9, -0.4, 0.6),
+            flashPart(CAMERA_DICT, CAMERA_FX, 5.0, { 0.35, 1.00, 1.00 }, -1.1, 0.8, 1.6),
         },
     },
     {
@@ -23669,8 +23671,9 @@ FL.methods = {
     {
         name = "Pink Clown", kind = "ptfx", safe = true,
         parts = {
-            flashPart(CAMERA_DICT, CAMERA_FX, 7.0, { 1.00, 0.10, 0.75 }, 0.0, 0.0, 1.2),
-            flashPart(ALIEN_DICT, ALIEN_FX, 6.0, { 1.00, 0.35, 0.85 }, -1.3, -0.6, 0.7),
+            flashPart(BURNOUT_DICT, BURNOUT_FX, 7.0, { 1.00, 0.20, 0.80 }, 0.0, 0.0, 1.2),
+            flashPart(CAMERA_DICT, CAMERA_FX, 6.0, { 1.00, 0.10, 0.75 }, -0.9, -0.6, 0.7),
+            flashPart(ALIEN_DICT, ALIEN_FX, 6.0, { 1.00, 0.35, 0.85 }, 1.3, 0.8, 1.7),
         },
     },
     {
@@ -23721,7 +23724,18 @@ FL.methods = {
         },
     },
 }
+-- Warm the three assets once at load. The tick still requests on every pulse
+-- when one is missing, but this removes the first-second delay after a reload.
+if type(RequestNamedPtfxAsset) == "function" then
+    pcall(RequestNamedPtfxAsset, CAMERA_DICT)
+    pcall(RequestNamedPtfxAsset, ALIEN_DICT)
+    pcall(RequestNamedPtfxAsset, BURNOUT_DICT)
+end
+
 FL.stats = { flashes = 0, skips = 0, fails = 0 }
+FL.graft = nil
+FL.graftToken = 0
+FL.graftKeys = nil
 FL.flashType = FLASH_TYPE
 FL.damageScale = DAMAGE_SCALE
 FL.safeDist = SAFE_DIST
@@ -23754,9 +23768,25 @@ local function hashMatches(a, b)
     return ua == ub
 end
 
+local function decodeState(value)
+    if type(value) == "table" then return value end
+    if type(value) ~= "string" then return nil end
+    local json = rawget(_G, "json")
+    if type(json) == "table" and type(json.decode) == "function" then
+        local ok, decoded = pcall(json.decode, value)
+        if ok and type(decoded) == "table" then return decoded end
+    end
+    local cjson = rawget(_G, "cjson")
+    if type(cjson) == "table" and type(cjson.decode) == "function" then
+        local ok, decoded = pcall(cjson.decode, value)
+        if ok and type(decoded) == "table" then return decoded end
+    end
+    return nil
+end
+
 local function acConfig()
     local current = now()
-    if FL.acCache ~= nil and current - FL.acAt < CONFIG_TTL then
+    if (FL.acAt or 0) > 0 and current - FL.acAt < CONFIG_TTL then
         return FL.acCache
     end
 
@@ -23765,14 +23795,16 @@ local function acConfig()
     if type(gs) == "table" then
         local key = gs.CFct1C6gobnW4qkaQUx3Xk9Q
         if type(key) == "string" then
-            cfg = gs[key]
+            cfg = decodeState(gs[key])
         end
         if type(cfg) ~= "table" or type(cfg.Explosions) ~= "table" then
             cfg = nil
             local ok, found = pcall(function()
                 for _, value in pairs(gs) do
-                    if type(value) == "table" and type(value.Explosions) == "table" then
-                        return value
+                    local decoded = decodeState(value)
+                    if type(decoded) == "table"
+                        and type(decoded.Explosions) == "table" then
+                        return decoded
                     end
                 end
                 return nil
@@ -23789,10 +23821,34 @@ end
 local function whitelisted(cfg, effect)
     local ex = cfg and cfg.Explosions
     local tbl = ex and ex.WhiteListedParticles
+    if type(tbl) ~= "table" then tbl = decodeState(tbl) end
     if type(tbl) ~= "table" or type(effect) ~= "string" then return false end
     local hash = GetHashKey(effect)
     local unsigned = hash < 0 and (hash + 4294967296) or hash
-    return tbl[hash] == true or tbl[unsigned] == true or tbl[effect] == true
+    -- GlobalState configuration is transported as JSON, so numeric table keys
+    -- become decimal strings on decode. Check both forms; without this the
+    -- entire static whitelist reads as empty and every pulse is forced down
+    -- the slow dynamic path.
+    if tbl[hash] == true
+        or tbl[unsigned] == true
+        or tbl[tostring(hash)] == true
+        or tbl[tostring(unsigned)] == true
+        or tbl[effect] == true then
+        return true
+    end
+    -- Some builds serialise the whitelist as an array of hash values rather
+    -- than a hash-keyed object. Walk it once; the list is small and this is
+    -- only reached when the three direct lookups missed.
+    for _, value in pairs(tbl) do
+        if value == hash or value == unsigned or value == effect then
+            return true
+        end
+        if type(value) == "string"
+            and (value == tostring(hash) or value == tostring(unsigned)) then
+            return true
+        end
+    end
+    return false
 end
 
 local function safeCandidate(cfg)
@@ -23815,6 +23871,36 @@ local function currentMethod()
     return FL.methods[index]
 end
 
+-- Two effects are present in autoWhiteList.lua itself:
+--   * scr_wheel_burnout is under the "default" Particles table and is always
+--     present after the server builds its static list;
+--   * scr_alien_teleport is added only while the WaveAdmin resource is
+--     started, and only when the white-list switch is on.
+-- scr_bike_cfid_camera_flash appears in a Props list, not Particles, so it is
+-- never an automatic particle entry. Treating it as safe was why every recipe
+-- that began with the camera could be cancelled on a strict server.
+local function autoSafeEffect(effect, ex)
+    -- scr_wheel_burnout is inserted into the static table unconditionally by
+    -- autoWhiteList.lua -> runAutoWhiteList(default, Particles), so it survives
+    -- the AI branch even when the static switch is off.
+    if effect == BURNOUT_FX then return true end
+    -- scr_alien_teleport is only auto-added when the white-list switch is on
+    -- and WaveAdmin is actually started. Without both facts it is just another
+    -- hash and needs the dynamic acknowledgement.
+    if effect == ALIEN_FX then
+        return resourceStarted("WaveAdmin")
+            and (type(ex) ~= "table" or ex.EnableParticlesWhiteList == true)
+    end
+    return false
+end
+
+local function resourceStarted(name)
+    if type(name) ~= "string" then return false end
+    if type(GetResourceState) ~= "function" then return false end
+    local ok, state = pcall(GetResourceState, name)
+    return ok and state == "started"
+end
+
 local function waveShieldStarted()
     local gs = rawget(_G, "GlobalState")
     if type(gs) == "table" and gs.WaveShield_ServerResources ~= nil then
@@ -23825,6 +23911,20 @@ local function waveShieldStarted()
     for i = 1, #names do
         local ok, state = pcall(GetResourceState, names[i])
         if ok and state == "started" then return true end
+    end
+    if type(GetNumResources) == "function"
+        and type(GetResourceByFindIndex) == "function" then
+        local okCount, total = pcall(GetNumResources)
+        if okCount and type(total) == "number" then
+            for i = 0, total - 1 do
+                local okName, name = pcall(GetResourceByFindIndex, i)
+                if okName and type(name) == "string"
+                    and string.find(string.lower(name), "waveshield", 1, true) then
+                    local okState, state = pcall(GetResourceState, name)
+                    if okState and state == "started" then return true end
+                end
+            end
+        end
     end
     return false
 end
@@ -24058,44 +24158,43 @@ local function emitParticle(method, coords)
 
     local ceiling = tonumber(FL.maxScale) or 10.0
     local sent = 0
-    local pending = false
 
     for i = 1, #parts do
         local part = parts[i]
         if part and type(part.dict) == "string" and type(part.effect) == "string" then
-            if ptfxLoaded(part.dict) then
-                local scale = tonumber(part.scale) or tonumber(method.scale) or 5.0
-                if ceiling > 0.0 and scale > ceiling then scale = ceiling end
-                if scale < 1.0 then scale = 1.0 end
+            -- Kick the streamer on every pulse. Do not gate the native call on
+            -- HasNamedPtfxAssetLoaded: several builds return false for an asset
+            -- that is already resident, which made every recipe silently emit
+            -- nothing. The native itself is the final authority on readiness.
+            ptfxLoaded(part.dict)
 
-                pcall(UseParticleFxAssetNextCall, part.dict)
-                local color = part.color
-                if type(color) == "table" and #color >= 3 then
-                    pcall(SetParticleFxNonLoopedColour,
-                        tonumber(color[1]) or 1.0,
-                        tonumber(color[2]) or 1.0,
-                        tonumber(color[3]) or 1.0)
-                elseif method.white then
-                    pcall(SetParticleFxNonLoopedColour, 1.0, 1.0, 1.0)
-                end
-                pcall(SetParticleFxNonLoopedAlpha, 1.0)
+            local scale = tonumber(part.scale) or tonumber(method.scale) or 5.0
+            if ceiling > 0.0 and scale > ceiling then scale = ceiling end
+            if scale < 1.0 then scale = 1.0 end
 
-                local x = coords.x + (tonumber(part.ox) or 0.0)
-                local y = coords.y + (tonumber(part.oy) or 0.0)
-                local z = coords.z + (tonumber(part.oz) or OFFSET_Z)
-                local okay, didStart = pcall(StartNetworkedParticleFxNonLoopedAtCoord,
-                    part.effect, x, y, z,
-                    0.0, 0.0, 0.0, scale, false, false, false)
-                if okay and didStart ~= false then sent = sent + 1 end
-            else
-                pending = true
+            pcall(UseParticleFxAssetNextCall, part.dict)
+            local color = part.color
+            if type(color) == "table" and #color >= 3 then
+                pcall(SetParticleFxNonLoopedColour,
+                    tonumber(color[1]) or 1.0,
+                    tonumber(color[2]) or 1.0,
+                    tonumber(color[3]) or 1.0)
+            elseif method.white then
+                pcall(SetParticleFxNonLoopedColour, 1.0, 1.0, 1.0)
             end
+            pcall(SetParticleFxNonLoopedAlpha, 1.0)
+
+            local x = coords.x + (tonumber(part.ox) or 0.0)
+            local y = coords.y + (tonumber(part.oy) or 0.0)
+            local z = coords.z + (tonumber(part.oz) or OFFSET_Z)
+            local okay, didStart = pcall(StartNetworkedParticleFxNonLoopedAtCoord,
+                part.effect, x, y, z,
+                0.0, 0.0, 0.0, scale, false, false, false)
+            if okay and didStart ~= false then sent = sent + 1 end
         end
     end
 
-    if sent > 0 then return true end
-    if pending then return nil end
-    return false
+    return sent > 0
 end
 
 Menu.__vgd_onOutbound = function(name, payload)
@@ -24161,11 +24260,12 @@ local function playerName(player)
     return "player_" .. tostring(player)
 end
 
-local function packPlayer(player, ped)
+local function packPlayer(player, ped, serverId)
     local coords = coordsOf(ped)
     if not coords then return nil end
     return {
         player = player,
+        serverId = serverId,
         ped = ped,
         name = playerName(player),
         coords = coords,
@@ -24185,7 +24285,7 @@ local function targetFromSelection()
     if not okPed or type(ped) ~= "number" or ped == 0 then return nil end
     if not DoesEntityExist(ped) or isDead(ped) then return nil end
 
-    return packPlayer(player, ped)
+    return packPlayer(player, ped, serverId)
 end
 
 local function resolveTarget()
@@ -24207,7 +24307,8 @@ local function resolveTarget()
             local okPed, ped = pcall(GetPlayerPed, player)
             if okPed and type(ped) == "number" and ped ~= 0 and ped ~= me
                 and DoesEntityExist(ped) and not isDead(ped) then
-                local entry = packPlayer(player, ped)
+                local okSid, sid = pcall(GetPlayerServerId, player)
+                local entry = packPlayer(player, ped, okSid and sid or nil)
                 if entry then
                     entry.dist = distance(meCoords, entry.coords)
                     if entry.dist <= REACH_MAX and (not best or entry.dist < best.dist) then
@@ -24240,6 +24341,187 @@ local function resolveTarget()
     return nil
 end
 
+-- ---------------------------------------------------------------------------
+-- STAGE B / RESOURCE GRAFT
+--
+-- StartNetworkedParticleFxNonLoopedAtCoord must be called from a real
+-- CitizenFX resource VM. The external executor has no resource source of its
+-- own, which makes the ptFxEvent origin invalid on several servers even when
+-- the native returns true. The graft is a one-shot chunk queued into any
+-- legitimate resource; it owns the 50 ms pulse loop and calls only plain
+-- natives (no Susano.*). The executor owns the target, the selected recipe and
+-- the stop token.
+--
+-- Cross-VM stop signal: an entity decorator on the local ped. _G is per VM, so
+-- a normal global cannot carry the cancellation; a decor is readable from both
+-- VMs. The key is random per session and the token is a positive random int.
+-- ---------------------------------------------------------------------------
+local function graftKeys()
+    if not FL.graftKeys then
+        local suffix = string.format("%08x", math.floor(math.random(0, 2147483647)))
+        FL.graftKeys = {
+            token = "__vgf_" .. suffix,
+            beat = "__vgf_" .. suffix .. "_b",
+            ack = "__vgf_" .. suffix .. "_a",
+        }
+        if type(DecorRegister) == "function" then
+            pcall(DecorRegister, FL.graftKeys.token, 3)
+            pcall(DecorRegister, FL.graftKeys.beat, 3)
+            pcall(DecorRegister, FL.graftKeys.ack, 3)
+        end
+    end
+    return FL.graftKeys.token, FL.graftKeys.beat, FL.graftKeys.ack
+end
+
+local function graftPed()
+    local ped = PlayerPedId()
+    if not ped or ped == 0 or not DoesEntityExist(ped) then return nil end
+    return ped
+end
+
+local function graftWriteToken(token)
+    local key, beatKey, ackKey = graftKeys()
+    local ped = graftPed()
+    if not ped or type(DecorSetInt) ~= "function" then return false end
+    local ok = pcall(DecorSetInt, ped, key, token or 0)
+    pcall(DecorSetInt, ped, beatKey, token and token ~= 0 and GetGameTimer() or 0)
+    pcall(DecorSetInt, ped, ackKey, 0)
+    return ok
+end
+
+local function graftBeat()
+    if not FL.graft then return end
+    local _, beatKey = graftKeys()
+    local ped = graftPed()
+    if ped and type(DecorSetInt) == "function" then
+        pcall(DecorSetInt, ped, beatKey, GetGameTimer())
+    end
+end
+
+local function graftAck()
+    if not FL.graft then return false end
+    local _, _, ackKey = graftKeys()
+    local ped = graftPed()
+    if not ped or type(DecorGetInt) ~= "function" then return false end
+    local ok, value = pcall(DecorGetInt, ped, ackKey)
+    if ok and value == FL.graft.token then
+        FL.graft.ack = true
+        return true
+    end
+    return false
+end
+
+local function graftStop()
+    if FL.graft then
+        graftWriteToken(0)
+        FL.graft = nil
+    end
+end
+
+local function graftPartsCode(parts)
+    local rows = {}
+    for i = 1, #parts do
+        local part = parts[i]
+        local color = part.color
+        local r, g, b = 1.0, 1.0, 1.0
+        if type(color) == "table" and #color >= 3 then
+            r, g, b = tonumber(color[1]) or 1.0,
+                tonumber(color[2]) or 1.0,
+                tonumber(color[3]) or 1.0
+        end
+        rows[#rows + 1] = string.format(
+            "{dict=%q,effect=%q,scale=%.4f,r=%.4f,g=%.4f,b=%.4f,x=%.4f,y=%.4f,z=%.4f}",
+            tostring(part.dict), tostring(part.effect),
+            tonumber(part.scale) or 5.0, r, g, b,
+            tonumber(part.ox) or 0.0,
+            tonumber(part.oy) or 0.0,
+            tonumber(part.oz) or OFFSET_Z)
+    end
+    return table.concat(rows, ",")
+end
+
+local function graftStart(target, method, parts)
+    if type(target) ~= "table" or type(target.serverId) ~= "number" then return false end
+    if type(parts) ~= "table" or #parts == 0 then return false end
+    local api = rawget(_G, "Susano")
+    if type(api) ~= "table" or type(api.InjectResource) ~= "function" then return false end
+
+    local tokenKey, beatKey, ackKey = graftKeys()
+    local token = math.random(1, 2147483646)
+    if not graftWriteToken(token) then return false end
+
+    local code = string.format([[
+local targetServerId = %d
+local token = %d
+local tokenKey = %q
+local beatKey = %q
+local ackKey = %q
+local parts = {%s}
+
+pcall(DecorRegister, tokenKey, 3)
+pcall(DecorRegister, beatKey, 3)
+pcall(DecorRegister, ackKey, 3)
+
+local function alive()
+    local ok, value = pcall(DecorGetInt, PlayerPedId(), tokenKey)
+    if not ok or value ~= token then return false end
+    local okBeat, beat = pcall(DecorGetInt, PlayerPedId(), beatKey)
+    if not okBeat or type(beat) ~= "number" then return false end
+    return GetGameTimer() - beat < 1000
+end
+
+local function resolve()
+    for _, player in ipairs(GetActivePlayers()) do
+        if GetPlayerServerId(player) == targetServerId then
+            local ped = GetPlayerPed(player)
+            if ped and ped ~= 0 and DoesEntityExist(ped)
+                and not IsPedDeadOrDying(ped, true) then
+                return ped
+            end
+        end
+    end
+    return 0
+end
+
+CreateThread(function()
+    while alive() do
+        local ped = resolve()
+        if ped == 0 then break end
+        local c = GetEntityCoords(ped, true)
+        for i = 1, #parts do
+            local p = parts[i]
+            if not HasNamedPtfxAssetLoaded(p.dict) then
+                RequestNamedPtfxAsset(p.dict)
+            end
+            pcall(UseParticleFxAssetNextCall, p.dict)
+            pcall(SetParticleFxNonLoopedColour, p.r, p.g, p.b)
+            pcall(SetParticleFxNonLoopedAlpha, 1.0)
+            pcall(StartNetworkedParticleFxNonLoopedAtCoord,
+                p.effect, c.x + p.x, c.y + p.y, c.z + p.z,
+                0.0, 0.0, 0.0, p.scale, false, false, false)
+        end
+        pcall(DecorSetInt, PlayerPedId(), ackKey, token)
+        Wait(50)
+    end
+end)
+]], target.serverId, token, tokenKey, beatKey, ackKey, graftPartsCode(parts))
+
+    local ok = pcall(api.InjectResource, "any", code)
+    if not ok then
+        graftWriteToken(0)
+        return false
+    end
+    FL.graft = {
+        token = token,
+        target = target.serverId,
+        method = FL.method,
+        count = #parts,
+        at = now(),
+        ack = false,
+    }
+    return true
+end
+
 local function tickCore()
     if not FL.active then return end
 
@@ -24259,6 +24541,7 @@ local function tickCore()
         if okTarget then FL.target = retry end
         t = okTarget and retry or nil
         if not t then
+            graftStop()
             if now() < FL.nextAt then return end
             localPulse()
             return
@@ -24266,6 +24549,7 @@ local function tickCore()
     end
 
     if t.self then
+        graftStop()
         if now() < FL.nextAt then return end
         local selfCoords = coordsOf(t.ped)
         if not selfCoords then
@@ -24329,33 +24613,109 @@ local function tickCore()
     elseif effective then
         local parts = effective.parts or { effective }
         local wireHashes = {}
-        local dynamicPending = false
+        local graftParts = {}
+        local allowedParts = {}
+        local assumeAI = not ex and waveShieldStarted()
+        local strictAI = (ex and ex.EnableParticlesAI == true) or assumeAI
+
+        -- Never let an unacknowledged hash reach a strict AI server, but never
+        -- let the whole loop go silent either. scr_wheel_burnout is in the
+        -- unconditional default auto whitelist, so every recipe keeps at least
+        -- that part while the other parts wait for their dynamic _ws:cb ack.
         for i = 1, #parts do
             local part = parts[i]
             if part and type(part.effect) == "string" then
                 local hash = GetHashKey(part.effect)
-                wireHashes[#wireHashes + 1] = hash
-                if ex and ex.EnableParticlesAI
-                    and not whitelisted(cfg, part.effect) then
-                    if not ensureDynamicEffect(part.effect) then
-                        dynamicPending = true
-                    end
+                local isWhite = whitelisted(cfg, part.effect)
+                local isAuto = autoSafeEffect(part.effect, ex)
+                local confirmed = dynamicConfirmed(hash)
+
+                if strictAI and not isWhite and not confirmed then
+                    -- Fire the request regardless; the reply unlocks the part.
+                    ensureDynamicEffect(part.effect)
+                end
+
+                if not strictAI or isWhite or isAuto or confirmed then
+                    wireHashes[#wireHashes + 1] = hash
+                    graftParts[#graftParts + 1] = part
+                    allowedParts[#allowedParts + 1] = part
                 end
             end
         end
 
-        if dynamicPending then
-            -- Dynamic acknowledgement is still outstanding. No native call:
-            -- an unlisted effect before the server has written the entry is
-            -- exactly the branch this path is avoiding.
-            FL.nextAt = now() + 120
-            return
+        if #allowedParts == 0 then
+            local safe = safeCandidate(cfg) or SAFE_CANDIDATES[1]
+            if safe then
+                local safeHash = GetHashKey(safe.effect)
+                local safeWhite = whitelisted(cfg, safe.effect)
+                local safeAuto = autoSafeEffect(safe.effect, ex)
+                local safeConfirmed = dynamicConfirmed(safeHash)
+                if strictAI and not safeWhite and not safeConfirmed then
+                    ensureDynamicEffect(safe.effect)
+                end
+                if not strictAI or safeWhite or safeAuto or safeConfirmed then
+                    wireHashes[1] = safeHash
+                    graftParts[1] = safe
+                    allowedParts[1] = safe
+                end
+            end
         end
 
-        if canRewriteEvent() and #wireHashes > 0 then
-            FL.wire = { hashes = wireHashes, expires = now() + WIRE_TTL }
+        if #allowedParts == 0 then
+            emitted = false
+        else
+            local active = effective
+            if #allowedParts ~= #parts then
+                active = {
+                    parts = allowedParts,
+                    scale = effective.scale,
+                    kind = effective.kind,
+                }
+            end
+
+            if canRewriteEvent() and #wireHashes > 0 then
+                FL.wire = { hashes = wireHashes, expires = now() + WIRE_TTL }
+            end
+
+            if FL.graft and (FL.graft.target ~= t.serverId
+                or FL.graft.method ~= FL.method
+                or FL.graft.count ~= #graftParts) then
+                graftStop()
+            end
+
+            if FL.graft then
+                graftBeat()
+                if not FL.graft.ack then
+                    graftAck()
+                    if not FL.graft.ack and now() - FL.graft.at > 1500 then
+                        graftStop()
+                        FL.graftFailAt = now()
+                    end
+                end
+            end
+
+            local grafted = false
+            local canGraft = not FL.graftFailAt
+                or now() - FL.graftFailAt > 5000
+            if #graftParts > 0 and canGraft then
+                if FL.graft then
+                    grafted = true
+                else
+                    grafted = graftStart(t, effective, graftParts)
+                end
+            end
+
+            if grafted and FL.graft and FL.graft.ack then
+                emitted = true
+            else
+                -- Until the graft acknowledges, keep the executor-side native
+                -- as a parallel first pulse. If the host VM never runs the
+                -- chunk, the menu still emits instead of going silent for the
+                -- watchdog window; if it does run, the acknowledgement stops
+                -- this branch.
+                emitted = emitParticle(active, coords)
+            end
         end
-        emitted = emitParticle(effective, coords)
     else
         emitted = false
     end
@@ -24416,6 +24776,7 @@ function FL.stop(reason)
     if FL.active then
         log("stop (%s)", tostring(reason or "request"))
     end
+    graftStop()
     FL.active = false
     FL.target = nil
     FL.reason = reason
@@ -37112,3 +37473,4 @@ end)(O,S,E,D,F,V,M,SN,C,G,FL,A,ST,SB,VS,K,N,L,VC,CU,UC,FA,TP,FP,Menu)
 
 end)()
 -- <<< VANGUARD MODULE END
+
