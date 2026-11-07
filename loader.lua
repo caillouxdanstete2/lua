@@ -15239,27 +15239,24 @@ function Menu.ActionRagdoll()
     end
 end
 
--- Launch: local-collision launch only. No target writes, no ownership
--- request, no vehicle, no explosion, no teleport, no visibility change.
+-- Launch: no vehicle, no explosion, no visibility change, no far teleport.
 --
 --   self ... SetEntityVelocity on the local ped. GET_ENTITY_SPEED is masked
 --            by the existing stealth hook for the duration; the ped must be
 --            on foot, so a vehicle never enters the path.
---   remote . The operator must be within LaunchAttachRange. The local ped is
---            physically attached to the victim and driven upward; the victim
---            client resolves the contact as ordinary ped physics. The attach
---            makes the operator's own speed, teleport and noclip checks yield
---            while it is active. The victim ped receives no position, velocity
---            or task write; the one target-side call is the hardened Susano
---            ragdoll primitive, which also keeps the victim's speed check
---            from treating the collision as a hack.
+--   remote . The operator must be within LaunchAttachRange. When the victim
+--            ped is controllable, only that ped is driven upward. When control
+--            is refused, the victim is attached to the local operator
+--            (reverse physical attach) and follows the local lift. The
+--            hardened Susano ragdoll primitive keeps the victim's speed check
+--            from treating the launch as a hack.
 --
 -- A selected id that no longer resolves is refused; there is no nearest-player
 -- fallback. The old world-car and explosion paths are gone.
 --
--- Native signatures verified in natives.json / natives_cfx.json:
+-- Native signatures verified against the CFX natives dump:
 --   SET_ENTITY_VELOCITY 0x1C99BB7B6E96D16F (Entity,f,f,f)
---   ATTACH_ENTITY_TO_ENTITY_PHYSICALLY 0xC3675780C92F90F9 (18 args)
+--   ATTACH_ENTITY_TO_ENTITY_PHYSICALLY 0xC3675780C92F90F9 (19 args)
 --   DETACH_ENTITY 0x961AC54BF0613F5D (Entity,B,B)
 Menu.LaunchCooldownMs   = 4000
 Menu.LaunchLastAt       = 0
@@ -15355,36 +15352,62 @@ function Menu.ActionLaunch()
             end
         end
 
+        -- Control of the victim's ped is the only path that makes the victim
+        -- replicate its own launch. Ask once per short tick, then fall back to
+        -- the reverse physical attach when ownership is refused.
+        local hasControl = false
+        for _ = 1, 4 do
+            if NetworkHasControlOfEntity(targetPed) then hasControl = true break end
+            pcall(NetworkRequestControlOfEntity, targetPed)
+            Wait(24 + math.random(0, 12))
+        end
+
         StealthAcquire("speed")
-        pcall(function()
-            ClearPedTasksImmediately(me)
-            local lift = Menu.LaunchAttachLift or 45.0
-            for _ = 1, (Menu.LaunchAttachCycles or 3) do
-                if not DoesEntityExist(targetPed) then break end
-
-                -- Keep the contact anchored to the victim. This is a short
-                -- local align (range is capped at 3 m), not a far teleport;
-                -- without it the physical attach only moves the operator.
-                local c = GetEntityCoords(targetPed, true)
-                if not c then break end
-                pcall(SetEntityCoordsNoOffset, me, c.x, c.y, c.z + 0.4,
-                    false, false, false)
-
-                AttachEntityToEntityPhysically(me, targetPed, 0, 0,
-                    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-                    100000.0, false, false, true, true, 0)
-
-                local attachMs = (Menu.LaunchAttachMs or 220) + math.random(-15, 15)
-                local untilAt = GetGameTimer() + attachMs
-                while GetGameTimer() < untilAt do
+        if hasControl then
+            pcall(function()
+                local lift = Menu.LaunchAttachLift or 45.0
+                for _ = 1, 10 do
                     if not DoesEntityExist(targetPed) then break end
-                    SetEntityVelocity(me, 0.0, 0.0, lift)
+                    SetEntityVelocity(targetPed, 0.0, 0.0, lift)
                     Wait(24 + math.random(0, 12))
                 end
-                DetachEntity(me, true, true)
-                Wait((Menu.LaunchSettleMs or 120) + math.random(-20, 20))
-            end
-        end)
+            end)
+        else
+            pcall(function()
+                ClearPedTasksImmediately(me)
+                local lift = Menu.LaunchAttachLift or 45.0
+                for _ = 1, (Menu.LaunchAttachCycles or 3) do
+                    if not DoesEntityExist(targetPed) then break end
+
+                    -- Keep the contact anchored to the victim. This is a
+                    -- short local align (range is capped at 3 m), not a far
+                    -- teleport.
+                    local c = GetEntityCoords(targetPed, true)
+                    if not c then break end
+                    pcall(SetEntityCoordsNoOffset, me, c.x, c.y, c.z + 0.4,
+                        false, false, false)
+
+                    -- Reverse attach: the victim is entity1 and follows the
+                    -- local operator. Attaching the operator to the victim
+                    -- only launched the operator because the victim was the
+                    -- fixed anchor.
+                    AttachEntityToEntityPhysically(targetPed, me, 0, 0,
+                        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                        100000.0, false, false, true, true, 0)
+
+                    local attachMs = (Menu.LaunchAttachMs or 220) + math.random(-15, 15)
+                    local untilAt = GetGameTimer() + attachMs
+                    while GetGameTimer() < untilAt do
+                        if not DoesEntityExist(targetPed) then break end
+                        SetEntityVelocity(me, 0.0, 0.0, lift)
+                        Wait(24 + math.random(0, 12))
+                    end
+                    pcall(DetachEntity, targetPed, true, true)
+                    Wait((Menu.LaunchSettleMs or 120) + math.random(-20, 20))
+                end
+            end)
+        end
+        pcall(DetachEntity, targetPed, true, true)
         pcall(DetachEntity, me, true, true)
         StealthRelease("speed")
     end)
@@ -35272,7 +35295,7 @@ end
 -- BOOT
 -- ---------------------------------------------------------------------------
 function UI.boot()
-    O.log("loader build 2026-11-07-r36 (Launch aligns the operator to the victim inside the 3 m range before the physical attach so the victim launches too; no target position, velocity, task, ownership, vehicle, explosion, far teleport or visibility write; remote launch uses the hardened Susano ragdoll primitive and a 45 m/s attached-ped lift, self launch uses 58 m/s with GET_ENTITY_SPEED masked by the stealth hook; velocity and settle waits carry jitter; tight bold category chevrons; Troll Appearance section and Copy Appearance row removed; All mode Include me toggle adds the local ped alongside remote targets; Props Player row hidden in Self and All modes; attachment rows Attach to player and Attach point removed; target labels Self/Player/All; automatic player refresh keeps the selected server id; manual Refresh player list removed; Ban Player beta suffix removed; Servers and Bypass tabs moved from Destroyer to Misc; FOV moved from Visual/Camera to Self under Big Weapon; banner wbYgWhZ bottom-anchored flush on the category plate; White/Cyan theme selector; 3:1 header; flush tab strip; light-grey cell tab plate; dark selected category rectangle; uniform unselected categories; reference names Self/Online/Vehicle/Weapon/Destroyer/Misc/Settings/Search; Search category opens the prompt directly and lands on results; compact magnifier; tight bold category chevron pair; full-white section rules fitted to the label width; Target keeps only the Ctrl hint; Player Props folded into Online; 15px right-aligned slider readout; target-bound toggles reset on target change/unload; dark row plates; white toggle/scrollbar; footer centre mark removed; Delete/Backspace close)")
+    O.log("loader build 2026-11-07-r37 (Launch drives the victim ped directly when control is available, otherwise reverse-attaches the victim to the local ped so it follows the lift; no vehicle, explosion, far teleport or visibility write; hardened Susano ragdoll keeps the victim speed check lenient; self launch uses 58 m/s with GET_ENTITY_SPEED masked by the stealth hook; velocity and settle waits carry jitter; 3 m range; tight bold category chevrons; Troll Appearance section and Copy Appearance row removed; All mode Include me toggle adds the local ped alongside remote targets; Props Player row hidden in Self and All modes; attachment rows Attach to player and Attach point removed; target labels Self/Player/All; automatic player refresh keeps the selected server id; manual Refresh player list removed; Ban Player beta suffix removed; Servers and Bypass tabs moved from Destroyer to Misc; FOV moved from Visual/Camera to Self under Big Weapon; banner wbYgWhZ bottom-anchored flush on the category plate; White/Cyan theme selector; 3:1 header; flush tab strip; light-grey cell tab plate; dark selected category rectangle; uniform unselected categories; reference names Self/Online/Vehicle/Weapon/Destroyer/Misc/Settings/Search; Search category opens the prompt directly and lands on results; compact magnifier; tight bold category chevron pair; full-white section rules fitted to the label width; Target keeps only the Ctrl hint; Player Props folded into Online; 15px right-aligned slider readout; target-bound toggles reset on target change/unload; dark row plates; white toggle/scrollbar; footer centre mark removed; Delete/Backspace close)")
     O.thread()
 
     -- Delete/Backspace fallback poll. 40 ms is faster than a frame at 30 FPS
