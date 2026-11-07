@@ -2421,7 +2421,7 @@ Menu.Categories = {
             { name = "Copy Appearance", type = "action" },
             
             { name = "", isSeparator = true, separatorText = "Attacks" },
-            { name = "Ban Player [BETA]", type = "toggle", value = false, risk = true},
+            { name = "Ban Player", type = "toggle", value = false, risk = true},
             { name = "Shoot Player", type = "action", risk = true},
             { name = "Ped Flood", type = "action", risk = true},
             { name = "Launch", type = "action", onClick = function() Menu.ActionLaunch() end },
@@ -12005,7 +12005,7 @@ if Actions.copyAppearanceItem then
     end
 end
 
-Actions.banPlayerItem = FindItem("Online", "Troll", "Ban Player (test)")
+Actions.banPlayerItem = FindItem("Online", "Troll", "Ban Player")
 if Actions.banPlayerItem then
     Actions.banPlayerItem.onClick = function(value)
         banPlayerActive = value
@@ -18439,7 +18439,9 @@ local function Selector(name, options, selected, handler)
     return { name = name, type = "selector", options = options, selected = selected, onClick = Guard(handler) }
 end
 
-local targetModeItem = Selector("Target", CFG.targetModes, S.targetMode, function(index)
+-- Display labels stay capitalised; CFG.targetModes keeps the lowercase keys
+-- the spawner compares against. The selector index is the shared state.
+local targetModeItem = Selector("Target", { "Self", "Player", "All" }, S.targetMode, function(index)
     S.targetMode = index
 end)
 
@@ -18470,6 +18472,13 @@ local function PlayerItemSync()
 end
 
 local function RefreshPlayerItem()
+    -- Capture the server id under the cursor before the list is rebuilt. The
+    -- active-player array is not ordered, so an index alone would point at a
+    -- different person a moment later. Resolving by id keeps the selected
+    -- player selected while the automatic refresh runs.
+    local previous = Players.list[playerItem.selected or Players.index or 1]
+    local previousServerId = previous and previous.serverId or nil
+
     local count = RefreshPlayers()
     local labels = {}
 
@@ -18483,7 +18492,20 @@ local function RefreshPlayerItem()
     if #labels == 0 then labels[1] = "none" end
     playerItem.options = labels
 
-    if (playerItem.selected or 1) > #labels then playerItem.selected = 1 end
+    local selected = 1
+    if previousServerId then
+        for i = 1, count do
+            if Players.list[i].serverId == previousServerId then
+                selected = i
+                break
+            end
+        end
+    end
+    if playerItem.selected and previousServerId == nil then
+        selected = math.max(1, math.min(#labels, playerItem.selected))
+    end
+    if selected > #labels then selected = 1 end
+    playerItem.selected = selected
     PlayerItemSync()
     return count
 end
@@ -18879,10 +18901,6 @@ local playerItems = {
     Sep("Target"),
     targetModeItem,
     playerItem,
-    Action("Refresh player list", function()
-        Notify(("%d player(s) in scope"):format(RefreshPlayerItem()), C.blue)
-    end),
-
     Sep("Attachment"),
     Toggle("Attach to player", S.attachTarget, function(v) S.attachTarget = v end),
     boneItem,
@@ -35284,7 +35302,7 @@ end
 -- BOOT
 -- ---------------------------------------------------------------------------
 function UI.boot()
-    O.log("loader build 2026-11-07-r27 (Servers and Bypass tabs moved from Destroyer to Misc; FOV moved from Visual/Camera to Self under Big Weapon; banner wbYgWhZ bottom-anchored flush on the category plate; White/Cyan theme selector; 3:1 header; flush tab strip; light-grey cell tab plate; dark selected category rectangle; uniform unselected categories; reference names Self/Online/Vehicle/Weapon/Destroyer/Misc/Settings/Search; Search category opens the prompt directly and lands on results; compact magnifier; literal >> category chevrons; full-white section rules fitted to the label width; Target keeps only the Ctrl hint; Player Props folded into Online; 15px right-aligned slider readout; target-bound toggles reset on target change/unload; dark row plates; white toggle/scrollbar; footer centre mark removed; Delete/Backspace close)")
+    O.log("loader build 2026-11-07-r28 (Props target labels Self/Player/All; automatic player refresh keeps the selected server id; manual Refresh player list removed; Ban Player beta suffix removed; Servers and Bypass tabs moved from Destroyer to Misc; FOV moved from Visual/Camera to Self under Big Weapon; banner wbYgWhZ bottom-anchored flush on the category plate; White/Cyan theme selector; 3:1 header; flush tab strip; light-grey cell tab plate; dark selected category rectangle; uniform unselected categories; reference names Self/Online/Vehicle/Weapon/Destroyer/Misc/Settings/Search; Search category opens the prompt directly and lands on results; compact magnifier; literal >> category chevrons; full-white section rules fitted to the label width; Target keeps only the Ctrl hint; Player Props folded into Online; 15px right-aligned slider readout; target-bound toggles reset on target change/unload; dark row plates; white toggle/scrollbar; footer centre mark removed; Delete/Backspace close)")
     O.thread()
 
     -- Delete/Backspace fallback poll. 40 ms is faster than a frame at 30 FPS
