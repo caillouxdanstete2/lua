@@ -23704,7 +23704,6 @@ local DYN_TTL = 4000
 local SAFE_CANDIDATES = {
     { name = "Safe Burnout", kind = "ptfx", dict = "scr_recartheft", effect = "scr_wheel_burnout", scale = MAX_SCALE, white = true },
     { name = "Safe Alien", kind = "ptfx", dict = "scr_rcbarry1", effect = "scr_alien_teleport", scale = MAX_SCALE, white = true },
-    { name = "Safe Camera", kind = "ptfx", dict = "scr_bike_business", effect = "scr_bike_cfid_camera_flash", scale = MAX_SCALE, white = true },
 }
 
 FL.active = false
@@ -23745,30 +23744,6 @@ local BURNOUT_FX = "scr_wheel_burnout"
 
 FL.methods = {
     {
-        name = "Auto Safe", kind = "ptfx", safe = true,
-        parts = {
-            flashPart(BURNOUT_DICT, BURNOUT_FX, 8.0, { 1.00, 0.45, 0.08 }, 0.0, 0.0, 1.0),
-            flashPart(ALIEN_DICT, ALIEN_FX, 6.0, { 0.25, 0.90, 1.00 }, 1.2, -0.9, 0.5),
-            flashPart(CAMERA_DICT, CAMERA_FX, 7.0, { 1.00, 1.00, 1.00 }, -1.3, 1.0, 1.9),
-        },
-    },
-    {
-        name = "Camera White", kind = "ptfx", safe = true,
-        parts = {
-            flashPart(CAMERA_DICT, CAMERA_FX, 8.0, { 1.00, 1.00, 1.00 }, 0.0, 0.0, 1.0),
-            flashPart(ALIEN_DICT, ALIEN_FX, 5.0, { 1.00, 1.00, 1.00 }, 0.9, -0.7, 1.6),
-            flashPart(BURNOUT_DICT, BURNOUT_FX, 6.0, { 1.00, 1.00, 1.00 }, -1.1, 0.8, 0.4),
-        },
-    },
-    {
-        name = "Alien Cyan", kind = "ptfx", safe = true,
-        parts = {
-            flashPart(BURNOUT_DICT, BURNOUT_FX, 7.0, { 0.05, 0.60, 1.00 }, 0.0, 0.0, 1.1),
-            flashPart(ALIEN_DICT, ALIEN_FX, 7.0, { 0.10, 0.75, 1.00 }, 0.9, -0.4, 0.6),
-            flashPart(CAMERA_DICT, CAMERA_FX, 5.0, { 0.35, 1.00, 1.00 }, -1.1, 0.8, 1.6),
-        },
-    },
-    {
         name = "Burnout Ember", kind = "ptfx", safe = true,
         parts = {
             flashPart(BURNOUT_DICT, BURNOUT_FX, 8.0, { 1.00, 0.32, 0.05 }, 0.0, 0.0, 0.8),
@@ -23776,58 +23751,10 @@ FL.methods = {
         },
     },
     {
-        name = "Pink Clown", kind = "ptfx", safe = true,
-        parts = {
-            flashPart(BURNOUT_DICT, BURNOUT_FX, 7.0, { 1.00, 0.20, 0.80 }, 0.0, 0.0, 1.2),
-            flashPart(CAMERA_DICT, CAMERA_FX, 6.0, { 1.00, 0.10, 0.75 }, -0.9, -0.6, 0.7),
-            flashPart(ALIEN_DICT, ALIEN_FX, 6.0, { 1.00, 0.35, 0.85 }, 1.3, 0.8, 1.7),
-        },
-    },
-    {
         name = "Acid Green", kind = "ptfx", safe = true,
         parts = {
             flashPart(BURNOUT_DICT, BURNOUT_FX, 7.0, { 0.20, 1.00, 0.10 }, -0.6, 0.0, 1.0),
             flashPart(ALIEN_DICT, ALIEN_FX, 6.0, { 0.45, 1.00, 0.20 }, 1.0, 0.7, 1.7),
-        },
-    },
-    {
-        name = "FBI Blue", kind = "ptfx", safe = true,
-        parts = {
-            flashPart(CAMERA_DICT, CAMERA_FX, 8.0, { 0.10, 0.35, 1.00 }, 0.0, 0.0, 1.4),
-            flashPart(ALIEN_DICT, ALIEN_FX, 6.0, { 0.10, 0.55, 1.00 }, -1.4, 0.8, 0.5),
-            flashPart(BURNOUT_DICT, BURNOUT_FX, 5.0, { 0.40, 0.70, 1.00 }, 1.5, -1.0, 2.0),
-        },
-    },
-    {
-        name = "Electric Violet", kind = "ptfx", safe = true,
-        parts = {
-            flashPart(ALIEN_DICT, ALIEN_FX, 7.0, { 0.65, 0.10, 1.00 }, 0.0, 0.0, 1.3),
-            flashPart(CAMERA_DICT, CAMERA_FX, 5.0, { 0.90, 0.30, 1.00 }, 0.7, 1.0, 0.6),
-            flashPart(BURNOUT_DICT, BURNOUT_FX, 4.0, { 0.35, 0.00, 1.00 }, -1.5, -0.8, 1.9),
-        },
-    },
-    {
-        name = "Strobe Red", kind = "ptfx", safe = true,
-        parts = {
-            flashPart(CAMERA_DICT, CAMERA_FX, 8.0, { 1.00, 0.05, 0.02 }, 0.0, 0.0, 1.2),
-            flashPart(ALIEN_DICT, ALIEN_FX, 6.0, { 1.00, 0.10, 0.05 }, 1.3, -0.9, 0.5),
-            flashPart(BURNOUT_DICT, BURNOUT_FX, 7.0, { 1.00, 0.20, 0.00 }, -1.2, 1.0, 1.8),
-        },
-    },
-    {
-        name = "White Nova", kind = "ptfx", safe = true,
-        parts = {
-            flashPart(CAMERA_DICT, CAMERA_FX, 8.0, { 1.00, 1.00, 1.00 }, 0.0, 0.0, 1.0),
-            flashPart(ALIEN_DICT, ALIEN_FX, 5.0, { 0.80, 1.00, 1.00 }, 1.8, 1.2, 0.6),
-            flashPart(BURNOUT_DICT, BURNOUT_FX, 4.0, { 1.00, 1.00, 0.90 }, -1.7, -1.1, 2.1),
-        },
-    },
-    {
-        name = "Meltdown", kind = "ptfx", safe = true,
-        parts = {
-            flashPart(CAMERA_DICT, CAMERA_FX, 8.0, { 1.00, 0.25, 0.00 }, 0.0, 0.0, 1.5),
-            flashPart(ALIEN_DICT, ALIEN_FX, 8.0, { 0.80, 0.00, 0.20 }, 1.6, -1.3, 0.4),
-            flashPart(BURNOUT_DICT, BURNOUT_FX, 8.0, { 1.00, 0.70, 0.00 }, -1.6, 1.2, 2.2),
         },
     },
 }
@@ -24468,9 +24395,43 @@ local function targetFromSelection()
 
     local okPed, ped = pcall(GetPlayerPed, player)
     if not okPed or type(ped) ~= "number" or ped == 0 then return nil end
+    -- A stale remote player index can point at the local ped during the
+    -- unstream window. An explicit remote selection must never resolve to self.
+    if ped == PlayerPedId() then return nil end
     if not DoesEntityExist(ped) or isDead(ped) then return nil end
 
     return packPlayer(player, ped, serverId)
+end
+
+-- Re-resolve a stored target through its server id on every tick. Entity
+-- handles are recycled while a remote is out of streaming range; using the
+-- cached handle can therefore land the particle on the local ped. This helper
+-- returns only a live remote ped that still belongs to the selected server id,
+-- or the real local ped when the selection itself is self.
+local function liveTargetPed(t, myServerId)
+    if type(t) ~= "table" then return nil end
+
+    if t.self then
+        local selfPed = PlayerPedId()
+        if type(selfPed) ~= "number" or selfPed == 0 then return nil end
+        if not DoesEntityExist(selfPed) or isDead(selfPed) then return nil end
+        return selfPed, PlayerId()
+    end
+
+    local serverId = t.serverId
+    if type(serverId) ~= "number" then return nil end
+    if type(myServerId) == "number" and myServerId == serverId then return nil end
+
+    local okPlayer, player = pcall(GetPlayerFromServerId, serverId)
+    if not okPlayer or type(player) ~= "number" or player < 0 then return nil end
+    if player == PlayerId() then return nil end
+
+    local okPed, ped = pcall(GetPlayerPed, player)
+    if not okPed or type(ped) ~= "number" or ped == 0 then return nil end
+    if ped == PlayerPedId() then return nil end
+    if not DoesEntityExist(ped) or isDead(ped) then return nil end
+
+    return ped, player
 end
 
 local function resolveTarget()
@@ -24484,10 +24445,10 @@ local function resolveTarget()
         if selected.dist <= REACH_MAX then return selected end
     end
 
-    -- A single-player selection is authoritative too. If the selected remote
-    -- is not streamed yet, wait for it instead of falling through to the local
-    -- self test target.
-    if type(Menu) == "table" and type(Menu.SelectedPlayer) == "number" then
+    -- Any explicit selection, not only a numeric one, is authoritative. If the
+    -- selected remote is not streamed yet, wait for it instead of falling
+    -- through to the local self test target.
+    if type(Menu) == "table" and Menu.SelectedPlayer ~= nil then
         return nil
     end
 
@@ -24599,6 +24560,7 @@ local function selectedTargets()
                     and player ~= PlayerId() then
                     local okPed, ped = pcall(GetPlayerPed, player)
                     if okPed and type(ped) == "number" and ped ~= 0
+                        and ped ~= PlayerPedId()
                         and DoesEntityExist(ped) and not isDead(ped) then
                         entry = packPlayer(player, ped, serverId)
                     end
@@ -24894,9 +24856,10 @@ end
 
 local function resolveOne(serverId)
     for _, player in ipairs(GetActivePlayers()) do
-        if GetPlayerServerId(player) == serverId then
+        if player ~= PlayerId() and GetPlayerServerId(player) == serverId then
             local ped = GetPlayerPed(player)
-            if ped and ped ~= 0 and DoesEntityExist(ped)
+            if ped and ped ~= 0 and ped ~= PlayerPedId()
+                and DoesEntityExist(ped)
                 and not IsPedDeadOrDying(ped, true) then
                 return ped
             end
@@ -25092,35 +25055,37 @@ local function tickCore()
     if not meCoords then return end
 
     -- Refresh coords; drop dead/unstreamed/out-of-reach. Selection survives.
+    -- Re-resolve every remote through its server id on each tick: a cached ped
+    -- handle can be recycled after the target leaves streaming range, and a
+    -- recycled handle must never turn an explicit remote selection into a
+    -- local self flash.
+    local okMy, myServerId = pcall(GetPlayerServerId, PlayerId())
     local alive = {}
     local anyRemote = false
     for i = 1, #targets do
         local t = targets[i]
-        local ped = t.ped
-        if t.self then
-            if DoesEntityExist(ped) then
-                local coords = flashCoordsForPed(ped)
-                if coords then
-                    t.coords = coords
-                    t.aim = predictedCoords(t, coords)
-                    t.dist = 0.0
-                    alive[#alive + 1] = t
-                end
-            end
-        elseif DoesEntityExist(ped) and not isDead(ped) then
+        local ped, player = liveTargetPed(t, okMy and myServerId or nil)
+        if ped then
+            t.ped = ped
+            if type(player) == "number" then t.player = player end
             local coords = flashCoordsForPed(ped)
             if coords then
                 t.coords = coords
                 t.aim = predictedCoords(t, coords)
-                t.dist = distance(meCoords, coords)
-                if t.dist > REACH_MAX then
-                    -- Out of reach this tick; the selection keeps it eligible
-                    -- and the next tick re-resolves it.
-                elseif SAFE_DIST > 0.0 and t.dist < SAFE_DIST then
-                    FL.stats.skips = FL.stats.skips + 1
-                else
+                if t.self then
+                    t.dist = 0.0
                     alive[#alive + 1] = t
-                    anyRemote = true
+                else
+                    t.dist = distance(meCoords, coords)
+                    if t.dist > REACH_MAX then
+                        -- Out of reach this tick; the selection keeps it
+                        -- eligible and the next tick re-resolves it.
+                    elseif SAFE_DIST > 0.0 and t.dist < SAFE_DIST then
+                        FL.stats.skips = FL.stats.skips + 1
+                    else
+                        alive[#alive + 1] = t
+                        anyRemote = true
+                    end
                 end
             end
         end
@@ -28999,6 +28964,10 @@ local N = (function(O,S,B)
 --   IS_PED_RAGDOLL           0x47E4E977581C5B55  (Ped) -> BOOL
 --   GET_PED_PARACHUTE_STATE  0x79CFD9827CC979B6  (Ped) -> int
 --   GET_ENTITY_HEIGHT_ABOVE_GROUND 0x1DD55701034110E5 (Entity) -> float
+--   GET_ENTITY_COORDS        0x3FEF770D40960D5A  (Entity, BOOL) -> Vector3
+--   START_EXPENSIVE_SYNCHRONOUS_SHAPE_TEST_LOS_PROBE 0x377906D8A31E5586
+--     (float x6, int, Entity, int) -> int
+--   GET_SHAPE_TEST_RESULT    0x3D87450E15D98694  (int, BOOL*, Vector3*, Vector3*, Entity*) -> int
 --
 -- SET_ENTITY_GRAVITY is not in natives.json: never call it. The ped-native is
 -- SET_PED_GRAVITY; SET_ENTITY_HAS_GRAVITY is the entity alternative if the ped
@@ -29050,6 +29019,15 @@ local POSE_LOAD_MS = 1200
 -- cannot turn gravity back on and sink the body into the floor logic.
 local GRAVITY_REFRESH_MS = 250
 
+-- Prop probe. GET_ENTITY_HEIGHT_ABOVE_GROUND sees the ground elevation, not map
+-- props: a wind-turbine nacelle is map collision the height native ignores, so
+-- the capsule can still hit it. A short vertical + forward shape test finds the
+-- surface in front/below and the response is a velocity lift, never a
+-- collision, position or gravity write.
+local PROBE_MS = 100
+local PROBE_RANGE = 8.0
+local PROBE_DROP = 4.0
+
 -- Base-game freefall pose. The dictionary has free_back, free_forward,
 -- free_forward_add, free_forward_anim, free_left and free_right. The operator's
 -- working reference shows the arms-out arch; the Pleb Masters preview for
@@ -29078,8 +29056,10 @@ local MODE_NOCLIP = "noclip"
 local MODE_NARUTO = "naruto"
 
 -- Clearance is the real GET_ENTITY_HEIGHT_ABOVE_GROUND value: no coordinate
--- read and no collision write. Naruto holds a low glide band and follows the
--- terrain; noclip keeps a hard minimum so the body never reaches the ground.
+-- write and no collision write. The ground-height native does not include map
+-- props, so a short vertical + forward shape-test probe lifts the written
+-- velocity over a nacelle/roof lip. Naruto holds a low glide band and follows
+-- the terrain; noclip keeps a hard minimum so the body never reaches the ground.
 local NARUTO_CLEARANCE = 0.9
 local NARUTO_BAND = 0.35
 local NARUTO_LIFT = 4.0
@@ -29155,6 +29135,7 @@ N.coverChecked = false
 N.recheckAt = 0
 N.gravityNext = 0
 N.chuteNext = 0
+N.probeAt = 0
 local motionStopped = false
 local stageBResource = nil
 
@@ -29499,9 +29480,9 @@ local function cleanupMotion()
             pcall(SetPedGravity, ped, true)
         end
         if N.ragdollOff then
-            -- SET_PED_CAN_RAGDOLL (0xB128377056A54E2A) is the verified ped
-            -- native cleared at arm. `true` is the neutral value the ped had
-            -- before the session, so nothing custom survives the stop.
+            -- Restore the collision entry points cleared at arm. The global
+            -- flag is written back to its neutral true as well, so nothing
+            -- custom survives the stop.
             pcall(SetPedCanRagdoll, ped, true)
             pcall(SetPedCanRagdollFromPlayerImpact, ped, true)
             pcall(SetPedRagdollOnCollision, ped, true)
@@ -29598,6 +29579,7 @@ function N.arm(mode)
     N.recheckAt = 0
     N.gravityNext = 0
     N.chuteNext = 0
+    N.probeAt = 0
     N.gravityOff = false
     N.ragdollOff = false
     motionStopped = false
@@ -29621,13 +29603,16 @@ function N.arm(mode)
     end
     N.gravityOff = true
 
-    -- The landing roll is a ragdoll transition. Clearing the ped's ragdoll flag
-    -- keeps the body upright through a ground clip or a slope tick; it is
-    -- restored to true in cleanupMotion. Native verified:
-    -- SET_PED_CAN_RAGDOLL 0xB128377056A54E2A.
-    N.ragdollOff = pcall(SetPedCanRagdoll, ped, false)
-    pcall(SetPedCanRagdollFromPlayerImpact, ped, false)
-    pcall(SetPedRagdollOnCollision, ped, false)
+    -- The landing roll is a ragdoll transition. Keep the global ragdoll flag
+    -- enabled: CAN_PED_RAGDOLL (0x128F79EDCECE4FD5) stays 1, which is the value
+    -- the guard's AntiNoRagdoll read expects, and clear only the collision entry
+    -- points so a ground clip or a slope tick cannot start a ragdoll. Both flags
+    -- are restored to true in cleanupMotion. Natives verified:
+    -- SET_PED_CAN_RAGDOLL_FROM_PLAYER_IMPACT 0xDF993EE5E90ABA25
+    -- SET_PED_RAGDOLL_ON_COLLISION 0xF0A4F1BBF4FA7497.
+    local okRagCollision = pcall(SetPedRagdollOnCollision, ped, false)
+    local okRagImpact = pcall(SetPedCanRagdollFromPlayerImpact, ped, false)
+    N.ragdollOff = (okRagCollision or okRagImpact) and true or false
 
     -- Clear a stale locomotion multiplier from an interrupted previous session.
     pcall(SetPedMoveRateOverride, ped, 1.0)
@@ -29686,6 +29671,7 @@ function N.stop(reason)
     N.recheckAt = 0
     N.gravityNext = 0
     N.chuteNext = 0
+    N.probeAt = 0
     N.lastTickAt = 0
     N.armAt = 0
     N.vx, N.vy, N.vz = 0.0, 0.0, 0.0
@@ -29747,6 +29733,20 @@ local function controlDown(control, vk)
     return vk ~= nil and rawKeyDown(vk)
 end
 
+-- One synchronous shape test. Returns the hit Z or nil. Read-only: the probe
+-- never writes collision, position or gravity, so the guard's noclip model is
+-- untouched. pcall keeps a runtime without the shape-test natives inert.
+local function shapeProbeZ(ped, x1, y1, z1, x2, y2, z2)
+    local okRay, ray = pcall(StartExpensiveSynchronousShapeTestLosProbe,
+        x1, y1, z1, x2, y2, z2, -1, ped, 7)
+    if not okRay or not ray or ray == 0 then return nil end
+    local okRes, _, hit, endCoords = pcall(GetShapeTestResult, ray)
+    if not okRes or not hit or not endCoords then return nil end
+    local z = endCoords.z
+    if type(z) ~= "number" then return nil end
+    return z
+end
+
 function N.tick(now)
     if not N.active then return end
     now = now or O.now()
@@ -29796,7 +29796,6 @@ function N.tick(now)
         local flags = (N.mode == MODE_NARUTO) and ANIM_FLAGS_NARUTO or ANIM_FLAGS_NOCLIP
         pcall(ClearPedTasks, ped)
         pcall(SetPedGravity, ped, false)
-        pcall(SetPedCanRagdoll, ped, false)
         pcall(SetPedCanRagdollFromPlayerImpact, ped, false)
         pcall(SetPedRagdollOnCollision, ped, false)
         pcall(TaskPlayAnim, ped, ANIM_DICT, ANIM_CLIP,
@@ -29810,7 +29809,6 @@ function N.tick(now)
     if now >= N.gravityNext then
         N.gravityNext = now + O.jitter(GRAVITY_REFRESH_MS, 0.3)
         pcall(SetPedGravity, ped, false)
-        pcall(SetPedCanRagdoll, ped, false)
         pcall(SetPedCanRagdollFromPlayerImpact, ped, false)
         pcall(SetPedRagdollOnCollision, ped, false)
     end
@@ -29941,8 +29939,9 @@ function N.tick(now)
     N.vx, N.vy, N.vz = N.vx + dx, N.vy + dy, N.vz + dz
 
     -- Clearance. Height above ground is the real engine value, so this is a
-    -- velocity correction only: no coordinate read, no coordinate write, no
-    -- collision write and no freeze. Naruto rides a low band and follows the
+    -- velocity correction only: no coordinate write, no collision write and no
+    -- freeze. The prop probe below is a read plus a velocity lift, never a
+    -- position write. Naruto rides a low band and follows the
     -- terrain down slopes; noclip keeps a hard floor so it never lands. The
     -- freefall pose is horizontal, so the clearance also keeps the capsule
     -- from eating the horizontal velocity on contact.
@@ -29966,6 +29965,37 @@ function N.tick(now)
             if N.vz < 0.0 then N.vz = 0.0 end
             if height < NOCLIP_FLOOR and N.vz < NOCLIP_LIFT then
                 N.vz = NOCLIP_LIFT
+            end
+        end
+    end
+
+    -- Prop probe. The ground-height native does not include map props, so a
+    -- wind-turbine nacelle or roof lip can still be hit. A forward and a
+    -- vertical shape test find the surface the capsule is about to meet; the
+    -- response is a velocity lift over it. This is the only place the module
+    -- reads coordinates, and it writes no collision, position or gravity.
+    if not naruto and now >= N.probeAt then
+        N.probeAt = now + O.jitter(PROBE_MS, 0.25)
+        local okCoords, coords = pcall(GetEntityCoords, ped)
+        if okCoords and coords and type(coords.x) == "number"
+            and type(coords.y) == "number" and type(coords.z) == "number" then
+            local hx, hy = N.vx, N.vy
+            local hlen = math.sqrt(hx * hx + hy * hy)
+            if hlen < 0.5 then
+                hx, hy, hlen = -math.sin(rz), math.cos(rz), 1.0
+            end
+            hx, hy = hx / hlen, hy / hlen
+            local below = shapeProbeZ(ped,
+                coords.x, coords.y, coords.z + 2.0,
+                coords.x, coords.y, coords.z - 2.0)
+            local ahead = shapeProbeZ(ped,
+                coords.x, coords.y, coords.z + 1.0,
+                coords.x + hx * PROBE_RANGE, coords.y + hy * PROBE_RANGE,
+                coords.z + 1.0 - PROBE_DROP)
+            local limit = NOCLIP_FLOOR + 1.0
+            if (below and (coords.z - below) < limit)
+                or (ahead and (coords.z - ahead) < limit) then
+                if N.vz < NOCLIP_LIFT then N.vz = NOCLIP_LIFT end
             end
         end
     end
@@ -30018,7 +30048,6 @@ function N.tick(now)
         -- A ragdoll reset can restore gravity/ragdoll flags; re-assert them
         -- immediately instead of waiting for the 250 ms refresh.
         pcall(SetPedGravity, ped, false)
-        pcall(SetPedCanRagdoll, ped, false)
         pcall(SetPedCanRagdollFromPlayerImpact, ped, false)
         pcall(SetPedRagdollOnCollision, ped, false)
     end
@@ -30050,7 +30079,6 @@ function N.tick(now)
                 pcall(TaskPlayAnim, ped, ANIM_DICT, ANIM_CLIP,
                     8.0, 8.0, -1, ANIM_FLAGS_NOCLIP, 1.0, false, false, false)
                 pcall(SetPedGravity, ped, false)
-                pcall(SetPedCanRagdoll, ped, false)
                 pcall(SetPedCanRagdollFromPlayerImpact, ped, false)
                 pcall(SetPedRagdollOnCollision, ped, false)
                 N.animCheckAt = now + O.jitter(ANIM_LOCK_MS, 0.3)
@@ -38351,7 +38379,7 @@ end
 -- BOOT
 -- ---------------------------------------------------------------------------
 function UI.boot()
-    O.log("loader build 2026-11-08-r61 (Air movement: No Clip hard-locks the flat pose with CLEAR_PED_TASKS plus TASK_PLAY_ANIM only when IS_ENTITY_PLAYING_ANIM drops, a one-metre approach buffer keeps a two-metre floor, ped gravity and the ragdoll flags (including ragdoll-on-collision) are re-asserted every 250 ms and immediately after any task clear so a task reset or collision cannot drop the body, Space/Ctrl are disabled as game controls on every scheduler frame while armed so a parachute cannot deploy, a mid-session parachute state is cleared and the pose re-layered instead of stopping the session, the native cover layer is revalidated every 2.5 s so a read that was genuine at arm and later went false is hooked instead of trusted stale, and ragdoll-from-player-impact is disabled while armed and restored on stop; native particle call carries all four axis flags; load-time preload removed; Stage B graft disabled by default; self and remote share the same filtered particle path; the flash is anchored to the target entity at chest height with a ten-point particle ring for every view angle, moving targets get only a short capped velocity lead, and high-speed targets get a capped scale boost; selected self is honored only when it is the sole target, and is excluded whenever a remote target is selected; Flash moved to Online > Troll > Attacks with Auto Safe and ten explicit methods; the selected method is read live; the WaveShield V4 particle configuration is read from GlobalState and scr_wheel_burnout and scr_alien_teleport are emitted only when rcore_spray/WaveAdmin put them in the static table, dynamic camera parts are sent only from the executor with assetHash stripped on ptFxEvent, and Stage B graft remains available but is disabled by default, so statically safe parts are emitted from the executor without a host injection; particle scale is capped at MaxParticleScale and each pulse sends up to three base parts plus a ten-point ring on a solo target with no minimum range; a one-player server never fabricates a server event; the retired Exploit Flash tab is removed; Search magnifier handle rebuilt as a fused diagonal instead of three dots; White keeps the wbYgWhZ banner and Cyan restores its original 3HLMxX5 banner; Online Props Player row sorts the player list by distance and always targets the nearest player; Launch Player selector offers Method 1 and Method 2; Method 1 drives the victim ped directly when control is available and otherwise reverse-attaches the victim to the local ped within 3 m; Method 2 uses a range-free injected coordinate lift plus repeated upward force and velocity for servers that ignore Method 1; launch has no vehicle or explosion; hardened Susano ragdoll keeps the victim speed check lenient; self launch uses 58 m/s with GET_ENTITY_SPEED masked by the stealth hook; velocity and settle waits carry jitter; tight bold category chevrons; Troll Appearance section and Copy Appearance row removed; All mode Include me toggle adds the local ped alongside remote targets; Props Player row hidden in Self and All modes; attachment rows Attach to player and Attach point removed; target labels Self/Player/All; automatic player refresh sorts by distance and selects nearest; manual Refresh player list removed; Ban Player beta suffix removed; Servers and Bypass tabs moved from Destroyer to Misc; FOV moved from Visual/Camera to Self under Big Weapon; theme banners bottom-anchored flush on the category plate; White uses wbYgWhZ and Cyan uses 3HLMxX5; White/Cyan theme selector; White 3:1 header and Cyan 4.1:1 header; flush tab strip; light-grey cell tab plate; dark selected category rectangle; uniform unselected categories; reference names Self/Online/Vehicle/Weapon/Destroyer/Misc/Settings/Search; Search category opens the prompt directly and lands on results; compact magnifier; tight bold category chevron pair; full-white section rules fitted to the label width; Target keeps only the Ctrl hint; Player Props folded into Online; 15px right-aligned slider readout; target-bound toggles reset on target change/unload; dark row plates; white toggle/scrollbar; footer centre mark removed; Delete/Backspace close)")
+    O.log("loader build 2026-11-08-r63 (Air movement: No Clip hard-locks the flat pose with CLEAR_PED_TASKS plus TASK_PLAY_ANIM only when IS_ENTITY_PLAYING_ANIM drops, a one-metre approach buffer keeps a two-metre floor, ped gravity and the collision-only ragdoll flags are re-asserted every 250 ms and immediately after any task clear so a task reset or collision cannot drop the body, the global ragdoll flag is left enabled so CAN_PED_RAGDOLL stays 1, a 100 ms vertical and forward shape-test probe lifts the written velocity over a map prop such as a wind-turbine nacelle that the ground-height native cannot see (the probe is read-only and writes no collision, position or gravity), Space/Ctrl are disabled as game controls on every scheduler frame while armed so a parachute cannot deploy, a mid-session parachute state is cleared and the pose re-layered instead of stopping the session, the native cover layer is revalidated every 2.5 s so a read that was genuine at arm and later went false is hooked instead of trusted stale, and ragdoll-from-player-impact is disabled while armed and restored on stop; native particle call carries all four axis flags; load-time preload removed; Stage B graft disabled by default; self and remote share the same filtered particle path; the flash is anchored to the target entity at chest height with a ten-point particle ring for every view angle, moving targets get only a short capped velocity lead, and high-speed targets get a capped scale boost; selected self is honored only when it is the sole target, and is excluded whenever a remote target is selected; Flash moved to Online > Troll > Attacks with Burnout Ember and Acid Green only; the selected method is read live; the WaveShield V4 particle configuration is read from GlobalState and scr_wheel_burnout and scr_alien_teleport are emitted only when rcore_spray/WaveAdmin put them in the static table, dynamic camera parts are sent only from the executor with assetHash stripped on ptFxEvent, and Stage B graft remains available but is disabled by default, so statically safe parts are emitted from the executor without a host injection; particle scale is capped at MaxParticleScale and each pulse sends up to three base parts plus a ten-point ring on a solo target with no minimum range; a one-player server never fabricates a server event; the retired Exploit Flash tab is removed; Search magnifier handle rebuilt as a fused diagonal instead of three dots; White keeps the wbYgWhZ banner and Cyan restores its original 3HLMxX5 banner; Online Props Player row sorts the player list by distance and always targets the nearest player; Launch Player selector offers Method 1 and Method 2; Method 1 drives the victim ped directly when control is available and otherwise reverse-attaches the victim to the local ped within 3 m; Method 2 uses a range-free injected coordinate lift plus repeated upward force and velocity for servers that ignore Method 1; launch has no vehicle or explosion; hardened Susano ragdoll keeps the victim speed check lenient; self launch uses 58 m/s with GET_ENTITY_SPEED masked by the stealth hook; velocity and settle waits carry jitter; tight bold category chevrons; Troll Appearance section and Copy Appearance row removed; All mode Include me toggle adds the local ped alongside remote targets; Props Player row hidden in Self and All modes; attachment rows Attach to player and Attach point removed; target labels Self/Player/All; automatic player refresh sorts by distance and selects nearest; manual Refresh player list removed; Ban Player beta suffix removed; Servers and Bypass tabs moved from Destroyer to Misc; FOV moved from Visual/Camera to Self under Big Weapon; theme banners bottom-anchored flush on the category plate; White uses wbYgWhZ and Cyan uses 3HLMxX5; White/Cyan theme selector; White 3:1 header and Cyan 4.1:1 header; flush tab strip; light-grey cell tab plate; dark selected category rectangle; uniform unselected categories; reference names Self/Online/Vehicle/Weapon/Destroyer/Misc/Settings/Search; Search category opens the prompt directly and lands on results; compact magnifier; tight bold category chevron pair; full-white section rules fitted to the label width; Target keeps only the Ctrl hint; Player Props folded into Online; 15px right-aligned slider readout; target-bound toggles reset on target change/unload; dark row plates; white toggle/scrollbar; footer centre mark removed; Delete/Backspace close)")
     O.thread()
 
     -- Delete/Backspace fallback poll. 40 ms is faster than a frame at 30 FPS
