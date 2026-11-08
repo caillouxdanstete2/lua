@@ -13394,10 +13394,15 @@ end)
 -- ---------------------------------------------------------------------------
 -- One click on the selected player. The target is placed directly in front of
 -- the local ped with the same heading, the local ped enters unarmed stealth
--- and the native stealth-kill task is issued from a host resource VM. This is
--- the exact task pair used by fbi4_prep2: TASK_STEALTH_KILL with
--- AR_stealth_kill_a, followed by CLEAR_PED_TASKS on the victim. No weapon
--- damage modifier and no synthetic damage event are involved.
+-- and the native stealth-kill task is issued from a host resource VM. The
+-- action is TASK_STEALTH_KILL with AR_stealth_kill_a, as in fbi4_prep2. The
+-- victim is flagged with CPED_CONFIG_FLAG_ForceScriptControlledKnockout (114)
+-- before the task, so the result is a knockout rather than a death state.
+--
+-- CLEAR_PED_TASKS is deliberately not called on the victim. A remote clear is
+-- the one call the host resource forwards to its server event handler and
+-- reports when the sender does not own the ped; the knockout task completes
+-- on its own, so no victim-side cleanup is needed.
 --
 -- Stage A only owns target selection and Susano.InjectResource. The injected
 -- chunk is Stage B: it has no Susano.* access and uses only host globals and
@@ -13508,11 +13513,15 @@ function Menu.BabayagaStart(serverId)
                 return
             end
 
-            if type(TaskStealthKill) == "function" then
-                TaskStealthKill(me, ped, GetHashKey("AR_stealth_kill_a"), 1.0, 0)
+            -- 114 = CPED_CONFIG_FLAG_ForceScriptControlledKnockout. Set it on
+            -- the victim before the takedown so the task resolves to a
+            -- knockout instead of a kill. pcall keeps a stripped native from
+            -- aborting the task call below.
+            if type(SetPedConfigFlag) == "function" then
+                pcall(SetPedConfigFlag, ped, 114, true)
             end
-            if type(ClearPedTasks) == "function" then
-                ClearPedTasks(ped)
+            if type(TaskStealthKill) == "function" then
+                pcall(TaskStealthKill, me, ped, GetHashKey("AR_stealth_kill_a"), 1.0, 0)
             end
             rawset(_G, loopKey, false)
         end)
@@ -13607,7 +13616,7 @@ function Menu.ActionBabayaga(enabled)
 
     -- The task is one-shot. Drop the local handle after the animation window
     -- so the same row can be re-armed without a target change. A token keeps
-    -- a delayed clear from wiping a newer target.
+    -- a delayed reset from wiping a newer target.
     CreateThread(function()
         Wait(1500)
         if Menu.BabayagaToken == token then
@@ -34045,38 +34054,29 @@ local ICON_B64 = {
         "jJxaXgAAAABJRU5ErkJggg==",
     }),
     vehicle = table.concat({
-        "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",
-        "AAAAAElFTkSuQmCC",
+        "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAMAAACdt4HsAAADAFBMVEX/////////////////////////",
+        "////////////////////////////////////////////////////////////////////////////////",
+        "////////////////////////////////////////////////////////////////////////////////",
+        "////////////////////////////////////////////////////////////////////////////////",
+        "////////////////////////////////////////////////////////////////////////////////",
+        "////////////////////////////////////////////////////////////////////////////////",
+        "////////////////////////////////////////////////////////////////////////////////",
+        "////////////////////////////////////////////////////////////////////////////////",
+        "////////////////////////////////////////////////////////////////////////////////",
+        "////////////////////////////////////////////////////////////////////////////////",
+        "////////////////////////////////////////////////////////////////////////////////",
+        "////////////////////////////////////////////////////////////////////////////////",
+        "////////////////////////////////////////////////////////////////////////////////",
+        "//////////////////////////////////////+/LkhhAAABAHRSTlMAJEltkrbb////////////////",
+        "////////////////////////////////////////////////////////////////////////////////",
+        "////////////////////////////////////////////////////////////////////////////////",
+        "////////////////////////////////////////////////////////////////////////////////",
+        "////////////////////////////////////////////////////////////////////////////2daQ",
+        "CwAAARNJREFUeNrtlUsOwyAMRBn/uP+Na0PTqJVN6bISbxlgiD2epLXD4XD4AkDEF0T48bRY/8R4X4Rj",
+        "v4q83kBEQ5G2z2tyGUg3FdC1WLG+rAJqZtJgVkv7UuzSYtnRtnpR7tKiGcUVYO0ae2q0s/meqhJwyGtl",
+        "OqKP4efKvafnXqbbeKPqpd8zkRdJfR/k9e0juQnEOyLKlNpAo7TZx9VpjGYhFbAySW95Qt7GkSAZFiJX",
+        "sBkJsVpgppCRG+IfiJnKpcAmlYBFVBbnYsKsEKARpTGx3oO3ORz4M1+ZqS4FcI2UpIMmd2xzgZmSuL+I",
+        "os0bpJoDBNzLQEs3ii2UCuBuFVes07STg6dFxScBF+e3ejgcDv/KA00RESYix5NaAAAAAElFTkSuQmCC",
     }),
     weapon = table.concat({
         "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAACx0lEQVR42u1ar2/bQBT+XhWT/gdDQwUj",
@@ -34137,17 +34137,18 @@ local function loadIconTextures()
 end
 
 -- Load once at module start, outside the render path. A failed upload simply
--- leaves the table empty and the vector fallback takes over.
+-- leaves the table empty; vector glyphs still draw, and the car stays blank
+-- rather than falling back to a hand-built silhouette.
 pcall(loadIconTextures)
 
 -- ---------------------------------------------------------------------------
 -- ICONS
 --
--- Every glyph is composed from filled rectangles and, for the gauge, a handful
--- of strokes. No texture is loaded, no URL is fetched and no external asset is
--- touched: the icon set cannot be fingerprinted by a resource or a memory
--- scanner looking for a known cheat texture. Each glyph lives in a 0..1 box
--- scaled by the icon size, so it stays crisp at any Menu.Scale.
+-- Most glyphs are composed from filled rectangles and, for the gauge, a handful
+-- of strokes. The car is the original car texture, embedded as a base64 PNG and
+-- uploaded once through Susano; no URL is fetched and no external asset is
+-- touched. The remaining glyphs live in a 0..1 box scaled by the icon size, so
+-- they stay crisp at any Menu.Scale.
 -- ---------------------------------------------------------------------------
 local function drawIcon(name, x, y, size, cr, cg, cb)
     if size <= 0 then return end
@@ -34161,11 +34162,11 @@ local function drawIcon(name, x, y, size, cr, cg, cb)
         end
     end
 
-    -- Material texture first: one tinted draw call instead of a primitive
+    -- Original car texture first: one tinted draw call instead of a primitive
     -- cluster. The texture is white with alpha, so r/g/b is the whole colour.
-    -- The vehicle glyph stays vector: its old texture lost the roof and wheels
-    -- at dossier size, while this silhouette keeps both at 16 logical pixels.
-    local texture = (name ~= "vehicle" and name ~= "radio" and name ~= "speed")
+    -- Radio and speed keep the vector path because their fine strokes stay
+    -- sharper than the uploaded texture at 16 logical pixels.
+    local texture = (name ~= "radio" and name ~= "speed")
         and ICON_TEXTURES[name] or nil
     if texture and Susano and type(Susano.DrawImage) == "function" then
         local ok = pcall(Susano.DrawImage, texture, x, y, size, size, ir, ig, ib, 1.0, 0)
@@ -34253,16 +34254,6 @@ local function drawIcon(name, x, y, size, cr, cg, cb)
             R(0.5 - w * 0.5, 0.50 + t * 0.40, w, 0.40 / rows + 0.010, 0.0)
         end
 
-    elseif name == "vehicle" then
-        -- Old front-view car, rebuilt as vectors so the original silhouette
-        -- stays intact without the blur of the 64 px texture at 14 px.
-        R(0.10, 0.07, 0.80, 0.20, 0.08)
-        R(0.04, 0.24, 0.92, 0.36, 0.04)
-        C(0.18, 0.14, 0.64, 0.14, 0.025)
-        C(0.13, 0.34, 0.14, 0.14, 0.07)
-        C(0.73, 0.34, 0.14, 0.14, 0.07)
-        C(0.22, 0.52, 0.56, 0.12, 0.02)
-
     elseif name == "weapon" then
         -- Pistol: slide, muzzle, grip, trigger notch.
         R(0.04, 0.30, 0.86, 0.20, 0.03)
@@ -34282,28 +34273,14 @@ local function drawIcon(name, x, y, size, cr, cg, cb)
     end
 end
 
--- Solid car silhouette for the player-list badge. The list row background is
--- not the card body, so this glyph uses no cut-outs: it is one flat colour and
--- reads at a glance without depending on what is behind it.
+-- Original car texture for the player-list badge, tinted with the list's red.
+-- No hand-built fallback: the texture is loaded once at module start.
 local function drawVehicleBadge(x, y, size, r, g, b)
     if size <= 0 then return end
-
-    -- Original Material car, tinted with the list's red. The primitive below
-    -- is only the upload-failure path.
     local texture = ICON_TEXTURES.vehicle
     if texture and Susano and type(Susano.DrawImage) == "function" then
-        local ok = pcall(Susano.DrawImage, texture, x, y, size, size, r, g, b, 1.0, 0)
-        if ok then return end
+        pcall(Susano.DrawImage, texture, x, y, size, size, r, g, b, 1.0, 0)
     end
-
-    fillRect(x + 0.06 * size, y + 0.44 * size, 0.88 * size, 0.24 * size,
-        r, g, b, 1.0, 0.05 * size)
-    fillRect(x + 0.24 * size, y + 0.30 * size, 0.46 * size, 0.20 * size,
-        r, g, b, 1.0, 0.05 * size)
-    fillRect(x + 0.14 * size, y + 0.62 * size, 0.20 * size, 0.20 * size,
-        r, g, b, 1.0, 0.10 * size)
-    fillRect(x + 0.66 * size, y + 0.62 * size, 0.20 * size, 0.20 * size,
-        r, g, b, 1.0, 0.10 * size)
 end
 
 -- ---------------------------------------------------------------------------
