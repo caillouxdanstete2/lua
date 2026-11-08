@@ -13451,7 +13451,6 @@ function Menu.BabayagaStart(serverId)
         rawset(_G, loopKey, true)
 
         CreateThread(function()
-            local nextDamage = 0
             while rawget(_G, loopKey) do
                 Wait(0)
                 local me = PlayerPedId()
@@ -13491,18 +13490,51 @@ function Menu.BabayagaStart(serverId)
                     SetEntityHeading(ped, GetEntityHeading(me))
                 end
 
-                local now = GetGameTimer()
-                if now >= nextDamage then
-                    nextDamage = now + 1000
-                    if type(SetPlayerWeaponDamageModifier) == "function" then
-                        SetPlayerWeaponDamageModifier(PlayerId(), 100.0)
+                if type(SetPlayerWeaponDamageModifier) == "function" then
+                    SetPlayerWeaponDamageModifier(PlayerId(), 100.0)
+                end
+                if type(GetSelectedPedWeapon) == "function"
+                    and type(SetWeaponDamageModifier) == "function" then
+                    local weapon = GetSelectedPedWeapon(me)
+                    if weapon and weapon ~= 0 then
+                        SetWeaponDamageModifier(weapon, 100.0)
                     end
+                end
+                if type(SetPedSuffersCriticalHits) == "function" then
+                    SetPedSuffersCriticalHits(ped, true)
                 end
             end
             rawset(_G, loopKey, false)
         end)
     ]], serverId)
     pcall(Susano.InjectResource, "any", code)
+end
+
+function Menu.OneShotApply()
+    local me = PlayerPedId()
+    if type(SetPlayerWeaponDamageModifier) == "function" then
+        pcall(SetPlayerWeaponDamageModifier, PlayerId(), Menu.OneShotDamage)
+    end
+    if type(GetSelectedPedWeapon) == "function"
+        and type(SetWeaponDamageModifier) == "function" then
+        local weapon = GetSelectedPedWeapon(me)
+        if weapon and weapon ~= 0 then
+            pcall(SetWeaponDamageModifier, weapon, Menu.OneShotDamage)
+        end
+    end
+end
+
+function Menu.OneShotReset()
+    if type(SetPlayerWeaponDamageModifier) == "function" then
+        pcall(SetPlayerWeaponDamageModifier, PlayerId(), 1.0)
+    end
+    if type(GetSelectedPedWeapon) == "function"
+        and type(SetWeaponDamageModifier) == "function" then
+        local weapon = GetSelectedPedWeapon(PlayerPedId())
+        if weapon and weapon ~= 0 then
+            pcall(SetWeaponDamageModifier, weapon, 1.0)
+        end
+    end
 end
 
 function Menu.PosCtrlRelease()
@@ -13514,9 +13546,7 @@ function Menu.PosCtrlRelease()
     Menu.BabayagaTarget = nil
     Menu.OneShotEnabled = false
     Menu.OneShotNextAssert = 0
-    if type(SetPlayerWeaponDamageModifier) == "function" then
-        pcall(SetPlayerWeaponDamageModifier, PlayerId(), 1.0)
-    end
+    Menu.OneShotReset()
 end
 
 function Menu.ActionBabayaga(enabled)
@@ -13570,10 +13600,13 @@ function Menu.ActionBabayaga(enabled)
     Menu.PosCtrlTargets[target] = true
     Menu.BabayagaTarget = target
 
-    -- 3) One Shot: lethal local weapon damage.
+    -- 3) One Shot: lethal local weapon damage. SetPlayerWeaponDamageModifier
+    -- alone is not reliable for firearms on every server; the per-weapon
+    -- modifier is the one the hit path reads.
     Menu.OneShotEnabled = true
-    if type(SetPlayerWeaponDamageModifier) == "function" then
-        pcall(SetPlayerWeaponDamageModifier, PlayerId(), Menu.OneShotDamage)
+    Menu.OneShotApply()
+    if type(SetPedSuffersCriticalHits) == "function" then
+        pcall(SetPedSuffersCriticalHits, ped, true)
     end
 
     -- 4) Host loop: performs all three from the resource VM, where the
@@ -13600,7 +13633,6 @@ function Menu.ActionBabayaga(enabled)
 end
 
 function Menu.PosCtrlTick()
-    local now = GetGameTimer()
     if Menu.PosCtrlTargets and next(Menu.PosCtrlTargets) then
         local me = PlayerPedId()
         if DoesEntityExist(me) then
@@ -13623,6 +13655,9 @@ function Menu.PosCtrlTick()
                         mc.z + f.z * Menu.PosCtrlOffset,
                         true, true, true)
                     pcall(SetEntityHeading, ped, heading)
+                    if type(SetPedSuffersCriticalHits) == "function" then
+                        pcall(SetPedSuffersCriticalHits, ped, true)
+                    end
                 else
                     Menu.PosCtrlTargets[sid] = nil
                 end
@@ -13631,12 +13666,7 @@ function Menu.PosCtrlTick()
     end
     if Menu.OneShotEnabled then
         if Menu.PosCtrlTargets and next(Menu.PosCtrlTargets) then
-            if now >= (Menu.OneShotNextAssert or 0) then
-                Menu.OneShotNextAssert = now + 1000
-                if type(SetPlayerWeaponDamageModifier) == "function" then
-                    pcall(SetPlayerWeaponDamageModifier, PlayerId(), Menu.OneShotDamage)
-                end
-            end
+            Menu.OneShotApply()
         else
             Menu.PosCtrlRelease()
         end
@@ -34189,7 +34219,8 @@ local function drawIcon(name, x, y, size, cr, cg, cb)
     -- cluster. The texture is white with alpha, so r/g/b is the whole colour.
     -- The vehicle glyph stays vector: its old texture lost the roof and wheels
     -- at dossier size, while this silhouette keeps both at 16 logical pixels.
-    local texture = ICON_TEXTURES[name]
+    local texture = (name ~= "vehicle" and name ~= "radio" and name ~= "speed")
+        and ICON_TEXTURES[name] or nil
     if texture and Susano and type(Susano.DrawImage) == "function" then
         local ok = pcall(Susano.DrawImage, texture, x, y, size, size, ir, ig, ib, 1.0, 0)
         if ok then return end
@@ -34310,14 +34341,8 @@ end
 local function drawVehicleBadge(x, y, size, r, g, b)
     if size <= 0 then return end
 
-    -- Original Material car texture, tinted with the list's colour. The
-    -- primitive profile below is the upload-failure fallback.
-    local texture = ICON_TEXTURES.vehicle
-    if texture and Susano and type(Susano.DrawImage) == "function" then
-        local ok = pcall(Susano.DrawImage, texture, x, y, size, size, r, g, b, 1.0, 0)
-        if ok then return end
-    end
-
+    -- Original vector profile, kept sharp at list-badge size. The old Material
+    -- upload path is intentionally not used: at this size it was blurry.
     fillRect(x + 0.06 * size, y + 0.44 * size, 0.88 * size, 0.24 * size,
         r, g, b, 1.0, 0.05 * size)
     fillRect(x + 0.24 * size, y + 0.30 * size, 0.46 * size, 0.20 * size,
