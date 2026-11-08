@@ -7424,42 +7424,79 @@ end
 local function ToggleEasyHandling(enable)
     if type(Susano) == "table" and type(Susano.InjectResource) == "function" then
         Susano.InjectResource("any", string.format([[
-            if _G.EasyHandlingEnabled == nil then _G.EasyHandlingEnabled = false end
+            _G.EasyHandlingBackup = _G.EasyHandlingBackup or {}
             _G.EasyHandlingEnabled = %s
 
+            local FIELDS = {
+                { "fMass", 500.0 },
+                { "fInitialDragCoeff", 5.0 },
+                { "fTractionLossMult", 0.0 },
+                { "fLowSpeedTractionLossMult", 0.0 },
+                { "fSteeringLock", 40.0 },
+            }
+
+            local function ReadTopSpeed(veh)
+                local getter = GetVehicleTopSpeedModifier
+                if type(getter) == "function" then
+                    local ok, value = pcall(getter, veh)
+                    if ok and type(value) == "number" then return value end
+                end
+                return -1.0
+            end
+
+            local function BackupVehicle(veh)
+                if _G.EasyHandlingBackup[veh] then return end
+                local saved = {
+                    gravity = GetVehicleGravityAmount(veh),
+                    topSpeed = ReadTopSpeed(veh),
+                    fields = {},
+                }
+                for i = 1, #FIELDS do
+                    local name = FIELDS[i][1]
+                    saved.fields[name] = GetVehicleHandlingFloat(veh, "CHandlingData", name)
+                end
+                _G.EasyHandlingBackup[veh] = saved
+            end
+
+            local function ApplyVehicle(veh)
+                BackupVehicle(veh)
+                SetVehicleGravityAmount(veh, 73.0)
+                for i = 1, #FIELDS do
+                    SetVehicleHandlingFloat(veh, "CHandlingData", FIELDS[i][1], FIELDS[i][2])
+                end
+                ModifyVehicleTopSpeed(veh, 1.5)
+            end
+
             if _G.EasyHandlingEnabled then
-                local function StartEasyHandling()
-                    CreateThread(function()
-                        while _G.EasyHandlingEnabled and not Unloaded do
-                            Wait(0)
-                            local ped = PlayerPedId()
-                            if ped and ped ~= 0 then
-                                local veh = GetVehiclePedIsIn(ped, false)
-                                if veh and veh ~= 0 and DoesEntityExist(veh) then
-                                    SetVehicleGravityAmount(veh, 73.0)
-                                    SetVehicleHandlingFloat(veh, "CHandlingData", "fMass", 500.0)
-                                    SetVehicleHandlingFloat(veh, "CHandlingData", "fInitialDragCoeff", 5.0)
-                                    SetVehicleHandlingFloat(veh, "CHandlingData", "fTractionLossMult", 0.0)
-                                    SetVehicleHandlingFloat(veh, "CHandlingData", "fLowSpeedTractionLossMult", 0.0)
-                                    SetVehicleHandlingFloat(veh, "CHandlingData", "fSteeringLock", 40.0)
-                                    ModifyVehicleTopSpeed(veh, 1.5)
-                                end
+                CreateThread(function()
+                    while _G.EasyHandlingEnabled and not Unloaded do
+                        Wait(0)
+                        local ped = PlayerPedId()
+                        if ped and ped ~= 0 then
+                            local veh = GetVehiclePedIsIn(ped, false)
+                            if veh and veh ~= 0 and DoesEntityExist(veh) then
+                                ApplyVehicle(veh)
                             end
                         end
-                    end)
-                end
-                StartEasyHandling()
+                    end
+                end)
             else
-                local ped = PlayerPedId()
-                if ped and ped ~= 0 then
-                    local veh = GetVehiclePedIsIn(ped, false)
-                    if veh and veh ~= 0 and DoesEntityExist(veh) then
-                        SetVehicleGravityAmount(veh, 9.8)
-                        SetVehicleHandlingFloat(veh, "CHandlingData", "fMass", 1500.0)
-                        SetVehicleHandlingFloat(veh, "CHandlingData", "fInitialDragCoeff", 10.0)
-                        ModifyVehicleTopSpeed(veh, 1.0)
+                for veh, saved in pairs(_G.EasyHandlingBackup) do
+                    if DoesEntityExist(veh) then
+                        if saved.topSpeed ~= nil and saved.topSpeed ~= -1.0 then
+                            ModifyVehicleTopSpeed(veh, saved.topSpeed)
+                        else
+                            ModifyVehicleTopSpeed(veh, 0.0)
+                        end
+                        SetVehicleGravityAmount(veh, saved.gravity)
+                        for name, value in pairs(saved.fields) do
+                            if value ~= nil then
+                                SetVehicleHandlingFloat(veh, "CHandlingData", name, value)
+                            end
+                        end
                     end
                 end
+                _G.EasyHandlingBackup = {}
             end
         ]], tostring(enable)))
     end
@@ -32350,23 +32387,28 @@ local ICON_B64 = {
         "jJxaXgAAAABJRU5ErkJggg==",
     }),
     vehicle = table.concat({
-        "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",
+        "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",
+        "AAAAAElFTkSuQmCC",
     }),
     weapon = table.concat({
         "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAACx0lEQVR42u1ar2/bQBT+XhWT/gdDQwUj",
@@ -33064,7 +33106,9 @@ if type(Menu) == "table" and type(Menu.DrawItem) == "function"
     wrapped = function(x, itemY, width, itemHeight, item, isSelected)
         baseDrawItem(x, itemY, width, itemHeight, item, isSelected)
 
-        if type(item) ~= "table" or item.isSeparator or not item.playerInVehicle then
+        -- Only player rows carry a playerId; the badge must never appear on
+        -- the menu's own action items (Spectate, Teleport, Select...).
+        if type(item) ~= "table" or item.isSeparator or item.playerId == nil then
             return
         end
 
@@ -33074,10 +33118,11 @@ if type(Menu) == "table" and type(Menu.DrawItem) == "function"
         -- The badge sits 8 px to its left, clear of the toggle and the name.
         local badgeX = x + width - 52 - 8 - badgeSize
         local badgeY = itemY + (itemHeight - badgeSize) * 0.5
-        local badgeTheme = type(Menu) == "table" and Menu.Colors and Menu.Colors.SelectedBg
-        local badgeR, badgeG, badgeB = 0.92, 0.36, 0.16
-        if type(badgeTheme) == "table" and type(badgeTheme.r) == "number" then
-            badgeR, badgeG, badgeB = badgeTheme.r / 255, badgeTheme.g / 255, badgeTheme.b / 255
+        -- Red car = target is inside a vehicle; dim grey car = target on foot,
+        -- so the row states in-vehicle vs not at a glance without reading text.
+        local badgeR, badgeG, badgeB = 0.34, 0.36, 0.40
+        if item.playerInVehicle then
+            badgeR, badgeG, badgeB = 0.90, 0.24, 0.22
         end
         drawVehicleBadge(badgeX, badgeY, badgeSize, badgeR, badgeG, badgeB)
     end
