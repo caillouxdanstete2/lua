@@ -2608,8 +2608,8 @@ Menu.Categories = {
             { name = "Ban Player", type = "toggle", value = false, risk = true},
             { name = "Shoot Player", type = "action", risk = true},
             { name = "Ped Flood", type = "action", risk = true},
-            { name = "Babayaga", type = "action", risk = true, targetBound = true, onClick = function()
-                Menu.ActionBabayaga()
+            { name = "Babayaga", type = "toggle", value = false, risk = true, targetBound = true, onClick = function(value)
+                Menu.ActionBabayaga(value)
             end },
             { name = "Launch Player", type = "selector", options = {"Object", "Force", "Attach"}, selected = 1, onClick = function(index, option)
                 Menu.LaunchMethod = index
@@ -13418,8 +13418,10 @@ Menu.OneShotDamage = Menu.OneShotDamage or 100.0
 
 function Menu.PosCtrlResolve(serverId)
     if type(GetActivePlayers) ~= "function" then return nil, nil end
+    local wanted = tonumber(serverId)
+    if not wanted then return nil, nil end
     for _, player in ipairs(GetActivePlayers()) do
-        if GetPlayerServerId(player) == serverId then
+        if tonumber(GetPlayerServerId(player)) == wanted then
             return player, GetPlayerPed(player)
         end
     end
@@ -13431,6 +13433,15 @@ function Menu.PosCtrlRelease()
     if type(attachedPlayers) == "table" and Menu.BabayagaTarget then
         attachedPlayers[Menu.BabayagaTarget] = nil
     end
+    if type(FindItem) == "function" then
+        local attachItem = FindItem("Online", "Troll", "Attach Player")
+        if attachItem and attachItem.value then
+            attachItem.value = false
+            if type(attachItem.onClick) == "function" then
+                pcall(attachItem.onClick, false)
+            end
+        end
+    end
     Menu.BabayagaTarget = nil
     Menu.OneShotEnabled = false
     Menu.OneShotNextAssert = 0
@@ -13439,23 +13450,34 @@ function Menu.PosCtrlRelease()
     end
 end
 
-function Menu.ActionBabayaga()
-    local target = Menu.SelectedPlayer
-    if not target then return end
-
-    -- Re-running the row on the same target releases the grab.
-    if Menu.BabayagaTarget == target then
+function Menu.ActionBabayaga(enabled)
+    if enabled == false then
         Menu.PosCtrlRelease()
         return
     end
 
+    local target = tonumber(Menu.SelectedPlayer)
+    if not target then Menu.PosCtrlRelease() return end
+
+    -- The toggle itself is the release control; re-arming the same target is
+    -- a no-op instead of a second click silently turning the grab off.
+    if Menu.BabayagaTarget == target then return end
+
     local _, ped = Menu.PosCtrlResolve(target)
-    if not ped or not DoesEntityExist(ped) then return end
+    if not ped or not DoesEntityExist(ped) then Menu.PosCtrlRelease() return end
 
     -- Drop any previous grab before arming this one.
     Menu.PosCtrlRelease()
 
-    -- 1) Existing Attach Player path: pin him in front from now on.
+    -- 1) Existing Attach Player path: pin him in front from now on. The
+    -- shipped row handler adds its host loop; the passthrough table stays as
+    -- the local fallback so a refused injection does not make the row dead.
+    local attachItem = type(FindItem) == "function"
+        and FindItem("Online", "Troll", "Attach Player") or nil
+    if attachItem and type(attachItem.onClick) == "function" then
+        attachItem.value = true
+        pcall(attachItem.onClick, true)
+    end
     if type(attachedPlayers) ~= "table" then attachedPlayers = {} end
     attachedPlayers[target] = ped
 
@@ -13469,7 +13491,12 @@ function Menu.ActionBabayaga()
         pcall(SetPlayerWeaponDamageModifier, PlayerId(), Menu.OneShotDamage)
     end
 
-    -- Place him immediately so he is in front on the very next frame.
+    -- Place him immediately so he is in front on the very next frame. Ask
+    -- for control first; the tick repeats the request if the server refuses.
+    if type(NetworkRequestControlOfEntity) == "function" then
+        pcall(NetworkRequestControlOfEntity, ped)
+    end
+    pcall(SetEntityVelocity, ped, 0.0, 0.0, 0.0)
     local me = PlayerPedId()
     if DoesEntityExist(me) then
         local mc = GetEntityCoords(me)
@@ -34200,14 +34227,9 @@ end
 local function drawVehicleBadge(x, y, size, r, g, b)
     if size <= 0 then return end
 
-    -- Same Material car texture as the card, tinted with the list's colour.
-    -- One draw call per row; the primitive car below is the upload-failure path.
-    local texture = ICON_TEXTURES.vehicle
-    if texture and Susano and type(Susano.DrawImage) == "function" then
-        local ok = pcall(Susano.DrawImage, texture, x, y, size, size, r, g, b, 1.0, 0)
-        if ok then return end
-    end
-
+    -- Flat row badge: no texture path, so the silhouette cannot inherit a
+    -- low-resolution upload from the dossier icon set. The list background is
+    -- not the card body, therefore there are no window cut-outs here.
     fillRect(x + 0.06 * size, y + 0.44 * size, 0.88 * size, 0.24 * size,
         r, g, b, 1.0, 0.05 * size)
     fillRect(x + 0.24 * size, y + 0.30 * size, 0.46 * size, 0.20 * size,
@@ -34857,7 +34879,7 @@ if type(Menu) == "table" and type(Menu.DrawItem) == "function"
             elseif kind == "apartment" then
                 Menu.__vgdDrawApartmentBadge(badgeX, badgeY, badgeSize, 0.48, 0.68, 0.94)
             else
-                drawVehicleBadge(badgeX, badgeY, badgeSize, 0.92, 0.36, 0.16)
+                drawVehicleBadge(badgeX, badgeY, badgeSize, 0.90, 0.24, 0.22)
             end
             right = badgeX - badgeGap
         end
