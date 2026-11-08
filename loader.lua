@@ -31892,38 +31892,40 @@ local function text(x, y, value, size, r, g, b, a)
     Menu.DrawText(x, y, tostring(value), size, r, g, b, a or 1.0)
 end
 
--- Pure-Lua width estimate. The card is our own layout, so a proportional
--- estimate is exact enough for right-alignment and truncation. The render
--- thread never calls Susano.GetTextWidth: that primitive is a cross-thread
--- measurement that waits for the overlay thread, and measuring every changing
--- value on every frame is exactly the kind of stall that ends with a frozen
--- client. Counting UTF-8 characters (not bytes) keeps names honest.
-local TEXT_CHAR_RATIO = 0.52
+-- Susano.GetTextWidth(text, size_px) wants the final pixel size, while the
+-- menu multiplies the logical size by Menu.Scale. Multiply before measuring.
+-- Susano.GetTextWidth is a cross-thread call: it queues the measurement and
+-- waits for the overlay thread to answer. The card redraws every frame, so a
+-- static label would be re-measured on every frame for no reason. Cache the
+-- unscaled width per (text, size). The panel only measures from the render
+-- thread, so the cache needs no locking; it is capped so a stream of changing
+-- values cannot grow it without bound.
+local widthCache = {}
+local widthCacheKeys = {}
+local WIDTH_CACHE_MAX = 256
+
 local function textWidth(value, size, scale)
     value = tostring(value or "")
     if value == "" then return 0.0 end
     scale = tonumber(scale) or 1.0
     if scale <= 0 then scale = 1.0 end
-    local pixelSize = tonumber(size) or 0.0
-    if pixelSize <= 0 then return 0.0 end
 
-    local characters = 0
-    local index = 1
-    local length = #value
-    while index <= length do
-        local byte = value:byte(index) or 0
-        local step = 1
-        if byte >= 0xF0 then
-            step = 4
-        elseif byte >= 0xE0 then
-            step = 3
-        elseif byte >= 0xC0 then
-            step = 2
-        end
-        index = index + step
-        characters = characters + 1
+    local key = value .. "\0" .. tostring(size)
+    local cached = widthCache[key]
+    if cached then return cached * scale end
+
+    local base = nil
+    if Susano and type(Susano.GetTextWidth) == "function" then
+        local ok, width = pcall(Susano.GetTextWidth, value, size * scale)
+        if ok and type(width) == "number" and width > 0 then base = width / scale end
     end
-    return characters * pixelSize * TEXT_CHAR_RATIO * scale
+    if not base then base = #value * size * 0.52 end
+
+    if #widthCacheKeys < WIDTH_CACHE_MAX then
+        widthCacheKeys[#widthCacheKeys + 1] = key
+        widthCache[key] = base
+    end
+    return base * scale
 end
 
 -- Byte offsets of every UTF-8 character boundary, with a final sentinel at
@@ -32438,51 +32440,12 @@ Menu.FitRowLabel = function(value, maxWidth)
     return value:sub(1, utf8Cut(value, maxChars - 3)) .. "..."
 end
 
--- ---------------------------------------------------------------------------
--- PANEL SNAPSHOT
---
--- The card used to call Menu.GetSelectedPlayerInfo and resolveIdentity from
--- the render pass: ~25 native reads and a state-bag deserialisation on the
--- frame thread, every frame, for as long as a player was selected. A render
--- thread that blocks on the game or on a state bag is what freezes the client.
--- The sample now runs on its own 5 Hz thread and the card reads a plain table.
--- Nothing on the frame thread touches a native or a state bag.
--- ---------------------------------------------------------------------------
-local PANEL = { snapshot = nil, w = 1920, h = 1080 }
-
-local function samplePanel()
-    local ok, info = pcall(Menu.GetSelectedPlayerInfo)
-    if not ok or type(info) ~= "table" then
-        PANEL.snapshot = nil
+local function drawPlayerInfoPanel()
+    if type(Menu) ~= "table" or type(Menu.GetSelectedPlayerInfo) ~= "function" then
         return
     end
-    local okIdentity, identity = pcall(resolveIdentity, info.localId, info.ped)
-    if not okIdentity or type(identity) ~= "table" then
-        identity = { character = "-", phone = "-", radio = "-", job = "-", group = "-" }
-    end
-    info.identity = identity
-    PANEL.snapshot = info
-end
 
--- Force a fresh sample (used when the card first opens, and by the tests).
-Menu.RefreshPlayerPanel = samplePanel
-
-CreateThread(function()
-    while true do
-        Wait(200)
-        local sw, sh = screenSize()
-        if type(sw) == "number" and sw > 0 then PANEL.w = sw end
-        if type(sh) == "number" and sh > 0 then PANEL.h = sh end
-        if type(Menu) == "table" and Menu.SelectedPlayer then
-            samplePanel()
-        else
-            PANEL.snapshot = nil
-        end
-    end
-end)
-
-local function drawPlayerInfoPanel()
-    local info = PANEL.snapshot
+    local info = Menu.GetSelectedPlayerInfo()
     if type(info) ~= "table" then return end
 
     local scale = Menu.Scale or 1.0
@@ -32494,7 +32457,7 @@ local function drawPlayerInfoPanel()
         return
     end
 
-    local screenWidth, screenHeight = PANEL.w, PANEL.h
+    local screenWidth, screenHeight = screenSize()
 
     local menuWidth = tonumber(sp.width) or (360 * scale)
     local panelWidth = math.max(WIDTH_MIN * scale,
@@ -32541,11 +32504,22 @@ local function drawPlayerInfoPanel()
         panelY = math.max(8, screenHeight - panelHeight - 8)
     end
 
-    -- Background: the same two-layer chrome as library.lua's menu card. Plain
-    -- fills only; the card does not depend on any extra drawing primitive.
+    -- Background: the same two-layer chrome as library.lua's menu card, with
+    -- the soft offset shadow kept under the border. DrawShadowRect is the
+    -- documented primitive; the plain fill is the fallback. Alpha stays just
+    -- below 1 so the card reads as an overlay rather than a hole in the game.
     local radius = RADIUS * scale
-    fillRect(panelX, panelY, panelWidth, panelHeight,
-        BORDER_R, BORDER_G, BORDER_B, 0.98, radius)
+    local shadowDrawn = false
+    if Susano and type(Susano.DrawShadowRect) == "function" then
+        shadowDrawn = pcall(Susano.DrawShadowRect,
+            panelX, panelY, panelWidth, panelHeight,
+            BORDER_R, BORDER_G, BORDER_B, 0.98,
+            3 * scale, 0.38, radius)
+    end
+    if not shadowDrawn then
+        fillRect(panelX, panelY, panelWidth, panelHeight,
+            BORDER_R, BORDER_G, BORDER_B, 0.98, radius)
+    end
     fillRect(panelX + 1, panelY + 1, panelWidth - 2, panelHeight - 2,
         BODY_R, BODY_G, BODY_B, 0.98, radius)
 
@@ -32628,10 +32602,9 @@ local function drawPlayerInfoPanel()
     cy = cy + headerHeight
     sectionGap()
 
-    -- Section 1: identity, resolved by the snapshot thread.
-    local identity = info.identity or {
-        character = "-", phone = "-", radio = "-", job = "-", group = "-",
-    }
+    -- Section 1: identity. All five values come from the passive state-bag
+    -- reader; missing fields fall back to "-" and never trigger a request.
+    local identity = resolveIdentity(info.localId, info.ped)
     local identityData = {
         { icon = "character", label = "Character", value = identity.character },
         { icon = "phone",     label = "Phone",     value = identity.phone },
