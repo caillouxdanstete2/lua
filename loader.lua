@@ -1508,45 +1508,12 @@ local _fakeStaminaDir = -1
 local _fakeStaminaTick = 0
 local _fakeAmmo = {}
 
--- Native-free hook state. A native call made from inside a Susano native hook
--- re-enters the native bridge; on a hooked native that is the fastest way to
--- corrupt the VM and it shows up as an access violation far from the call.
--- Every value the hook callbacks below need is cached here by plain threads,
--- and the callbacks read only these upvalues.
-_Stealth.myPlayerId = PlayerId()
-_Stealth.myPed = PlayerPedId()
-_Stealth.gameTimer = GetGameTimer()
-_Stealth.inVehicle = false
-_Stealth.isShooting = false
-_Stealth.knuckleHash = GetHashKey("WEAPON_KNUCKLE")
-
-CreateThread(function()
-    while true do
-        Wait(250)
-        _Stealth.myPed = PlayerPedId()
-        _Stealth.gameTimer = GetGameTimer()
-        _Stealth.inVehicle = IsPedInAnyVehicle(_Stealth.myPed, false)
-    end
-end)
-
-CreateThread(function()
-    while true do
-        Wait(50)
-        _Stealth.isShooting = IsPedShooting(_Stealth.myPed)
-    end
-end)
-
--- The AC event filter is installed on demand, not at load. Leaving an
--- OnTriggerServerEvent callback resident means every outgoing server event is
--- decoded and re-encoded by the executor bridge; a single payload the bridge
--- cannot round-trip corrupts the network event pool. At rest there is no
--- callback, so the network path stays untouched.
 do
     if type(Susano) == "table" and type(Susano.HookNative) == "function" then
 
         -- GetPlayerInvincible ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ false
         Susano.HookNative(0xB721981B2B939E07, function(player)
-            if _Stealth.invincible and player == _Stealth.myPlayerId then
+            if _Stealth.invincible and player == PlayerId() then
                 return false, false
             end
             return true
@@ -1554,7 +1521,7 @@ do
 
         -- GetEntityHealth ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ 190-200
         Susano.HookNative(0xEEF059FAD016D209, function(entity)
-            if _Stealth.health and entity == _Stealth.myPed then
+            if _Stealth.health and entity == PlayerPedId() then
                 return false, 190 + math.random(0, 10)
             end
             return true
@@ -1562,9 +1529,10 @@ do
 
         -- GetPlayerStamina ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ oscillation 45-98
         Susano.HookNative(0xCEFD02E1E6BC7AF0, function(player)
-            if _Stealth.stamina and player == _Stealth.myPlayerId then
-                if _Stealth.gameTimer - _fakeStaminaTick > 300 then
-                    _fakeStaminaTick = _Stealth.gameTimer
+            if _Stealth.stamina and player == PlayerId() then
+                local now = GetGameTimer()
+                if now - _fakeStaminaTick > 300 then
+                    _fakeStaminaTick = now
                     _fakeStamina = _fakeStamina + (_fakeStaminaDir * math.random(2, 6))
                     if _fakeStamina < 45 then _fakeStamina = 45; _fakeStaminaDir = 1
                     elseif _fakeStamina > 98 then _fakeStamina = 98; _fakeStaminaDir = -1 end
@@ -1576,8 +1544,11 @@ do
 
         -- GetEntitySpeed ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ cap 6.5-8.0 m/s
         Susano.HookNative(0xD5037BA82E12416F, function(entity)
-            if _Stealth.speed and entity == _Stealth.myPed and not _Stealth.inVehicle then
-                return false, 6.5 + math.random() * 1.5
+            if _Stealth.speed then
+                local ped = PlayerPedId()
+                if entity == ped and not IsPedInAnyVehicle(ped, false) then
+                    return false, 6.5 + math.random() * 1.5
+                end
             end
             return true
         end)
@@ -1591,18 +1562,18 @@ do
         Susano.HookNative(0xD979143, function(weaponHash)
             if _Stealth.punch then
                 local hash = weaponHash
-                if hash == -1569615261 or hash == _Stealth.knuckleHash then
+                if hash == -1569615261 or hash == GetHashKey("WEAPON_KNUCKLE") then
                     return false, 1.0
                 end
             end
             return true
         end)
         Susano.HookNative(0x015A522136D7F951, function(ped, weaponHash)
-            if _Stealth.ammo and ped == _Stealth.myPed then
+            if _Stealth.ammo and ped == PlayerPedId() then
                 if not _fakeAmmo[weaponHash] then
                     _fakeAmmo[weaponHash] = 25 + math.random(0, 15)
                 end
-                if _Stealth.isShooting then
+                if IsPedShooting(ped) then
                     _fakeAmmo[weaponHash] = _fakeAmmo[weaponHash] - 1
                     if _fakeAmmo[weaponHash] <= 0 then
                         _fakeAmmo[weaponHash] = 20 + math.random(0, 15)
@@ -1624,11 +1595,7 @@ do
         "aimbot","aim_bot","teleport_detect","tp_detect","noclip_detect","ammo_check",
         "ammo_hack","position_check",
     }
-    local eventFilterInstalled = false
-    _Stealth.installEventFilter = function()
-        if eventFilterInstalled then return end
-        if type(Susano) ~= "table" or type(Susano.OnTriggerServerEvent) ~= "function" then return end
-        eventFilterInstalled = true
+    if type(Susano) == "table" and type(Susano.OnTriggerServerEvent) == "function" then
         Susano.OnTriggerServerEvent(function(name, payload)
             local outName, outPayload = name, payload
             local rewrite = Menu.__vgd_onOutbound
@@ -1650,41 +1617,21 @@ do
             return outName, outPayload
         end)
     end
-    _Stealth.removeEventFilter = function()
-        if not eventFilterInstalled then return end
-        eventFilterInstalled = false
-        if type(Susano) == "table" and type(Susano.ClearOnTriggerServerEvent) == "function" then
-            pcall(Susano.ClearOnTriggerServerEvent)
-        end
-    end
 end
 
 local function StealthAcquire(flag)
     local key = "_" .. flag .. "Users"
     if _Stealth[key] then _Stealth[key] = _Stealth[key] + 1 end
     _Stealth[flag] = true
-    if flag == "blockAC" and _Stealth.installEventFilter then _Stealth.installEventFilter() end
 end
 
 local function StealthRelease(flag)
     local key = "_" .. flag .. "Users"
     if _Stealth[key] then
         _Stealth[key] = math.max(0, _Stealth[key] - 1)
-        if _Stealth[key] > 0 then return end
-    end
-    _Stealth[flag] = false
-    if flag == "blockAC" and _Stealth.removeEventFilter then _Stealth.removeEventFilter() end
-end
-
--- blockAC is set from several features directly, so the event filter install
--- has to ride on the setter rather than on StealthAcquire("blockAC").
-local function StealthBlockAC(state)
-    state = state and true or false
-    _Stealth.blockAC = state
-    if state then
-        if _Stealth.installEventFilter then _Stealth.installEventFilter() end
+        if _Stealth[key] <= 0 then _Stealth[flag] = false end
     else
-        if _Stealth.removeEventFilter then _Stealth.removeEventFilter() end
+        _Stealth[flag] = false
     end
 end
 
@@ -4586,11 +4533,8 @@ local function UpdatePlayerList()
                     -- channel, truncated to the width left by the car badge and
                     -- the toggle. The identity reader is passive and cached; the
                     -- row builder only reads its result.
-                    local listPos = nil
-                    if type(Menu.GetScaledPosition) == "function" then
-                        local ok, pos = pcall(Menu.GetScaledPosition)
-                        if ok and type(pos) == "table" then listPos = pos end
-                    end
+                    local listPos = type(Menu.GetScaledPosition) == "function"
+                        and Menu.GetScaledPosition() or nil
                     local listWidth = (listPos and tonumber(listPos.width))
                         or (360 * (Menu.Scale or 1.0))
                     local function playerRowLabel(playerId, playerName, identity, inVehicle)
@@ -4602,8 +4546,7 @@ local function UpdatePlayerList()
                         local maxWidth = listWidth - 16 - reserved
                         if maxWidth < 40 then maxWidth = 40 end
                         if type(Menu.FitRowLabel) == "function" then
-                            local ok, fitted = pcall(Menu.FitRowLabel, label, maxWidth)
-                            if ok and type(fitted) == "string" then return fitted end
+                            return Menu.FitRowLabel(label, maxWidth)
                         end
                         return label
                     end
@@ -4666,11 +4609,8 @@ local function UpdatePlayerList()
                     local selfPed = GetPlayerPed(myPlayerId)
                     local selfInVehicle = selfPed and selfPed ~= 0
                         and GetVehiclePedIsIn(selfPed, false) ~= 0
-                    local selfIdentity = nil
-                    if type(Menu.ResolvePlayerIdentity) == "function" then
-                        local ok, identity = pcall(Menu.ResolvePlayerIdentity, myPlayerId, selfPed)
-                        if ok and type(identity) == "table" then selfIdentity = identity end
-                    end
+                    local selfIdentity = (type(Menu.ResolvePlayerIdentity) == "function")
+                        and Menu.ResolvePlayerIdentity(myPlayerId, selfPed) or nil
                     local selfToggle = {
                         name = playerRowLabel(myServerId, myName, selfIdentity, selfInVehicle),
                         type = "toggle",
@@ -4685,11 +4625,8 @@ local function UpdatePlayerList()
                     table.insert(tab.items, selfToggle)
                     
                     for _, playerData in ipairs(otherPlayers) do
-                        local identity = nil
-                        if type(Menu.ResolvePlayerIdentity) == "function" then
-                            local ok, value = pcall(Menu.ResolvePlayerIdentity, playerData.localId, playerData.ped)
-                            if ok and type(value) == "table" then identity = value end
-                        end
+                        local identity = (type(Menu.ResolvePlayerIdentity) == "function")
+                            and Menu.ResolvePlayerIdentity(playerData.localId, playerData.ped) or nil
                         local playerToggle = {
                             name = playerRowLabel(playerData.id, playerData.name, identity, playerData.inVehicle),
                             type = "toggle",
@@ -4714,10 +4651,7 @@ Citizen.CreateThread(function()
     Wait(500)
     while true do
         UpdatePlayerList()
-        -- The list is a 4 Hz surface. Rebuilding it every frame keeps the
-        -- entity reads and the identity cache hot for no visible benefit and
-        -- is the one loop that runs while the menu is closed.
-        Wait(250)
+        Wait(0)
     end
 end)
 
@@ -4907,6 +4841,235 @@ end
 
 -- Utility: draw a rounded-rect panel matching menu style
 -- Outer border: 0.180 grey | Inner bg: 0.052 anthracite | Alpha: 0.99 | Radius: 6
+local function DrawPanelBackground(px, py, pw, ph, radius)
+    radius = radius or 6
+    if Susano and Susano.DrawRectFilled then
+        -- Outer border (same as menu header border)
+        Susano.DrawRectFilled(px, py, pw, ph, 0.180, 0.180, 0.190, 0.99, radius)
+        -- Inner fill (same as menu body)
+        Susano.DrawRectFilled(px + 1, py + 1, pw - 2, ph - 2, 0.052, 0.052, 0.056, 0.99, radius)
+    else
+        Menu.DrawRoundedRect(px, py, pw, ph, 55, 55, 55, 250, radius)
+        Menu.DrawRoundedRect(px + 1, py + 1, pw - 2, ph - 2, 15, 15, 15, 250, radius)
+    end
+end
+
+-- Utility: draw a health/armor style bar with rounded ends
+local function DrawInfoBar(bx, by, bw, bh, pct, fillR, fillG, fillB, label, radius)
+    radius = radius or 3
+    pct = math.max(0, math.min(1, pct))
+    -- Bar track
+    if Susano and Susano.DrawRectFilled then
+        Susano.DrawRectFilled(bx, by, bw, bh, 0.16, 0.16, 0.16, 0.9, radius)
+    else
+        Menu.DrawRect(bx, by, bw, bh, 40, 40, 40, 230)
+    end
+    -- Bar fill
+    if pct > 0 then
+        local fillW = math.max(radius * 2, math.floor(bw * pct))
+        if Susano and Susano.DrawRectFilled then
+            Susano.DrawRectFilled(bx, by, fillW, bh, fillR / 255, fillG / 255, fillB / 255, 0.95, radius)
+        else
+            Menu.DrawRect(bx, by, fillW, bh, fillR, fillG, fillB, 242)
+        end
+    end
+    -- Bar text
+    if label then
+        Menu.DrawText(bx + 5, by + 1, label, 11, 1.0, 1.0, 1.0, 0.95)
+    end
+end
+
+-- Draw section separator line
+local function DrawSectionSep(sx, sy, sw, text, scale, accent)
+    -- Dim line
+    if Susano and Susano.DrawRectFilled then
+        Susano.DrawRectFilled(sx, sy + 8 * scale, sw, 1, 0.25, 0.25, 0.25, 0.5, 0)
+    else
+        Menu.DrawRect(sx, sy + 8 * scale, sw, 1, 64, 64, 64, 128)
+    end
+    if text then
+        Menu.DrawText(sx, sy, text, 11, accent.r / 255, accent.g / 255, accent.b / 255, 0.8)
+    end
+    return sy + 18 * scale
+end
+
+function Menu.DrawPlayerInfoPanel()
+    local info = Menu.GetSelectedPlayerInfo()
+    if not info then return end
+
+    local scale = Menu.Scale or 1.0
+    local sp = Menu.GetScaledPosition()
+    local accent = Menu.Colors.SelectedBg or { r = 104, g = 168, b = 203 }
+
+    -- Compute exact menu total height (banner to footer bottom)
+    local menuTotalH
+    if Menu.OpenedCategory then
+        local category = Menu.Categories[Menu.OpenedCategory]
+        if category and category.hasTabs and category.tabs then
+            local currentTab = category.tabs[Menu.CurrentTab]
+            local visibleItems = 0
+            if currentTab and currentTab.items then
+                visibleItems = math.min(Menu.ItemsPerPage, #currentTab.items)
+            end
+            menuTotalH = sp.headerHeight + (sp.headerSpacing or 0) + sp.mainMenuHeight + sp.mainMenuSpacing + (visibleItems * sp.itemHeight) + sp.footerSpacing + sp.footerHeight
+        else
+            menuTotalH = sp.headerHeight + (sp.headerSpacing or 0) + sp.mainMenuHeight + sp.mainMenuSpacing + sp.footerSpacing + sp.footerHeight
+        end
+    else
+        local totalCats = #Menu.Categories - 1
+        local visCats = math.min(Menu.ItemsPerPage, totalCats)
+        menuTotalH = sp.headerHeight + (sp.headerSpacing or 0) + (visCats * sp.itemHeight) + sp.footerSpacing + sp.footerHeight
+    end
+
+    -- Panel position: right of menu, same Y, same height
+    local gap = 12 * scale
+    local panelX = sp.x + sp.width + gap
+    local panelW = 310 * scale
+    local panelY = sp.y
+    local panelH = menuTotalH
+
+    local pad = 14 * scale
+    local rowH = 22 * scale
+    local barH = 14 * scale
+    local fontSize = 13
+    local headerFontSize = 16
+
+    local cx = panelX + pad
+    local contentW = panelW - pad * 2
+    local labelW = 95 * scale
+    local valX = cx + labelW
+
+    -- === BACKGROUND (matches menu: outer border + inner fill, rounded) ===
+    DrawPanelBackground(panelX, panelY, panelW, panelH, 6)
+
+    -- Start content below top padding
+    local cy = panelY + pad
+
+    -- =====================
+    --  HEADER: Nom + ID
+    -- =====================
+    Menu.DrawText(cx, cy, info.name, headerFontSize, accent.r / 255, accent.g / 255, accent.b / 255, 1.0)
+
+    local idText = "ID: " .. tostring(info.serverId)
+    if Susano and Susano.GetTextWidth then
+        local tw = Susano.GetTextWidth(idText, fontSize * scale)
+        Menu.DrawText(panelX + panelW - pad - tw, cy + 2 * scale, idText, fontSize, 0.45, 0.45, 0.45, 1.0)
+    else
+        Menu.DrawText(panelX + panelW - pad - 55 * scale, cy + 2 * scale, idText, fontSize, 0.45, 0.45, 0.45, 1.0)
+    end
+    cy = cy + 26 * scale
+
+    -- Helper: draw a label:value row
+    local function Row(label, value, vR, vG, vB)
+        vR = vR or 1.0; vG = vG or 1.0; vB = vB or 1.0
+        Menu.DrawText(cx, cy, label, fontSize, 0.50, 0.50, 0.50, 1.0)
+        Menu.DrawText(valX, cy, tostring(value), fontSize, vR, vG, vB, 1.0)
+        cy = cy + rowH
+    end
+
+    -- =====================
+    --  SANTE & ARMURE
+    -- =====================
+    cy = DrawSectionSep(cx, cy, contentW, "", scale, accent)
+
+    -- Sante
+    Menu.DrawText(cx, cy, "Sante", fontSize, 0.55, 0.55, 0.55, 1.0)
+    local healthPct = 0
+    if info.maxHealth > 0 then
+        healthPct = math.max(0, math.min(1, info.health / info.maxHealth))
+    end
+    local healthPctText = tostring(math.floor(healthPct * 100)) .. "%"
+    if Susano and Susano.GetTextWidth then
+        local tw = Susano.GetTextWidth(healthPctText, fontSize * scale)
+        Menu.DrawText(panelX + panelW - pad - tw, cy, healthPctText, fontSize, 0.7, 0.7, 0.7, 1.0)
+    else
+        Menu.DrawText(panelX + panelW - pad - 30 * scale, cy, healthPctText, fontSize, 0.7, 0.7, 0.7, 1.0)
+    end
+    cy = cy + rowH * 0.65
+
+    local hR, hG, hB = 76, 175, 80
+    if healthPct < 0.25 then hR, hG, hB = 211, 64, 60
+    elseif healthPct < 0.55 then hR, hG, hB = 230, 160, 40 end
+    DrawInfoBar(cx, cy, contentW, barH, healthPct, hR, hG, hB, tostring(info.health) .. " / " .. tostring(info.maxHealth))
+    cy = cy + barH + 5 * scale
+
+    -- Armure
+    Menu.DrawText(cx, cy, "Armure", fontSize, 0.55, 0.55, 0.55, 1.0)
+    local armorPct = math.max(0, math.min(1, info.armor / 100))
+    local armorPctText = tostring(info.armor) .. "%"
+    if Susano and Susano.GetTextWidth then
+        local tw = Susano.GetTextWidth(armorPctText, fontSize * scale)
+        Menu.DrawText(panelX + panelW - pad - tw, cy, armorPctText, fontSize, 0.7, 0.7, 0.7, 1.0)
+    else
+        Menu.DrawText(panelX + panelW - pad - 30 * scale, cy, armorPctText, fontSize, 0.7, 0.7, 0.7, 1.0)
+    end
+    cy = cy + rowH * 0.65
+
+    DrawInfoBar(cx, cy, contentW, barH, armorPct, 60, 130, 220, tostring(info.armor) .. " / 100")
+    cy = cy + barH + 5 * scale
+
+    -- =====================
+    --  JOUEUR
+    -- =====================
+    cy = DrawSectionSep(cx, cy, contentW, "", scale, accent)
+
+    Row("Arme", info.weapon)
+    Row("Distance", tostring(info.distance) .. " m")
+    Row("Direction", tostring(info.heading) .. "  ")
+    local coordsStr = string.format("%.1f, %.1f, %.1f", info.coords.x, info.coords.y, info.coords.z)
+    Row("Coords", coordsStr, 0.7, 0.7, 0.7)
+
+    -- =====================
+    --  VEHICULE (conditionnel)
+    -- =====================
+    if info.inVehicle then
+        cy = DrawSectionSep(cx, cy, contentW, "", scale, accent)
+        Row("Modele", info.vehicle)
+        if info.vehPlate ~= "" then
+            Row("Plaque", info.vehPlate)
+        end
+        Row("Vitesse", tostring(info.speed) .. " km/h")
+
+        Menu.DrawText(cx, cy, "Vie Vehicule", fontSize, 0.55, 0.55, 0.55, 1.0)
+        cy = cy + rowH * 0.65
+        local vhPct = 0
+        if info.vehMaxHealth > 0 then
+            vhPct = math.max(0, math.min(1, info.vehHealth / info.vehMaxHealth))
+        end
+        local vhR, vhG, vhB = 76, 175, 80
+        if vhPct < 0.25 then vhR, vhG, vhB = 211, 64, 60
+        elseif vhPct < 0.55 then vhR, vhG, vhB = 230, 160, 40 end
+        DrawInfoBar(cx, cy, contentW, barH, vhPct, vhR, vhG, vhB, tostring(info.vehHealth) .. " / " .. tostring(info.vehMaxHealth))
+        cy = cy + barH + 5 * scale
+    end
+
+    -- =====================
+    --  ETAT (only if active flags)
+    -- =====================
+    local states = {}
+    if info.isAiming then states[#states + 1] = "Vise" end
+    if info.isInCover then states[#states + 1] = "Couvert" end
+    if info.isSprinting then states[#states + 1] = "Sprint" end
+    if info.isSwimming then states[#states + 1] = "Nage" end
+    if info.isFalling then states[#states + 1] = "Chute" end
+    if info.isRagdoll then states[#states + 1] = "Ragdoll" end
+    if info.isInvisible then states[#states + 1] = "Invisible" end
+
+    if #states > 0 then
+        cy = DrawSectionSep(cx, cy, contentW, "", scale, accent)
+        Row("Action", table.concat(states, ", "))
+    end
+
+    -- Statut
+    cy = DrawSectionSep(cx, cy, contentW, "", scale, accent)
+    if not info.isAlive then
+        Row("Statut", "Mort", 0.9, 0.2, 0.2)
+    elseif info.isGodmode then
+        Row("Statut", "En Vie  [GODMODE]", 1.0, 0.85, 0.0)
+    else
+        Row("Statut", "En Vie", 0.3, 0.9, 0.35)
+    end
+end
 
 
 
@@ -12114,10 +12277,10 @@ end
 Actions.shootPlayerItem = FindItem("Online", "Troll", "Shoot Player")
 if Actions.shootPlayerItem then
     Actions.shootPlayerItem.onClick = function()
-        StealthBlockAC(true)
+        _Stealth.blockAC = true
         Menu.ActionShootPlayer()
         Citizen.SetTimeout(3000, function()
-            if _Stealth._acUsers <= 0 then StealthBlockAC(false) end
+            if _Stealth._acUsers <= 0 then _Stealth.blockAC = false end
         end)
     end
 end
@@ -15109,11 +15272,11 @@ end
 Actions.pedFloodItem = FindItem("Online", "Troll", "Crash Method")
 if Actions.pedFloodItem then
     Actions.pedFloodItem.onClick = function()
-        if type(_Stealth) == "table" then StealthBlockAC(true) end
+        if type(_Stealth) == "table" then _Stealth.blockAC = true end
         Menu.ActionPedFlood()
         Citizen.SetTimeout(140000, function()
             if type(_Stealth) == "table" and (_Stealth._acUsers or 0) <= 0 then
-                StealthBlockAC(false)
+                _Stealth.blockAC = false
             end
         end)
     end
@@ -15125,11 +15288,11 @@ end
 Actions.pedFloodAttackItem = FindItem("Online", "Troll", "Ped Flood")
 if Actions.pedFloodAttackItem then
     Actions.pedFloodAttackItem.onClick = function()
-        if type(_Stealth) == "table" then StealthBlockAC(true) end
+        if type(_Stealth) == "table" then _Stealth.blockAC = true end
         Menu.ActionPedFlood()
         Citizen.SetTimeout(140000, function()
             if type(_Stealth) == "table" and (_Stealth._acUsers or 0) <= 0 then
-                StealthBlockAC(false)
+                _Stealth.blockAC = false
             end
         end)
     end
@@ -15457,10 +15620,10 @@ end
 Actions.airstrikeItem = FindItem("Online", "Troll", "Airstrike")
 if Actions.airstrikeItem then
     Actions.airstrikeItem.onClick = function(index, option)
-        StealthBlockAC(true)
+        _Stealth.blockAC = true
         Menu.ActionAirstrike()
         Citizen.SetTimeout(10000, function()
-            if _Stealth._acUsers <= 0 then StealthBlockAC(false) end
+            if _Stealth._acUsers <= 0 then _Stealth.blockAC = false end
         end)
     end
 end
@@ -22830,7 +22993,7 @@ local function targetFromSelection()
     if not okPed or type(ped) ~= "number" or ped == 0 then return nil end
     if not DoesEntityExist(ped) or isDead(ped) then return nil end
 
-    return packPlayer(player, ped, serverId)
+    return packPlayer(player, ped)
 end
 
 local function resolveTarget()
@@ -22850,8 +23013,7 @@ local function resolveTarget()
             local ped = GetPlayerPed(player)
             if ped and ped ~= 0 and ped ~= me
                 and DoesEntityExist(ped) and not isDead(ped) then
-                local okSid, sid = pcall(GetPlayerServerId, player)
-                local entry = packPlayer(player, ped, okSid and sid or nil)
+                local entry = packPlayer(player, ped)
                 if entry then
                     entry.dist = distance(meCoords, entry.coords)
                     if entry.dist <= REACH_MAX and (not best or entry.dist < best.dist) then
@@ -23378,27 +23540,22 @@ local FL = (function(O,Menu)
 --      playersWhitelistedParticles[source][effectHash] to be fresh. Older
 --      than 120 s is reported; older than 5 s is cancelled without report.
 --
--- Delivery is resolved at tick time from the replicated table:
---   * scr_wheel_burnout (scr_recartheft) is auto-added while rcore_spray is
---     started and EnableParticlesWhiteList is on. It stays in every recipe
---     because that resource is common and owns the exact effect;
---   * scr_alien_teleport (scr_rcbarry1) is auto-added only while WaveAdmin is
---     started and EnableParticlesWhiteList is on;
---   * scr_bike_cfid_camera_flash appears in a Props list in autoWhiteList.lua,
---     not the Particles table, so it is never an automatic particle entry;
---   * any other hash needs __WaveShield:CreateParticle with a started server
---     resource plus the matching _ws:cb acknowledgement.
---
--- ptFxEvent.lua checks the static list before the AI list. While the static
--- switch is on, an unlisted hash is cancelled and reported even if the dynamic
--- entry exists. Therefore only statically listed hashes and the two known auto
--- entries are emitted in that mode; the camera is held back instead of feeding
--- a report. With the static switch off, the dynamic acknowledgement unlocks it.
+-- Auto Safe resolves the delivery at tick time:
+--   * an effect present in WhiteListedParticles is sent as-is;
+--   * otherwise scr_bike_cfid_camera_flash (scr_bike_business) is used with
+--     the dynamic whitelist; scr_alien_teleport and scr_wheel_burnout remain
+--     static auto-whitelist candidates:
+--     __WaveShield:CreateParticle carries its hash and a started server
+--     resource, and Susano.OnTriggerServerEvent removes assetHash from the
+--     outbound ptFxEvent so the static branch cannot match;
+--   * if the dynamic request or its _ws:cb acknowledgement is unavailable, no
+--     native is called. The menu fails closed instead of sending a
+--     non-whitelisted effect.
 --
 -- The burst is placed at the victim's coordinates plus 1.0 m, not attached to
--- an entity, and the scale is capped at MaxParticleScale. Two or three offset
--- bursts are sent under that ceiling. Residual surface: the server log switch,
--- and a custom resource that logs raw ptFxEvent independently of WaveShield.
+-- an entity, and the scale is capped at MaxParticleScale. Two offset bursts
+-- are sent under that ceiling. Residual surface: the server log switch, and a
+-- custom resource that logs raw ptFxEvent independently of WaveShield.
 --
 -- RATE
 --
@@ -23431,16 +23588,16 @@ local WIRE_TTL = 5000
 local DYN_TTL = 4000
 
 -- Verified particle pairs. scr_bike_cfid_camera_flash lives in
--- scr_bike_business and is a camera flash, but autoWhiteList.lua only places it
--- in a Props list, never the Particles list. scr_alien_teleport lives in
--- scr_rcbarry1 and is the WaveAdmin particle entry. scr_wheel_burnout lives in
--- scr_recartheft and is the unconditional default Particles entry. Names,
--- dictionaries and hashes were checked against the particle catalogue and
--- WaveShield's own autoWhiteList table.
+-- scr_bike_business and is a camera flash. scr_alien_teleport lives in
+-- scr_rcbarry1 and is the WaveAdmin auto-whitelist entry; scr_wheel_burnout
+-- lives in scr_recartheft and is the rcore_spray entry. Names, dictionaries
+-- and hashes were checked against the particle catalogue and WaveShield's own
+-- autoWhiteList table. When none is statically listed, FL uses the first
+-- candidate through the dynamic whitelist path with assetHash stripped.
 local SAFE_CANDIDATES = {
-    { name = "Safe Burnout", kind = "ptfx", dict = "scr_recartheft", effect = "scr_wheel_burnout", scale = MAX_SCALE, white = true },
-    { name = "Safe Alien", kind = "ptfx", dict = "scr_rcbarry1", effect = "scr_alien_teleport", scale = MAX_SCALE, white = true },
     { name = "Safe Camera", kind = "ptfx", dict = "scr_bike_business", effect = "scr_bike_cfid_camera_flash", scale = MAX_SCALE, white = true },
+    { name = "Safe Alien", kind = "ptfx", dict = "scr_rcbarry1", effect = "scr_alien_teleport", scale = MAX_SCALE, white = true },
+    { name = "Safe Burnout", kind = "ptfx", dict = "scr_recartheft", effect = "scr_wheel_burnout", scale = MAX_SCALE, white = true },
 }
 
 FL.active = false
@@ -23482,9 +23639,9 @@ FL.methods = {
     {
         name = "Auto Safe", kind = "ptfx", safe = true,
         parts = {
-            flashPart(BURNOUT_DICT, BURNOUT_FX, 8.0, { 1.00, 0.45, 0.08 }, 0.0, 0.0, 1.0),
+            flashPart(CAMERA_DICT, CAMERA_FX, 8.0, { 1.00, 1.00, 1.00 }, 0.0, 0.0, 1.0),
             flashPart(ALIEN_DICT, ALIEN_FX, 6.0, { 0.25, 0.90, 1.00 }, 1.2, -0.9, 0.5),
-            flashPart(CAMERA_DICT, CAMERA_FX, 7.0, { 1.00, 1.00, 1.00 }, -1.3, 1.0, 1.9),
+            flashPart(BURNOUT_DICT, BURNOUT_FX, 7.0, { 1.00, 0.45, 0.08 }, -1.3, 1.0, 1.9),
         },
     },
     {
@@ -23498,9 +23655,8 @@ FL.methods = {
     {
         name = "Alien Cyan", kind = "ptfx", safe = true,
         parts = {
-            flashPart(BURNOUT_DICT, BURNOUT_FX, 7.0, { 0.05, 0.60, 1.00 }, 0.0, 0.0, 1.1),
-            flashPart(ALIEN_DICT, ALIEN_FX, 7.0, { 0.10, 0.75, 1.00 }, 0.9, -0.4, 0.6),
-            flashPart(CAMERA_DICT, CAMERA_FX, 5.0, { 0.35, 1.00, 1.00 }, -1.1, 0.8, 1.6),
+            flashPart(ALIEN_DICT, ALIEN_FX, 7.0, { 0.10, 0.75, 1.00 }, 0.0, 0.0, 1.1),
+            flashPart(CAMERA_DICT, CAMERA_FX, 5.0, { 0.35, 1.00, 1.00 }, -1.1, 0.8, 0.4),
         },
     },
     {
@@ -23513,9 +23669,8 @@ FL.methods = {
     {
         name = "Pink Clown", kind = "ptfx", safe = true,
         parts = {
-            flashPart(BURNOUT_DICT, BURNOUT_FX, 7.0, { 1.00, 0.20, 0.80 }, 0.0, 0.0, 1.2),
-            flashPart(CAMERA_DICT, CAMERA_FX, 6.0, { 1.00, 0.10, 0.75 }, -0.9, -0.6, 0.7),
-            flashPart(ALIEN_DICT, ALIEN_FX, 6.0, { 1.00, 0.35, 0.85 }, 1.3, 0.8, 1.7),
+            flashPart(CAMERA_DICT, CAMERA_FX, 7.0, { 1.00, 0.10, 0.75 }, 0.0, 0.0, 1.2),
+            flashPart(ALIEN_DICT, ALIEN_FX, 6.0, { 1.00, 0.35, 0.85 }, -1.3, -0.6, 0.7),
         },
     },
     {
@@ -23566,18 +23721,7 @@ FL.methods = {
         },
     },
 }
--- Warm the three assets once at load. The tick still requests on every pulse
--- when one is missing, but this removes the first-second delay after a reload.
-if type(RequestNamedPtfxAsset) == "function" then
-    pcall(RequestNamedPtfxAsset, CAMERA_DICT)
-    pcall(RequestNamedPtfxAsset, ALIEN_DICT)
-    pcall(RequestNamedPtfxAsset, BURNOUT_DICT)
-end
-
 FL.stats = { flashes = 0, skips = 0, fails = 0 }
-FL.graft = nil
-FL.graftToken = 0
-FL.graftKeys = nil
 FL.flashType = FLASH_TYPE
 FL.damageScale = DAMAGE_SCALE
 FL.safeDist = SAFE_DIST
@@ -23610,25 +23754,9 @@ local function hashMatches(a, b)
     return ua == ub
 end
 
-local function decodeState(value)
-    if type(value) == "table" then return value end
-    if type(value) ~= "string" then return nil end
-    local json = rawget(_G, "json")
-    if type(json) == "table" and type(json.decode) == "function" then
-        local ok, decoded = pcall(json.decode, value)
-        if ok and type(decoded) == "table" then return decoded end
-    end
-    local cjson = rawget(_G, "cjson")
-    if type(cjson) == "table" and type(cjson.decode) == "function" then
-        local ok, decoded = pcall(cjson.decode, value)
-        if ok and type(decoded) == "table" then return decoded end
-    end
-    return nil
-end
-
 local function acConfig()
     local current = now()
-    if (FL.acAt or 0) > 0 and current - FL.acAt < CONFIG_TTL then
+    if FL.acCache ~= nil and current - FL.acAt < CONFIG_TTL then
         return FL.acCache
     end
 
@@ -23637,16 +23765,14 @@ local function acConfig()
     if type(gs) == "table" then
         local key = gs.CFct1C6gobnW4qkaQUx3Xk9Q
         if type(key) == "string" then
-            cfg = decodeState(gs[key])
+            cfg = gs[key]
         end
         if type(cfg) ~= "table" or type(cfg.Explosions) ~= "table" then
             cfg = nil
             local ok, found = pcall(function()
                 for _, value in pairs(gs) do
-                    local decoded = decodeState(value)
-                    if type(decoded) == "table"
-                        and type(decoded.Explosions) == "table" then
-                        return decoded
+                    if type(value) == "table" and type(value.Explosions) == "table" then
+                        return value
                     end
                 end
                 return nil
@@ -23663,34 +23789,10 @@ end
 local function whitelisted(cfg, effect)
     local ex = cfg and cfg.Explosions
     local tbl = ex and ex.WhiteListedParticles
-    if type(tbl) ~= "table" then tbl = decodeState(tbl) end
     if type(tbl) ~= "table" or type(effect) ~= "string" then return false end
     local hash = GetHashKey(effect)
     local unsigned = hash < 0 and (hash + 4294967296) or hash
-    -- GlobalState configuration is transported as JSON, so numeric table keys
-    -- become decimal strings on decode. Check both forms; without this the
-    -- entire static whitelist reads as empty and every pulse is forced down
-    -- the slow dynamic path.
-    if tbl[hash] == true
-        or tbl[unsigned] == true
-        or tbl[tostring(hash)] == true
-        or tbl[tostring(unsigned)] == true
-        or tbl[effect] == true then
-        return true
-    end
-    -- Some builds serialise the whitelist as an array of hash values rather
-    -- than a hash-keyed object. Walk it once; the list is small and this is
-    -- only reached when the three direct lookups missed.
-    for _, value in pairs(tbl) do
-        if value == hash or value == unsigned or value == effect then
-            return true
-        end
-        if type(value) == "string"
-            and (value == tostring(hash) or value == tostring(unsigned)) then
-            return true
-        end
-    end
-    return false
+    return tbl[hash] == true or tbl[unsigned] == true or tbl[effect] == true
 end
 
 local function safeCandidate(cfg)
@@ -23713,41 +23815,6 @@ local function currentMethod()
     return FL.methods[index]
 end
 
-local function resourceStarted(name)
-    if type(name) ~= "string" then return false end
-    if type(GetResourceState) ~= "function" then return false end
-    local ok, state = pcall(GetResourceState, name)
-    return ok and state == "started"
-end
-
--- Two effects are present in autoWhiteList.lua itself:
---   * scr_wheel_burnout is under the "default" Particles table and is always
---     present after the server builds its static list;
---   * scr_alien_teleport is added only while the WaveAdmin resource is
---     started, and only when the white-list switch is on.
--- scr_bike_cfid_camera_flash appears in a Props list, not Particles, so it is
--- never an automatic particle entry. Treating it as safe was why every recipe
--- that began with the camera could be cancelled on a strict server.
-local function autoSafeEffect(effect, ex)
-    -- scr_wheel_burnout is a resource entry for rcore_spray. It reaches the
-    -- static table only when that resource is started and the white-list
-    -- switch is on, exactly like scr_alien_teleport for WaveAdmin.
-    if effect == BURNOUT_FX then
-        return type(ex) == "table"
-            and ex.EnableParticlesWhiteList == true
-            and resourceStarted("rcore_spray")
-    end
-    -- scr_alien_teleport is only auto-added when the white-list switch is on
-    -- and WaveAdmin is actually started. Without both facts it is just another
-    -- hash and needs the dynamic acknowledgement.
-    if effect == ALIEN_FX then
-        return type(ex) == "table"
-            and ex.EnableParticlesWhiteList == true
-            and resourceStarted("WaveAdmin")
-    end
-    return false
-end
-
 local function waveShieldStarted()
     local gs = rawget(_G, "GlobalState")
     if type(gs) == "table" and gs.WaveShield_ServerResources ~= nil then
@@ -23758,20 +23825,6 @@ local function waveShieldStarted()
     for i = 1, #names do
         local ok, state = pcall(GetResourceState, names[i])
         if ok and state == "started" then return true end
-    end
-    if type(GetNumResources) == "function"
-        and type(GetResourceByFindIndex) == "function" then
-        local okCount, total = pcall(GetNumResources)
-        if okCount and type(total) == "number" then
-            for i = 0, total - 1 do
-                local okName, name = pcall(GetResourceByFindIndex, i)
-                if okName and type(name) == "string"
-                    and string.find(string.lower(name), "waveshield", 1, true) then
-                    local okState, state = pcall(GetResourceState, name)
-                    if okState and state == "started" then return true end
-                end
-            end
-        end
     end
     return false
 end
@@ -23795,19 +23848,8 @@ local function resolveDelivery(cfg)
     end
 
     if method.safe then
-        -- A multi-part recipe. When the replicated config is unreadable, the
-        -- server may still be running the AI branch; strip assetHash so the
-        -- static branch cannot cancel. When the config is readable, dynamic
-        -- entries are requested for every part that is not statically safe.
-        if not ex then return method, canRewriteEvent() end
-        local parts = method.parts or { method }
-        for i = 1, #parts do
-            local part = parts[i]
-            if part and type(part.effect) == "string"
-                and not whitelisted(cfg, part.effect) then
-                return method, true
-            end
-        end
+        -- A multi-part recipe built from the three server auto-whitelisted
+        -- effects. It never needs a dynamic ack.
         return method, false
     end
 
@@ -23850,9 +23892,12 @@ end
 local function resourceName()
     local gs = rawget(_G, "GlobalState")
     local raw = gs and gs.WaveShield_ServerResources
+    local json = rawget(_G, "json")
     local serverMap = type(raw) == "table" and raw or nil
-    if not serverMap and type(raw) == "string" then
-        serverMap = decodeState(raw)
+    if not serverMap and type(raw) == "string" and type(json) == "table"
+        and type(json.decode) == "function" then
+        local ok, decoded = pcall(json.decode, raw)
+        if ok and type(decoded) == "table" then serverMap = decoded end
     end
     if serverMap then
         for name in pairs(serverMap) do
@@ -23935,18 +23980,6 @@ local function dynamicConfirmed(hash)
     return type(alt) == "number" and now() - alt < DYN_TTL
 end
 
-local function ensureDynamicEffect(effect)
-    if type(effect) ~= "string" then return true end
-    local hash = GetHashKey(effect)
-    if dynamicConfirmed(hash) then return true end
-
-    local last = FL.dynamic[hash]
-    if type(last) == "number" and now() - last < DYN_TTL then return false end
-    FL.dynamic[hash] = now()
-    rawServerEvent("__WaveShield:CreateParticle", hash, 0, resourceName())
-    return false
-end
-
 local function ensureDynamic(method, cfg)
     if not method then return false end
     local ex = cfg and cfg.Explosions
@@ -23955,7 +23988,15 @@ local function ensureDynamic(method, cfg)
         -- assetHash, so the static whitelist branch cannot match either.
         return true
     end
-    return ensureDynamicEffect(method.effect)
+    if type(method.effect) ~= "string" then return false end
+    local hash = GetHashKey(method.effect)
+    if dynamicConfirmed(hash) then return true end
+
+    local last = FL.dynamic[hash]
+    if type(last) == "number" and now() - last < DYN_TTL then return false end
+    FL.dynamic[hash] = now()
+    rawServerEvent("__WaveShield:CreateParticle", hash, 0, resourceName())
+    return false
 end
 
 -- WaveShield's server acknowledges a dynamic particle entry with _ws:cb.
@@ -23991,7 +24032,7 @@ end
 local function ptfxLoaded(dict)
     if type(dict) ~= "string" or #dict == 0 then return false end
     local ok, value = pcall(HasNamedPtfxAssetLoaded, dict)
-    if ok and (value == true or value == 1 or value == 1.0) then return true end
+    if ok and value == true then return true end
     pcall(RequestNamedPtfxAsset, dict)
     return false
 end
@@ -24002,43 +24043,44 @@ local function emitParticle(method, coords)
 
     local ceiling = tonumber(FL.maxScale) or 10.0
     local sent = 0
+    local pending = false
 
     for i = 1, #parts do
         local part = parts[i]
         if part and type(part.dict) == "string" and type(part.effect) == "string" then
-            -- Kick the streamer on every pulse. Do not gate the native call on
-            -- HasNamedPtfxAssetLoaded: several builds return false for an asset
-            -- that is already resident, which made every recipe silently emit
-            -- nothing. The native itself is the final authority on readiness.
-            ptfxLoaded(part.dict)
+            if ptfxLoaded(part.dict) then
+                local scale = tonumber(part.scale) or tonumber(method.scale) or 5.0
+                if ceiling > 0.0 and scale > ceiling then scale = ceiling end
+                if scale < 1.0 then scale = 1.0 end
 
-            local scale = tonumber(part.scale) or tonumber(method.scale) or 5.0
-            if ceiling > 0.0 and scale > ceiling then scale = ceiling end
-            if scale < 1.0 then scale = 1.0 end
+                pcall(UseParticleFxAssetNextCall, part.dict)
+                local color = part.color
+                if type(color) == "table" and #color >= 3 then
+                    pcall(SetParticleFxNonLoopedColour,
+                        tonumber(color[1]) or 1.0,
+                        tonumber(color[2]) or 1.0,
+                        tonumber(color[3]) or 1.0)
+                elseif method.white then
+                    pcall(SetParticleFxNonLoopedColour, 1.0, 1.0, 1.0)
+                end
+                pcall(SetParticleFxNonLoopedAlpha, 1.0)
 
-            pcall(UseParticleFxAssetNextCall, part.dict)
-            local color = part.color
-            if type(color) == "table" and #color >= 3 then
-                pcall(SetParticleFxNonLoopedColour,
-                    tonumber(color[1]) or 1.0,
-                    tonumber(color[2]) or 1.0,
-                    tonumber(color[3]) or 1.0)
-            elseif method.white then
-                pcall(SetParticleFxNonLoopedColour, 1.0, 1.0, 1.0)
+                local x = coords.x + (tonumber(part.ox) or 0.0)
+                local y = coords.y + (tonumber(part.oy) or 0.0)
+                local z = coords.z + (tonumber(part.oz) or OFFSET_Z)
+                local okay, didStart = pcall(StartNetworkedParticleFxNonLoopedAtCoord,
+                    part.effect, x, y, z,
+                    0.0, 0.0, 0.0, scale, false, false, false, false)
+                if okay and didStart ~= false then sent = sent + 1 end
+            else
+                pending = true
             end
-            pcall(SetParticleFxNonLoopedAlpha, 1.0)
-
-            local x = coords.x + (tonumber(part.ox) or 0.0)
-            local y = coords.y + (tonumber(part.oy) or 0.0)
-            local z = coords.z + (tonumber(part.oz) or OFFSET_Z)
-            local okay, didStart = pcall(StartNetworkedParticleFxNonLoopedAtCoord,
-                part.effect, x, y, z,
-                0.0, 0.0, 0.0, scale, false, false, false)
-            if okay and didStart ~= false then sent = sent + 1 end
         end
     end
 
-    return sent > 0
+    if sent > 0 then return true end
+    if pending then return nil end
+    return false
 end
 
 Menu.__vgd_onOutbound = function(name, payload)
@@ -24055,18 +24097,11 @@ Menu.__vgd_onOutbound = function(name, payload)
     if not ok or type(args) ~= "table" then return nil end
 
     local changed = false
-    local hashes = wire.hashes or { wire.hash }
-    local function matchesWire(value)
-        for i = 1, #hashes do
-            if hashes[i] ~= nil and hashMatches(value, hashes[i]) then return true end
-        end
-        return false
-    end
     local function walk(node, depth)
         if not changed and type(node) == "table" and depth <= 5 then
             local effectType = type(node.effectHash)
             if (effectType == "number" or effectType == "string")
-                and matchesWire(node.effectHash) then
+                and hashMatches(node.effectHash, wire.hash) then
                 node.assetHash = nil
                 changed = true
                 return
@@ -24104,12 +24139,11 @@ local function playerName(player)
     return "player_" .. tostring(player)
 end
 
-local function packPlayer(player, ped, serverId)
+local function packPlayer(player, ped)
     local coords = coordsOf(ped)
     if not coords then return nil end
     return {
         player = player,
-        serverId = serverId,
         ped = ped,
         name = playerName(player),
         coords = coords,
@@ -24129,7 +24163,7 @@ local function targetFromSelection()
     if not okPed or type(ped) ~= "number" or ped == 0 then return nil end
     if not DoesEntityExist(ped) or isDead(ped) then return nil end
 
-    return packPlayer(player, ped, serverId)
+    return packPlayer(player, ped)
 end
 
 local function resolveTarget()
@@ -24151,8 +24185,7 @@ local function resolveTarget()
             local okPed, ped = pcall(GetPlayerPed, player)
             if okPed and type(ped) == "number" and ped ~= 0 and ped ~= me
                 and DoesEntityExist(ped) and not isDead(ped) then
-                local okSid, sid = pcall(GetPlayerServerId, player)
-                local entry = packPlayer(player, ped, okSid and sid or nil)
+                local entry = packPlayer(player, ped)
                 if entry then
                     entry.dist = distance(meCoords, entry.coords)
                     if entry.dist <= REACH_MAX and (not best or entry.dist < best.dist) then
@@ -24185,256 +24218,6 @@ local function resolveTarget()
     return nil
 end
 
--- ---------------------------------------------------------------------------
--- STAGE B / RESOURCE GRAFT
---
--- StartNetworkedParticleFxNonLoopedAtCoord must be called from a real
--- CitizenFX resource VM. The external executor has no resource source of its
--- own, which makes the ptFxEvent origin invalid on several servers even when
--- the native returns true. The graft is a one-shot chunk queued into any
--- legitimate resource; it owns the 50 ms pulse loop and calls only plain
--- natives (no Susano.*). The executor owns the target, the selected recipe and
--- the stop token.
---
--- Cross-VM stop signal: an entity decorator on the local ped. _G is per VM, so
--- a normal global cannot carry the cancellation; a decor is readable from both
--- VMs. The key is random per session and the token is a positive random int.
--- ---------------------------------------------------------------------------
-local function graftKeys()
-    if not FL.graftKeys then
-        local suffix = string.format("%08x", math.floor(math.random(0, 2147483647)))
-        FL.graftKeys = {
-            token = "__vgf_" .. suffix,
-            beat = "__vgf_" .. suffix .. "_b",
-            ack = "__vgf_" .. suffix .. "_a",
-            ackTime = "__vgf_" .. suffix .. "_t",
-        }
-        if type(DecorRegister) == "function" then
-            pcall(DecorRegister, FL.graftKeys.token, 3)
-            pcall(DecorRegister, FL.graftKeys.beat, 3)
-            pcall(DecorRegister, FL.graftKeys.ack, 3)
-            pcall(DecorRegister, FL.graftKeys.ackTime, 3)
-        end
-    end
-    return FL.graftKeys.token, FL.graftKeys.beat, FL.graftKeys.ack,
-        FL.graftKeys.ackTime
-end
-
-local function graftPed()
-    local ped = PlayerPedId()
-    if not ped or ped == 0 or not DoesEntityExist(ped) then return nil end
-    return ped
-end
-
-local function graftWriteToken(token)
-    local key, beatKey, ackKey, ackTimeKey = graftKeys()
-    local ped = graftPed()
-    if not ped or type(DecorSetInt) ~= "function" then return false end
-    local ok = pcall(DecorSetInt, ped, key, token or 0)
-    pcall(DecorSetInt, ped, beatKey, token and token ~= 0 and GetGameTimer() or 0)
-    pcall(DecorSetInt, ped, ackKey, 0)
-    pcall(DecorSetInt, ped, ackTimeKey, 0)
-    return ok
-end
-
-local function graftBeat()
-    if not FL.graft then return end
-    local _, beatKey = graftKeys()
-    local ped = graftPed()
-    if ped and type(DecorSetInt) == "function" then
-        pcall(DecorSetInt, ped, beatKey, GetGameTimer())
-    end
-end
-
-local function graftAck()
-    if not FL.graft then return false end
-    local _, _, ackKey, ackTimeKey = graftKeys()
-    local ped = graftPed()
-    if not ped or type(DecorGetInt) ~= "function" then
-        FL.graft.ack = false
-        return false
-    end
-    local ok, value = pcall(DecorGetInt, ped, ackKey)
-    local okTime, at = pcall(DecorGetInt, ped, ackTimeKey)
-    -- The host writes both the token and a millisecond timestamp every pulse.
-    -- A stale token means the injected thread died (target lost, resource
-    -- restarted, VM dropped). Returning false makes the caller stop trusting
-    -- a graft it can no longer hear and fall back to the executor native.
-    if ok and value == FL.graft.token
-        and okTime and type(at) == "number" and now() - at < 750 then
-        FL.graft.ack = true
-        return true
-    end
-    FL.graft.ack = false
-    return false
-end
-
-local function graftStop()
-    if FL.graft then
-        graftWriteToken(0)
-        FL.graft = nil
-    end
-end
-
-local function graftPartsCode(parts)
-    local rows = {}
-    for i = 1, #parts do
-        local part = parts[i]
-        local color = part.color
-        local r, g, b = 1.0, 1.0, 1.0
-        if type(color) == "table" and #color >= 3 then
-            r, g, b = tonumber(color[1]) or 1.0,
-                tonumber(color[2]) or 1.0,
-                tonumber(color[3]) or 1.0
-        end
-        rows[#rows + 1] = string.format(
-            "{dict=%q,effect=%q,scale=%.4f,r=%.4f,g=%.4f,b=%.4f,x=%.4f,y=%.4f,z=%.4f}",
-            tostring(part.dict), tostring(part.effect),
-            tonumber(part.scale) or 5.0, r, g, b,
-            tonumber(part.ox) or 0.0,
-            tonumber(part.oy) or 0.0,
-            tonumber(part.oz) or OFFSET_Z)
-    end
-    return table.concat(rows, ",")
-end
-
--- The injectable list is authoritative when Susano exposes it. Prefer the
--- resource that actually owns the whitelisted particle so the emission has a
--- natural origin: rcore_spray for scr_wheel_burnout, WaveAdmin for
--- scr_alien_teleport. Falling straight to "any" can land in a resource that
--- the AC already watches, so it stays last.
-local function graftResource(parts)
-    local api = rawget(_G, "Susano")
-    local injectable = nil
-    if type(api) == "table" and type(api.GetInjectableResources) == "function" then
-        local ok, list = pcall(api.GetInjectableResources)
-        if ok and type(list) == "table" then injectable = list end
-    end
-
-    local function usable(name)
-        if type(name) ~= "string" or not resourceStarted(name) then return false end
-        if type(injectable) ~= "table" then return true end
-        for i = 1, #injectable do
-            if injectable[i] == name then return true end
-        end
-        return false
-    end
-
-    local wantsBurnout, wantsAlien = false, false
-    for i = 1, #parts do
-        local effect = parts[i] and parts[i].effect
-        if effect == BURNOUT_FX then wantsBurnout = true end
-        if effect == ALIEN_FX then wantsAlien = true end
-    end
-
-    if wantsBurnout and usable("rcore_spray") then return "rcore_spray" end
-    if wantsAlien and usable("WaveAdmin") then return "WaveAdmin" end
-
-    local preferred = {
-        "ox_lib", "es_extended", "qb-core", "qbx_core",
-        "oxmysql", "monitor", "rcore_spray",
-    }
-    for i = 1, #preferred do
-        if usable(preferred[i]) then return preferred[i] end
-    end
-    return "any"
-end
-
-local function graftSignature(parts)
-    local rows = {}
-    for i = 1, #parts do
-        rows[i] = tostring(parts[i].dict) .. ":" .. tostring(parts[i].effect)
-    end
-    return table.concat(rows, "|")
-end
-
-local function graftStart(target, method, parts)
-    if type(target) ~= "table" or type(target.serverId) ~= "number" then return false end
-    if type(parts) ~= "table" or #parts == 0 then return false end
-    local api = rawget(_G, "Susano")
-    if type(api) ~= "table" or type(api.InjectResource) ~= "function" then return false end
-
-    local tokenKey, beatKey, ackKey, ackTimeKey = graftKeys()
-    local token = math.random(1, 2147483646)
-    if not graftWriteToken(token) then return false end
-
-    local code = string.format([[
-local targetServerId = %d
-local token = %d
-local tokenKey = %q
-local beatKey = %q
-local ackKey = %q
-local ackTimeKey = %q
-local parts = {%s}
-
-pcall(DecorRegister, tokenKey, 3)
-pcall(DecorRegister, beatKey, 3)
-pcall(DecorRegister, ackKey, 3)
-pcall(DecorRegister, ackTimeKey, 3)
-
-local function alive()
-    local ok, value = pcall(DecorGetInt, PlayerPedId(), tokenKey)
-    if not ok or value ~= token then return false end
-    local okBeat, beat = pcall(DecorGetInt, PlayerPedId(), beatKey)
-    if not okBeat or type(beat) ~= "number" then return false end
-    return GetGameTimer() - beat < 1000
-end
-
-local function resolve()
-    for _, player in ipairs(GetActivePlayers()) do
-        if GetPlayerServerId(player) == targetServerId then
-            local ped = GetPlayerPed(player)
-            if ped and ped ~= 0 and DoesEntityExist(ped)
-                and not IsPedDeadOrDying(ped, true) then
-                return ped
-            end
-        end
-    end
-    return 0
-end
-
-CreateThread(function()
-    while alive() do
-        local ped = resolve()
-        if ped == 0 then break end
-        local c = GetEntityCoords(ped, true)
-        for i = 1, #parts do
-            local p = parts[i]
-            if not HasNamedPtfxAssetLoaded(p.dict) then
-                RequestNamedPtfxAsset(p.dict)
-            end
-            pcall(UseParticleFxAssetNextCall, p.dict)
-            pcall(SetParticleFxNonLoopedColour, p.r, p.g, p.b)
-            pcall(SetParticleFxNonLoopedAlpha, 1.0)
-            pcall(StartNetworkedParticleFxNonLoopedAtCoord,
-                p.effect, c.x + p.x, c.y + p.y, c.z + p.z,
-                0.0, 0.0, 0.0, p.scale, false, false, false)
-        end
-        pcall(DecorSetInt, PlayerPedId(), ackTimeKey, GetGameTimer())
-        pcall(DecorSetInt, PlayerPedId(), ackKey, token)
-        Wait(50)
-    end
-end)
-]], target.serverId, token, tokenKey, beatKey, ackKey, ackTimeKey,
-        graftPartsCode(parts))
-
-    local ok = pcall(api.InjectResource, graftResource(parts), code)
-    if not ok then
-        graftWriteToken(0)
-        return false
-    end
-    FL.graft = {
-        token = token,
-        target = target.serverId,
-        method = FL.method,
-        count = #parts,
-        sig = graftSignature(parts),
-        at = now(),
-        ack = false,
-    }
-    return true
-end
-
 local function tickCore()
     if not FL.active then return end
 
@@ -24454,7 +24237,6 @@ local function tickCore()
         if okTarget then FL.target = retry end
         t = okTarget and retry or nil
         if not t then
-            graftStop()
             if now() < FL.nextAt then return end
             localPulse()
             return
@@ -24462,7 +24244,6 @@ local function tickCore()
     end
 
     if t.self then
-        graftStop()
         if now() < FL.nextAt then return end
         local selfCoords = coordsOf(t.ped)
         if not selfCoords then
@@ -24524,206 +24305,21 @@ local function tickCore()
         emitted = pcall(AddExplosion, coords.x, coords.y, coords.z + OFFSET_Z,
             FLASH_TYPE, DAMAGE_SCALE, false, false, 0.0)
     elseif effective then
-        local parts = effective.parts or { effective }
-        local wireHashes = {}
-        local graftParts = {}
-        local allowedParts = {}
-        local assumeAI = not ex and waveShieldStarted()
-        local strictAI = (ex and ex.EnableParticlesAI == true) or assumeAI
-        local staticEnabled = type(ex) == "table"
-            and ex.EnableParticlesWhiteList == true
-        local staticUnknown = type(ex) ~= "table" and assumeAI
-
-        -- Never let an unacknowledged hash reach a strict AI server, but never
-        -- let the whole loop go silent either. scr_wheel_burnout is in the
-        -- unconditional default auto whitelist, so every recipe keeps at least
-        -- that part while the other parts wait for their dynamic _ws:cb ack.
-        --
-        -- The static branch runs before the AI branch on the server. Camera
-        -- and any other non-listed hash therefore cannot be rescued by a
-        -- dynamic entry while the static switch is on: it is cancelled and
-        -- reported at line 10 of ptFxEvent.lua. Those parts are held back
-        -- unless the static list itself contains them.
-        for i = 1, #parts do
-            local part = parts[i]
-            if part and type(part.effect) == "string" then
-                local hash = GetHashKey(part.effect)
-                local isWhite = whitelisted(cfg, part.effect)
-                local isAuto = autoSafeEffect(part.effect, ex)
-                local confirmed = dynamicConfirmed(hash)
-
-                if strictAI and not isWhite and not confirmed then
-                    -- Fire the request regardless; the reply unlocks the part
-                    -- on servers whose static switch is off.
-                    ensureDynamicEffect(part.effect)
-                end
-
-                local staticSafe = isWhite or isAuto
-                local allowed
-                if staticEnabled or staticUnknown then
-                    -- Static branch first: a non-listed hash is cancelled
-                    -- before the AI branch. Two routes remain:
-                    --   1. a statically safe hash, which needs no rewrite;
-                    --   2. a dynamic-acknowledged hash sent only from the
-                    --      executor, whose outbound ptFxEvent is passed through
-                    --      Susano.OnTriggerServerEvent and loses assetHash.
-                    -- Route 2 is deliberately excluded from the host graft:
-                    -- the injected resource VM does not run Susano's outbound
-                    -- callback, so only the executor gets the rewritten event.
-                    allowed = staticSafe
-                        or (confirmed and canRewriteEvent())
-                else
-                    allowed = not strictAI or staticSafe or confirmed
-                end
-
-                if allowed then
-                    wireHashes[#wireHashes + 1] = hash
-                    allowedParts[#allowedParts + 1] = part
-                    -- The graft may emit only hashes that are safe even
-                    -- without the assetHash rewrite.
-                    if staticSafe or not strictAI then
-                        graftParts[#graftParts + 1] = part
-                    end
-                end
+        if needsWire then
+            if type(effective.effect) ~= "string" or not canRewriteEvent() then
+                FL.nextAt = now() + 120
+                return
             end
+            if not ensureDynamic(effective, cfg) then
+                -- The server acknowledgement has not arrived yet, or the
+                -- request could not be sent. Do not call the native: a
+                -- non-whitelisted effect here is worse than no effect.
+                FL.nextAt = now() + 120
+                return
+            end
+            FL.wire = { hash = GetHashKey(effective.effect), expires = now() + WIRE_TTL }
         end
-
-        if #allowedParts == 0 then
-            local safe = safeCandidate(cfg) or SAFE_CANDIDATES[1]
-            if safe then
-                local safeHash = GetHashKey(safe.effect)
-                local safeWhite = whitelisted(cfg, safe.effect)
-                local safeAuto = autoSafeEffect(safe.effect, ex)
-                local safeConfirmed = dynamicConfirmed(safeHash)
-                if strictAI and not safeWhite and not safeConfirmed then
-                    ensureDynamicEffect(safe.effect)
-                end
-                local safeStatic = safeWhite or safeAuto
-                local safeAllowed
-                if staticEnabled or staticUnknown then
-                    safeAllowed = safeStatic
-                        or (safeConfirmed and canRewriteEvent())
-                else
-                    safeAllowed = not strictAI or safeStatic or safeConfirmed
-                end
-                if safeAllowed then
-                    wireHashes[1] = safeHash
-                    allowedParts[1] = safe
-                    if safeStatic or not strictAI then
-                        graftParts[1] = safe
-                    end
-                end
-            end
-        end
-
-        if #allowedParts == 0 then
-            -- Last resort: a hash that is statically safe, or a dynamic entry
-            -- that the executor can send through the assetHash rewrite. If
-            -- neither fact holds, stay silent rather than feed a report.
-            local last = SAFE_CANDIDATES[1]
-            if last then
-                local lastHash = GetHashKey(last.effect)
-                local lastStatic = whitelisted(cfg, last.effect)
-                    or autoSafeEffect(last.effect, ex)
-                if not strictAI then
-                    wireHashes[1] = lastHash
-                    graftParts[1] = last
-                    allowedParts[1] = last
-                elseif lastStatic then
-                    wireHashes[1] = lastHash
-                    graftParts[1] = last
-                    allowedParts[1] = last
-                elseif dynamicConfirmed(lastHash) and canRewriteEvent() then
-                    wireHashes[1] = lastHash
-                    allowedParts[1] = last
-                end
-            end
-        end
-
-        if #allowedParts == 0 then
-            emitted = false
-        else
-            local active = effective
-            if #allowedParts ~= #parts then
-                active = {
-                    parts = allowedParts,
-                    scale = effective.scale,
-                    kind = effective.kind,
-                }
-            end
-
-            local externalParts = {}
-            for i = 1, #allowedParts do
-                local part = allowedParts[i]
-                local inGraft = false
-                for j = 1, #graftParts do
-                    if graftParts[j] == part then inGraft = true break end
-                end
-                if not inGraft then
-                    externalParts[#externalParts + 1] = part
-                end
-            end
-            local externalActive = active
-            if #externalParts ~= #allowedParts then
-                externalActive = {
-                    parts = externalParts,
-                    scale = effective.scale,
-                    kind = effective.kind,
-                }
-            end
-
-            if canRewriteEvent() and #wireHashes > 0 then
-                FL.wire = { hashes = wireHashes, expires = now() + WIRE_TTL }
-            end
-
-            if FL.graft and (FL.graft.target ~= t.serverId
-                or FL.graft.method ~= FL.method
-                or FL.graft.count ~= #graftParts
-                or FL.graft.sig ~= graftSignature(graftParts)) then
-                graftStop()
-            end
-
-            if FL.graft then
-                graftBeat()
-                -- Read the acknowledgement every tick, not only once: the
-                -- injected thread writes a fresh millisecond stamp with each
-                -- 50 ms pulse. A stale stamp means it died and the executor
-                -- must take back over instead of trusting a dead graft.
-                graftAck()
-                if not FL.graft.ack and now() - FL.graft.at > 1500 then
-                    graftStop()
-                    FL.graftFailAt = now()
-                end
-            end
-
-            local grafted = false
-            local canGraft = not FL.graftFailAt
-                or now() - FL.graftFailAt > 5000
-            if #graftParts > 0 and canGraft then
-                if FL.graft then
-                    grafted = true
-                else
-                    grafted = graftStart(t, effective, graftParts)
-                end
-            end
-
-            if grafted and FL.graft and FL.graft.ack then
-                -- The graft owns every statically safe part. Only dynamic
-                -- parts whose assetHash rewrite is executor-only are sent from
-                -- here; if there are none, the graft is the whole pulse.
-                if #externalParts > 0 then
-                    emitParticle(externalActive, coords)
-                end
-                emitted = true
-            else
-                -- Until the graft acknowledges, keep the executor-side native
-                -- as a parallel first pulse. If the host VM never runs the
-                -- chunk, the menu still emits instead of going silent for the
-                -- watchdog window; if it does run, the acknowledgement stops
-                -- this branch.
-                emitted = emitParticle(active, coords)
-            end
-        end
+        emitted = emitParticle(effective, coords)
     else
         emitted = false
     end
@@ -24784,7 +24380,6 @@ function FL.stop(reason)
     if FL.active then
         log("stop (%s)", tostring(reason or "request"))
     end
-    graftStop()
     FL.active = false
     FL.target = nil
     FL.reason = reason
@@ -31894,38 +31489,15 @@ end
 
 -- Susano.GetTextWidth(text, size_px) wants the final pixel size, while the
 -- menu multiplies the logical size by Menu.Scale. Multiply before measuring.
--- Susano.GetTextWidth is a cross-thread call: it queues the measurement and
--- waits for the overlay thread to answer. The card redraws every frame, so a
--- static label would be re-measured on every frame for no reason. Cache the
--- unscaled width per (text, size). The panel only measures from the render
--- thread, so the cache needs no locking; it is capped so a stream of changing
--- values cannot grow it without bound.
-local widthCache = {}
-local widthCacheKeys = {}
-local WIDTH_CACHE_MAX = 256
-
 local function textWidth(value, size, scale)
     value = tostring(value or "")
     if value == "" then return 0.0 end
-    scale = tonumber(scale) or 1.0
-    if scale <= 0 then scale = 1.0 end
 
-    local key = value .. "\0" .. tostring(size)
-    local cached = widthCache[key]
-    if cached then return cached * scale end
-
-    local base = nil
     if Susano and type(Susano.GetTextWidth) == "function" then
         local ok, width = pcall(Susano.GetTextWidth, value, size * scale)
-        if ok and type(width) == "number" and width > 0 then base = width / scale end
+        if ok and type(width) == "number" and width > 0 then return width end
     end
-    if not base then base = #value * size * 0.52 end
-
-    if #widthCacheKeys < WIDTH_CACHE_MAX then
-        widthCacheKeys[#widthCacheKeys + 1] = key
-        widthCache[key] = base
-    end
-    return base * scale
+    return #value * size * 0.52 * scale
 end
 
 -- Byte offsets of every UTF-8 character boundary, with a final sentinel at
@@ -31951,11 +31523,9 @@ local function utf8Offsets(value)
     return offsets
 end
 
-local function fitText(value, maxWidth, size, scale, knownWidth)
+local function fitText(value, maxWidth, size, scale)
     value = tostring(value or "")
-    local fullWidth = knownWidth
-    if fullWidth == nil then fullWidth = textWidth(value, size, scale) end
-    if fullWidth <= maxWidth then return value end
+    if textWidth(value, size, scale) <= maxWidth then return value end
 
     local suffix = "..."
     local suffixWidth = textWidth(suffix, size, scale)
@@ -32010,28 +31580,365 @@ end
 -- upload, the card still draws the same layout with vector glyphs instead of
 -- dropping the icon row.
 -- ---------------------------------------------------------------------------
--- ---------------------------------------------------------------------------
--- ICON GLYPHS
---
--- The glyphs are drawn with the menu's own primitives (DrawRectFilled and
--- DrawLine). No texture is uploaded, no image is decoded and no image bytes are
--- kept in the chunk: a texture upload runs inside the executor's DX11 path and
--- a single bad decode or handle takes the whole client down without a FiveM
--- crash dump. The vector set below is the same 0..1 box as the reference card,
--- so the layout is identical and there is nothing left to fault.
--- ---------------------------------------------------------------------------
+local B64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+local B64_VALUE = {}
+for index = 1, #B64_ALPHABET do
+    B64_VALUE[B64_ALPHABET:sub(index, index)] = index - 1
+end
+
+local function decodeBase64(value)
+    local out = {}
+    local index = 1
+    while index <= #value do
+        local c1 = value:sub(index, index)
+        local c2 = value:sub(index + 1, index + 1)
+        local c3 = value:sub(index + 2, index + 2)
+        local c4 = value:sub(index + 3, index + 3)
+        local n = (B64_VALUE[c1] or 0) * 262144
+            + (B64_VALUE[c2] or 0) * 4096
+            + (B64_VALUE[c3] or 0) * 64
+            + (B64_VALUE[c4] or 0)
+        out[#out + 1] = string.char(math.floor(n / 65536) % 256)
+        if c3 ~= "=" then
+            out[#out + 1] = string.char(math.floor(n / 256) % 256)
+        end
+        if c4 ~= "=" then
+            out[#out + 1] = string.char(n % 256)
+        end
+        index = index + 4
+    end
+    return table.concat(out)
+end
+
+local ICON_B64 = {
+    character = table.concat({
+        "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",
+    }),
+    phone = table.concat({
+        "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",
+        "gg==",
+    }),
+    radio = table.concat({
+        "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",
+    }),
+    job = table.concat({
+        "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAADPElEQVR42u2bz48MURDHPzU9ywrr",
+        "R4iLi5OEEJZ/QCJBHFwccBInEf+AA3f/gIgbJxxcJC4u/gISIdi9OYkfMclOZJeZ7q/DVEeb7V4z",
+        "Mmtne6qSTmfy3qv36vOq6r2Z1EBIyESLrYZSSWZmkrQXOAMcAKaHmE/AEvAWeGpmH3KdYw2guEhJ",
+        "14HLwHZgCmgMCSADOkALuGdmt/rnGCuR1JBkkjZKuilpQaOTBUk3JE37HI1xBGD+npXU8oV3/Ukl",
+        "dST99PdKT94nLYyX65wtzjUKaY5q980sk7QJOOVun/W5/b/uWh4O24GTkt6b2WI+51gAKBi5DTgC",
+        "pEBSaO8CbWBxgDm7wCZgxvuaPykw63Msjip/NUccCU1gS8F4+UI/AQ+Bd34apBXjE8/++4ELwJ6C",
+        "jsR1N0e94FFL0ue+BnwBHpjZiwFD6hhwog9Av+6xBVAFZbOkxI/ETkW/vG3zahi7lgAEZGaWevJK",
+        "V0imqaTMx6wNAD9nG0NclhIf06zob0BT0pS/K9fjbYPoSQa8D+STZWWnRrPE+Ckz6/jRM6h0fOxH",
+        "T2Jl7Z9db2cAPZ8r+i0BHwfQU5VbctvKr8KSmmbWlXQUOAfs83j8mxeYk54GDgK7+pJg2+/1Lfes",
+        "Krh52w7//jDTlwS/Am8chA0QJgK+A/PAYzN7mdu4DICkxOPvKnAJOOpJqQ7SAV4C983sTm5rmQec",
+        "B+74DuQDNURCMg+rRslOdIcIq6p8krmeYdZjhY1sAVfN7FGZB+wEngOHgJ8VhqxXycFtAF4Dx83s",
+        "W//9/DSw2zvXyfiiR2Vu42lKvqDMOqE6GV4GYoPnt2UAthVuX0Z9f/1K3NZlAOq882WeMHFGr0wi",
+        "AASAABAAAkAACAABIAAEgAAQAAJAAAgAASAABIAAEAACQAAIAAEgAASAABAAJgWAJshulQFY4ncR",
+        "k2psdFasZSwCmKdXxZ3VeOczt3GuDMAzegWNebGiarb7+R842m7rnwDM7D29mv5shVpd1nF9UF4l",
+        "9tDM5korRf3zbeAssBXYyH8qW19FSYEfwALwBLgGqKpStOHuchG4AhymV6/bWMcx3wZeAXeBBz1n",
+        "tzrnuZCQkCHkF+Sx1bcpicgAAAAAAElFTkSuQmCC",
+    }),
+    group = table.concat({
+        "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAEyklEQVR42u2ZO4xVVRSGv3XnwSOg",
+        "oEyGBBUkYoOMjYmvRNFYEIMUJhp7Q2kjDxF6g2CF9iRUVjY+CkIwQRI1oTFIAYVKokQ0YGScGWbm",
+        "3vPb/CfZOZ577pmRCQH2n5ycM3uvvfZaa6+9HncgIyMjIyMjIyMjIyMjIyMjI+PWQ1Ik3xOSjkm6",
+        "KGlG0k1/H5M0UbfmrlBe0nJJByTNqj9mTbP8rjCCpJA0ImmZpE+sZCGpV6N8z3My7TKvjTvZAEN+",
+        "75Y0JanbR/nUCF3T7k553InKd/wek3TWCs5rMEqas5LGUl5LgU5bZeyOo35GWghVntxLwASgZGzQ",
+        "OgHbgO0VXrdSPgCG27hxRPSAomGuCQ8Dq4FeW4N7r/uAR5ZavuE2zCWtBl4FHvXUL8AXEfGPpE5E",
+        "FDXLy+C1wifaa+kBYdoAVlZ4/efkLd8qYCewyVM/A19FxGTLQ2q8wxOSvpQ0ndzTKY9ta1g/4vce",
+        "r+kmUb4JhWklaU/Kq88+2yzLVMJj2mMTi4ohvlMh6TFJ5xLGc35KXJC0YYAB3pR0w4q1NUAh6W9J",
+        "bzQZQNIGy9BPvnPWIVobwcTlc8iMZirpq0g2OnK7soCkI4niRSWdzvj7UKrTQlx/vaSTZjbfkLcv",
+        "92O8lHWAFbrcwG/ecyclre9nyCa3WAWsM000pNHxhvnC7nsCOO4gGHUR22NhmuPACa8tGoLleIMO",
+        "4bl11mXBdcA0cL00eAPd7/3mI0JANyJmgb3AwYZ02PHcQWCv13TNo9YJgKtNzuz3NWBqMTV8SHo/",
+        "aVKKmmAlSUcX0BBFTTc4k3aDKW0Lvh9VZEllK5uuA63vf00c2CzpTMOdvVQGqiZD/s9mKhrmxyxD",
+        "P5yRtHmxqbAMYFscSG64d5+TNCnpG0mb2grusRWS1khaZ+HH/Yx5bI1poq0hJG2yLJOW7aZlPSlp",
+        "y6CGKgadQHkHJb0MPOOgdC4iTvVx9SgrQ0krgQeBzcCzru+3Ag8B9yeVaBf4G/gVuACcB74FfgKu",
+        "RcR0coqqiwuSXgGeciz5LiJOV3VobQAr0nEg67V118RYG6zs68BrwPo+UV+ViF0XYD8HPgPOR8Rv",
+        "bZSq82SgqFsTNYoPRUS3MvaAG5pRD88BN4C/UqZOWzuB94Cnk2jc9V7Vpxq1q89wQvc98KF7kPmK",
+        "fGvdPKXyTQLXK/INA710LOpOUdIK4EngceAJu/C4m5OeFfoY+NT0pUKHgX2JEJ0k9y8qDnq/IlHu",
+        "KHCgvAre+y3gHRtsyCn8qq/Qj8Al4IeImOnrPUn62SXpuKQrA0rWFyvr9ydlaZuSd6GYT8rv/ZW9",
+        "Xxiw9op12tWYYiXtq3RVs37mXaLOurw85Ra5XLc1UbzQ0qFIDLE12X+1ZepZxq7pZis/wk5J2ltb",
+        "CUraDnxgN59L3G40ca0yWJ22m5V4GxgZUDbfCpSl8giwOxmfAb5O9h+yzKX8hXVaCRxOvTeNvO96",
+        "Ual4p6G8vFhmB7vTDs91WHqE99pRurKD9sWGsr2TGGII2FNngOdbKFEy/zPN+8DGJT75OiNsBNIC",
+        "6Y8WfUvH88/VGWDtApSYq/y9/Db88Dw6QKYm462tM8Dd8a+oBf4a3uEexz1vgIyMjIyMjIyMjIyM",
+        "jIyMjIx7Dv8CU/2cGN2s160AAAAASUVORK5CYII=",
+    }),
+    health = table.concat({
+        "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",
+    }),
+    armor = table.concat({
+        "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAACl0lEQVR42u2bv2uTQRyHP99qjdIM",
+        "da4gnTSgSJ3sVujo6Ojgj45iR8V/QB2dFR20g+JYlBZq0RaKQy2Ioi4BNTrGVgoJljaPywldat+k",
+        "1/e9S+4DGQJv7n2f5w5yd+/3pJSUwgKcAE72IvgYMA203GcaGOt26H7gIrDCzllx1/R3E/ggcAOo",
+        "kT0195vBmMGHgXvAOp1n3bUxHBP4KPAc2MRfNl2bo6FCHwAuAEvsf5bcvfpCAC8Dk0CV/FN19y4X",
+        "AT4E3AVWKT6r7lmG8gAfAZ4AG4SXDfdsI76hDTgPzBNP5t0z2258lkHAZ0mxTle/mFllrwKIeSJm",
+        "Zv9l7FOPJwlIApKAJCAJSAKSgCQgCUgCkoAkIAnYaUUcMV/Lh4BmxAKavS6g4UNAPWIBv3wI+B6x",
+        "gG8+BHztdQEfIxbwwYeA5YgFLPt4L3BE0pqkQ5HB/5F01MyaexoBroE3Efb+693g25kKv4hQwMss",
+        "F5kyvg12f4exrB22JB03s59eRoBraDai3p/NAt/uavBBRALuZ73QlP01eZ+bE1QCh/8k6ZSZ4XUE",
+        "mFlL0u0Iev9OVvi2RsC/YihJ7ySdCRT+vaSzrrPkfUfIzLYkTQbc+9fbge9oS8zMFiRNBQj/2MwW",
+        "2+ZRh+WvbqFxLBD4mqTTZvZbeWyKmtmapEvKsOemfPb9LncCLw8VZLcCqAi7qYKrRZ8VCP9UAZTL",
+        "HgZeFQA/B5QUSLH0QE6F0tsLpgcUWMV4GZjJAX6mkALpNo7FPNpH+IfAQUVwaGICaHgEbwATiuzI",
+        "TAVY9AC/AFSkOM8NGXAV+NEBeA24kqXiOwYRJeBaxpMlVXdtSeq+s4MGjANTQH0bdN0ddhjPu8et",
+        "yINWks65r2/dUjslJef8BTpad6ItSEHnAAAAAElFTkSuQmCC",
+    }),
+    distance = table.concat({
+        "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAEMUlEQVR42u1bPWhUQRD+nrkE4SSF",
+        "gaiJZSSSoI0oRKNIsBcTohZeAsFWOzsN2qaM2qiFYieC2ienhTYRGyVHDoMR5c4f0ELujM3dZ5ER",
+        "wrn7dt/dvp8kb6pjbnd2dnZ3/h+QwtYGL45FSQ4D6GtAL3ue93JLSJ3kff4P9+PgZdtWfwKpAFIB",
+        "pFYgEqXXDeAkgGEAAwAOA+hsGPYLwGsABQAvAbzwPO/7Rtb0HSRzJOdJ1hgcaiTnhEb7Rtp4huQl",
+        "kiW6g5LQzCR988dJLjE8WBInKnEbbyM50+RVb+ZpzJBsS4QSJNkF4BGAEYvhXwAsAFgGUAJQFXwW",
+        "QK+4x0cA7LGglQcw7nnezzhPvpdkwXBiKySvk9wfgO5+mfPRQHuRZG+cm//gw9xnkhOtKC5RqBNC",
+        "SwcfIhcCyS7Dyd8kmXW43g6h6XcTdkZp5vIaRqokR0Nce4zkb83a864Uo4mJGQ0DP0kORbD+UVlL",
+        "BTNR2Pma5uSHInyCRzU3oRaan0CynWRRI/mxGJTwmI+zlAljwcuaBWcD0smSPE3yqii2W/L7dFDF",
+        "6aMYL4UR2JQ1pi5rSaOH5B2Sqz7afFXG9ASwDp81sUO7SwFMahjOWc4/S7ISwN2tkBy3pD3RCm+2",
+        "AshrPLyMxdwrJOtN+Px1klcszbLKY5xzlszQaP5py5OvtxD41G1ugrjNKovQ7UIA5zXM9Vu8+YqD",
+        "6K9i0gkSO6jgrIuc4DEFrux5XtEw74ZEea1CFsB135DW85Yk0myEYRcCGFTgFkymDsAFh4YoZ2Ft",
+        "VDwNmAhnGspVFxVjDilw7w10TwHY7lAA24XmM58xywrcYU3F6d6/Mtx6Ld4HYNKSobLh/4MhOH8H",
+        "DAIoKXCdmj29kMxz03WBquH/XSEIYHeLPEVaGAmj3kAkqDJkUkhfQ+D1W4s8+StBUSIPFGPOKKo4",
+        "Jl/9bQgCeGf4X5UW+wXgiaXCDOQGP7GI+P44TIWvmswgyafNuMM2T2BRgTticEyqAB46PP2HQtMP",
+        "VDwV4naFq5vBFc4DqCvw5wy3oAxgqkXtTQBTQssPzitwdbH3WyIcXlFliZOUEDkX8DlUbK5vlAkR",
+        "XUrsU8CU2F2DdViVMT0B8ou6lFhH0pOi10jelqTotUQnRS3S4qFVg3z4GY00LS6LnkhIYWRIo1Nq",
+        "JI9v9tLYUGylsXVm53mMxdFqrMVRy/L4rOPyeFZo6qAgnSqRKqG9GgdkvYnMOWiQyCWuQaJBCDYt",
+        "MtOm2KGBbr/MWTHQLrS6eVdNUo+x1glqk0tckKRquaFJqgfAPonqbByh51hrkvoBJKM5Muo2ueQ1",
+        "TYqfUAxx88XQ7bwjj/GyJnZoFspCs32jNUtPSijdbLN0Xmh0YBO0y49grc44iLVqk6pd/o2k4F4B",
+        "yG/odvn0oymkn8ykAkgFgPSjqfTT2RQSDn8BTLa3dUFZAtIAAAAASUVORK5CYII=",
+    }),
+    vehicle = table.concat({
+        "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",
+        "AAAAAElFTkSuQmCC",
+    }),
+    weapon = table.concat({
+        "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAA00lEQVR42u2YSQ6EMAwEcYv/fzlz",
+        "mSMSngXT2FVnkOKineBsGwAAAAAAAAAAzCIyD6211uHLEeFQxNH6smvT9ASIFvgi+o8pLtEG6lp8",
+        "tgZ1LT5bS3QXcNYinAIIQAACEICAwexTzvuPEuAy5lbMA/plkOgwDMWVg0ZlIW02wXhTJVuuMa2S",
+        "IOcerdiH1O2Co0TAPxaS/bpXp2B3PZ7GngLMAhNngTv/OuX8B0gLdBTgNmSRgMn9TwIQgIBaAY7X",
+        "bJq8AdICCEAAAuR2BUYCEABQyQucaER3HIL4xwAAAABJRU5ErkJggg==",
+    }),
+    speed = table.concat({
+        "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",
+    }),
+}
+
+local ICON_TEXTURES = {}
+
+local function loadIconTextures()
+    if not Susano or type(Susano.LoadTextureFromBuffer) ~= "function" then
+        return
+    end
+    for name, encoded in pairs(ICON_B64) do
+        local ok, png = pcall(decodeBase64, encoded)
+        if ok and type(png) == "string" and #png > 8 then
+            local okTex, texture = pcall(Susano.LoadTextureFromBuffer, png)
+            if okTex and type(texture) == "number" and texture ~= 0 then
+                ICON_TEXTURES[name] = texture
+            end
+        end
+    end
+end
+
+-- Load once at module start, outside the render path. A failed upload simply
+-- leaves the table empty and the vector fallback takes over.
+pcall(loadIconTextures)
 
 -- ---------------------------------------------------------------------------
 -- ICONS
 --
--- The Material glyphs above are uploaded from a thread and drawn as tinted
--- textures. The vector routines below are the fallback for builds that refuse
--- the upload: same 0..1 boxes, same optical size, so a missing texture never
--- shifts the layout. Nothing here calls a game native or fetches a URL.
+-- The Material glyphs above are uploaded once at module start and drawn as
+-- tinted textures. The vector routines below are the fallback for builds that
+-- refuse the upload: same 0..1 boxes, same optical size, so a missing texture
+-- never shifts the layout. Nothing here calls a game native or fetches a URL.
 -- ---------------------------------------------------------------------------
 local function drawIcon(name, x, y, size, cr, cg, cb)
     if size <= 0 then return end
     local ir, ig, ib = cr or ICON_R, cg or ICON_G, cb or ICON_B
+
+    -- Material texture first: one tinted draw call instead of a primitive
+    -- cluster. The texture is white with alpha, so r/g/b is the whole colour.
+    local texture = ICON_TEXTURES[name]
+    if texture and Susano and type(Susano.DrawImage) == "function" then
+        local ok = pcall(Susano.DrawImage, texture, x, y, size, size, ir, ig, ib, 1.0, 0)
+        if ok then return end
+    end
 
     -- Filled cell in the icon colour.
     local function R(u, v, w, h, rad)
@@ -32147,6 +32054,14 @@ end
 -- reads at a glance without depending on what is behind it.
 local function drawVehicleBadge(x, y, size, r, g, b)
     if size <= 0 then return end
+
+    -- Same Material car texture as the card, tinted with the list's red. One
+    -- draw call per row; the primitive car below is the upload-failure path.
+    local texture = ICON_TEXTURES.vehicle
+    if texture and Susano and type(Susano.DrawImage) == "function" then
+        local ok = pcall(Susano.DrawImage, texture, x, y, size, size, r, g, b, 1.0, 0)
+        if ok then return end
+    end
 
     fillRect(x + 0.06 * size, y + 0.44 * size, 0.88 * size, 0.24 * size,
         r, g, b, 1.0, 0.05 * size)
@@ -32383,64 +32298,14 @@ end
 -- one place that touches a state bag.
 Menu.ResolvePlayerIdentity = resolveIdentity
 
--- The Online list builder runs on its own thread every 250 ms and asks for a
--- truncation point for every row. It must not call Susano.GetTextWidth: that
--- primitive blocks the calling thread until the overlay thread answers, so a
--- measurement per player per rebuild starves the overlay and the client drops.
--- A proportional-font average is exact enough for where to cut, and the whole
--- helper stays pure Lua on the list thread.
-local ROW_FONT_SIZE = 19
-local ROW_CHAR_RATIO = 0.52
-
-local function utf8Length(value)
-    local count = 0
-    local index = 1
-    while index <= #value do
-        local byte = value:byte(index) or 0
-        local length = 1
-        if byte >= 0xF0 then length = 4
-        elseif byte >= 0xE0 then length = 3
-        elseif byte >= 0xC0 then length = 2 end
-        index = index + length
-        count = count + 1
-    end
-    return count
-end
-
-local function utf8Cut(value, keep)
-    if keep <= 0 then return 0 end
-    local index = 1
-    local seen = 0
-    while index <= #value and seen < keep do
-        local byte = value:byte(index) or 0
-        local length = 1
-        if byte >= 0xF0 then length = 4
-        elseif byte >= 0xE0 then length = 3
-        elseif byte >= 0xC0 then length = 2 end
-        index = index + length
-        seen = seen + 1
-    end
-    return index - 1
-end
-
+-- The Online list needs the same width-aware truncation the card uses for its
+-- values, but with the menu's 19 px row type. Exposing the helper keeps one
+-- text-measurement path instead of a second byte-count approximation.
 Menu.FitRowLabel = function(value, maxWidth)
-    value = tostring(value or "")
-    maxWidth = tonumber(maxWidth) or 0
-    if value == "" or maxWidth <= 0 then return value end
-
-    local scale = Menu.Scale or 1.0
-    local charWidth = ROW_FONT_SIZE * ROW_CHAR_RATIO * scale
-    if charWidth <= 0 then return value end
-
-    local maxChars = math.floor(maxWidth / charWidth)
-    if maxChars < 1 then return "" end
-    if utf8Length(value) <= maxChars then return value end
-
-    if maxChars <= 3 then return value:sub(1, utf8Cut(value, maxChars)) end
-    return value:sub(1, utf8Cut(value, maxChars - 3)) .. "..."
+    return fitText(value, maxWidth, 19, Menu.Scale or 1.0)
 end
 
-local function drawPlayerInfoPanel()
+function Menu.DrawPlayerInfoPanel()
     if type(Menu) ~= "table" or type(Menu.GetSelectedPlayerInfo) ~= "function" then
         return
     end
@@ -32554,14 +32419,8 @@ local function drawPlayerInfoPanel()
         local labelWidth = textWidth(label, FONT_ROW, scale)
         local maxValueWidth = effectiveRight - (labelX + labelWidth + 10 * scale)
         if maxValueWidth < 0 then maxValueWidth = 0 end
-        -- Measure the full value once. When it already fits, reuse that width
-        -- for the right alignment instead of measuring the same string twice.
-        local valueWidth = textWidth(value, FONT_ROW, scale)
-        local shownValue = value
-        if valueWidth > maxValueWidth then
-            shownValue = fitText(value, maxValueWidth, FONT_ROW, scale, valueWidth)
-            valueWidth = textWidth(shownValue, FONT_ROW, scale)
-        end
+        local shownValue = fitText(value, maxValueWidth, FONT_ROW, scale)
+        local valueWidth = textWidth(shownValue, FONT_ROW, scale)
 
         text(effectiveRight - valueWidth, textY, shownValue, FONT_ROW,
             VALUE_R, VALUE_G, VALUE_B, 1.0)
@@ -32667,18 +32526,6 @@ local function drawPlayerInfoPanel()
     end
 end
 
--- The library calls the card from its render pass. A single bad value must not
--- take the render thread with it, so the body is isolated and the first error
--- is logged once instead of repeating every frame.
-function Menu.DrawPlayerInfoPanel()
-    if type(Menu) ~= "table" then return end
-    local ok, err = pcall(drawPlayerInfoPanel)
-    if not ok and not Menu.__vgd_panelErrorLogged then
-        Menu.__vgd_panelErrorLogged = true
-        print("[Menu] panel draw error: " .. tostring(err))
-    end
-end
-
 -- ---------------------------------------------------------------------------
 -- PLAYER LIST BADGE
 --
@@ -32716,10 +32563,7 @@ if type(Menu) == "table" and type(Menu.DrawItem) == "function"
         -- its row fades.
         local previousAlpha = Menu.DrawAlpha
         Menu.DrawAlpha = (previousAlpha or 1.0) * (Menu.ContentEase or 1.0)
-        -- The row draw is already pcall'd by the base wrapper; this second
-        -- guard keeps a texture or primitive fault inside the badge from
-        -- taking down the whole menu render pass.
-        pcall(drawVehicleBadge, badgeX, badgeY, badgeSize, ICON_R, ICON_G, ICON_B)
+        drawVehicleBadge(badgeX, badgeY, badgeSize, ICON_R, ICON_G, ICON_B)
         Menu.DrawAlpha = previousAlpha
     end
 
@@ -37167,7 +37011,7 @@ end
 -- BOOT
 -- ---------------------------------------------------------------------------
 function UI.boot()
-    O.log("loader build 2026-11-07-r45")
+    O.log("loader build 2026-11-07-r44 (Flash moved to Online > Troll > Attacks with Auto Safe and ten explicit methods; the selected method is read live; the WaveShield V4 particle configuration is read from GlobalState and delivery uses the first native-whitelisted safe effect or a dynamic-whitelisted safe particle with assetHash stripped on ptFxEvent; particle scale is capped at MaxParticleScale and each pulse sends two networked bursts with no minimum range; a one-player test server gets a local Susano overlay pulse instead of a fabricated server event; the retired Exploit Flash tab is removed; Search magnifier handle rebuilt as a fused diagonal instead of three dots; White keeps the wbYgWhZ banner and Cyan restores its original 3HLMxX5 banner; Online Props Player row sorts the player list by distance and always targets the nearest player; Launch Player selector offers Method 1 and Method 2; Method 1 drives the victim ped directly when control is available and otherwise reverse-attaches the victim to the local ped within 3 m; Method 2 uses a range-free injected coordinate lift plus repeated upward force and velocity for servers that ignore Method 1; launch has no vehicle or explosion; hardened Susano ragdoll keeps the victim speed check lenient; self launch uses 58 m/s with GET_ENTITY_SPEED masked by the stealth hook; velocity and settle waits carry jitter; tight bold category chevrons; Troll Appearance section and Copy Appearance row removed; All mode Include me toggle adds the local ped alongside remote targets; Props Player row hidden in Self and All modes; attachment rows Attach to player and Attach point removed; target labels Self/Player/All; automatic player refresh sorts by distance and selects nearest; manual Refresh player list removed; Ban Player beta suffix removed; Servers and Bypass tabs moved from Destroyer to Misc; FOV moved from Visual/Camera to Self under Big Weapon; theme banners bottom-anchored flush on the category plate; White uses wbYgWhZ and Cyan uses 3HLMxX5; White/Cyan theme selector; White 3:1 header and Cyan 4.1:1 header; flush tab strip; light-grey cell tab plate; dark selected category rectangle; uniform unselected categories; reference names Self/Online/Vehicle/Weapon/Destroyer/Misc/Settings/Search; Search category opens the prompt directly and lands on results; compact magnifier; tight bold category chevron pair; full-white section rules fitted to the label width; Target keeps only the Ctrl hint; Player Props folded into Online; 15px right-aligned slider readout; target-bound toggles reset on target change/unload; dark row plates; white toggle/scrollbar; footer centre mark removed; Delete/Backspace close)")
     O.thread()
 
     -- Delete/Backspace fallback poll. 40 ms is faster than a frame at 30 FPS
@@ -37232,4 +37076,3 @@ end)(O,S,E,D,F,V,M,SN,C,G,FL,A,ST,SB,VS,K,N,L,VC,CU,UC,FA,TP,FP,Menu)
 
 end)()
 -- <<< VANGUARD MODULE END
-
