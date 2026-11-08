@@ -25034,16 +25034,6 @@ end
 local function tickCore()
     if not FL.active then return end
 
-    local function localPulse()
-        FL.localOnly = true
-        Menu.__vgd_flashLocalUntil = now() + 170
-        FL.stats.flashes = FL.stats.flashes + 1
-        local spread = (type(O) == "table" and type(O.jitter) == "function") and 0.25 or 0.0
-        local base = (type(O) == "table" and type(O.jitter) == "function")
-            and O.jitter(PERIOD_MS, spread) or PERIOD_MS
-        FL.nextAt = now() + base
-    end
-
     local sig = selectionSig()
     local targets = FL.targets
     local needResolve = (not targets) or (#targets == 0)
@@ -25059,12 +25049,7 @@ local function tickCore()
         if not targets or #targets == 0 then
             FL.target = nil
             graftStop()
-            -- With an explicit selection, never substitute a stranger or a
-            -- self pulse: stay armed and wait for a selected player to stream
-            -- back in. With no selection, keep the historical local test pulse.
-            if hasSelection() then return end
-            if now() < FL.nextAt then return end
-            localPulse()
+            -- Stay armed and wait for a selected player to stream back in.
             return
         end
     end
@@ -25076,7 +25061,6 @@ local function tickCore()
     -- Refresh coords; drop dead/unstreamed/out-of-reach. Selection survives.
     local alive = {}
     local anyRemote = false
-    local hasSelf = false
     for i = 1, #targets do
         local t = targets[i]
         local ped = t.ped
@@ -25087,7 +25071,6 @@ local function tickCore()
                     t.coords = coords
                     t.aim = predictedCoords(t, coords)
                     t.dist = 0.0
-                    hasSelf = true
                     alive[#alive + 1] = t
                 end
             end
@@ -25114,9 +25097,6 @@ local function tickCore()
         FL.targets = nil
         FL.target = nil
         graftStop()
-        if hasSelection() then return end
-        if now() < FL.nextAt then return end
-        localPulse()
         return
     end
 
@@ -25380,7 +25360,6 @@ local function tickCore()
         return
     elseif emitted then
         FL.stats.flashes = FL.stats.flashes + 1
-        if hasSelf then Menu.__vgd_flashLocalUntil = now() + 170 end
     else
         FL.stats.fails = FL.stats.fails + 1
     end
@@ -25408,7 +25387,6 @@ function FL.start()
     -- resolution and falls back to the local overlay pulse when needed.
     FL.active = true
     FL.reason = nil
-    Menu.__vgd_flashLocalUntil = 0
 
     local okTarget, targets = pcall(resolveTargets)
     if not okTarget then
@@ -25447,7 +25425,6 @@ function FL.stop(reason)
     FL.requiresWire = false
     FL.effective = nil
     FL.localOnly = false
-    Menu.__vgd_flashLocalUntil = 0
 end
 
 function FL.status()
@@ -25462,36 +25439,6 @@ function FL.status()
         return ("Flash %s | %.0f m | %d"):format(t.name, t.dist or 0.0, FL.stats.flashes)
     end
     return ("Flash %d targets | %d"):format(#targets, FL.stats.flashes)
-end
-
--- Fallback pulse when there is no target or no readable coordinates. The
--- normal self path uses the same filtered particle delivery as a remote
--- target, so the operator and the other clients see one recipe. This draw is
--- used only while the loop cannot resolve a ped; it never fabricates an event.
-local function flashSelfDraw()
-    local previous = Menu.__vgd_flashPrevOnRender
-    if type(previous) == "function" then pcall(previous) end
-    local untilAt = tonumber(Menu.__vgd_flashLocalUntil) or 0
-    local current = now()
-    if untilAt <= current or type(Menu.DrawRect) ~= "function" then return end
-    local alpha = math.floor(255 * math.max(0.0, math.min(1.0, (untilAt - current) / 170.0)))
-    local screenW, screenH = 1920, 1080
-    local api = rawget(_G, "Susano")
-    if type(api) == "table" and type(api.GetScreenWidth) == "function" then
-        local ok, width = pcall(api.GetScreenWidth)
-        if ok and type(width) == "number" and width > 0 then screenW = width end
-    end
-    if type(api) == "table" and type(api.GetScreenHeight) == "function" then
-        local ok, height = pcall(api.GetScreenHeight)
-        if ok and type(height) == "number" and height > 0 then screenH = height end
-    end
-    pcall(Menu.DrawRect, 0, 0, screenW, screenH, 255, 255, 255, alpha)
-end
-
-if not Menu.__vgd_flashOnRender then
-    Menu.__vgd_flashOnRender = true
-    Menu.__vgd_flashPrevOnRender = Menu.OnRender
-    Menu.OnRender = flashSelfDraw
 end
 
 -- Internal smoke seam. It is not a menu row and never calls a native by
@@ -38370,7 +38317,7 @@ end
 -- BOOT
 -- ---------------------------------------------------------------------------
 function UI.boot()
-    O.log("loader build 2026-11-08-r58 (Air movement: No Clip hard-locks the flat pose with CLEAR_PED_TASKS plus TASK_PLAY_ANIM only when IS_ENTITY_PLAYING_ANIM drops, a one-metre approach buffer keeps a two-metre floor, ped gravity and the ragdoll flags (including ragdoll-on-collision) are re-asserted every 250 ms and immediately after any task clear so a task reset or collision cannot drop the body, Space/Ctrl are disabled as game controls on every scheduler frame while armed so a parachute cannot deploy, a mid-session parachute state is cleared and the pose re-layered instead of stopping the session, the native cover layer is revalidated every 2.5 s so a read that was genuine at arm and later went false is hooked instead of trusted stale, and ragdoll-from-player-impact is disabled while armed and restored on stop; native particle call carries all four axis flags; load-time preload removed; Stage B graft disabled by default; self and remote share the same filtered particle path; the flash is anchored to the target entity at chest height with a ten-point particle ring for every view angle, self uses a full-screen overlay pulse, moving targets get only a short capped velocity lead, and high-speed targets get a capped scale boost; selected self is honored before nearest-player fallback; Flash moved to Online > Troll > Attacks with Auto Safe and ten explicit methods; the selected method is read live; the WaveShield V4 particle configuration is read from GlobalState and scr_wheel_burnout and scr_alien_teleport are emitted only when rcore_spray/WaveAdmin put them in the static table, dynamic camera parts are sent only from the executor with assetHash stripped on ptFxEvent, and Stage B graft remains available but is disabled by default, so statically safe parts are emitted from the executor without a host injection; particle scale is capped at MaxParticleScale and each pulse sends up to three networked parts with no minimum range; a one-player server never fabricates a server event; the retired Exploit Flash tab is removed; Search magnifier handle rebuilt as a fused diagonal instead of three dots; White keeps the wbYgWhZ banner and Cyan restores its original 3HLMxX5 banner; Online Props Player row sorts the player list by distance and always targets the nearest player; Launch Player selector offers Method 1 and Method 2; Method 1 drives the victim ped directly when control is available and otherwise reverse-attaches the victim to the local ped within 3 m; Method 2 uses a range-free injected coordinate lift plus repeated upward force and velocity for servers that ignore Method 1; launch has no vehicle or explosion; hardened Susano ragdoll keeps the victim speed check lenient; self launch uses 58 m/s with GET_ENTITY_SPEED masked by the stealth hook; velocity and settle waits carry jitter; tight bold category chevrons; Troll Appearance section and Copy Appearance row removed; All mode Include me toggle adds the local ped alongside remote targets; Props Player row hidden in Self and All modes; attachment rows Attach to player and Attach point removed; target labels Self/Player/All; automatic player refresh sorts by distance and selects nearest; manual Refresh player list removed; Ban Player beta suffix removed; Servers and Bypass tabs moved from Destroyer to Misc; FOV moved from Visual/Camera to Self under Big Weapon; theme banners bottom-anchored flush on the category plate; White uses wbYgWhZ and Cyan uses 3HLMxX5; White/Cyan theme selector; White 3:1 header and Cyan 4.1:1 header; flush tab strip; light-grey cell tab plate; dark selected category rectangle; uniform unselected categories; reference names Self/Online/Vehicle/Weapon/Destroyer/Misc/Settings/Search; Search category opens the prompt directly and lands on results; compact magnifier; tight bold category chevron pair; full-white section rules fitted to the label width; Target keeps only the Ctrl hint; Player Props folded into Online; 15px right-aligned slider readout; target-bound toggles reset on target change/unload; dark row plates; white toggle/scrollbar; footer centre mark removed; Delete/Backspace close)")
+    O.log("loader build 2026-11-08-r58 (Air movement: No Clip hard-locks the flat pose with CLEAR_PED_TASKS plus TASK_PLAY_ANIM only when IS_ENTITY_PLAYING_ANIM drops, a one-metre approach buffer keeps a two-metre floor, ped gravity and the ragdoll flags (including ragdoll-on-collision) are re-asserted every 250 ms and immediately after any task clear so a task reset or collision cannot drop the body, Space/Ctrl are disabled as game controls on every scheduler frame while armed so a parachute cannot deploy, a mid-session parachute state is cleared and the pose re-layered instead of stopping the session, the native cover layer is revalidated every 2.5 s so a read that was genuine at arm and later went false is hooked instead of trusted stale, and ragdoll-from-player-impact is disabled while armed and restored on stop; native particle call carries all four axis flags; load-time preload removed; Stage B graft disabled by default; self and remote share the same filtered particle path; the flash is anchored to the target entity at chest height with a ten-point particle ring for every view angle, moving targets get only a short capped velocity lead, and high-speed targets get a capped scale boost; selected self is honored before nearest-player fallback; Flash moved to Online > Troll > Attacks with Auto Safe and ten explicit methods; the selected method is read live; the WaveShield V4 particle configuration is read from GlobalState and scr_wheel_burnout and scr_alien_teleport are emitted only when rcore_spray/WaveAdmin put them in the static table, dynamic camera parts are sent only from the executor with assetHash stripped on ptFxEvent, and Stage B graft remains available but is disabled by default, so statically safe parts are emitted from the executor without a host injection; particle scale is capped at MaxParticleScale and each pulse sends up to three networked parts with no minimum range; a one-player server never fabricates a server event; the retired Exploit Flash tab is removed; Search magnifier handle rebuilt as a fused diagonal instead of three dots; White keeps the wbYgWhZ banner and Cyan restores its original 3HLMxX5 banner; Online Props Player row sorts the player list by distance and always targets the nearest player; Launch Player selector offers Method 1 and Method 2; Method 1 drives the victim ped directly when control is available and otherwise reverse-attaches the victim to the local ped within 3 m; Method 2 uses a range-free injected coordinate lift plus repeated upward force and velocity for servers that ignore Method 1; launch has no vehicle or explosion; hardened Susano ragdoll keeps the victim speed check lenient; self launch uses 58 m/s with GET_ENTITY_SPEED masked by the stealth hook; velocity and settle waits carry jitter; tight bold category chevrons; Troll Appearance section and Copy Appearance row removed; All mode Include me toggle adds the local ped alongside remote targets; Props Player row hidden in Self and All modes; attachment rows Attach to player and Attach point removed; target labels Self/Player/All; automatic player refresh sorts by distance and selects nearest; manual Refresh player list removed; Ban Player beta suffix removed; Servers and Bypass tabs moved from Destroyer to Misc; FOV moved from Visual/Camera to Self under Big Weapon; theme banners bottom-anchored flush on the category plate; White uses wbYgWhZ and Cyan uses 3HLMxX5; White/Cyan theme selector; White 3:1 header and Cyan 4.1:1 header; flush tab strip; light-grey cell tab plate; dark selected category rectangle; uniform unselected categories; reference names Self/Online/Vehicle/Weapon/Destroyer/Misc/Settings/Search; Search category opens the prompt directly and lands on results; compact magnifier; tight bold category chevron pair; full-white section rules fitted to the label width; Target keeps only the Ctrl hint; Player Props folded into Online; 15px right-aligned slider readout; target-bound toggles reset on target change/unload; dark row plates; white toggle/scrollbar; footer centre mark removed; Delete/Backspace close)")
     O.thread()
 
     -- Delete/Backspace fallback poll. 40 ms is faster than a frame at 30 FPS
