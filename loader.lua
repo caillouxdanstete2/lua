@@ -1467,7 +1467,7 @@ Menu.UpdatePlayerCount = function() end
 Menu.ShowSnowflakes = true -- sync avec Flocon value = true
 
 -- ============================================
--- DÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â°BUT DU CODE ORIGINAL (ligne 39 de l'ancien fichier)
+-- DÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â°BUT DU CODE ORIGINAL (ligne 39 de l'ancien fichier)
 -- ============================================
 Menu.shooteyesEnabled = false
 Menu.magicbulletEnabled = false
@@ -1487,8 +1487,8 @@ Menu.WarpPressW = false
 -- ============================================
 -- STEALTH AUTO-SPOOF SYSTEM
 -- ============================================
--- Hooks enregistrÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©s une seule fois. ConditionnÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©s par flags.
--- Chaque feature toggle active/dÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©sactive ses flags automatiquement.
+-- Hooks enregistrÃƒÆ’Ã‚Â©s une seule fois. ConditionnÃƒÆ’Ã‚Â©s par flags.
+-- Chaque feature toggle active/dÃƒÆ’Ã‚Â©sactive ses flags automatiquement.
 
 _Stealth = {
     invincible = false,
@@ -1511,7 +1511,7 @@ local _fakeAmmo = {}
 do
     if type(Susano) == "table" and type(Susano.HookNative) == "function" then
 
-        -- GetPlayerInvincible ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ false
+        -- GetPlayerInvincible ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ false
         Susano.HookNative(0xB721981B2B939E07, function(player)
             if _Stealth.invincible and player == PlayerId() then
                 return false, false
@@ -1519,7 +1519,7 @@ do
             return true
         end)
 
-        -- GetEntityHealth ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ 190-200
+        -- GetEntityHealth ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ 190-200
         Susano.HookNative(0xEEF059FAD016D209, function(entity)
             if _Stealth.health and entity == PlayerPedId() then
                 return false, 190 + math.random(0, 10)
@@ -1527,7 +1527,7 @@ do
             return true
         end)
 
-        -- GetPlayerStamina ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ oscillation 45-98
+        -- GetPlayerStamina ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ oscillation 45-98
         Susano.HookNative(0xCEFD02E1E6BC7AF0, function(player)
             if _Stealth.stamina and player == PlayerId() then
                 local now = GetGameTimer()
@@ -1542,7 +1542,7 @@ do
             return true
         end)
 
-        -- GetEntitySpeed ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ cap 6.5-8.0 m/s
+        -- GetEntitySpeed ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ cap 6.5-8.0 m/s
         Susano.HookNative(0xD5037BA82E12416F, function(entity)
             if _Stealth.speed then
                 local ped = PlayerPedId()
@@ -1553,7 +1553,7 @@ do
             return true
         end)
 
-        -- GetAmmoInPedWeapon ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ fake count dÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©croissant
+        -- GetAmmoInPedWeapon ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ fake count dÃƒÆ’Ã‚Â©croissant
 
         -- GetWeaponDamageModifier: the real per-weapon modifier field is what
         -- the engine uses to scale melee damage; the script getter is only a
@@ -2887,7 +2887,7 @@ Menu.Categories = {
     }}
 }
 
--- Appliquer le thÃƒÂ¨me monochrome par dÃƒÂ©faut au dÃƒÂ©marrage.
+-- Appliquer le thÃ¨me monochrome par dÃ©faut au dÃ©marrage.
 if Menu.ApplyTheme then
     Menu.ApplyTheme("White")
 end
@@ -3353,7 +3353,7 @@ local espSettings = nil
 -- ESP Cache pour optimisation
 local ESPCache = {}
 local ESPCacheTime = 0
-local ESPCacheMaxAge = 0.016 -- 1 frame ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â  60fps
+local ESPCacheMaxAge = 0.016 -- 1 frame ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â  60fps
 
 local function GetScreenSize()
     if Susano and Susano.GetScreenWidth and Susano.GetScreenHeight then
@@ -3963,10 +3963,10 @@ local function RenderPedESP(targetPed, playerIdx, settings, screenW, screenH, my
     local targetPos = GetEntityCoords(targetPed)
     local dist = #(myPos - targetPos)
     
-    -- Optimisation: vÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©rifier la distance avant les calculs coÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â»teux
+    -- Optimisation: vÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©rifier la distance avant les calculs coÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â»teux
     if dist > 100.0 then return end
     
-    -- Cache pour ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©viter les recalculs frÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©quents
+    -- Cache pour ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©viter les recalculs frÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©quents
     local cacheKey = tostring(targetPed) .. "_" .. tostring(playerIdx)
     local currentTime = GetGameTimer() or 0
     local cached = ESPCache[cacheKey]
@@ -4027,14 +4027,14 @@ local function RenderPedESP(targetPed, playerIdx, settings, screenW, screenH, my
         local textColor = ESPColors[1]
         if settings["Text Color"] then textColor = ESPColors[settings["Text Color"].selected] or textColor end
 
-        -- Skeleton (optimisÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â© avec cache des os)
+        -- Skeleton (optimisÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â© avec cache des os)
         if drawSkeleton then
             local boneCache = {}
             for _, connection in ipairs(SkeletonConnections) do
                 local bone1 = connection[1]
                 local bone2 = connection[2]
                 
-                -- Cache des positions des os pour ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©viter les appels rÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©pÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©tÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©s
+                -- Cache des positions des os pour ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©viter les appels rÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©pÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©tÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©s
                 local pos1 = boneCache[bone1]
                 if not pos1 then
                     pos1 = GetPedBoneCoords(targetPed, bone1, 0.0, 0.0, 0.0)
@@ -4050,7 +4050,7 @@ local function RenderPedESP(targetPed, playerIdx, settings, screenW, screenH, my
                 local os1, x1, y1 = GetScreenCoordFromWorldCoord(pos1.x, pos1.y, pos1.z)
                 local os2, x2, y2 = GetScreenCoordFromWorldCoord(pos2.x, pos2.y, pos2.z)
 
-                -- Optimisation: vÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©rifier que les coordonnÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©es sont valides et dans l'ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©cran
+                -- Optimisation: vÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©rifier que les coordonnÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©es sont valides et dans l'ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©cran
                 if os1 and os2 and x1 and y1 and x2 and y2 and 
                    x1 >= 0 and x1 <= 1 and y1 >= 0 and y1 <= 1 and
                    x2 >= 0 and x2 <= 1 and y2 >= 0 and y2 <= 1 and
@@ -4063,7 +4063,7 @@ local function RenderPedESP(targetPed, playerIdx, settings, screenW, screenH, my
             end
         end
         
-        -- Calculate 2D Box & Info Positions (optimisÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â© avec cache)
+        -- Calculate 2D Box & Info Positions (optimisÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â© avec cache)
         local headPos = GetPedBoneCoords(targetPed, 31086, 0.0, 0.0, 0.0)
         local footPos = GetEntityCoords(targetPed)
         footPos = vector3(footPos.x, footPos.y, footPos.z - 1.0) -- Adjust for bottom
@@ -4093,11 +4093,11 @@ local function RenderPedESP(targetPed, playerIdx, settings, screenW, screenH, my
             ESPCache[footCacheKey] = {x = footX, y = footY, time = currentTime}
         end
         
-        -- VÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©rifier que les coordonnÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©es sont valides avant de calculer la box
+        -- VÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©rifier que les coordonnÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©es sont valides avant de calculer la box
         if not headX or not headY or not footX or not footY then return end
         
         local height = math.abs(headY - footY)
-        if height < 0.01 then return end -- ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â°viter les boxes trop petites
+        if height < 0.01 then return end -- ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â°viter les boxes trop petites
         
         local width = height * 0.35 -- Thinner box (was 0.5)
         
@@ -4109,7 +4109,7 @@ local function RenderPedESP(targetPed, playerIdx, settings, screenW, screenH, my
         -- Fix Y order if inverted
         if boxY1 > boxY2 then boxY1, boxY2 = boxY2, boxY1 end
 
-        -- Box (optimisÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â© - vÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©rifier que la box est valide)
+        -- Box (optimisÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â© - vÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©rifier que la box est valide)
         if drawBox and boxX1 and boxX2 and boxY1 and boxY2 then
             -- Draw thin black outline
             Draw2DBox(boxX1 - 0.0005, boxY1 - 0.0005, boxX2 + 0.0005, boxY2 + 0.0005, 0.0, 0.0, 0.0, 1.0, screenW, screenH)
@@ -4117,7 +4117,7 @@ local function RenderPedESP(targetPed, playerIdx, settings, screenW, screenH, my
             Draw2DBox(boxX1, boxY1, boxX2, boxY2, boxColor[1], boxColor[2], boxColor[3], 1.0, screenW, screenH)
         end
         
-        -- Snapline (optimisÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â© - vÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©rifier que footX et footY sont valides)
+        -- Snapline (optimisÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â© - vÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©rifier que footX et footY sont valides)
         if drawLine and Susano.DrawLine and footX and footY then
              Susano.DrawLine(screenW / 2, screenH, footX * screenW, footY * screenH, lineColor[1], lineColor[2], lineColor[3], 1.0, 1)
         end
@@ -4138,7 +4138,7 @@ local function RenderPedESP(targetPed, playerIdx, settings, screenW, screenH, my
         if drawWeapon then
              local _, weaponHash = GetCurrentPedWeapon(targetPed, true)
              local weaponName = GetWeaponNameFromHash(weaponHash)
-             -- GetWeaponNameFromHash retourne dÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©jÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â  "Unarmed" pour WEAPON_UNARMED
+             -- GetWeaponNameFromHash retourne dÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©jÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â  "Unarmed" pour WEAPON_UNARMED
              AddToBucket(drawWeaponPos + 1, weaponName)
         end
         
@@ -4186,7 +4186,7 @@ local function RenderPedESP(targetPed, playerIdx, settings, screenW, screenH, my
             end
         end
         
-        -- Health & Armor Bars (optimisÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â© - vÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©rifier que la box est valide)
+        -- Health & Armor Bars (optimisÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â© - vÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©rifier que la box est valide)
         if (drawHealth or drawArmor) and boxX1 and boxY1 and boxY2 then
             local barW = 2 -- Thinner bar
             
@@ -4533,17 +4533,15 @@ local function UpdatePlayerList()
                     -- channel, truncated to the width left by the car badge and
                     -- the toggle. The identity reader is passive and cached; the
                     -- row builder only reads its result.
-                    local listPos = type(Menu.GetScaledPosition) == "function"
-                        and Menu.GetScaledPosition() or nil
-                    local listWidth = (listPos and tonumber(listPos.width))
-                        or (360 * (Menu.Scale or 1.0))
                     local function playerRowLabel(playerId, playerName, identity, inVehicle)
                         local label = tostring(playerId) .. " - " .. tostring(playerName)
                         if type(identity) == "table" and identity.radio and identity.radio ~= "-" then
                             label = label .. " | Radio " .. tostring(identity.radio)
                         end
-                        local reserved = inVehicle and 80 or 60
-                        local maxWidth = listWidth - 16 - reserved
+                        local sp = type(Menu.GetScaledPosition) == "function" and Menu.GetScaledPosition() or nil
+                        local menuWidth = (sp and tonumber(sp.width)) or (360 * (Menu.Scale or 1.0))
+                        local reserved = inVehicle and 88 or 60
+                        local maxWidth = menuWidth - 16 - reserved
                         if maxWidth < 40 then maxWidth = 40 end
                         if type(Menu.FitRowLabel) == "function" then
                             return Menu.FitRowLabel(label, maxWidth)
@@ -7679,7 +7677,7 @@ end
 
 function Menu.ActionChangePlate()
     if Menu and Menu.OpenInput then
-        Menu.OpenInput("Change Plate", "Entrez le texte de la plaque (max 8 caractÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¨res):", function(input)
+        Menu.OpenInput("Change Plate", "Entrez le texte de la plaque (max 8 caractÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¨res):", function(input)
             if input and input ~= "" then
                 local plateText = string.sub(input, 1, 8)
                 local playerPed = PlayerPedId()
@@ -12726,7 +12724,7 @@ end
                                     local playerPed = PlayerPedId()
                                     local myCoords = GetEntityCoords(playerPed)
                                     
-                                    -- Trouver le vÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©hicule le plus proche
+                                    -- Trouver le vÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©hicule le plus proche
                                     local closestVeh = GetClosestVehicle(myCoords.x, myCoords.y, myCoords.z, 100.0, 0, 70)
                                     if not closestVeh or closestVeh == 0 then return end
                                     
@@ -12734,7 +12732,7 @@ end
                                     local savedCoords = GetEntityCoords(playerPed)
                                     local savedHeading = GetEntityHeading(playerPed)
                                     
-                                    -- Obtenir le contrÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â´le du vÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©hicule
+                                    -- Obtenir le contrÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â´le du vÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©hicule
                                     SetEntityAsMissionEntity(closestVeh, true, true)
                                     local timeout = 1000
                                     NetworkRequestControlOfEntity(closestVeh)
@@ -12744,16 +12742,16 @@ end
                                         NetworkRequestControlOfEntity(closestVeh)
                                     end
                                     
-                                    -- Me tÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©lÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©porter dans le vÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©hicule
+                                    -- Me tÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©lÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©porter dans le vÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©hicule
                                     SetPedIntoVehicle(playerPed, closestVeh, -1)
                                     Wait(100)
                                     
-                                    -- Me remettre ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â  ma position originale
+                                    -- Me remettre ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â  ma position originale
                                     SetEntityCoordsNoOffset(playerPed, savedCoords.x, savedCoords.y, savedCoords.z, false, false, false)
                                     SetEntityHeading(playerPed, savedHeading)
                                     Wait(50)
                                     
-                                    -- Positionner le vÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©hicule derriÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¨re le joueur cible (comme dans Luxor)
+                                    -- Positionner le vÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©hicule derriÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¨re le joueur cible (comme dans Luxor)
                                     local targetCoords = GetEntityCoords(ped)
                                     local spawnPos = GetOffsetFromEntityInWorldCoords(ped, 0.0, -10.0, 0.0)
                                     local heading = GetEntityHeading(ped)
@@ -12761,13 +12759,13 @@ end
                                     SetEntityCoordsNoOffset(closestVeh, spawnPos.x, spawnPos.y, spawnPos.z, false, false, false)
                                     SetEntityHeading(closestVeh, heading)
                                     
-                                    -- Configurer le vÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©hicule pour le ram
+                                    -- Configurer le vÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©hicule pour le ram
                                     SetVehicleForwardSpeed(closestVeh, 100.0)
                                     SetEntityVisible(closestVeh, true, false)
                                     SetVehicleDoorsLocked(closestVeh, 4)
                                     SetVehicleEngineOn(closestVeh, true, true, false)
                                     
-                                    -- Nettoyage automatique aprÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¨s 15 secondes
+                                    -- Nettoyage automatique aprÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¨s 15 secondes
                                     Citizen.SetTimeout(15000, function()
                                         if DoesEntityExist(closestVeh) then
                                             DeleteVehicle(closestVeh)
@@ -12908,14 +12906,14 @@ function Menu.ActionDropVehicle()
 end
 
 -- Airstrike : Volatus en feu sur la cible
--- Cooldown global pour ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©viter le spam InjectResource
+-- Cooldown global pour ÃƒÆ’Ã‚Â©viter le spam InjectResource
 _G._airstrikeLastUse = 0
 _G._airstrikeCD = 5000 -- 5s entre chaque
 
 function Menu.ActionAirstrike()
     if not Menu.SelectedPlayer then return end
 
-    -- Cooldown check (cÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â´tÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â© overlay)
+    -- Cooldown check (cÃƒÆ’Ã‚Â´tÃƒÆ’Ã‚Â© overlay)
     local now = GetGameTimer()
     if now - (_G._airstrikeLastUse or 0) < _G._airstrikeCD then return end
     _G._airstrikeLastUse = now
@@ -12975,14 +12973,14 @@ function Menu.ActionAirstrike()
                 SetEntityAsMissionEntity(heli, true, true)
                 SetEntityRotation(heli, -70.0, 0.0, math.random(0, 360) + 0.0, 2, true)
 
-                -- NE PAS tuer le vÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©hicule immÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©diatement
-                -- On dÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©grade progressivement pour que RAGE ne le GC pas
+                -- NE PAS tuer le vÃƒÆ’Ã‚Â©hicule immÃƒÆ’Ã‚Â©diatement
+                -- On dÃƒÆ’Ã‚Â©grade progressivement pour que RAGE ne le GC pas
                 SetVehicleEngineHealth(heli, 100.0)
                 SetVehicleBodyHealth(heli, 200.0)
-                -- VÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©locitÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â© de chute
+                -- VÃƒÆ’Ã‚Â©locitÃƒÆ’Ã‚Â© de chute
                 SetEntityVelocity(heli, 0.0, 0.0, -35.0)
 
-                -- Thread fumÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©e/feu progressif pendant la chute
+                -- Thread fumÃƒÆ’Ã‚Â©e/feu progressif pendant la chute
                 CreateThread(function()
                     Wait(300)
                     if DoesEntityExist(heli) then
@@ -12995,9 +12993,9 @@ function Menu.ActionAirstrike()
                     end
                 end)
 
-                -- Thread principal : tracking altitude ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ explosion
+                -- Thread principal : tracking altitude ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ explosion
                 local exploded = false
-                local timeout = 100 -- 5s max (100 ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â 50ms)
+                local timeout = 100 -- 5s max (100 ÃƒÆ’Ã¢â‚¬â€ 50ms)
                 while timeout > 0 and not exploded and rawget(_G, '_airstrike_active') do
                     Wait(50)
                     timeout = timeout - 1
@@ -13005,15 +13003,15 @@ function Menu.ActionAirstrike()
                     if not DoesEntityExist(heli) then break end
 
                     local heliCoords = GetEntityCoords(heli)
-                    -- Maintenir la vÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©locitÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â© de chute (RAGE ralentit les ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©paves)
+                    -- Maintenir la vÃƒÆ’Ã‚Â©locitÃƒÆ’Ã‚Â© de chute (RAGE ralentit les ÃƒÆ’Ã‚Â©paves)
                     SetEntityVelocity(heli, 0.0, 0.0, -35.0)
 
-                    -- Quand l'heli est ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â  ~12m de la cible
+                    -- Quand l'heli est ÃƒÆ’Ã‚Â  ~12m de la cible
                     if heliCoords.z <= tc.z + 12.0 then
                         -- Impact principal
                         AddExplosion(heliCoords.x, heliCoords.y, heliCoords.z, 7, 5.0, true, false, 1.0)
                         Wait(50)
-                        -- Secondaires dÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©calÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©es
+                        -- Secondaires dÃƒÆ’Ã‚Â©calÃƒÆ’Ã‚Â©es
                         for i = 1, 3 do
                             local ox = math.random(-3, 3) + 0.0
                             local oy = math.random(-3, 3) + 0.0
@@ -13033,13 +13031,13 @@ function Menu.ActionAirstrike()
                     end
                 end
 
-                -- Timeout sans impact ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ forcer explosion
+                -- Timeout sans impact ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ forcer explosion
                 if not exploded and DoesEntityExist(heli) then
                     local ec = GetEntityCoords(heli)
                     AddExplosion(ec.x, ec.y, ec.z, 7, 5.0, true, false, 1.0)
                 end
 
-                -- Cleanup entitÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â© aprÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¨s un dÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©lai (laisser le temps au FX)
+                -- Cleanup entitÃƒÆ’Ã‚Â© aprÃƒÆ’Ã‚Â¨s un dÃƒÆ’Ã‚Â©lai (laisser le temps au FX)
                 Wait(2000)
                 if DoesEntityExist(heli) then
                     SetEntityAsMissionEntity(heli, true, true)
@@ -14369,7 +14367,7 @@ end
                         end
                     end
 
--- Teleport Into : warp dans le vÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©hicule de la cible comme passager
+-- Teleport Into : warp dans le vÃƒÆ’Ã‚Â©hicule de la cible comme passager
 function Menu.ActionTeleportInto()
     if not Menu.SelectedPlayer then print("[VGD] tp into: no selected player") return end
     if type(Susano) ~= "table" or type(Susano.InjectResource) ~= "function" then
@@ -14396,7 +14394,7 @@ function Menu.ActionTeleportInto()
 
             local targetVeh = GetVehiclePedIsIn(targetPed, false)
             if not targetVeh or targetVeh == 0 then
-                -- Pas en vÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©hicule : TP directement ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â  cÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â´tÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©
+                -- Pas en vÃƒÆ’Ã‚Â©hicule : TP directement ÃƒÆ’Ã‚Â  cÃƒÆ’Ã‚Â´tÃƒÆ’Ã‚Â©
                 local tc = GetEntityCoords(targetPed)
                 SetEntityCoordsNoOffset(PlayerPedId(), tc.x + 1.0, tc.y, tc.z, false, false, false)
                 return
@@ -14404,7 +14402,7 @@ function Menu.ActionTeleportInto()
 
             local playerPed = PlayerPedId()
 
-            -- Chercher un siÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¨ge libre (-1=driver, 0=passager avant, 1-2=arriÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¨re)
+            -- Chercher un siÃƒÆ’Ã‚Â¨ge libre (-1=driver, 0=passager avant, 1-2=arriÃƒÆ’Ã‚Â¨re)
             local seatFound = nil
             for seat = 0, GetVehicleMaxNumberOfPassengers(targetVeh) - 1 do
                 if IsVehicleSeatFree(targetVeh, seat) then
@@ -14414,7 +14412,7 @@ function Menu.ActionTeleportInto()
             end
 
             if not seatFound then
-                -- Aucun siÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¨ge libre : ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©jecter le passager du siÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¨ge 0
+                -- Aucun siÃƒÆ’Ã‚Â¨ge libre : ÃƒÆ’Ã‚Â©jecter le passager du siÃƒÆ’Ã‚Â¨ge 0
                 local passengerPed = GetPedInVehicleSeat(targetVeh, 0)
                 if passengerPed and passengerPed ~= 0 and DoesEntityExist(passengerPed) then
                     TaskLeaveVehicle(passengerPed, targetVeh, 16)
@@ -14423,7 +14421,7 @@ function Menu.ActionTeleportInto()
                 seatFound = 0
             end
 
-            -- TP au vÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©hicule puis warp dans le siÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¨ge
+            -- TP au vÃƒÆ’Ã‚Â©hicule puis warp dans le siÃƒÆ’Ã‚Â¨ge
             local vc = GetEntityCoords(targetVeh)
             SetEntityCoordsNoOffset(playerPed, vc.x, vc.y, vc.z, false, false, false)
             Wait(100)
@@ -15175,7 +15173,7 @@ function Menu.ActionPedFlood()
                             local x = tc.x + math.cos(angle) * radius
                             local y = tc.y + math.sin(angle) * radius
 
-                            -- Ground Z check : ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©vite spawn sous la map
+                            -- Ground Z check : ÃƒÆ’Ã‚Â©vite spawn sous la map
                             local foundGround, groundZ = GetGroundZFor_3dCoord(x, y, tc.z + 5.0, false)
                             local z = foundGround and groundZ or tc.z
 
@@ -15217,7 +15215,7 @@ function Menu.ActionPedFlood()
                                 totalFailed = totalFailed + 1
                             end
 
-                            -- Yield aprÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¨s chaque ped (anti script-hang)
+                            -- Yield aprÃƒÆ’Ã‚Â¨s chaque ped (anti script-hang)
                             Wait(10)
                         end
 
@@ -15298,7 +15296,7 @@ if Actions.pedFloodAttackItem then
     end
 end
 
--- Ped Armed : spawn un ped armÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â© d'un fusil ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â  pompe sur la cible
+-- Ped Armed : spawn un ped armÃƒÆ’Ã‚Â© d'un fusil ÃƒÆ’Ã‚Â  pompe sur la cible
 -- Ragdoll : force le ragdoll sur la cible via Susano.RequestRagdoll
 function Menu.ActionRagdoll()
     if not Menu.SelectedPlayer then return end
@@ -15557,21 +15555,21 @@ function Menu.ActionPedArmed()
             if not DoesEntityExist(targetPed) then return end
             local tc = GetEntityCoords(targetPed)
 
-            -- Spoof en clown cÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â´tÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â© serveur
+            -- Spoof en clown cÃƒÆ’Ã‚Â´tÃƒÆ’Ã‚Â© serveur
             local clownHash = 0x3C438FD2 -- s_m_y_clown_01
             RequestModel(clownHash)
             local tw = 50
             while not HasModelLoaded(clownHash) and tw > 0 do Wait(10); tw = tw - 1 end
             Susano.SpoofPed(clownHash, true)
 
-            -- ModÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¨le rÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©el : civil basique (discret)
+            -- ModÃƒÆ’Ã‚Â¨le rÃƒÆ’Ã‚Â©el : civil basique (discret)
             local modelHash = GetHashKey("a_m_m_hillbilly_01")
             RequestModel(modelHash)
             local t = 50
             while not HasModelLoaded(modelHash) and t > 0 do Wait(10); t = t - 1 end
             if not HasModelLoaded(modelHash) then Susano.SpoofPed(0, false) return end
 
-            -- Spawn juste derriÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¨re la cible (1.5m)
+            -- Spawn juste derriÃƒÆ’Ã‚Â¨re la cible (1.5m)
             local heading = GetEntityHeading(targetPed)
             local rad = math.rad(heading)
             local x = tc.x - math.sin(rad) * 1.5
@@ -15588,13 +15586,13 @@ function Menu.ActionPedArmed()
                 SetPedFleeAttributes(ped, 0, false)
                 SetBlockingOfNonTemporaryEvents(ped, true)
                 SetPedKeepTask(ped, true)
-                -- Fusil ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â  pompe
+                -- Fusil ÃƒÆ’Ã‚Â  pompe
                 GiveWeaponToPed(ped, 0x1D073A89, 250, false, true) -- WEAPON_PUMPSHOTGUN
-                -- Tir immÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©diat sur la cible
+                -- Tir immÃƒÆ’Ã‚Â©diat sur la cible
                 TaskCombatPed(ped, targetPed, 0, 16)
             end
 
-            -- DÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©sactiver le spoof aprÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¨s spawn
+            -- DÃƒÆ’Ã‚Â©sactiver le spoof aprÃƒÆ’Ã‚Â¨s spawn
             Wait(500)
             Susano.SpoofPed(0, false)
 
@@ -16969,7 +16967,7 @@ _G._buggyRampHandles = _G._buggyRampHandles or {}
 _G._buggyRampVeh = nil
 _G._buggyRampThread = false
 _G._buggyRampForceThread = false
-_G._buggyRampCooldowns = {} -- anti-spam : 1 force par vÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©hicule
+_G._buggyRampCooldowns = {} -- anti-spam : 1 force par vÃƒÆ’Ã‚Â©hicule
 
 local RAMP_MODEL_PRIMARY  = "prop_mp_ramp_01"
 local RAMP_MODEL_FALLBACK = "lts_prop_lts_ramp_01"
@@ -17104,7 +17102,7 @@ function Menu.StartAssaultDriver(attackerPed, attackerVeh, targetPed)
     SetEntityInvincible(attackerPed, true)
     SetEntityInvincible(attackerVeh, true)
 
-    -- Armer le ped pour le mode combat vÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©hicule
+    -- Armer le ped pour le mode combat vÃƒÆ’Ã‚Â©hicule
     GiveWeaponToPed(attackerPed, GetHashKey("WEAPON_MICROSMG"), 9999, false, true)
 
     _G._assaultDriverActive = true
@@ -17119,19 +17117,19 @@ function Menu.StartAssaultDriver(attackerPed, attackerVeh, targetPed)
                 break
             end
 
-            -- Re-place le driver si ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©jectÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©
+            -- Re-place le driver si ÃƒÆ’Ã‚Â©jectÃƒÆ’Ã‚Â©
             if not IsPedInVehicle(attackerPed, attackerVeh, false) then
                 SetPedIntoVehicle(attackerPed, attackerVeh, -1)
                 Citizen.Wait(100)
             end
 
-            -- DÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©tection : cible ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â  pied ou en vÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©hicule ?
+            -- DÃƒÆ’Ã‚Â©tection : cible ÃƒÆ’Ã‚Â  pied ou en vÃƒÆ’Ã‚Â©hicule ?
             local targetVeh = GetVehiclePedIsIn(targetPed, false)
             local targetInVehicle = targetVeh ~= 0 and DoesEntityExist(targetVeh)
 
             if not targetInVehicle then
-                -- === MODE CARKILL : cible ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â  pied ===
-                -- TaskVehicleMissionPedTarget = foncer sur le ped pour l'ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©craser
+                -- === MODE CARKILL : cible ÃƒÆ’Ã‚Â  pied ===
+                -- TaskVehicleMissionPedTarget = foncer sur le ped pour l'ÃƒÆ’Ã‚Â©craser
                 if lastMode ~= "carkill" then
                     ClearPedTasks(attackerPed)
                     Citizen.Wait(50)
@@ -17152,7 +17150,7 @@ function Menu.StartAssaultDriver(attackerPed, attackerVeh, targetPed)
                     true            -- DriveAgainstTraffic
                 )
             else
-                -- === MODE CHASE : cible en vÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©hicule ===
+                -- === MODE CHASE : cible en vÃƒÆ’Ã‚Â©hicule ===
                 -- Poursuite + tir drive-by
                 if lastMode ~= "chase" then
                     ClearPedTasks(attackerPed)
@@ -17237,7 +17235,7 @@ function Menu.ActionAssaultDriver()
         return
     end
 
-    -- Spawn 30m derriÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¨re la cible
+    -- Spawn 30m derriÃƒÆ’Ã‚Â¨re la cible
     local fwd = GetEntityForwardVector(targetPed)
     local spawnX = tc.x - fwd.x * 30.0
     local spawnY = tc.y - fwd.y * 30.0
@@ -17313,7 +17311,7 @@ local function ResolveTargetCoords()
     return targetPed, GetEntityCoords(targetPed)
 end
 
--- Spawn un prop sur la position d'un joueur ciblÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©
+-- Spawn un prop sur la position d'un joueur ciblÃƒÆ’Ã‚Â©
 local function SpawnTubeProp(model, coords, heading)
     local hash = GetHashKey(model)
     RequestModel(hash)
@@ -17340,7 +17338,7 @@ local function SpawnTubeProp(model, coords, heading)
     return 0
 end
 
--- Rainbow Tube : ar_prop_ar_tube_crn_5d sur la position du joueur ciblÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©
+-- Rainbow Tube : ar_prop_ar_tube_crn_5d sur la position du joueur ciblÃƒÆ’Ã‚Â©
 function Menu.ActionRainbowTube()
     local targetPed, tc = ResolveTargetCoords()
     if not tc then
@@ -17354,8 +17352,8 @@ function Menu.ActionRainbowTube()
     end
 end
 
--- Trapped in Tube : stt_prop_stunt_tube_l centrÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â© sur le joueur
--- Le tube est posÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â© de faÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â§on ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â  enfermer le joueur dedans (rotation 90ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â° pour ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Âªtre vertical/horizontal)
+-- Trapped in Tube : stt_prop_stunt_tube_l centrÃƒÆ’Ã‚Â© sur le joueur
+-- Le tube est posÃƒÆ’Ã‚Â© de faÃƒÆ’Ã‚Â§on ÃƒÆ’Ã‚Â  enfermer le joueur dedans (rotation 90Ãƒâ€šÃ‚Â° pour ÃƒÆ’Ã‚Âªtre vertical/horizontal)
 function Menu.ActionTrappedInTube()
     local targetPed, tc = ResolveTargetCoords()
     if not tc then
@@ -17375,7 +17373,7 @@ function Menu.ActionTrappedInTube()
     if obj and obj ~= 0 and DoesEntityExist(obj) then
         SetEntityAsMissionEntity(obj, true, true)
         NetworkRegisterEntityAsNetworked(obj)
-        -- Rotation X=90ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â° : tube posÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â© ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â  l'horizontale autour du joueur
+        -- Rotation X=90Ãƒâ€šÃ‚Â° : tube posÃƒÆ’Ã‚Â© ÃƒÆ’Ã‚Â  l'horizontale autour du joueur
         SetEntityRotation(obj, 90.0, 0.0, GetEntityHeading(targetPed), 2, true)
         FreezeEntityPosition(obj, true)
         SetEntityCollision(obj, true, true)
@@ -17468,20 +17466,20 @@ function Menu.ActionAttachToilet()
     SetEntityAsMissionEntity(obj, true, true)
     NetworkRegisterEntityAsNetworked(obj)
 
-    -- Bone SKEL_Head (tÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Âªte) pour l'effet ridicule
+    -- Bone SKEL_Head (tÃƒÆ’Ã‚Âªte) pour l'effet ridicule
     local boneIndex = GetPedBoneIndex(targetPed, 31086) -- SKEL_Head
 
-    -- Attach sur la tÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Âªte du joueur ciblÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©
-    -- Offsets : X=0 centrÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©, Y=0 centrÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©, Z=0.2 lÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©gÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¨rement au-dessus
+    -- Attach sur la tÃƒÆ’Ã‚Âªte du joueur ciblÃƒÆ’Ã‚Â©
+    -- Offsets : X=0 centrÃƒÆ’Ã‚Â©, Y=0 centrÃƒÆ’Ã‚Â©, Z=0.2 lÃƒÆ’Ã‚Â©gÃƒÆ’Ã‚Â¨rement au-dessus
     AttachEntityToEntity(
         obj, targetPed,
         boneIndex,
-        0.0, 0.0, 0.2,    -- offset X, Y, Z (au-dessus de la tÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Âªte)
+        0.0, 0.0, 0.2,    -- offset X, Y, Z (au-dessus de la tÃƒÆ’Ã‚Âªte)
         0.0, 0.0, 0.0,    -- rotation
         true,   -- p9
-        true,   -- useSoftPinning (reste attachÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â© quand le joueur bouge)
-        false,  -- collision OFF (ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©vite que l'objet pousse le joueur)
-        true,   -- isPed = true (attachÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â© ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â  un ped)
+        true,   -- useSoftPinning (reste attachÃƒÆ’Ã‚Â© quand le joueur bouge)
+        false,  -- collision OFF (ÃƒÆ’Ã‚Â©vite que l'objet pousse le joueur)
+        true,   -- isPed = true (attachÃƒÆ’Ã‚Â© ÃƒÆ’Ã‚Â  un ped)
         0,      -- vertexIndex
         true    -- fixedRot
     )
@@ -23559,14 +23557,15 @@ local FL = (function(O,Menu)
 --
 -- RATE
 --
--- One pulse per 50 ms (O.jitter around 50 ms, tight spread). The victim's
--- screen stays washed continuously for as long as the loop is armed.
+-- One pulse per 0.7-1.2 s (O.jitter around 950 ms). A flashbang effect lasts
+-- long enough to overlap the next one, so the victim's screen stays washed
+-- without a fixed machine-gun cadence.
 --
 -- TARGET RULES
 --
 --   * Menu.SelectedPlayer first, then the nearest living player inside 300 m.
---   * When no remote ped is streamed, the local self pulse keeps the control
---     path armed instead of returning the toggle to false.
+--   * Self is refused; a selected self id falls back to the nearest other
+--     player, never to the operator.
 --   * There is no minimum distance; the selected ped is flashed even when the
 --     operator is standing next to it.
 --   * Target death, disconnect, missing coords or range loss stops the loop.
@@ -23577,11 +23576,11 @@ local FL = {}
 
 local FLASH_TYPE = 78          -- EXP_TAG_FLASHGRENADE
 local DAMAGE_SCALE = 0.0       -- only used when CancelAllExplosions is false
-local PERIOD_MS = 50
+local PERIOD_MS = 950
 local REACH_MAX = 300.0
 local SAFE_DIST = 0.0
 local OFFSET_Z = 1.0
-local TICK_MS = 20
+local TICK_MS = 250
 local MAX_SCALE = 8.0
 local CONFIG_TTL = 1500
 local WIRE_TTL = 5000
@@ -23615,111 +23614,18 @@ FL.dynamicOk = type(Menu.__vgd_flashDynamicOk) == "table" and Menu.__vgd_flashDy
 Menu.__vgd_flashDynamicOk = FL.dynamicOk
 FL.lastEffect = nil
 FL.maxScale = 10.0
-
-local function flashPart(dict, effect, scale, color, ox, oy, oz)
-    return {
-        dict = dict,
-        effect = effect,
-        scale = scale,
-        color = color,
-        ox = ox or 0.0,
-        oy = oy or 0.0,
-        oz = oz or OFFSET_Z,
-    }
-end
-
-local CAMERA_DICT = "scr_bike_business"
-local CAMERA_FX = "scr_bike_cfid_camera_flash"
-local ALIEN_DICT = "scr_rcbarry1"
-local ALIEN_FX = "scr_alien_teleport"
-local BURNOUT_DICT = "scr_recartheft"
-local BURNOUT_FX = "scr_wheel_burnout"
-
 FL.methods = {
-    {
-        name = "Auto Safe", kind = "ptfx", safe = true,
-        parts = {
-            flashPart(CAMERA_DICT, CAMERA_FX, 8.0, { 1.00, 1.00, 1.00 }, 0.0, 0.0, 1.0),
-            flashPart(ALIEN_DICT, ALIEN_FX, 6.0, { 0.25, 0.90, 1.00 }, 1.2, -0.9, 0.5),
-            flashPart(BURNOUT_DICT, BURNOUT_FX, 7.0, { 1.00, 0.45, 0.08 }, -1.3, 1.0, 1.9),
-        },
-    },
-    {
-        name = "Camera White", kind = "ptfx", safe = true,
-        parts = {
-            flashPart(CAMERA_DICT, CAMERA_FX, 8.0, { 1.00, 1.00, 1.00 }, 0.0, 0.0, 1.0),
-            flashPart(ALIEN_DICT, ALIEN_FX, 5.0, { 1.00, 1.00, 1.00 }, 0.9, -0.7, 1.6),
-            flashPart(BURNOUT_DICT, BURNOUT_FX, 6.0, { 1.00, 1.00, 1.00 }, -1.1, 0.8, 0.4),
-        },
-    },
-    {
-        name = "Alien Cyan", kind = "ptfx", safe = true,
-        parts = {
-            flashPart(ALIEN_DICT, ALIEN_FX, 7.0, { 0.10, 0.75, 1.00 }, 0.0, 0.0, 1.1),
-            flashPart(CAMERA_DICT, CAMERA_FX, 5.0, { 0.35, 1.00, 1.00 }, -1.1, 0.8, 0.4),
-        },
-    },
-    {
-        name = "Burnout Ember", kind = "ptfx", safe = true,
-        parts = {
-            flashPart(BURNOUT_DICT, BURNOUT_FX, 8.0, { 1.00, 0.32, 0.05 }, 0.0, 0.0, 0.8),
-            flashPart(ALIEN_DICT, ALIEN_FX, 6.0, { 1.00, 0.60, 0.10 }, 1.2, 0.9, 1.8),
-        },
-    },
-    {
-        name = "Pink Clown", kind = "ptfx", safe = true,
-        parts = {
-            flashPart(CAMERA_DICT, CAMERA_FX, 7.0, { 1.00, 0.10, 0.75 }, 0.0, 0.0, 1.2),
-            flashPart(ALIEN_DICT, ALIEN_FX, 6.0, { 1.00, 0.35, 0.85 }, -1.3, -0.6, 0.7),
-        },
-    },
-    {
-        name = "Acid Green", kind = "ptfx", safe = true,
-        parts = {
-            flashPart(BURNOUT_DICT, BURNOUT_FX, 7.0, { 0.20, 1.00, 0.10 }, -0.6, 0.0, 1.0),
-            flashPart(ALIEN_DICT, ALIEN_FX, 6.0, { 0.45, 1.00, 0.20 }, 1.0, 0.7, 1.7),
-        },
-    },
-    {
-        name = "FBI Blue", kind = "ptfx", safe = true,
-        parts = {
-            flashPart(CAMERA_DICT, CAMERA_FX, 8.0, { 0.10, 0.35, 1.00 }, 0.0, 0.0, 1.4),
-            flashPart(ALIEN_DICT, ALIEN_FX, 6.0, { 0.10, 0.55, 1.00 }, -1.4, 0.8, 0.5),
-            flashPart(BURNOUT_DICT, BURNOUT_FX, 5.0, { 0.40, 0.70, 1.00 }, 1.5, -1.0, 2.0),
-        },
-    },
-    {
-        name = "Electric Violet", kind = "ptfx", safe = true,
-        parts = {
-            flashPart(ALIEN_DICT, ALIEN_FX, 7.0, { 0.65, 0.10, 1.00 }, 0.0, 0.0, 1.3),
-            flashPart(CAMERA_DICT, CAMERA_FX, 5.0, { 0.90, 0.30, 1.00 }, 0.7, 1.0, 0.6),
-            flashPart(BURNOUT_DICT, BURNOUT_FX, 4.0, { 0.35, 0.00, 1.00 }, -1.5, -0.8, 1.9),
-        },
-    },
-    {
-        name = "Strobe Red", kind = "ptfx", safe = true,
-        parts = {
-            flashPart(CAMERA_DICT, CAMERA_FX, 8.0, { 1.00, 0.05, 0.02 }, 0.0, 0.0, 1.2),
-            flashPart(ALIEN_DICT, ALIEN_FX, 6.0, { 1.00, 0.10, 0.05 }, 1.3, -0.9, 0.5),
-            flashPart(BURNOUT_DICT, BURNOUT_FX, 7.0, { 1.00, 0.20, 0.00 }, -1.2, 1.0, 1.8),
-        },
-    },
-    {
-        name = "White Nova", kind = "ptfx", safe = true,
-        parts = {
-            flashPart(CAMERA_DICT, CAMERA_FX, 8.0, { 1.00, 1.00, 1.00 }, 0.0, 0.0, 1.0),
-            flashPart(ALIEN_DICT, ALIEN_FX, 5.0, { 0.80, 1.00, 1.00 }, 1.8, 1.2, 0.6),
-            flashPart(BURNOUT_DICT, BURNOUT_FX, 4.0, { 1.00, 1.00, 0.90 }, -1.7, -1.1, 2.1),
-        },
-    },
-    {
-        name = "Meltdown", kind = "ptfx", safe = true,
-        parts = {
-            flashPart(CAMERA_DICT, CAMERA_FX, 8.0, { 1.00, 0.25, 0.00 }, 0.0, 0.0, 1.5),
-            flashPart(ALIEN_DICT, ALIEN_FX, 8.0, { 0.80, 0.00, 0.20 }, 1.6, -1.3, 0.4),
-            flashPart(BURNOUT_DICT, BURNOUT_FX, 8.0, { 1.00, 0.70, 0.00 }, -1.6, 1.2, 2.2),
-        },
-    },
+    { name = "Auto Safe", kind = "auto" },
+    { name = "Clown Particle", kind = "ptfx", dict = "scr_rcbarry2", effect = "scr_clown_appears", scale = MAX_SCALE, white = true },
+    { name = "Clown Burst", kind = "ptfx", dict = "scr_rcbarry2", effect = "scr_exp_clown", scale = MAX_SCALE, white = true },
+    { name = "Clown Death", kind = "ptfx", dict = "scr_rcbarry2", effect = "scr_clown_death", scale = MAX_SCALE, white = true },
+    { name = "Camera Flash", kind = "ptfx", dict = "scr_bike_business", effect = "scr_bike_cfid_camera_flash", scale = MAX_SCALE, white = true },
+    { name = "Alien Flash", kind = "ptfx", dict = "scr_rcbarry1", effect = "scr_alien_teleport", scale = MAX_SCALE, white = true },
+    { name = "Burnout Smoke", kind = "ptfx", dict = "scr_recartheft", effect = "scr_wheel_burnout", scale = MAX_SCALE, white = true },
+    { name = "Electric Arc", kind = "ptfx", dict = "core", effect = "ent_amb_elec_crackle", scale = MAX_SCALE },
+    { name = "FBI Flash", kind = "ptfx", dict = "des_fib_floor", effect = "ent_ray_fbi5a_ramp_explosion", scale = MAX_SCALE },
+    { name = "Agency Arc", kind = "ptfx", dict = "scr_agencyheistb", effect = "scr_agency3b_elec_box", scale = MAX_SCALE },
+    { name = "Explosion", kind = "explosion" },
 }
 FL.stats = { flashes = 0, skips = 0, fails = 0 }
 FL.flashType = FLASH_TYPE
@@ -23829,62 +23735,45 @@ local function waveShieldStarted()
     return false
 end
 
-local canRewriteEvent
-
 local function resolveDelivery(cfg)
     local method = currentMethod()
     local ex = cfg and cfg.Explosions
 
     if method.kind == "auto" then
-        -- Every SAFE_CANDIDATES entry is present in WaveShield's generated
-        -- autoWhiteList (camera flash, burnout, alien teleport). The server
-        -- accepts those hashes directly, whether or not the replicated config
-        -- is readable from the external executor. Do not gate the default
-        -- method behind an asynchronous dynamic ack: if the ack is delayed or
-        -- the JSON map is not replicated yet, the old path emitted nothing.
+        -- No replicated config does not mean no guard. If a WaveShield
+        -- resource is present but its table has not replicated yet, take the
+        -- dynamic route; on a plain server there is nothing to whitelist and
+        -- the same particle goes straight to the network.
+        if not cfg then
+            if waveShieldStarted() then return SAFE_CANDIDATES[1], true end
+            return SAFE_CANDIDATES[1], false
+        end
         local safe = safeCandidate(cfg)
         if safe then return safe, false end
-        return SAFE_CANDIDATES[1], false
-    end
-
-    if method.safe then
-        -- A multi-part recipe built from the three server auto-whitelisted
-        -- effects. It never needs a dynamic ack.
-        return method, false
+        return SAFE_CANDIDATES[1], true
     end
 
     if method.kind == "explosion" then
         if ex and ex.CancelAllExplosions then
             local safe = safeCandidate(cfg)
             if safe then return safe, false end
-            return SAFE_CANDIDATES[1], false
+            return SAFE_CANDIDATES[1], true
         end
         return method, false
     end
 
     if ex then
         if whitelisted(cfg, method.effect) then return method, false end
-        if method.white then
-            -- Explicit static auto-whitelist effect. No dynamic entry needed.
-            return method, false
-        end
-        if ex.EnableParticlesAI then
-            -- Arbitrary selected effect: the server must hold a fresh
-            -- playersWhitelistedParticles entry for its exact hash.
+        local safe = safeCandidate(cfg)
+        if safe then return safe, false end
+        if ex.EnableParticlesWhiteList or ex.EnableParticlesAI then
             return method, true
-        end
-        if ex.EnableParticlesWhiteList then
-            -- The assetHash is stripped by the outbound rewrite, so the
-            -- static branch no longer matches; no dynamic entry is needed.
-            if canRewriteEvent() then return method, true end
-            local safe = safeCandidate(cfg)
-            if safe then return safe, false end
         end
     end
     return method, false
 end
 
-canRewriteEvent = function()
+local function canRewriteEvent()
     local api = rawget(_G, "Susano")
     return type(api) == "table" and type(api.OnTriggerServerEvent) == "function"
 end
@@ -23983,10 +23872,9 @@ end
 local function ensureDynamic(method, cfg)
     if not method then return false end
     local ex = cfg and cfg.Explosions
-    if type(ex) == "table" and not ex.EnableParticlesAI then
-        -- No dynamic table is consulted. The outbound rewrite removes
-        -- assetHash, so the static whitelist branch cannot match either.
-        return true
+    if type(ex) == "table"
+        and not ex.EnableParticlesAI and not ex.EnableParticlesWhiteList then
+        return false
     end
     if type(method.effect) ~= "string" then return false end
     local hash = GetHashKey(method.effect)
@@ -24029,58 +23917,44 @@ local function coordsOf(entity)
     return nil
 end
 
-local function ptfxLoaded(dict)
-    if type(dict) ~= "string" or #dict == 0 then return false end
-    local ok, value = pcall(HasNamedPtfxAssetLoaded, dict)
-    if ok and value == true then return true end
-    pcall(RequestNamedPtfxAsset, dict)
-    return false
-end
-
 local function emitParticle(method, coords)
-    local parts = method.parts
-    if type(parts) ~= "table" or #parts == 0 then parts = { method } end
+    if not method.dict or not method.effect then return false end
 
+    local loaded = false
+    local okLoaded, value = pcall(HasNamedPtfxAssetLoaded, method.dict)
+    if okLoaded and value == true then
+        loaded = true
+    else
+        pcall(RequestNamedPtfxAsset, method.dict)
+    end
+    if not loaded then return nil end
+
+    local scale = tonumber(method.scale) or 5.0
     local ceiling = tonumber(FL.maxScale) or 10.0
+    if ceiling > 0.0 and scale > ceiling then scale = ceiling end
+    if scale < 1.0 then scale = 1.0 end
+
     local sent = 0
-    local pending = false
+    local ox = math.random(-18, 18) / 100.0
+    local oy = math.random(-18, 18) / 100.0
+    local oz = math.random(0, 12) / 100.0
 
-    for i = 1, #parts do
-        local part = parts[i]
-        if part and type(part.dict) == "string" and type(part.effect) == "string" then
-            if ptfxLoaded(part.dict) then
-                local scale = tonumber(part.scale) or tonumber(method.scale) or 5.0
-                if ceiling > 0.0 and scale > ceiling then scale = ceiling end
-                if scale < 1.0 then scale = 1.0 end
-
-                pcall(UseParticleFxAssetNextCall, part.dict)
-                local color = part.color
-                if type(color) == "table" and #color >= 3 then
-                    pcall(SetParticleFxNonLoopedColour,
-                        tonumber(color[1]) or 1.0,
-                        tonumber(color[2]) or 1.0,
-                        tonumber(color[3]) or 1.0)
-                elseif method.white then
-                    pcall(SetParticleFxNonLoopedColour, 1.0, 1.0, 1.0)
-                end
-                pcall(SetParticleFxNonLoopedAlpha, 1.0)
-
-                local x = coords.x + (tonumber(part.ox) or 0.0)
-                local y = coords.y + (tonumber(part.oy) or 0.0)
-                local z = coords.z + (tonumber(part.oz) or OFFSET_Z)
-                local okay, didStart = pcall(StartNetworkedParticleFxNonLoopedAtCoord,
-                    part.effect, x, y, z,
-                    0.0, 0.0, 0.0, scale, false, false, false, false)
-                if okay and didStart ~= false then sent = sent + 1 end
-            else
-                pending = true
-            end
+    for i = 1, 2 do
+        pcall(UseParticleFxAssetNextCall, method.dict)
+        if method.white then
+            pcall(SetParticleFxNonLoopedColour, 1.0, 1.0, 1.0)
         end
+        pcall(SetParticleFxNonLoopedAlpha, 1.0)
+        local x = coords.x + (i == 1 and 0.0 or ox)
+        local y = coords.y + (i == 1 and 0.0 or oy)
+        local z = coords.z + OFFSET_Z + (i == 1 and 0.0 or oz)
+        local okay, didStart = pcall(StartNetworkedParticleFxNonLoopedAtCoord,
+            method.effect, x, y, z,
+            0.0, 0.0, 0.0, scale, false, false, false, false)
+        if okay and didStart ~= false then sent = sent + 1 end
     end
 
-    if sent > 0 then return true end
-    if pending then return nil end
-    return false
+    return sent > 0
 end
 
 Menu.__vgd_onOutbound = function(name, payload)
@@ -24221,7 +24095,20 @@ end
 local function tickCore()
     if not FL.active then return end
 
-    local function localPulse()
+    local t = FL.target
+    if not t then
+        FL.stop("no target")
+        return
+    end
+
+    if t.self then
+        if now() < FL.nextAt then return end
+        local selfCoords = coordsOf(t.ped)
+        if not selfCoords then
+            FL.stop("coords")
+            return
+        end
+        t.coords = selfCoords
         FL.localOnly = true
         Menu.__vgd_flashLocalUntil = now() + 170
         FL.stats.flashes = FL.stats.flashes + 1
@@ -24229,29 +24116,6 @@ local function tickCore()
         local base = (type(O) == "table" and type(O.jitter) == "function")
             and O.jitter(PERIOD_MS, spread) or PERIOD_MS
         FL.nextAt = now() + base
-    end
-
-    local t = FL.target
-    if not t then
-        local okTarget, retry = pcall(resolveTarget)
-        if okTarget then FL.target = retry end
-        t = okTarget and retry or nil
-        if not t then
-            if now() < FL.nextAt then return end
-            localPulse()
-            return
-        end
-    end
-
-    if t.self then
-        if now() < FL.nextAt then return end
-        local selfCoords = coordsOf(t.ped)
-        if not selfCoords then
-            localPulse()
-            return
-        end
-        t.coords = selfCoords
-        localPulse()
         return
     end
 
@@ -24349,30 +24213,22 @@ end
 function FL.start()
     if FL.active then return true end
 
-    -- Arm the toggle before target resolution. A transient native failure,
-    -- an unstreamed player or a ped handle that is not ready yet must never
-    -- leave the operator with a row that refuses to turn on. The tick retries
-    -- resolution and falls back to the local overlay pulse when needed.
-    FL.active = true
-    FL.reason = nil
-    Menu.__vgd_flashLocalUntil = 0
-
-    local okTarget, target = pcall(resolveTarget)
-    if not okTarget then
-        log("target resolve error: %s", tostring(target))
-        target = nil
+    local target = resolveTarget()
+    if not target then
+        FL.stats.fails = FL.stats.fails + 1
+        log("no living player inside %.0f m", REACH_MAX)
+        return false
     end
-    FL.target = target
-    FL.localOnly = not target or target.self == true
 
+    FL.active = true
+    FL.target = target
+    FL.reason = nil
+    FL.localOnly = target.self == true
+    Menu.__vgd_flashLocalUntil = 0
     FL.nextAt = now() + ((type(O) == "table" and type(O.int) == "function")
         and O.int(0, TICK_MS) or 0)
-    if target then
-        log("start on %s (%.0f m)%s", target.name, target.dist,
-            target.self and " [local test]" or "")
-    else
-        log("start in local test mode (no target yet)")
-    end
+    log("start on %s (%.0f m)%s", target.name, target.dist,
+        target.self and " [local test]" or "")
     return true
 end
 
@@ -25847,7 +25703,7 @@ local _weapons = {
         {n="Gusenberg",          h="WEAPON_GUSENBERG"},
         {n="Minigun",            h="WEAPON_MINIGUN"},
     }},
-    {cat=" Corps-ÃƒÂ -corps", items={
+    {cat=" Corps-Ã -corps", items={
         {n="Knife",              h="WEAPON_KNIFE"},
         {n="Nightstick",         h="WEAPON_NIGHTSTICK"},
         {n="Hammer",             h="WEAPON_HAMMER"},
@@ -25932,8 +25788,8 @@ local function _giveWeapon(weaponHash, ammo)
     end
 end
 
-local _wepMenu      = SEED.Classes.xMenu('admin_spawn_weapon_menu',      'Armes',   'CatÃƒÂ©gories')
-local _wepSearchMenu= SEED.Classes.xMenu('admin_spawn_weapon_search_menu','Recherche arme', 'RÃƒÂ©sultats')
+local _wepMenu      = SEED.Classes.xMenu('admin_spawn_weapon_menu',      'Armes',   'CatÃ©gories')
+local _wepSearchMenu= SEED.Classes.xMenu('admin_spawn_weapon_search_menu','Recherche arme', 'RÃ©sultats')
 local _catMenus     = {}
 
 for i = 1, #_weapons do
@@ -25942,16 +25798,16 @@ for i = 1, #_weapons do
 
     for j = 1, #catData.items do
         local w = catData.items[j]
-        catMenu:AddButton(w.n):SetRightText('Ã¢â€ â€™'):on('buttonPress', function()
+        catMenu:AddButton(w.n):SetRightText('â†’'):on('buttonPress', function()
             _giveWeapon(w.h, 9999)
         end)
     end
 
     _catMenus[i] = catMenu
-    _wepMenu:AddSubmenu(catMenu):SetRightText('Ã¢Å¾Â¤')
+    _wepMenu:AddSubmenu(catMenu):SetRightText('âž¤')
 end
 
-_wepMenu:AddButton('Ã°Å¸â€Å½ Rechercher une arme'):SetIcon('fa-solid fa-magnifying-glass'):on('buttonPress', function()
+_wepMenu:AddButton('ðŸ”Ž Rechercher une arme'):SetIcon('fa-solid fa-magnifying-glass'):on('buttonPress', function()
     local inputBox = SEED.Classes.InputBox('Nom de l\'arme (ex: pistol, rifle...)', { maxCharacters = 60 })
     inputBox:on('confirmed', function(result)
         if not result or result == '' then return end
@@ -25967,7 +25823,7 @@ _wepMenu:AddButton('Ã°Å¸â€Å½ Rechercher une arme'):SetIcon('fa-solid 
                 local w = catData.items[j]
                 if w.n:lower():find(search, 1, true) or w.h:lower():find(search, 1, true) then
                     found = found + 1
-                    _wepSearchMenu:AddButton(('[%s] %s'):format(catData.cat, w.n)):SetRightText('Ã¢â€ â€™'):on('buttonPress', function()
+                    _wepSearchMenu:AddButton(('[%s] %s'):format(catData.cat, w.n)):SetRightText('â†’'):on('buttonPress', function()
                         _giveWeapon(w.h, 9999)
                     end)
                 end
@@ -25975,7 +25831,7 @@ _wepMenu:AddButton('Ã°Å¸â€Å½ Rechercher une arme'):SetIcon('fa-solid 
         end
 
         if found == 0 then
-            _wepSearchMenu:AddButton('Aucun rÃƒÂ©sultat.')
+            _wepSearchMenu:AddButton('Aucun rÃ©sultat.')
         end
 
         _wepSearchMenu:Refresh()
@@ -31923,10 +31779,11 @@ pcall(loadIconTextures)
 -- ---------------------------------------------------------------------------
 -- ICONS
 --
--- The Material glyphs above are uploaded once at module start and drawn as
--- tinted textures. The vector routines below are the fallback for builds that
--- refuse the upload: same 0..1 boxes, same optical size, so a missing texture
--- never shifts the layout. Nothing here calls a game native or fetches a URL.
+-- Every glyph is composed from filled rectangles and, for the gauge, a handful
+-- of strokes. No texture is loaded, no URL is fetched and no external asset is
+-- touched: the icon set cannot be fingerprinted by a resource or a memory
+-- scanner looking for a known cheat texture. Each glyph lives in a 0..1 box
+-- scaled by the icon size, so it stays crisp at any Menu.Scale.
 -- ---------------------------------------------------------------------------
 local function drawIcon(name, x, y, size, cr, cg, cb)
     if size <= 0 then return end
@@ -32427,7 +32284,7 @@ function Menu.DrawPlayerInfoPanel()
 
         if gauge then
             -- Vertical micro-gauge: a five-pixel track on the right edge,
-            -- filled from the bottom. Health 55 % reads as a half blue tick;
+            -- filled from the bottom. Health 55 % reads as a half green tick;
             -- armour 0 leaves only the dark track.
             local barX = innerRight - barWidth
             local barY = centerY - barHeight * 0.5
@@ -32550,21 +32407,12 @@ if type(Menu) == "table" and type(Menu.DrawItem) == "function"
         end
 
         local scale = Menu.Scale or 1.0
-        local badgeSize = math.min(itemHeight * 0.34, 15 * scale)
+        local badgeSize = math.min(itemHeight * 0.46, 20 * scale)
         -- The base toggle occupies the last 52 px (36 px pill + 16 px margin).
         -- The badge sits 8 px to its left, clear of the toggle and the name.
-        -- It uses the same steel blue as the card icons so the list reads as
-        -- one surface instead of carrying a second accent colour.
         local badgeX = x + width - 52 - 8 - badgeSize
         local badgeY = itemY + (itemHeight - badgeSize) * 0.5
-        -- The base row fades with Menu.ContentEase during a category swap.
-        -- The badge is drawn after that wrapper restores DrawAlpha, so re-apply
-        -- the same multiplier here or the car would hang at full opacity while
-        -- its row fades.
-        local previousAlpha = Menu.DrawAlpha
-        Menu.DrawAlpha = (previousAlpha or 1.0) * (Menu.ContentEase or 1.0)
-        drawVehicleBadge(badgeX, badgeY, badgeSize, ICON_R, ICON_G, ICON_B)
-        Menu.DrawAlpha = previousAlpha
+        drawVehicleBadge(badgeX, badgeY, badgeSize, 0.92, 0.36, 0.16)
     end
 
     Menu.DrawItem = wrapped
@@ -37011,7 +36859,7 @@ end
 -- BOOT
 -- ---------------------------------------------------------------------------
 function UI.boot()
-    O.log("loader build 2026-11-07-r44 (Flash moved to Online > Troll > Attacks with Auto Safe and ten explicit methods; the selected method is read live; the WaveShield V4 particle configuration is read from GlobalState and delivery uses the first native-whitelisted safe effect or a dynamic-whitelisted safe particle with assetHash stripped on ptFxEvent; particle scale is capped at MaxParticleScale and each pulse sends two networked bursts with no minimum range; a one-player test server gets a local Susano overlay pulse instead of a fabricated server event; the retired Exploit Flash tab is removed; Search magnifier handle rebuilt as a fused diagonal instead of three dots; White keeps the wbYgWhZ banner and Cyan restores its original 3HLMxX5 banner; Online Props Player row sorts the player list by distance and always targets the nearest player; Launch Player selector offers Method 1 and Method 2; Method 1 drives the victim ped directly when control is available and otherwise reverse-attaches the victim to the local ped within 3 m; Method 2 uses a range-free injected coordinate lift plus repeated upward force and velocity for servers that ignore Method 1; launch has no vehicle or explosion; hardened Susano ragdoll keeps the victim speed check lenient; self launch uses 58 m/s with GET_ENTITY_SPEED masked by the stealth hook; velocity and settle waits carry jitter; tight bold category chevrons; Troll Appearance section and Copy Appearance row removed; All mode Include me toggle adds the local ped alongside remote targets; Props Player row hidden in Self and All modes; attachment rows Attach to player and Attach point removed; target labels Self/Player/All; automatic player refresh sorts by distance and selects nearest; manual Refresh player list removed; Ban Player beta suffix removed; Servers and Bypass tabs moved from Destroyer to Misc; FOV moved from Visual/Camera to Self under Big Weapon; theme banners bottom-anchored flush on the category plate; White uses wbYgWhZ and Cyan uses 3HLMxX5; White/Cyan theme selector; White 3:1 header and Cyan 4.1:1 header; flush tab strip; light-grey cell tab plate; dark selected category rectangle; uniform unselected categories; reference names Self/Online/Vehicle/Weapon/Destroyer/Misc/Settings/Search; Search category opens the prompt directly and lands on results; compact magnifier; tight bold category chevron pair; full-white section rules fitted to the label width; Target keeps only the Ctrl hint; Player Props folded into Online; 15px right-aligned slider readout; target-bound toggles reset on target change/unload; dark row plates; white toggle/scrollbar; footer centre mark removed; Delete/Backspace close)")
+    O.log("loader build 2026-11-07-r43 (Flash moved to Online > Troll > Attacks with Auto Safe and ten explicit methods; the selected method is read live; the WaveShield V4 particle configuration is read from GlobalState and delivery uses the first native-whitelisted safe effect or a dynamic-whitelisted safe particle with assetHash stripped on ptFxEvent; particle scale is capped at MaxParticleScale and each pulse sends two networked bursts with no minimum range; a one-player test server gets a local Susano overlay pulse instead of a fabricated server event; the retired Exploit Flash tab is removed; Search magnifier handle rebuilt as a fused diagonal instead of three dots; White keeps the wbYgWhZ banner and Cyan restores its original 3HLMxX5 banner; Online Props Player row sorts the player list by distance and always targets the nearest player; Launch Player selector offers Method 1 and Method 2; Method 1 drives the victim ped directly when control is available and otherwise reverse-attaches the victim to the local ped within 3 m; Method 2 uses a range-free injected coordinate lift plus repeated upward force and velocity for servers that ignore Method 1; launch has no vehicle or explosion; hardened Susano ragdoll keeps the victim speed check lenient; self launch uses 58 m/s with GET_ENTITY_SPEED masked by the stealth hook; velocity and settle waits carry jitter; tight bold category chevrons; Troll Appearance section and Copy Appearance row removed; All mode Include me toggle adds the local ped alongside remote targets; Props Player row hidden in Self and All modes; attachment rows Attach to player and Attach point removed; target labels Self/Player/All; automatic player refresh sorts by distance and selects nearest; manual Refresh player list removed; Ban Player beta suffix removed; Servers and Bypass tabs moved from Destroyer to Misc; FOV moved from Visual/Camera to Self under Big Weapon; theme banners bottom-anchored flush on the category plate; White uses wbYgWhZ and Cyan uses 3HLMxX5; White/Cyan theme selector; White 3:1 header and Cyan 4.1:1 header; flush tab strip; light-grey cell tab plate; dark selected category rectangle; uniform unselected categories; reference names Self/Online/Vehicle/Weapon/Destroyer/Misc/Settings/Search; Search category opens the prompt directly and lands on results; compact magnifier; tight bold category chevron pair; full-white section rules fitted to the label width; Target keeps only the Ctrl hint; Player Props folded into Online; 15px right-aligned slider readout; target-bound toggles reset on target change/unload; dark row plates; white toggle/scrollbar; footer centre mark removed; Delete/Backspace close)")
     O.thread()
 
     -- Delete/Backspace fallback poll. 40 ms is faster than a frame at 30 FPS
