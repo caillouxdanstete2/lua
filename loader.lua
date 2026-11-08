@@ -2608,6 +2608,9 @@ Menu.Categories = {
             { name = "Ban Player", type = "toggle", value = false, risk = true},
             { name = "Shoot Player", type = "action", risk = true},
             { name = "Ped Flood", type = "action", risk = true},
+            { name = "Babayaga", type = "action", risk = true, targetBound = true, onClick = function()
+                Menu.ActionBabayaga()
+            end },
             { name = "Launch Player", type = "selector", options = {"Object", "Force", "Attach"}, selected = 1, onClick = function(index, option)
                 Menu.LaunchMethod = index
                 Menu.ActionLaunch(index)
@@ -2638,17 +2641,6 @@ Menu.Categories = {
                         attachedPlayers[target] = nil
                     end
                 end
-            end },
-            
-            { name = "", isSeparator = true, separatorText = "Babayaga" },
-            { name = "Position Control", type = "toggle", value = false, targetBound = true, onClick = function(val)
-                Menu.ActionPositionControlToggle(val)
-            end },
-            { name = "One Shot", type = "toggle", value = false, onClick = function(val)
-                Menu.ActionOneShotToggle(val)
-            end },
-            { name = "Babayaga", type = "action", risk = true, targetBound = true, onClick = function()
-                Menu.ActionBabayaga()
             end },
             
             { name = "", isSeparator = true, separatorText = "Bugs" },
@@ -13400,7 +13392,7 @@ end)
 -- ===========================================================================
 -- BABAYAGA / POSITION CONTROL / ONE SHOT  (Online > Troll)
 -- ---------------------------------------------------------------------------
--- Babayaga arms three rows on the selected player in one click: the existing
+-- Babayaga arms three effects on the selected player in one click: the existing
 -- Attach Player path pulls him to the front (the loop above already writes his
 -- coordinates there every frame), Position Control keeps him held and re-takes
 -- network control when it slips, and One Shot raises the local weapon damage
@@ -13434,62 +13426,50 @@ function Menu.PosCtrlResolve(serverId)
     return nil, nil
 end
 
-function Menu.ActionPositionControlToggle(value)
-    if not value then
-        for key in pairs(Menu.PosCtrlTargets) do Menu.PosCtrlTargets[key] = nil end
-        return
+function Menu.PosCtrlRelease()
+    for key in pairs(Menu.PosCtrlTargets) do Menu.PosCtrlTargets[key] = nil end
+    if type(attachedPlayers) == "table" and Menu.BabayagaTarget then
+        attachedPlayers[Menu.BabayagaTarget] = nil
     end
-    local target = Menu.SelectedPlayer
-    if not target then
-        if type(FindItem) == "function" then
-            local it = FindItem("Online", "Troll", "Position Control")
-            if it then it.value = false end
-        end
-        return
-    end
-    Menu.PosCtrlTargets[target] = true
-end
-
-function Menu.ActionOneShotToggle(value)
-    Menu.OneShotEnabled = value and true or false
+    Menu.BabayagaTarget = nil
+    Menu.OneShotEnabled = false
+    Menu.OneShotNextAssert = 0
     if type(SetPlayerWeaponDamageModifier) == "function" then
-        pcall(SetPlayerWeaponDamageModifier, PlayerId(), Menu.OneShotEnabled and Menu.OneShotDamage or 1.0)
+        pcall(SetPlayerWeaponDamageModifier, PlayerId(), 1.0)
     end
 end
 
 function Menu.ActionBabayaga()
     local target = Menu.SelectedPlayer
     if not target then return end
+
+    -- Re-running the row on the same target releases the grab.
+    if Menu.BabayagaTarget == target then
+        Menu.PosCtrlRelease()
+        return
+    end
+
     local _, ped = Menu.PosCtrlResolve(target)
     if not ped or not DoesEntityExist(ped) then return end
+
+    -- Drop any previous grab before arming this one.
+    Menu.PosCtrlRelease()
 
     -- 1) Existing Attach Player path: pin him in front from now on.
     if type(attachedPlayers) ~= "table" then attachedPlayers = {} end
     attachedPlayers[target] = ped
-    if type(FindItem) == "function" then
-        local it = FindItem("Online", "Troll", "Attach Player")
-        if it then it.value = true end
-    end
 
     -- 2) Position Control: hold, zero velocity, keep control.
     Menu.PosCtrlTargets[target] = true
-    if type(FindItem) == "function" then
-        local it = FindItem("Online", "Troll", "Position Control")
-        if it then it.value = true end
-    end
+    Menu.BabayagaTarget = target
 
     -- 3) One Shot: lethal local weapon damage.
     Menu.OneShotEnabled = true
     if type(SetPlayerWeaponDamageModifier) == "function" then
         pcall(SetPlayerWeaponDamageModifier, PlayerId(), Menu.OneShotDamage)
     end
-    if type(FindItem) == "function" then
-        local it = FindItem("Online", "Troll", "One Shot")
-        if it then it.value = true end
-    end
 
-    -- Place him immediately so he is in front on the very next frame rather
-    -- than waiting for one tick of the attach loop.
+    -- Place him immediately so he is in front on the very next frame.
     local me = PlayerPedId()
     if DoesEntityExist(me) then
         local mc = GetEntityCoords(me)
@@ -13505,35 +13485,44 @@ end
 
 function Menu.PosCtrlTick()
     local now = GetGameTimer()
-    if Menu.OneShotEnabled and now >= (Menu.OneShotNextAssert or 0) then
-        Menu.OneShotNextAssert = now + 1000
-        if type(SetPlayerWeaponDamageModifier) == "function" then
-            pcall(SetPlayerWeaponDamageModifier, PlayerId(), Menu.OneShotDamage)
+    if Menu.PosCtrlTargets and next(Menu.PosCtrlTargets) then
+        local me = PlayerPedId()
+        if DoesEntityExist(me) then
+            local mc = GetEntityCoords(me)
+            local f = GetEntityForwardVector(me)
+            local heading = GetEntityHeading(me)
+            for sid in pairs(Menu.PosCtrlTargets) do
+                local _, ped = Menu.PosCtrlResolve(sid)
+                local dead = ped and type(IsEntityDead) == "function" and IsEntityDead(ped)
+                if ped and DoesEntityExist(ped) and not dead then
+                    if type(NetworkHasControlOfEntity) == "function"
+                        and type(NetworkRequestControlOfEntity) == "function"
+                        and not NetworkHasControlOfEntity(ped) then
+                        pcall(NetworkRequestControlOfEntity, ped)
+                    end
+                    pcall(SetEntityVelocity, ped, 0.0, 0.0, 0.0)
+                    pcall(SetEntityCoordsNoOffset, ped,
+                        mc.x + f.x * Menu.PosCtrlOffset,
+                        mc.y + f.y * Menu.PosCtrlOffset,
+                        mc.z + f.z * Menu.PosCtrlOffset,
+                        true, true, true)
+                    pcall(SetEntityHeading, ped, heading)
+                else
+                    Menu.PosCtrlTargets[sid] = nil
+                end
+            end
         end
     end
-    if not (Menu.PosCtrlTargets and next(Menu.PosCtrlTargets)) then return end
-    local me = PlayerPedId()
-    if not DoesEntityExist(me) then return end
-    local mc = GetEntityCoords(me)
-    local f = GetEntityForwardVector(me)
-    local heading = GetEntityHeading(me)
-    for sid in pairs(Menu.PosCtrlTargets) do
-        local _, ped = Menu.PosCtrlResolve(sid)
-        if ped and DoesEntityExist(ped) then
-            if type(NetworkHasControlOfEntity) == "function"
-                and type(NetworkRequestControlOfEntity) == "function"
-                and not NetworkHasControlOfEntity(ped) then
-                pcall(NetworkRequestControlOfEntity, ped)
+    if Menu.OneShotEnabled then
+        if Menu.PosCtrlTargets and next(Menu.PosCtrlTargets) then
+            if now >= (Menu.OneShotNextAssert or 0) then
+                Menu.OneShotNextAssert = now + 1000
+                if type(SetPlayerWeaponDamageModifier) == "function" then
+                    pcall(SetPlayerWeaponDamageModifier, PlayerId(), Menu.OneShotDamage)
+                end
             end
-            pcall(SetEntityVelocity, ped, 0.0, 0.0, 0.0)
-            pcall(SetEntityCoordsNoOffset, ped,
-                mc.x + f.x * Menu.PosCtrlOffset,
-                mc.y + f.y * Menu.PosCtrlOffset,
-                mc.z + f.z * Menu.PosCtrlOffset,
-                true, true, true)
-            pcall(SetEntityHeading, ped, heading)
         else
-            Menu.PosCtrlTargets[sid] = nil
+            Menu.PosCtrlRelease()
         end
     end
 end
@@ -33973,29 +33962,29 @@ local ICON_B64 = {
         "jJxaXgAAAABJRU5ErkJggg==",
     }),
     vehicle = table.concat({
-        "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",
-        "B5kpXuLStGX3AAAAAElFTkSuQmCC",
+        "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAMAAACdt4HsAAADAFBMVEX/////////////////////////",
+        "////////////////////////////////////////////////////////////////////////////////",
+        "////////////////////////////////////////////////////////////////////////////////",
+        "////////////////////////////////////////////////////////////////////////////////",
+        "////////////////////////////////////////////////////////////////////////////////",
+        "////////////////////////////////////////////////////////////////////////////////",
+        "////////////////////////////////////////////////////////////////////////////////",
+        "////////////////////////////////////////////////////////////////////////////////",
+        "////////////////////////////////////////////////////////////////////////////////",
+        "////////////////////////////////////////////////////////////////////////////////",
+        "////////////////////////////////////////////////////////////////////////////////",
+        "////////////////////////////////////////////////////////////////////////////////",
+        "////////////////////////////////////////////////////////////////////////////////",
+        "//////////////////////////////////////+/LkhhAAABAHRSTlMAJEltkrbb////////////////",
+        "////////////////////////////////////////////////////////////////////////////////",
+        "////////////////////////////////////////////////////////////////////////////////",
+        "////////////////////////////////////////////////////////////////////////////////",
+        "////////////////////////////////////////////////////////////////////////////2daQ",
+        "CwAAARNJREFUeNrtlUsOwyAMRBn/uP+Na0PTqJVN6bISbxlgiD2epLXD4XD4AkDEF0T48bRY/8R4X4Rj",
+        "v4q83kBEQ5G2z2tyGUg3FdC1WLG+rAJqZtJgVkv7UuzSYtnRtnpR7tKiGcUVYO0ae2q0s/meqhJwyGtl",
+        "OqKP4efKvafnXqbbeKPqpd8zkRdJfR/k9e0juQnEOyLKlNpAo7TZx9VpjGYhFbAySW95Qt7GkSAZFiJX",
+        "sBkJsVpgppCRG+IfiJnKpcAmlYBFVBbnYsKsEKARpTGx3oO3ORz4M1+ZqS4FcI2UpIMmd2xzgZmSuL+I",
+        "os0bpJoDBNzLQEs3ii2UCuBuFVes07STg6dFxScBF+e3ejgcDv/KA00RESYix5NaAAAAAElFTkSuQmCC",
     }),
     weapon = table.concat({
         "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAACx0lEQVR42u1ar2/bQBT+XhWT/gdDQwUj",
@@ -34211,9 +34200,14 @@ end
 local function drawVehicleBadge(x, y, size, r, g, b)
     if size <= 0 then return end
 
-    -- Flat row badge: no texture path, so the silhouette cannot inherit a
-    -- low-resolution upload from the dossier icon set. The list background is
-    -- not the card body, therefore there are no window cut-outs here.
+    -- Same Material car texture as the card, tinted with the list's colour.
+    -- One draw call per row; the primitive car below is the upload-failure path.
+    local texture = ICON_TEXTURES.vehicle
+    if texture and Susano and type(Susano.DrawImage) == "function" then
+        local ok = pcall(Susano.DrawImage, texture, x, y, size, size, r, g, b, 1.0, 0)
+        if ok then return end
+    end
+
     fillRect(x + 0.06 * size, y + 0.44 * size, 0.88 * size, 0.24 * size,
         r, g, b, 1.0, 0.05 * size)
     fillRect(x + 0.24 * size, y + 0.30 * size, 0.46 * size, 0.20 * size,
@@ -34863,7 +34857,7 @@ if type(Menu) == "table" and type(Menu.DrawItem) == "function"
             elseif kind == "apartment" then
                 Menu.__vgdDrawApartmentBadge(badgeX, badgeY, badgeSize, 0.48, 0.68, 0.94)
             else
-                drawVehicleBadge(badgeX, badgeY, badgeSize, 0.90, 0.24, 0.22)
+                drawVehicleBadge(badgeX, badgeY, badgeSize, 0.92, 0.36, 0.16)
             end
             right = badgeX - badgeGap
         end
