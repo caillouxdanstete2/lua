@@ -13428,20 +13428,89 @@ function Menu.PosCtrlResolve(serverId)
     return nil, nil
 end
 
+function Menu.BabayagaStop(serverId)
+    serverId = tonumber(serverId)
+    if not serverId or serverId <= 0 then return end
+    if type(Susano) ~= "table" or type(Susano.InjectResource) ~= "function" then
+        return
+    end
+    pcall(Susano.InjectResource, "any", string.format([[
+        rawset(_G, "vgd_babayaga_%d", false)
+    ]], serverId))
+end
+
+function Menu.BabayagaStart(serverId)
+    serverId = tonumber(serverId)
+    if not serverId or serverId <= 0 then return end
+    if type(Susano) ~= "table" or type(Susano.InjectResource) ~= "function" then
+        return
+    end
+    local code = string.format([[
+        local targetServerId = %d
+        local loopKey = "vgd_babayaga_" .. targetServerId
+        rawset(_G, loopKey, true)
+
+        CreateThread(function()
+            local nextDamage = 0
+            while rawget(_G, loopKey) do
+                Wait(0)
+                local me = PlayerPedId()
+                if not DoesEntityExist(me) then break end
+
+                local targetPlayer = nil
+                for _, player in ipairs(GetActivePlayers()) do
+                    if tonumber(GetPlayerServerId(player)) == targetServerId then
+                        targetPlayer = player
+                        break
+                    end
+                end
+                if not targetPlayer then break end
+
+                local ped = GetPlayerPed(targetPlayer)
+                if not ped or ped == 0 or not DoesEntityExist(ped) then break end
+
+                if type(NetworkHasControlOfEntity) == "function"
+                    and type(NetworkRequestControlOfEntity) == "function"
+                    and not NetworkHasControlOfEntity(ped) then
+                    NetworkRequestControlOfEntity(ped)
+                end
+
+                local myCoords = GetEntityCoords(me)
+                local forward = GetEntityForwardVector(me)
+                if type(SetEntityVelocity) == "function" then
+                    SetEntityVelocity(ped, 0.0, 0.0, 0.0)
+                end
+                if type(SetEntityCoordsNoOffset) == "function" then
+                    SetEntityCoordsNoOffset(ped,
+                        myCoords.x + forward.x * 1.0,
+                        myCoords.y + forward.y * 1.0,
+                        myCoords.z + forward.z * 1.0,
+                        true, true, true)
+                end
+                if type(SetEntityHeading) == "function" then
+                    SetEntityHeading(ped, GetEntityHeading(me))
+                end
+
+                local now = GetGameTimer()
+                if now >= nextDamage then
+                    nextDamage = now + 1000
+                    if type(SetPlayerWeaponDamageModifier) == "function" then
+                        SetPlayerWeaponDamageModifier(PlayerId(), 100.0)
+                    end
+                end
+            end
+            rawset(_G, loopKey, false)
+        end)
+    ]], serverId)
+    pcall(Susano.InjectResource, "any", code)
+end
+
 function Menu.PosCtrlRelease()
     for key in pairs(Menu.PosCtrlTargets) do Menu.PosCtrlTargets[key] = nil end
     if type(attachedPlayers) == "table" and Menu.BabayagaTarget then
         attachedPlayers[Menu.BabayagaTarget] = nil
     end
-    if type(FindItem) == "function" then
-        local attachItem = FindItem("Online", "Troll", "Attach Player")
-        if attachItem and attachItem.value then
-            attachItem.value = false
-            if type(attachItem.onClick) == "function" then
-                pcall(attachItem.onClick, false)
-            end
-        end
-    end
+    Menu.BabayagaStop(Menu.BabayagaTarget)
     Menu.BabayagaTarget = nil
     Menu.OneShotEnabled = false
     Menu.OneShotNextAssert = 0
@@ -13457,6 +13526,29 @@ function Menu.ActionBabayaga(enabled)
     end
 
     local target = tonumber(Menu.SelectedPlayer)
+    if not target then
+        -- Same fallback as the Attach Player row: when no row is selected,
+        -- take the nearest remote player instead of making the toggle inert.
+        local myPed = PlayerPedId()
+        if DoesEntityExist(myPed) then
+            local myCoords = GetEntityCoords(myPed)
+            local myPlayer = PlayerId()
+            local best = 5.0
+            for _, player in ipairs(GetActivePlayers()) do
+                if player ~= myPlayer then
+                    local ped = GetPlayerPed(player)
+                    if ped and ped ~= 0 and DoesEntityExist(ped) then
+                        local dist = #(GetEntityCoords(ped) - myCoords)
+                        if dist < best then
+                            best = dist
+                            target = tonumber(GetPlayerServerId(player))
+                        end
+                    end
+                end
+            end
+        end
+        if target then Menu.SelectedPlayer = target end
+    end
     if not target then Menu.PosCtrlRelease() return end
 
     -- The toggle itself is the release control; re-arming the same target is
@@ -13469,15 +13561,8 @@ function Menu.ActionBabayaga(enabled)
     -- Drop any previous grab before arming this one.
     Menu.PosCtrlRelease()
 
-    -- 1) Existing Attach Player path: pin him in front from now on. The
-    -- shipped row handler adds its host loop; the passthrough table stays as
-    -- the local fallback so a refused injection does not make the row dead.
-    local attachItem = type(FindItem) == "function"
-        and FindItem("Online", "Troll", "Attach Player") or nil
-    if attachItem and type(attachItem.onClick) == "function" then
-        attachItem.value = true
-        pcall(attachItem.onClick, true)
-    end
+    -- 1) Attach path: the local passthrough keeps the target pinned while
+    -- the host loop owns the real coordinate writes and the control requests.
     if type(attachedPlayers) ~= "table" then attachedPlayers = {} end
     attachedPlayers[target] = ped
 
@@ -13490,6 +13575,10 @@ function Menu.ActionBabayaga(enabled)
     if type(SetPlayerWeaponDamageModifier) == "function" then
         pcall(SetPlayerWeaponDamageModifier, PlayerId(), Menu.OneShotDamage)
     end
+
+    -- 4) Host loop: performs all three from the resource VM, where the
+    -- coordinate write is not rejected by the executor's native context.
+    Menu.BabayagaStart(target)
 
     -- Place him immediately so he is in front on the very next frame. Ask
     -- for control first; the tick repeats the request if the server refuses.
@@ -34100,7 +34189,7 @@ local function drawIcon(name, x, y, size, cr, cg, cb)
     -- cluster. The texture is white with alpha, so r/g/b is the whole colour.
     -- The vehicle glyph stays vector: its old texture lost the roof and wheels
     -- at dossier size, while this silhouette keeps both at 16 logical pixels.
-    local texture = (name ~= "vehicle") and ICON_TEXTURES[name] or nil
+    local texture = ICON_TEXTURES[name]
     if texture and Susano and type(Susano.DrawImage) == "function" then
         local ok = pcall(Susano.DrawImage, texture, x, y, size, size, ir, ig, ib, 1.0, 0)
         if ok then return end
@@ -34188,19 +34277,13 @@ local function drawIcon(name, x, y, size, cr, cg, cb)
         end
 
     elseif name == "vehicle" then
-        -- Low, wide side profile. The cabin and body are a continuous
-        -- silhouette; the two window cut-outs and the open wheel rings keep
-        -- the car legible at 16 px instead of turning into a solid block.
-        R(0.04, 0.44, 0.92, 0.24, 0.07)
-        R(0.20, 0.27, 0.52, 0.23, 0.08)
-        C(0.29, 0.31, 0.15, 0.13, 0.025)
-        C(0.48, 0.31, 0.16, 0.13, 0.025)
-        R(0.12, 0.64, 0.22, 0.22, 0.11)
-        C(0.17, 0.69, 0.12, 0.12, 0.06)
-        R(0.66, 0.64, 0.22, 0.22, 0.11)
-        C(0.71, 0.69, 0.12, 0.12, 0.06)
-        R(0.02, 0.49, 0.07, 0.11, 0.025)
-        R(0.91, 0.49, 0.07, 0.11, 0.025)
+        -- Original side profile: body, cabin, two ringed wheels.
+        R(0.06, 0.42, 0.88, 0.24, 0.05)
+        R(0.24, 0.28, 0.46, 0.20, 0.05)
+        R(0.14, 0.60, 0.22, 0.22, 0.11)
+        C(0.19, 0.65, 0.12, 0.12, 0.06)
+        R(0.64, 0.60, 0.22, 0.22, 0.11)
+        C(0.69, 0.65, 0.12, 0.12, 0.06)
 
     elseif name == "weapon" then
         -- Pistol: slide, muzzle, grip, trigger notch.
@@ -34227,9 +34310,14 @@ end
 local function drawVehicleBadge(x, y, size, r, g, b)
     if size <= 0 then return end
 
-    -- Flat row badge: no texture path, so the silhouette cannot inherit a
-    -- low-resolution upload from the dossier icon set. The list background is
-    -- not the card body, therefore there are no window cut-outs here.
+    -- Original Material car texture, tinted with the list's colour. The
+    -- primitive profile below is the upload-failure fallback.
+    local texture = ICON_TEXTURES.vehicle
+    if texture and Susano and type(Susano.DrawImage) == "function" then
+        local ok = pcall(Susano.DrawImage, texture, x, y, size, size, r, g, b, 1.0, 0)
+        if ok then return end
+    end
+
     fillRect(x + 0.06 * size, y + 0.44 * size, 0.88 * size, 0.24 * size,
         r, g, b, 1.0, 0.05 * size)
     fillRect(x + 0.24 * size, y + 0.30 * size, 0.46 * size, 0.20 * size,
@@ -34821,12 +34909,8 @@ function Menu.DrawPlayerInfoPanel()
     }
     for index = 1, #contextData do
         local row = contextData[index]
-        local rowIconSize = nil
-        if row.icon == "vehicle" then
-            rowIconSize = (ICON_SIZE + 2) * scale
-        end
         drawRow(cy + (index - 0.5) * rowHeight, row.icon, row.label,
-            row.value, innerRight, nil, nil, nil, nil, rowIconSize)
+            row.value, innerRight, nil, nil, nil, nil)
     end
 end
 
