@@ -32350,20 +32350,23 @@ local ICON_B64 = {
         "jJxaXgAAAABJRU5ErkJggg==",
     }),
     vehicle = table.concat({
-        "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAC30lEQVR42u1ZoW7cQBB9G51k0j8oSIMO",
-        "RDIpCC5JpQCTSkVRpX6BVSk4pOwUElZWqbBSgQsCSooLKpkEHEoK7g9KKoMpmZVG27W9Ps/meu08aeWz",
-        "z5p98zw7s2MDBoPBYDAYDAaDwWD4/+ByT0BExWySzv3aKwG801rEpYjaYrgczkuSTH4J4AlfOkowc8fH",
-        "ewDr0J6mCC6H80RUAjgHcArgWMH0LYD3AN6xfTURnFaIC+drAFcB+R8A1ny+SZjiMUcNABwGIr5wzn3u",
-        "ibR8+YKIijCh+XNxrImoI6KGiEqNBOjnZXsN26/6EmyMZ1YxxLH0zg84sdUI7LQ8Txk+hCyOBxM0TMCT",
-        "WAmiHY+oA6nkxoQQQrfiv0Zca/l80ryphLpgtHxPNDT7nmRqZA2I4Jfais/bCLdCLSoC9WvhcBOS0Qz9",
-        "IScEh1oI4PnoPP2BpVBHVG+IqPLJT3s9BsmwEgJ0IvwnO+8m1vewxI3VbnAJ9FhP8Hkpfh/yMXVPES2V",
-        "WwkglFwC+L5Hfc5TL/iQCAcTmpG3e9bonadsilxi6BcAfvrw4v38a6Vtrhb8dvkOwCe+9mhs63yQaPx5",
-        "EBHXAE44zC7Eet+F0xfM44R5HfXkkVmZvwqybRHJ0CVvjLrMw2f7MsK3DO4tZ5XDHgE8iRVfj4nRZnQ+",
-        "Nl/VI341JsBiy+A45vGGJ7jhjLsB8BXApViHmrgEsCSiZ6JjPJtjcKFE7GwukUSoi7qYmYDCqNhFEhya",
-        "/z6XADcAXvrSEmyWAOADE7oF8EXB0VNh75XcVQYcvqk+iIEk+EfHFrTMnWxJlfqARrbgPfM/SBWoe+4t",
-        "g66syDBk31/28FjlFqCMEKvF/6vMb6Okg1WESzVFgNQcIJPJWEO06YsSJWwmVIX17HZYqPfxgUqdFi6c",
-        "c9djLbGb8qFDfORY/+3eq78ez/6qeUffJN2/KkLOD6oGg8FgMBgMBoPBYDAYDAaDYX/xG73+fH2Sq8pe",
-        "AAAAAElFTkSuQmCC",
+        "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAADsUlEQVR42u1asWrjQBB9G4T+whhCioBB",
+        "X3CQwoUrVVddc4QrfZWaS3eQMmmSJi7D3TVXuXLlwkXgekPAkMIciPyFm7lmxE3Gu2tJkRQn2QfCSqTs",
+        "zrydfTM7MRAQEBAQEBAQEBAQEBDw/mDaGpiI4kYNNWaz1wS4HH6u4W2N2ygBhZHaKGX8ccVhH1yOuuZ7",
+        "EQKIKC4MYcOOAQwB9PmVHn8eVhz6L38+8ucCQA7gwRizaYoEU8dR/Ts2ZsSOnwAYtCQtKwB3AG6NMfe+",
+        "yCtLjKm799TzEYCpMLJYwUdeNQBYq6Fycd+3THUknvVEBA14ju/GmJkkwSe8lSPFN5h8RkQpEW34yogo",
+        "bjoDFHPylfFcSyJK5LNW86WegCdN2JANExE73qt9lSBh690qZBiXujK7X5SQAcAPAHO+/w0gBXAG4KaT",
+        "wuV/qF8CGAOYAfgktuKpeL0QUK9mbDHM95kIbXml/Pyaf56Kv3GuXkPhL+1LeO4NEWUlbd6yK/LMu2B2",
+        "D5WqH/GAYxajc5cAtbUvedwHAOds3wURLTxZI68khmo/JczsUqx4cX/duvjsjoqp0AN5nxUi6UPkct7j",
+        "WCruTwBcCvZzXck1iGNL2hyq9DhQRdSWHzoCjKvgUUJTp2B5YohFmFzoWX4nnayKMwA3hU9eAhRbXwFc",
+        "vJFT70ddNBUPDjzh9vkNHftPXXpw4CgZh6LknHA2eE1Ysc0ToVt9WwaIHOIna/NbUQANRV0+2EOni/PH",
+        "QgjyWJ0tnhyWIkeV1ROiMzTGXAG4BzDjUOqLkx9ekAzt9Fwd1i5l5rBltmhHugEXGeui/DXG3AsyYlF+",
+        "ph07P9FOKyEflclgUcnJpryn/nDOlzl+zgqbdZg1zowxV5aapWjGfLAsSM92bI4qTJqKQWXo5UzKgldl",
+        "3MXK81Ycqn5B5a0Y1TRioCZbdagFJ01qT9SQUV2KYKNzRTVER7er5B5LLVHRhuMzUVLL88danBHGTRIw",
+        "AfDNdZRUKWcF4JelB/hcSKced9gztyxIuSOwajRstZ0sVyKaI8ui+dDSEVg2PK59bTS2a+N630dArAhI",
+        "Xc0O1RNc6s5L05eFhCnbEDv8yOoSIFc0cRiUqShJ0F0jJNXEe6LTS0C0o4U1APCzhCjdFS3yDrPBnUjH",
+        "0zKia2vduUQwr5h2xh0UQM9JjyuRwexZQHZMiOjG8x+bfUJe8r21aOX7G6Mv1eTEPn1B4q2SYFt58x4i",
+        "oa1vlwQEBAQEBAQEBAQEBAQEvFL8A6SlS/hVgM+bAAAAAElFTkSuQmCC",
     }),
     weapon = table.concat({
         "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAACx0lEQVR42u1ar2/bQBT+XhWT/gdDQwUj",
@@ -32922,8 +32925,7 @@ function Menu.DrawPlayerInfoPanel()
     end
 
     local function drawRow(centerY, icon, label, value, valueRight, gauge)
-        local rowIconSize = (icon == "vehicle") and (iconSize * 1.36) or iconSize
-        drawIcon(icon, cx, centerY - rowIconSize * 0.5, rowIconSize)
+        drawIcon(icon, cx, centerY - iconSize * 0.5, iconSize)
 
         local labelX = cx + iconSize + iconGap
         local textY = centeredTextY(centerY, FONT_ROW, scale)
