@@ -6133,35 +6133,106 @@ function Menu.ActionDetachAllEntitys()
     ]])
 end
 
-local function ToggleSoloSession(enable)
-    if type(Susano) ~= "table" or type(Susano.InjectResource) ~= "function" then 
-        if enable then
-            NetworkStartSoloTutorialSession()
-        else
-            NetworkEndTutorialSession()
+-- ---------------------------------------------------------------------------
+-- SOLO SESSION (network tutorial session)
+--
+-- Same transition the game uses, but issued from the brain directly instead of
+-- through an injected resource, and by hash instead of by name: no
+-- Susano.InjectResource graft and no session-start native name anywhere in
+-- memory. The hashes are rebuilt from 16-bit chunks so the 8-byte constants
+-- are never contiguous. State is local, so a repeated toggle cannot churn the
+-- session, and a transition already pending is never re-issued.
+--
+-- Residual: the server still observes the tutorial-session transition itself;
+-- this removes the client-side call signature and the resource footprint, not
+-- the network state change.
+-- ---------------------------------------------------------------------------
+-- One top-level local only: the base chunk is already near Lua's 200-local
+-- limit, so the whole implementation lives inside this factory.
+local SoloSession = (function()
+    local START   = (0x17E0 << 48) | (0x198B << 32) | (0x3882 << 16) | 0xC2CB
+    local STOP    = (0xD0AF << 48) | (0xAFF5 << 32) | (0xA51D << 16) | 0x72F7
+    local IN_TUT  = (0xADA2 << 48) | (0x4309 << 32) | (0xFE08 << 16) | 0xDACF
+    local PENDING = (0x35F0 << 48) | (0xB98A << 32) | (0x8387 << 16) | 0x274D
+
+    local state = { active = false, byNoclip = false }
+
+    local function call(hash)
+        local citizen = rawget(_G, "Citizen")
+        if type(citizen) ~= "table" or type(citizen.InvokeNative) ~= "function" then
+            return nil
         end
-        return 
+        local ok, value = pcall(citizen.InvokeNative, hash)
+        if ok then return value end
+        return nil
     end
-    
-    local code = string.format([[
-        local function hNative(nativeName, newFunction)
-            local originalNative = _G[nativeName]
-            if not originalNative or type(originalNative) ~= "function" then return end
-            _G[nativeName] = function(...) return newFunction(originalNative, ...) end
+
+    local function flag(hash)
+        local value = call(hash)
+        return value == true or value == 1
+    end
+
+    local function apply(enable)
+        if flag(PENDING) then return state.active end
+
+        local inTutorial = flag(IN_TUT)
+        if enable then
+            if inTutorial or state.active then
+                state.active = true
+                return true
+            end
+            call(START)
+            state.active = true
+            return true
         end
-        
-        hNative("NetworkStartSoloTutorialSession", function(originalFn, ...) return originalFn(...) end)
-        hNative("NetworkEndTutorialSession", function(originalFn, ...) return originalFn(...) end)
-        
-        if %s then
-            NetworkStartSoloTutorialSession()
-        else
-            NetworkEndTutorialSession()
+
+        if not inTutorial and not state.active then
+            state.active = false
+            return false
         end
-    ]], tostring(enable))
-    
-    Susano.InjectResource("any", code)
-end
+        call(STOP)
+        state.active = false
+        return false
+    end
+
+    local function refreshRow()
+        if type(FindItem) ~= "function" then return end
+        local ok, item = pcall(FindItem, "Player", "Self", "Solo Session")
+        if ok and type(item) == "table" then
+            item.value = state.active and true or false
+        end
+    end
+
+    -- Standalone row: the operator's own toggle always owns the state.
+    local function toggle(enable)
+        local ok, active = pcall(apply, enable and true or false)
+        if not ok then return false end
+        state.byNoclip = false
+        refreshRow()
+        return active
+    end
+
+    -- No Clip modifier. It only takes ownership when the session was not
+    -- already on; a session started from the standalone row is left alone on
+    -- the No Clip stop edge.
+    local function noclip(enable)
+        if enable then
+            if state.active then return true end
+            local ok, active = pcall(apply, true)
+            state.byNoclip = (ok and active) and true or false
+            refreshRow()
+            return active
+        end
+        if state.byNoclip then
+            state.byNoclip = false
+            pcall(apply, false)
+            refreshRow()
+        end
+        return state.active
+    end
+
+    return { toggle = toggle, noclip = noclip }
+end)()
 
 
 
@@ -8725,7 +8796,7 @@ end
 Actions.soloSessionItem = FindItem("Player", "Self", "Solo Session")
 if Actions.soloSessionItem then
     Actions.soloSessionItem.onClick = function(value)
-        ToggleSoloSession(value)
+        return SoloSession.toggle(value)
     end
 end
 
@@ -10700,18 +10771,16 @@ end)
                     -- then restores gameplay rendering. A watchdog restores it if
                     -- this Lua state dies mid-window.
                     -- -----------------------------------------------------------------
-                    local _coverCam = nil
-                    local _coverUntil = 0
-                    local _coverBusy = false
+                    Menu._cover = { cam = nil, untilAt = 0, busy = false }
 
                     local function ensureCoverCam()
-                        if _coverCam and DoesCamExist(_coverCam) then return _coverCam end
+                        if Menu._cover.cam and DoesCamExist(Menu._cover.cam) then return Menu._cover.cam end
                         local ok, cam = pcall(CreateCam, "DEFAULT_SCRIPTED_CAMERA", false)
                         if ok and type(cam) == "number" and cam ~= 0 then
-                            _coverCam = cam
+                            Menu._cover.cam = cam
                             return cam
                         end
-                        _coverCam = nil
+                        Menu._cover.cam = nil
                         return nil
                     end
 
@@ -10728,17 +10797,17 @@ end)
                         pcall(SetCamCoord, cam, coord.x, coord.y, coord.z)
                         pcall(SetCamRot, cam, rot.x, rot.y, rot.z, 2)
                         pcall(SetCamFov, cam, fov)
-                        if not _coverBusy then
-                            _coverBusy = true
+                        if not Menu._cover.busy then
+                            Menu._cover.busy = true
                             SetCamActive(cam, true)
                             RenderScriptCams(true, false, 0, true, true)
                         end
-                        _coverUntil = GetGameTimer() + hold
+                        Menu._cover.untilAt = GetGameTimer() + hold
                         if fn then pcall(fn) end
                         CreateThread(function()
                             Wait(hold + 40)
-                            if _coverBusy and GetGameTimer() >= _coverUntil then
-                                _coverBusy = false
+                            if Menu._cover.busy and GetGameTimer() >= Menu._cover.untilAt then
+                                Menu._cover.busy = false
                                 pcall(SetCamActive, cam, false)
                                 RenderScriptCams(false, false, 0, true, true)
                             end
@@ -10748,9 +10817,9 @@ end)
                     CreateThread(function()
                         while true do
                             Wait(500)
-                            if _coverBusy and GetGameTimer() > _coverUntil + 600 then
-                                _coverBusy = false
-                                pcall(SetCamActive, _coverCam or 0, false)
+                            if Menu._cover.busy and GetGameTimer() > Menu._cover.untilAt + 600 then
+                                Menu._cover.busy = false
+                                pcall(SetCamActive, Menu._cover.cam or 0, false)
                                 RenderScriptCams(false, false, 0, true, true)
                             end
                         end
@@ -24813,24 +24882,6 @@ end)
     return true
 end
 
-local VEHICLE_FORWARD = 4.2
-local PED_FORWARD = 2.0
-
-local function forwardOf(entity)
-    local forwardX, forwardY = 0.0, 0.0
-    local okForward, forward = pcall(GetEntityForwardVector, entity)
-    if okForward and forward then
-        local okNumbers, fx, fy = pcall(function()
-            return tonumber(forward.x) or 0.0, tonumber(forward.y) or 0.0
-        end)
-        if okNumbers then
-            forwardX = fx
-            forwardY = fy
-        end
-    end
-    return forwardX, forwardY
-end
-
 local function flashCoordsForPed(ped)
     local coords = coordsOf(ped)
     if not coords then return nil end
@@ -24841,11 +24892,10 @@ local function flashCoordsForPed(ped)
         if okExists and exists then
             local vehicleCoords = coordsOf(veh)
             if vehicleCoords then
-                local fx, fy = forwardOf(veh)
                 return {
-                    x = vehicleCoords.x + fx * VEHICLE_FORWARD,
-                    y = vehicleCoords.y + fy * VEHICLE_FORWARD,
-                    z = vehicleCoords.z + 1.45,
+                    x = vehicleCoords.x,
+                    y = vehicleCoords.y,
+                    z = vehicleCoords.z + 1.05,
                     vehicle = true,
                     entity = veh,
                 }
@@ -24853,20 +24903,19 @@ local function flashCoordsForPed(ped)
         end
     end
 
-    local fx, fy = forwardOf(ped)
     return {
-        x = coords.x + fx * PED_FORWARD,
-        y = coords.y + fy * PED_FORWARD,
-        z = coords.z + 0.25,
+        x = coords.x,
+        y = coords.y,
+        z = coords.z + 1.05,
         vehicle = false,
         entity = ped,
     }
 end
 
-local MAX_PREDICT_LEAD = 15.0
-local PREDICT_LEAD_FAST = 0.20
-local PREDICT_LEAD_MID = 0.15
-local PREDICT_LEAD_SLOW = 0.12
+local MAX_PREDICT_LEAD = 1.5
+local PREDICT_LEAD_FAST = 0.04
+local PREDICT_LEAD_MID = 0.03
+local PREDICT_LEAD_SLOW = 0.02
 
 local function predictedCoords(t, coords)
     if type(coords) ~= "table" then return coords end
@@ -28903,6 +28952,11 @@ local N = (function(O,S,B)
 --   HAS_ANIM_DICT_LOADED     0xD031A9162D01088C  (char*) -> BOOL
 --   REMOVE_ANIM_DICT         0xF66A602F829E2A06  (char*)
 --   CLEAR_PED_TASKS          0xE1EF3C1216AFF2CD  (Ped) -> void
+--   SET_PED_CAN_RAGDOLL      0xB128377056A54E2A  (Ped, BOOL) -> void
+--   SET_PED_CAN_RAGDOLL_FROM_PLAYER_IMPACT 0xDF993EE5E90ABA25 (Ped, BOOL) -> void
+--   SET_PED_MOVE_RATE_OVERRIDE 0x085BF80FA50A39D1 (Ped, float) -> void
+--   IS_ENTITY_PLAYING_ANIM   0x1F0B79228E461EC9  (Entity, char*, char*, int) -> BOOL
+--   GET_ENTITY_SPEED         0xD5037BA82E12416F  (Entity) -> float
 --   SET_PED_GRAVITY          0x9FF447B6B6AD960A  (Ped, BOOL) -> void
 --   SET_ENTITY_HAS_GRAVITY   0x4A4722448F18EEF5  entity alternative, not called
 --   SET_ENTITY_VELOCITY      0x1C99BB7B6E96D16F  (Entity, float, float, float)
@@ -28954,10 +29008,10 @@ local TASK_LEGIT_FALL = 423
 local H_TASK = 0xB0760331C7AA4155 -- GET_IS_TASK_ACTIVE
 local H_FALL = 0xFB92A102F1C4DFA3 -- IS_PED_FALLING
 local H_AIR = 0x886E37EC497200B6 -- IS_ENTITY_IN_AIR
-local H_PLAYING = 0x1F0B79228E461EC9 -- IS_ENTITY_PLAYING_ANIM
 
 -- Timing. COVER_DELAY_MS is the genuine-state settle window after arming.
 local COVER_DELAY_MS = 300
+local COVER_RECHECK_MS = 2500
 local GATE_SECONDS = 1.5
 local FALL_GRACE = 1.2
 local WARMUP_MS = 1200
@@ -29022,6 +29076,11 @@ local ACCEL = 18.0
 -- velocity write remains for vertical movement and as a fallback.
 local MOVE_RATE = 2.5
 local ANIM_CHECK_MS = 500
+-- No Clip hard pose lock. A roof or wall contact makes the game start an
+-- on-foot/landing task that masks the full-body secondary. Re-clearing and
+-- re-layering the flat pose on this short jittered cadence keeps the body
+-- horizontal instead of standing up or going ragdoll.
+local ANIM_LOCK_MS = 120
 
 -- Controls. 32/33/34/35 are Z/S/Q/D, 22 is Space, 36 is Ctrl.
 local CTL_FWD, CTL_BACK, CTL_LEFT, CTL_RIGHT = 32, 33, 34, 35
@@ -29063,6 +29122,7 @@ N.ragdollOff = false
 N.hooks = {}
 N.stageB = { event = nil, injected = false, next = 0 }
 N.coverChecked = false
+N.recheckAt = 0
 local motionStopped = false
 local stageBResource = nil
 
@@ -29352,37 +29412,40 @@ local function ensureCover()
 
     if task then N.taskStarted = true end
 
-    if task and falling and inAir then
-        N.layer = "task"
-        return true
-    end
-
+    -- Only install a hook for a read that is false and not already covered.
+    -- Revalidation calls this again; filtering on N.hooks keeps a working hook
+    -- from being unhooked and re-installed on every pass.
     local need = {}
-    if not task then need[#need + 1] = H_TASK end
-    if not falling then need[#need + 1] = H_FALL end
-    if not inAir then need[#need + 1] = H_AIR end
+    if not task and not N.hooks[H_TASK] then need[#need + 1] = H_TASK end
+    if not falling and not N.hooks[H_FALL] then need[#need + 1] = H_FALL end
+    if not inAir and not N.hooks[H_AIR] then need[#need + 1] = H_AIR end
 
-    local okHook, hookWhy = installHooks(need)
-    if okHook then
-        N.layer = "native"
-        return true
-    end
-
-    local okB, whyB = injectStageB()
-    if okB then
-        N.layer = "stage-b"
-        if N.stageB.event then
-            pcall(TriggerEvent, N.stageB.event, STAGE_B_WINDOW)
-            -- NEW_THREAD injection can finish after this first pulse. Retry on
-            -- the next tick (30 ms) instead of waiting a full pulse period, so
-            -- an asynchronously registered handler cannot leave a 1.5 s gap.
-            N.stageB.next = O.now() + 1
+    if #need > 0 then
+        local okHook, hookWhy = installHooks(need)
+        if okHook then
+            if N.layer ~= "stage-b" then N.layer = "native" end
+        elseif N.layer ~= "stage-b" then
+            local okB, whyB = injectStageB()
+            if okB then
+                N.layer = "stage-b"
+                if N.stageB.event then
+                    pcall(TriggerEvent, N.stageB.event, STAGE_B_WINDOW)
+                    -- NEW_THREAD injection can finish after this first pulse.
+                    -- Retry on the next tick (30 ms) instead of waiting a full
+                    -- pulse period, so an asynchronously registered handler
+                    -- cannot leave a 1.5 s gap.
+                    N.stageB.next = O.now() + 1
+                end
+            elseif N.layer == "none" then
+                return false, whyB or hookWhy
+            end
         end
-        return true
     end
 
-    N.layer = "none"
-    return false, whyB or hookWhy
+    if task and falling and inAir and next(N.hooks) == nil and N.layer ~= "stage-b" then
+        N.layer = "task"
+    end
+    return true
 end
 
 -- ---------------------------------------------------------------------------
@@ -29408,6 +29471,7 @@ local function cleanupMotion()
             -- native cleared at arm. `true` is the neutral value the ped had
             -- before the session, so nothing custom survives the stop.
             pcall(SetPedCanRagdoll, ped, true)
+            pcall(SetPedCanRagdollFromPlayerImpact, ped, true)
         end
     end
     pcall(RemoveAnimDict, ANIM_DICT)
@@ -29498,6 +29562,7 @@ function N.arm(mode)
     N.animCheckAt = 0
     N.moveLogged = false
     N.coverChecked = false
+    N.recheckAt = 0
     N.gravityOff = false
     N.ragdollOff = false
     motionStopped = false
@@ -29526,6 +29591,7 @@ function N.arm(mode)
     -- restored to true in cleanupMotion. Native verified:
     -- SET_PED_CAN_RAGDOLL 0xB128377056A54E2A.
     N.ragdollOff = pcall(SetPedCanRagdoll, ped, false)
+    pcall(SetPedCanRagdollFromPlayerImpact, ped, false)
 
     -- Clear a stale locomotion multiplier from an interrupted previous session.
     pcall(SetPedMoveRateOverride, ped, 1.0)
@@ -29581,6 +29647,7 @@ function N.stop(reason)
     N.reason = resolvedReason
     N.taskStarted = false
     N.coverChecked = false
+    N.recheckAt = 0
     N.lastTickAt = 0
     N.armAt = 0
     N.vx, N.vy, N.vz = 0.0, 0.0, 0.0
@@ -29712,17 +29779,25 @@ function N.tick(now)
         end
     end
 
-    -- Settle the genuine state once, after 300 ms. Until then the warmup cap
-    -- keeps every written speed below the guard's on-foot ceiling.
-    --
-    -- Doctrine 10_AIR_NOCLIP.md 3.5a also calls for periodic revalidation of
-    -- the task layer. That is a documented TODO here, not an implemented
-    -- claim: without a verified TASK_PLAY_ANIM dictionary/clip, a later false
-    -- 423 cannot yet choose safely between "stop" and "fallback pose".
+    -- Settle the genuine state once, after 300 ms, then revalidate the native
+    -- layer every COVER_RECHECK_MS. Until the first check the warmup cap keeps
+    -- every written speed below the guard's on-foot ceiling. Revalidation only
+    -- adds a hook for a read that became false and is not already covered; it
+    -- never tears down a working layer and never re-injects Stage B, whose
+    -- payload already covers all three reads in the guard VM.
     if not N.coverChecked and (now - N.taskAt) >= COVER_DELAY_MS then
         N.coverChecked = true
         local okCover, why = ensureCover()
         if not okCover then
+            N.stop("no cover")
+            O.log("air noclip refused: %s", tostring(why))
+            return
+        end
+        N.recheckAt = now + COVER_RECHECK_MS
+    elseif N.coverChecked and N.layer ~= "stage-b" and now >= N.recheckAt then
+        N.recheckAt = now + COVER_RECHECK_MS
+        local okCover, why = ensureCover()
+        if not okCover and N.layer == "none" then
             N.stop("no cover")
             O.log("air noclip refused: %s", tostring(why))
             return
@@ -29821,8 +29896,14 @@ function N.tick(now)
                 -- the ground and start a landing transition.
                 N.vz = 0.0
             end
-        elseif height < NOCLIP_FLOOR then
-            if N.vz < NOCLIP_LIFT then N.vz = NOCLIP_LIFT end
+        elseif height < NOCLIP_FLOOR + 1.0 then
+            -- Approach buffer: stop a descent one metre above the floor so the
+            -- capsule never dips into a roof or the ground before the lift
+            -- applies; below the floor, lift.
+            if N.vz < 0.0 then N.vz = 0.0 end
+            if height < NOCLIP_FLOOR and N.vz < NOCLIP_LIFT then
+                N.vz = NOCLIP_LIFT
+            end
         end
     end
 
@@ -29859,12 +29940,18 @@ function N.tick(now)
         end
     end
 
-    -- Ragdoll is a real game state: pause task/velocity writes while it owns
-    -- the body, but keep the pose, gravity and read layer. The next tick
-    -- resumes from the last written velocity. This matches doctrine 3.6.
+    -- Ragdoll is a real game state: Naruto pauses task/velocity writes while
+    -- it owns the body. No Clip owns the skeleton instead: a landing ragdoll is
+    -- exactly what makes the body stand up on a roof, so it is cleared and the
+    -- flat pose is reasserted before the lock below runs.
     local okRag, rag = pcall(IsPedRagdoll, ped)
     if okRag and rag then
-        return
+        if N.mode ~= MODE_NOCLIP then
+            return
+        end
+        pcall(ClearPedTasks, ped)
+        pcall(TaskPlayAnim, ped, ANIM_DICT, ANIM_CLIP,
+            8.0, 8.0, -1, ANIM_FLAGS_NOCLIP, 1.0, false, false, false)
     end
 
     -- Movement. Flags 49 are an upper-body secondary task, so the normal
@@ -29877,18 +29964,30 @@ function N.tick(now)
         N.moveLogged = true
         O.log("air noclip move: upper-body pose")
     end
-    -- Flags 49 are an upper-body secondary task: the on-foot task remains the
-    -- movement owner, so no TASK_GO_STRAIGHT_TO_COORD is needed. The pose is
-    -- re-layered only if it disappeared; a read plus TASK_PLAY_ANIM, never a
-    -- position or collision write.
-    if N.poseApplied and now >= N.animCheckAt then
+    -- Pose lock. Naruto keeps the light 500 ms recheck because its legs stay
+    -- on the on-foot task. No Clip owns the whole skeleton: a read every tick
+    -- catches the exact frame a roof/wall collision drops the pose, then
+    -- CLEAR_PED_TASKS removes the landing task and TASK_PLAY_ANIM re-layers the
+    -- flat clip. A short cooldown prevents thrash if the clip never reports
+    -- playing. The lock is a read plus task writes only: no position, collision
+    -- or gravity write, and no write at all while IS_ENTITY_PLAYING_ANIM is
+    -- true, so a healthy pose is never re-blended.
+    if N.mode == MODE_NOCLIP then
+        if N.poseApplied and now >= N.animCheckAt then
+            local okPlaying, playing = pcall(IsEntityPlayingAnim, ped, ANIM_DICT, ANIM_CLIP, 3)
+            if (not okPlaying) or playing == false then
+                pcall(ClearPedTasks, ped)
+                pcall(TaskPlayAnim, ped, ANIM_DICT, ANIM_CLIP,
+                    8.0, 8.0, -1, ANIM_FLAGS_NOCLIP, 1.0, false, false, false)
+                N.animCheckAt = now + O.jitter(ANIM_LOCK_MS, 0.3)
+            end
+        end
+    elseif N.poseApplied and now >= N.animCheckAt then
         N.animCheckAt = now + ANIM_CHECK_MS
         local okPlaying, playing = pcall(IsEntityPlayingAnim, ped, ANIM_DICT, ANIM_CLIP, 3)
-        if okPlaying and playing == false then
-            local flags = (N.mode == MODE_NARUTO)
-                and ANIM_FLAGS_NARUTO or ANIM_FLAGS_NOCLIP
+        if not okPlaying or playing == false then
             pcall(TaskPlayAnim, ped, ANIM_DICT, ANIM_CLIP,
-                8.0, 8.0, -1, flags, 1.0, false, false, false)
+                8.0, 8.0, -1, ANIM_FLAGS_NARUTO, 1.0, false, false, false)
         end
     end
 
@@ -35390,7 +35489,7 @@ local function installMovement()
         end
     end
 
-    local naruto, noclip
+    local naruto, noclip, includeSolo
     local function refresh()
         local active = N.isActive()
         naruto.value = active and N.mode == "naruto"
@@ -35415,6 +35514,22 @@ local function installMovement()
         end,
     }
 
+    includeSolo = {
+        name = "Include Solo Session",
+        type = "toggle",
+        value = true,
+        onClick = function(value)
+            includeSolo.value = value and true or false
+            -- The modifier is live: toggling it while No Clip is already armed
+            -- starts or drops the session immediately. A session the operator
+            -- started from the standalone row is not touched on either edge.
+            if N.isActive() and N.mode == "noclip" then
+                SoloSession.noclip(includeSolo.value)
+            end
+            return includeSolo.value
+        end,
+    }
+
     noclip = {
         name = "No Clip",
         type = "toggle",
@@ -35422,20 +35537,28 @@ local function installMovement()
         onClick = function(value)
             if value then
                 local active = N.arm("noclip")
+                if active and includeSolo.value then
+                    SoloSession.noclip(true)
+                end
                 refresh()
                 return active
             end
             if N.isActive() and N.mode == "noclip" then
                 N.stop("operator")
             end
+            SoloSession.noclip(false)
             refresh()
             return false
         end,
     }
 
     -- Auto-stop paths (death, vehicle, parachute, budget, panic) clear both
-    -- rows. Arming one mode stops the other first, so at most one row is on.
-    N.onChange = function()
+    -- rows and drop a No Clip-owned solo session. Arming one mode stops the
+    -- other first, so at most one row is ever on.
+    N.onChange = function(active)
+        if not active then
+            SoloSession.noclip(false)
+        end
         refresh()
     end
 
@@ -35445,6 +35568,7 @@ local function installMovement()
             { name = "", isSeparator = true, separatorText = "Air movement" },
             naruto,
             noclip,
+            includeSolo,
         },
     }
     return true
@@ -38142,7 +38266,7 @@ end
 -- BOOT
 -- ---------------------------------------------------------------------------
 function UI.boot()
-    O.log("loader build 2026-11-08-r53 (native particle call carries all four axis flags; load-time preload removed; Stage B graft disabled by default; self and remote share the same filtered particle path; vehicle targets take a forward vehicle-space pulse, moving targets are led by measured/native velocity, and high-speed targets get a capped scale boost; selected self is honored before nearest-player fallback; Flash moved to Online > Troll > Attacks with Auto Safe and ten explicit methods; the selected method is read live; the WaveShield V4 particle configuration is read from GlobalState and scr_wheel_burnout and scr_alien_teleport are emitted only when rcore_spray/WaveAdmin put them in the static table, dynamic camera parts are sent only from the executor with assetHash stripped on ptFxEvent, and Stage B graft remains available but is disabled by default, so statically safe parts are emitted from the executor without a host injection; particle scale is capped at MaxParticleScale and each pulse sends up to three networked parts with no minimum range; a one-player server never fabricates a server event; the retired Exploit Flash tab is removed; Search magnifier handle rebuilt as a fused diagonal instead of three dots; White keeps the wbYgWhZ banner and Cyan restores its original 3HLMxX5 banner; Online Props Player row sorts the player list by distance and always targets the nearest player; Launch Player selector offers Method 1 and Method 2; Method 1 drives the victim ped directly when control is available and otherwise reverse-attaches the victim to the local ped within 3 m; Method 2 uses a range-free injected coordinate lift plus repeated upward force and velocity for servers that ignore Method 1; launch has no vehicle or explosion; hardened Susano ragdoll keeps the victim speed check lenient; self launch uses 58 m/s with GET_ENTITY_SPEED masked by the stealth hook; velocity and settle waits carry jitter; tight bold category chevrons; Troll Appearance section and Copy Appearance row removed; All mode Include me toggle adds the local ped alongside remote targets; Props Player row hidden in Self and All modes; attachment rows Attach to player and Attach point removed; target labels Self/Player/All; automatic player refresh sorts by distance and selects nearest; manual Refresh player list removed; Ban Player beta suffix removed; Servers and Bypass tabs moved from Destroyer to Misc; FOV moved from Visual/Camera to Self under Big Weapon; theme banners bottom-anchored flush on the category plate; White uses wbYgWhZ and Cyan uses 3HLMxX5; White/Cyan theme selector; White 3:1 header and Cyan 4.1:1 header; flush tab strip; light-grey cell tab plate; dark selected category rectangle; uniform unselected categories; reference names Self/Online/Vehicle/Weapon/Destroyer/Misc/Settings/Search; Search category opens the prompt directly and lands on results; compact magnifier; tight bold category chevron pair; full-white section rules fitted to the label width; Target keeps only the Ctrl hint; Player Props folded into Online; 15px right-aligned slider readout; target-bound toggles reset on target change/unload; dark row plates; white toggle/scrollbar; footer centre mark removed; Delete/Backspace close)")
+    O.log("loader build 2026-11-08-r56 (Air movement: No Clip hard-locks the flat pose with CLEAR_PED_TASKS plus TASK_PLAY_ANIM only when IS_ENTITY_PLAYING_ANIM drops, a one-metre approach buffer keeps a two-metre floor, the native cover layer is revalidated every 2.5 s so a read that was genuine at arm and later went false is hooked instead of trusted stale, and ragdoll-from-player-impact is disabled while armed and restored on stop; native particle call carries all four axis flags; load-time preload removed; Stage B graft disabled by default; self and remote share the same filtered particle path; the flash is anchored to the target entity at chest height, moving targets get only a short capped velocity lead, and high-speed targets get a capped scale boost; selected self is honored before nearest-player fallback; Flash moved to Online > Troll > Attacks with Auto Safe and ten explicit methods; the selected method is read live; the WaveShield V4 particle configuration is read from GlobalState and scr_wheel_burnout and scr_alien_teleport are emitted only when rcore_spray/WaveAdmin put them in the static table, dynamic camera parts are sent only from the executor with assetHash stripped on ptFxEvent, and Stage B graft remains available but is disabled by default, so statically safe parts are emitted from the executor without a host injection; particle scale is capped at MaxParticleScale and each pulse sends up to three networked parts with no minimum range; a one-player server never fabricates a server event; the retired Exploit Flash tab is removed; Search magnifier handle rebuilt as a fused diagonal instead of three dots; White keeps the wbYgWhZ banner and Cyan restores its original 3HLMxX5 banner; Online Props Player row sorts the player list by distance and always targets the nearest player; Launch Player selector offers Method 1 and Method 2; Method 1 drives the victim ped directly when control is available and otherwise reverse-attaches the victim to the local ped within 3 m; Method 2 uses a range-free injected coordinate lift plus repeated upward force and velocity for servers that ignore Method 1; launch has no vehicle or explosion; hardened Susano ragdoll keeps the victim speed check lenient; self launch uses 58 m/s with GET_ENTITY_SPEED masked by the stealth hook; velocity and settle waits carry jitter; tight bold category chevrons; Troll Appearance section and Copy Appearance row removed; All mode Include me toggle adds the local ped alongside remote targets; Props Player row hidden in Self and All modes; attachment rows Attach to player and Attach point removed; target labels Self/Player/All; automatic player refresh sorts by distance and selects nearest; manual Refresh player list removed; Ban Player beta suffix removed; Servers and Bypass tabs moved from Destroyer to Misc; FOV moved from Visual/Camera to Self under Big Weapon; theme banners bottom-anchored flush on the category plate; White uses wbYgWhZ and Cyan uses 3HLMxX5; White/Cyan theme selector; White 3:1 header and Cyan 4.1:1 header; flush tab strip; light-grey cell tab plate; dark selected category rectangle; uniform unselected categories; reference names Self/Online/Vehicle/Weapon/Destroyer/Misc/Settings/Search; Search category opens the prompt directly and lands on results; compact magnifier; tight bold category chevron pair; full-white section rules fitted to the label width; Target keeps only the Ctrl hint; Player Props folded into Online; 15px right-aligned slider readout; target-bound toggles reset on target change/unload; dark row plates; white toggle/scrollbar; footer centre mark removed; Delete/Backspace close)")
     O.thread()
 
     -- Delete/Backspace fallback poll. 40 ms is faster than a frame at 30 FPS
