@@ -236,6 +236,61 @@ do
             .. "                Susano.DrawRectFilled(x + 1, y + 1, width - 2, height - 2, 0.052, 0.052, 0.056, 0.99, bannerRadius)"
     )
 
+    -- The header is a top-rounded frame, not a full capsule. The banner image
+    -- fills the inner width and stops on a square bottom edge, so the tab strip
+    -- below it has no dark notches at the join. Menu.DrawTopRoundedRect already
+    -- draws exactly this shape: rounded top, square bottom.
+    LibraryCode = replacePlain(
+        LibraryCode,
+        [[            if Susano and Susano.DrawRectFilled then
+                Susano.DrawRectFilled(x, y, width, height, 0.180, 0.180, 0.190, 0.99, bannerRadius)
+                Susano.DrawRectFilled(x + 1, y + 1, width - 2, height - 2, 0.052, 0.052, 0.056, 0.99, bannerRadius)
+            else
+                Menu.DrawTopRoundedRect(x, y, width, height, 55, 55, 55, 250, bannerRadius)
+                Menu.DrawTopRoundedRect(x + 1, y + 1, width - 2, height - 2, 15, 15, 15, 250, bannerRadius)
+            end]],
+        [[            if type(Menu.DrawTopRoundedRect) == "function" then
+                Menu.DrawTopRoundedRect(x, y, width, height, 0.180, 0.180, 0.190, 255, bannerRadius)
+                Menu.DrawTopRoundedRect(x + 1, y + 1, width - 2, height - 2, 0.052, 0.052, 0.056, 255, bannerRadius)
+            elseif Susano and Susano.DrawRectFilled then
+                Susano.DrawRectFilled(x, y, width, height, 0.180, 0.180, 0.190, 0.99, 0)
+                Susano.DrawRectFilled(x + 1, y + 1, width - 2, height - 2, 0.052, 0.052, 0.056, 0.99, 0)
+            else
+                Menu.DrawRect(x, y, width, height, 47, 47, 48, 252)
+                Menu.DrawRect(x + 1, y + 1, width - 2, height - 2, 13, 13, 14, 252)
+            end]]
+    )
+
+    -- Full-width, bottom-flush banner. The old placement inset the image by
+    -- 8 px on every side and rounded all four corners, which left a dark band
+    -- and two corner holes over the tab strip. Starting below the top arc keeps
+    -- the frame rounded at the top while the square image edge reaches the tabs.
+    LibraryCode = replacePlain(
+        LibraryCode,
+        [[            local availW = width - (framePad * 2)
+            local availH = height - (framePad * 2)
+            local imgRounding = 6
+            local imgW = Menu.bannerWidth or width
+            local imgH = Menu.bannerHeight or bannerHeight
+            local aspectRatio = imgW / imgH
+            local drawW, drawH
+            if (availW / availH) > aspectRatio then drawH = availH; drawW = availH * aspectRatio
+            else drawW = availW; drawH = availW / aspectRatio end
+            local drawX = x + framePad + (availW - drawW) / 2
+            local drawY = y + framePad + (availH - drawH) / 2
+            Susano.DrawImage(Menu.bannerTexture, drawX, drawY, drawW, drawH, 1, 1, 1, 1, imgRounding)]],
+        [[            local availW = width - 2
+            local availH = height - radius - 1
+            if availW < 1 then availW = 1 end
+            if availH < 1 then availH = 1 end
+            local imgRounding = 0
+            local drawX = x + 1
+            local drawY = y + radius
+            local drawW = availW
+            local drawH = availH
+            Susano.DrawImage(Menu.bannerTexture, drawX, drawY, drawW, drawH, 1, 1, 1, 1, imgRounding)]]
+    )
+
     -- Menu body and the 1px outer frame.
     LibraryCode = replacePlain(
         LibraryCode,
@@ -2553,7 +2608,7 @@ Menu.Categories = {
             { name = "Ban Player", type = "toggle", value = false, risk = true},
             { name = "Shoot Player", type = "action", risk = true},
             { name = "Ped Flood", type = "action", risk = true},
-            { name = "Launch Player", type = "selector", options = {"Method 1", "Method 2"}, selected = 1, onClick = function(index, option)
+            { name = "Launch Player", type = "selector", options = {"Object", "Force", "Attach"}, selected = 1, onClick = function(index, option)
                 Menu.LaunchMethod = index
                 Menu.ActionLaunch(index)
             end },
@@ -2601,7 +2656,7 @@ Menu.Categories = {
         }},
         { name = "Vehicle", items = {
             { name = "", isSeparator = true, separatorText = "Bugs" },
-            { name = "Bug Vehicle", type = "selector", options = {"V1", "V2"}, selected = 1 },
+            { name = "Bug Vehicle", type = "selector", options = {"#1", "#2"}, selected = 1 },
             { name = "Warp", type = "selector", options = {"Classic", "Boost"}, selected = 1 },
             { name = "Teleport Into", type = "action" },
             
@@ -2613,7 +2668,7 @@ Menu.Categories = {
             { name = "Steal Vehicle", type = "action" },
             { name = "NPC Drive", type = "action" },
             { name = "Delete Vehicle", type = "action" },
-            { name = "Kick Vehicle", type = "selector", options = {"V1", "V2"}, selected = 1 },
+            { name = "Kick Vehicle", type = "selector", options = {"#1", "#2"}, selected = 1 },
             { name = "Remove Tires", type = "action" },
             { name = "Give", type = "selector", options = {"Vehicle", "Ramp", "Wall", "Wall 2"}, selected = 1 }
         }}
@@ -2905,7 +2960,10 @@ function Menu.DrawTabs(category, x, startY, width, tabHeight)
     local scale = Menu.Scale or 1.0
     local ui = Menu.Ui or {}
     local tabWidth = width / count
-    local radius = math.floor(8 * scale)
+    -- The tab strip is a full-width plate that meets the banner edge. Rounding
+    -- its top corners left two dark notches under the now-square banner bottom;
+    -- square corners make the two plates read as one continuous panel.
+    local radius = 0
     local textSize = 17
     local textScale = textSize * scale
 
@@ -2931,7 +2989,7 @@ function Menu.DrawTabs(category, x, startY, width, tabHeight)
     local tabText = ui.tabText or { 0.035, 0.035, 0.040, 1.0 }
 
     fill(x, startY, width, tabHeight, barBorder[1], barBorder[2], barBorder[3], barBorder[4], radius)
-    fill(x + 1, startY + 1, width - 2, tabHeight - 2, bar[1], bar[2], bar[3], bar[4], radius - 1)
+    fill(x + 1, startY + 1, width - 2, tabHeight - 2, bar[1], bar[2], bar[3], bar[4], math.max(0, radius - 1))
 
     local selected = Menu.CurrentTab or 1
     if selected < 1 then selected = 1 end
@@ -4423,6 +4481,33 @@ local function ToggleSpectate(enable)
     end
 end
 
+-- Passive row-state readers. The list only reflects what the client already
+-- knows: a dead ped, an interior handle, and the replicated group string.
+function Menu.__vgdPlayerDeadFlag(ped)
+    if type(IsPedDeadOrDying) ~= "function" then return false end
+    local ok, dead = pcall(IsPedDeadOrDying, ped, false)
+    return ok and dead == true
+end
+
+function Menu.__vgdPlayerInteriorFlag(ped)
+    if type(GetInteriorFromEntity) ~= "function" then return false end
+    local ok, interior = pcall(GetInteriorFromEntity, ped)
+    return ok and type(interior) == "number" and interior ~= 0
+end
+
+function Menu.__vgdIdentityIsModerator(identity)
+    if type(identity) ~= "table" then return false end
+    local group = tostring(identity.group or "")
+    if group == "" or group == "-" then return false end
+    group = string.lower(group)
+    return group:find("admin", 1, true) ~= nil
+        or group:find("mod", 1, true) ~= nil
+        or group:find("staff", 1, true) ~= nil
+        or group:find("owner", 1, true) ~= nil
+        or group:find("founder", 1, true) ~= nil
+        or group:find("super", 1, true) ~= nil
+end
+
 local function UpdatePlayerList()
     for _, cat in ipairs(Menu.Categories) do
         if cat.name == "Online" and cat.tabs then
@@ -4516,6 +4601,8 @@ local function UpdatePlayerList()
                                     name = playerName,
                                     distance = math.floor(distance),
                                     inVehicle = GetVehiclePedIsIn(targetPed, false) ~= 0,
+                                    dead = Menu.__vgdPlayerDeadFlag(targetPed),
+                                    inApartment = Menu.__vgdPlayerInteriorFlag(targetPed),
                                 })
                             end
                         end
@@ -4524,17 +4611,24 @@ local function UpdatePlayerList()
                     table.sort(otherPlayers, function(a, b) return a.distance < b.distance end)
 
                     -- Online row label: "ID - Name" plus the replicated radio
-                    -- channel, truncated to the width left by the car badge and
-                    -- the toggle. The identity reader is passive and cached; the
-                    -- row builder only reads its result.
-                    local function playerRowLabel(playerId, playerName, identity, inVehicle)
+                    -- channel, truncated to the width left by the status badges
+                    -- and the toggle. The identity reader is passive and cached;
+                    -- the row builder only reads its result.
+                    local function playerRowLabel(playerId, playerName, identity, statusCount)
                         local label = tostring(playerId) .. " - " .. tostring(playerName)
                         if type(identity) == "table" and identity.radio and identity.radio ~= "-" then
                             label = label .. " | Radio " .. tostring(identity.radio)
                         end
                         local sp = type(Menu.GetScaledPosition) == "function" and Menu.GetScaledPosition() or nil
                         local menuWidth = (sp and tonumber(sp.width)) or (360 * (Menu.Scale or 1.0))
-                        local reserved = inVehicle and 88 or 60
+                        local scale = Menu.Scale or 1.0
+                        local reserved = 60
+                        statusCount = tonumber(statusCount) or 0
+                        if statusCount > 0 then
+                            local badgeSize = 20 * scale
+                            local badgeGap = 4 * scale
+                            reserved = 52 + 8 + statusCount * (badgeSize + badgeGap) + 2
+                        end
                         local maxWidth = menuWidth - 16 - reserved
                         if maxWidth < 40 then maxWidth = 40 end
                         if type(Menu.FitRowLabel) == "function" then
@@ -4603,13 +4697,24 @@ local function UpdatePlayerList()
                         and GetVehiclePedIsIn(selfPed, false) ~= 0
                     local selfIdentity = (type(Menu.ResolvePlayerIdentity) == "function")
                         and Menu.ResolvePlayerIdentity(myPlayerId, selfPed) or nil
+                    local selfDead = Menu.__vgdPlayerDeadFlag(selfPed)
+                    local selfInApartment = Menu.__vgdPlayerInteriorFlag(selfPed)
+                    local selfModerator = Menu.__vgdIdentityIsModerator(selfIdentity)
+                    local selfBadgeCount = 0
+                    if selfDead then selfBadgeCount = selfBadgeCount + 1 end
+                    if selfModerator then selfBadgeCount = selfBadgeCount + 1 end
+                    if selfInApartment then selfBadgeCount = selfBadgeCount + 1 end
+                    if selfInVehicle then selfBadgeCount = selfBadgeCount + 1 end
                     local selfToggle = {
-                        name = playerRowLabel(myServerId, myName, selfIdentity, selfInVehicle),
+                        name = playerRowLabel(myServerId, myName, selfIdentity, selfBadgeCount),
                         type = "toggle",
                         value = isPlayerSelected(myServerId),
                         playerId = myServerId,
                         isSelf = true,
                         playerInVehicle = selfInVehicle,
+                        playerDead = selfDead,
+                        playerModerator = selfModerator,
+                        playerInApartment = selfInApartment,
                     }
                     selfToggle.onClick = function(value)
                         togglePlayerSelection(selfToggle.playerId)
@@ -4619,12 +4724,21 @@ local function UpdatePlayerList()
                     for _, playerData in ipairs(otherPlayers) do
                         local identity = (type(Menu.ResolvePlayerIdentity) == "function")
                             and Menu.ResolvePlayerIdentity(playerData.localId, playerData.ped) or nil
+                        local moderator = Menu.__vgdIdentityIsModerator(identity)
+                        local badgeCount = 0
+                        if playerData.dead then badgeCount = badgeCount + 1 end
+                        if moderator then badgeCount = badgeCount + 1 end
+                        if playerData.inApartment then badgeCount = badgeCount + 1 end
+                        if playerData.inVehicle then badgeCount = badgeCount + 1 end
                         local playerToggle = {
-                            name = playerRowLabel(playerData.id, playerData.name, identity, playerData.inVehicle),
+                            name = playerRowLabel(playerData.id, playerData.name, identity, badgeCount),
                             type = "toggle",
                             value = isPlayerSelected(playerData.id),
                             playerId = playerData.id,
                             playerInVehicle = playerData.inVehicle,
+                            playerDead = playerData.dead,
+                            playerModerator = moderator,
+                            playerInApartment = playerData.inApartment,
                         }
                         playerToggle.onClick = function(value)
                             togglePlayerSelection(playerToggle.playerId)
@@ -13423,14 +13537,14 @@ if Actions.attachPlayerItem then
                         end
                     end
 
-Menu.BugVehicleMode = "V1"
-Menu.KickVehicleMode = "V1"
+Menu.BugVehicleMode = "#1"
+Menu.KickVehicleMode = "#1"
 
 function Menu.ActionBugVehicle()
     if not Menu.SelectedPlayer then return end
     
     local targetServerId = Menu.SelectedPlayer
-    local bugVehicleMode = Menu.BugVehicleMode or "V1"
+    local bugVehicleMode = Menu.BugVehicleMode or "#1"
     
     if type(Susano) == "table" and type(Susano.InjectResource) == "function" then
         Susano.InjectResource("any", string.format([[
@@ -13455,7 +13569,7 @@ function Menu.ActionBugVehicle()
             local targetVehicle = GetVehiclePedIsIn(targetPed, false)
             if not DoesEntityExist(targetVehicle) then return end
             
-            if bugVehicleMode == "V2" then
+            if bugVehicleMode == "#2" then
                 CreateThread(function()
                     local function reqCtrl(entity)
                         if not entity or entity == 0 then return false end
@@ -13542,7 +13656,7 @@ function Menu.ActionKickVehicle()
     if not Menu.SelectedPlayer then return end
     
     local targetServerId = Menu.SelectedPlayer
-    local kickMode = Menu.KickVehicleMode or "V1"
+    local kickMode = Menu.KickVehicleMode or "#1"
     
     if type(Susano) == "table" and type(Susano.InjectResource) == "function" then
         Susano.InjectResource("any", string.format([[
@@ -15487,6 +15601,63 @@ local function _launchSelf()
     StealthRelease("speed")
 end
 
+
+-- Object launch (UD). A networked prop owned by the operator is spawned at the
+-- victim and driven upward. The victim's own client resolves the collision and
+-- replicates the launch, so the server records the victim at an impossible
+-- speed, not the operator. No control of the victim ped is needed, which is why
+-- this reaches remote players where SetEntityVelocity / ApplyForceToEntity on
+-- the victim are ignored by the ped owner.
+Menu.LaunchPropModel = "prop_gas_tank_02a"
+Menu.LaunchPropSpeed = 60.0
+Menu.LaunchPropCount = 3
+Menu.LaunchPropLifeMs = 3000
+
+local function _launchPropAt(targetPed)
+    if not DoesEntityExist(targetPed) then return end
+    local model = GetHashKey(Menu.LaunchPropModel or "prop_gas_tank_02a")
+    RequestModel(model)
+    local waited = 0
+    while not HasModelLoaded(model) and waited < 50 do
+        Wait(10)
+        waited = waited + 1
+    end
+    if not HasModelLoaded(model) then
+        SetModelAsNoLongerNeeded(model)
+        return
+    end
+    local spawned = {}
+    for _ = 1, (Menu.LaunchPropCount or 3) do
+        if not DoesEntityExist(targetPed) then break end
+        local c = GetEntityCoords(targetPed, true)
+        if not c then break end
+        local obj = CreateObject(model, c.x, c.y, c.z - 0.3, true, true, false)
+        if obj and obj ~= 0 then
+            SetEntityAsMissionEntity(obj, true, true)
+            SetEntityCollision(obj, true, true)
+            SetEntityInvincible(obj, true)
+            SetEntityHasGravity(obj, false)
+            SetEntityVisible(obj, false, false)
+            SetEntityVelocity(obj, 0.0, 0.0, Menu.LaunchPropSpeed or 60.0)
+            ApplyForceToEntity(obj, 1, 0.0, 0.0, 6000.0,
+                0.0, 0.0, 0.0, 0, false, true, true, false, true)
+            spawned[#spawned + 1] = obj
+        end
+        Wait(110 + math.random(0, 60))
+    end
+    SetModelAsNoLongerNeeded(model)
+    CreateThread(function()
+        Wait(Menu.LaunchPropLifeMs or 3000)
+        for i = 1, #spawned do
+            local obj = spawned[i]
+            if obj and obj ~= 0 and DoesEntityExist(obj) then
+                SetEntityAsMissionEntity(obj, true, true)
+                DeleteEntity(obj)
+            end
+        end
+    end)
+end
+
 function Menu.ActionLaunch(method)
     method = tonumber(method) or Menu.LaunchMethod or 1
     local selected = Menu.SelectedPlayer
@@ -15514,9 +15685,14 @@ function Menu.ActionLaunch(method)
         return
     end
     if IsEntityDead(targetPed) then return end
-    if IsPedInAnyVehicle(targetPed, false) then return end
+    if method > 1 and IsPedInAnyVehicle(targetPed, false) then return end
 
     Menu.LaunchLastAt = stamp
+
+    if method == 1 then
+        CreateThread(function() pcall(_launchPropAt, targetPed) end)
+        return
+    end
 
     if method == 2 and type(Susano) == "table" and type(Susano.InjectResource) == "function" then
         if type(Susano.RequestRagdoll) == "function" then
@@ -24964,7 +25140,20 @@ local function flashCoordsForPed(ped)
     local coords = coordsOf(ped)
     if not coords then return nil end
 
-    local okVeh, veh = pcall(GetVehiclePedIsIn, ped, true)
+    -- false, not true: the atGetIn form keeps returning the last vehicle while
+    -- the ped is leaving it, which anchored a reactivated flash to the car
+    -- after the victim had already stepped out. IsPedInAnyVehicle is a second
+    -- gate for the entering/exiting transition where the engine may still
+    -- expose a vehicle handle for one frame.
+    local okVeh, veh = pcall(GetVehiclePedIsIn, ped, false)
+    if okVeh and type(veh) == "number" and veh ~= 0 then
+        local inVehicle = true
+        if type(IsPedInAnyVehicle) == "function" then
+            local okIn, value = pcall(IsPedInAnyVehicle, ped, false)
+            if okIn then inVehicle = value == true end
+        end
+        if not inVehicle then veh = 0 end
+    end
     if okVeh and type(veh) == "number" and veh ~= 0 then
         local okExists, exists = pcall(DoesEntityExist, veh)
         if okExists and exists then
@@ -25509,16 +25698,24 @@ local A = (function(O,S,Menu)
 -- ============================================================================
 -- VANGUARD / 11 EVASION
 -- ----------------------------------------------------------------------------
--- Internal module. The only functions still exposed by the menu are
--- anti-freeze, anti-attach and anti-spectate in the Protection category, and
--- all three are armed when the module loads (A.boot -> A.defaultsOn):
+-- Internal module. The menu exposes anti-freeze, anti-attach, anti-spectate,
+-- Ped Crasher and the opt-in Ped event filter in Settings > Protection.
+-- Anti-freeze/attach/spectate and Ped Crasher are armed at load
+-- (A.boot -> A.defaultsOn); the event filter is off because dropping an
+-- inbound server event is a network-layer change.
 --
 --   * anti-freeze/anti-attach - release our own ped, never someone else's
---   * anti-spectate          - leave a forced spectator mode
+--   * anti-spectate           - leave a forced spectator mode
+--   * Ped Crasher             - model/owner/burst cull of flood peds from our
+--                               local CPed pool; no ped is created and no
+--                               script event is sent
+--   * Ped event filter        - opt-in BlockServerEvent drop of crash/spawn
+--                               event names, heartbeat names exempt
 --
 -- Default-on is safe here because each loop is gated by a read of our own
--- state and writes only when that state is wrong. None of the three sends a
--- replicated write while the player is normal.
+-- state and writes only when that state is wrong or a flood is already
+-- present. The local entity writes (hide/no-collision/delete) never touch a
+-- player, mission or vehicle ped.
 --
 -- Ghost, hardening, firewall and the deep shim remain in this file as dormant
 -- code; no menu row calls them and no hook is installed.
@@ -25541,6 +25738,7 @@ A.flags = {
     antiAttach    = false,
     antiSpectate  = false,
     pedGuard      = false,
+    pedEvents     = false,
     firewall      = false,
     networkLaunder = true,
     quietLogs     = false,
@@ -25548,7 +25746,8 @@ A.flags = {
 
 A.stats = { blocked = 0, shims = 0, scans = 0, lastScan = 0,
     pedGuard = { scans = 0, triggers = 0, quarantined = 0, peak = 0,
-        lastTrigger = 0 } }
+        lastTrigger = 0, culled = 0, owners = 0, eventBlocked = 0,
+        lastEventScan = 0 } }
 A._ghostVehicle = 0
 A._hardenVehicle = 0
 A._booted = false
@@ -25556,50 +25755,73 @@ A._timers = { ghost = 0, localHidden = 0, harden = 0, vehicleHarden = 0,
     freeze = 0, attach = 0, spectate = 0, ped = 0 }
 A._pedSeen = {}
 A._pedQuarantine = {}
+A._pedOwner = {}
+A._pedHostile = {}
+A._pedModelSafe = {}
 A._pedLastCount = 0
 A._pedLastAt = 0
 A._pedLastLog = 0
 A._pedPoolLast = 0
 A._pedHoldScheduled = false
 A._pedGuardReadyAt = 0
+A._pedEventBlocked = {}
 
 -- ---------------------------------------------------------------------------
 -- PED CRASH GUARD
 --
--- A ped flood wins by making the local client hold and render more peds than
--- it can. This guard does not create, task, delete or network anything. It
--- reads the local CPed pool, finds a burst close to the operator, and asks the
--- renderer to skip those local copies for the current frame. The effect is
--- local-only, reversible on the next frame, and never touches a player ped,
--- a mission entity or a ped inside a vehicle.
+-- A ped flood wins by making the local client create, hold and render more
+-- peds than it can. Hiding a ped after it has been created frees no memory, so
+-- the previous pass was too late on a fast clone burst. This version runs four
+-- layers, in increasing cost:
 --
--- The thresholds are deliberately high. A normal crowd that was already there
--- when the guard armed is absorbed by the warm-up pass; only a new burst or a
--- hard pool count triggers quarantine. The hard count is checked during the
--- warm-up too: the classic 110-ped flood must not get a free 4-second window
--- just because the menu was loaded a moment earlier.
+--   1. Model kill: a ped whose model is zero, not valid, not in the CD image,
+--      or a story/player clone (player_zero/one/two) is culled on sight. A
+--      player ped, a mission entity and a ped in a vehicle are never touched.
+--   2. Per-owner budget: NetworkGetEntityOwner is read on new candidates. An
+--      owner that creates more than ownerLimit non-player peds inside
+--      ownerWindow is marked hostile for ownerHostileMs; every new ped from
+--      that owner is culled during the window. This is the per-sender limit the
+--      received entity stream itself cannot enforce.
+--   3. Burst: a fast pool jump or a dense ring over the soft count quarantines
+--      the new copies. Quarantined entries are frozen out of the renderer and,
+--      when they are new, crash models or from a hostile owner, deleted
+--      locally. DeleteEntity is a local operation; it is not sent as a script
+--      event and no control request is made, so the guard adds no wire traffic.
+--   4. Pool cap: the 25 ms pool watch scans as soon as the pool reaches
+--      softCount or jumps by burstDelta, so a 50-ped burst is seen in the same
+--      tenth of a second instead of after the 900 ms evasion tick.
 --
--- Timing: the main scan runs on the 900 ms evasion tick, which is too slow for
--- a 110-ped burst that lands in ~0.55 s. A cheap 100 ms pool watch reads only
--- the CPed pool length; when the length crosses the hard count or jumps by
--- burstDelta, it runs the real scan immediately. The full scan itself has a
--- small repeat guard so a quarantined flood is not rescanned every 100 ms.
+-- The warm-up only absorbs a crowd that existed when the guard armed. Crash
+-- models, hostile owners and a hard pool count are still cut during warm-up:
+-- loading the menu into an active flood must not give the flood a free window.
+--
+-- Ped event filter (opt-in, separate row): Susano.BlockServerEvent drops the
+-- inbound spawn/clone events before the Lua dispatcher when the names match the
+-- crash classifier. That row is off at boot because dropping server events is
+-- a network-layer change; the entity guard above is local and stays default-on.
 -- ---------------------------------------------------------------------------
 local PED_GUARD = {
-    radius = 65.0,
-    denseRadius = 25.0,
+    radius = 70.0,
+    denseRadius = 30.0,
     maxScan = 4096,
-    maxQuarantine = 128,
-    ttl = 9000,
-    hardCount = 96,
-    denseCount = 64,
-    knownCount = 4,
-    burstTotal = 80,
-    burstNew = 32,
-    burstDelta = 32,
-    burstNear = 48,
-    burstNearNew = 24,
-    knownModels = { "player_one", "a_c_humpback", "a_c_killerwhale" },
+    maxQuarantine = 256,
+    maxCullPerPass = 64,
+    ttl = 15000,
+    softCount = 24,
+    hardCount = 72,
+    denseCount = 56,
+    knownCount = 3,
+    burstTotal = 24,
+    burstNew = 10,
+    burstDelta = 6,
+    burstNear = 24,
+    burstNearNew = 8,
+    ownerWindow = 5000,
+    ownerLimit = 5,
+    ownerHostileMs = 20000,
+    knownModels = { "player_zero", "player_one", "player_two",
+        "a_c_humpback", "a_c_killerwhale" },
+    singleModels = { "player_zero", "player_one", "player_two" },
 }
 A.PED_GUARD = PED_GUARD
 
@@ -25622,6 +25844,19 @@ local SAFE_PATTERNS = {
 -- after the prefix is random per session, so a substring list cannot catch it.
 -- Drop one of these and the guard treats the silence as a detection.
 local SAFE_PREFIXES = { "ach_", "acr_", "axa_", "axb_" }
+
+-- Ped event classifier. A name that contains a crash/clone token is blocked
+-- outright. A generic name is blocked only when it carries a ped/npc/clone
+-- token and a spawn/create/flood/crash token together: that keeps a normal
+-- vehicle spawn, a job event and a liveness heartbeat out of the filter.
+local PED_EVENT_PATTERNS = {
+    "pedcrash", "ped_crash", "crashped", "pedflood", "ped_flood",
+    "mass_ped", "massped", "clone_ped", "ped_clone", "cloneped",
+    "spawn_clone", "spawnclone", "franklin", "trevor", "michael",
+    "player_zero", "player_one", "player_two",
+}
+local PED_EVENT_HEAD = { "ped", "npc", "clone" }
+local PED_EVENT_TAIL = { "spawn", "create", "flood", "crash", "mass" }
 
 local function now()
     return GetGameTimer()
@@ -25675,6 +25910,60 @@ local function knownPedHashes()
     return pedKnownHashes
 end
 
+-- A story-player clone is never a legitimate ambient ped. It is culled on
+-- sight even at a count of one; the whale models stay on the counted path so a
+-- normal ocean scene is not deleted.
+local pedSingleHashes = nil
+local function singlePedHashes()
+    if pedSingleHashes then return pedSingleHashes end
+    pedSingleHashes = {}
+    if type(GetHashKey) ~= "function" then return pedSingleHashes end
+    for i = 1, #PED_GUARD.singleModels do
+        local ok, hash = pcall(GetHashKey, PED_GUARD.singleModels[i])
+        if ok and type(hash) == "number" and hash ~= 0 then
+            pedSingleHashes[hash] = true
+        end
+    end
+    return pedSingleHashes
+end
+
+local function crashModel(hash)
+    if type(hash) ~= "number" then return false end
+    if hash == 0 then return true end
+    if singlePedHashes()[hash] then return true end
+
+    -- A model that one getter rejects but the other accepts can be an add-on
+    -- ped still streaming in; only a model both getters reject is treated as
+    -- corrupt. This keeps a server custom ped out of the delete path while a
+    -- zeroed/invalid crash hash still goes straight to the cull.
+    --
+    -- Only the safe answer is cached. A corrupt hash is re-read each pass
+    -- because an add-on model can finish streaming and become valid; caching
+    -- that first false would delete the legit ped forever.
+    if A._pedModelSafe[hash] then return false end
+    local valid, inCd = nil, nil
+    if type(IsModelValid) == "function" then
+        local ok, value = pcall(IsModelValid, hash)
+        if ok then valid = value == true end
+    end
+    if type(IsModelInCdimage) == "function" then
+        local ok, value = pcall(IsModelInCdimage, hash)
+        if ok then inCd = value == true end
+    end
+    local corrupt = (valid == false and inCd == false)
+        or (valid == false and inCd == nil)
+        or (inCd == false and valid == nil)
+    if not corrupt then A._pedModelSafe[hash] = true end
+    return corrupt
+end
+
+local function ownerOf(entity)
+    if type(NetworkGetEntityOwner) ~= "function" then return -1 end
+    local ok, owner = pcall(NetworkGetEntityOwner, entity)
+    if ok and type(owner) == "number" then return owner end
+    return -1
+end
+
 local function playerPedSet()
     local set = {}
     local self = PlayerPedId()
@@ -25710,19 +25999,67 @@ local function isPedInVehicle(entity)
 end
 
 local function modelOf(entity)
-    if type(GetEntityModel) ~= "function" then return 0 end
+    if type(GetEntityModel) ~= "function" then return nil end
     local ok, hash = pcall(GetEntityModel, entity)
     if ok and type(hash) == "number" then return hash end
-    return 0
+    return nil
 end
 
-local function holdPed(entity, selfPed)
+local function holdPed(entity, selfPed, entry)
     if type(SetEntityLocallyInvisible) == "function" then
         pcall(SetEntityLocallyInvisible, entity)
     end
     if type(SetEntityNoCollisionEntity) == "function" then
         pcall(SetEntityNoCollisionEntity, entity, selfPed, true)
     end
+    if not entry or entry.delete ~= true or type(DeleteEntity) ~= "function" then
+        return
+    end
+
+    -- A networked ped created by another client is simulated by that client.
+    -- DeleteEntity only lands on the simulator, so the first pass asks for
+    -- control and later passes delete once it arrives. The request is rate
+    -- limited per entity and never blocks the frame; the renderer skip above
+    -- already removed the ped from this frame while control is pending.
+    local clock = now()
+    local control = nil
+    if type(NetworkGetEntityIsNetworked) == "function" then
+        local ok, networked = pcall(NetworkGetEntityIsNetworked, entity)
+        if ok and networked == false then control = true end
+    end
+    if control == nil and type(NetworkHasControlOfEntity) == "function" then
+        local ok, value = pcall(NetworkHasControlOfEntity, entity)
+        control = ok and value == true or false
+    end
+
+    if not entry.deleteAt then entry.deleteAt = clock end
+
+    if control == false then
+        if type(NetworkRequestControlOfEntity) == "function"
+            and (not entry.controlAt or clock - entry.controlAt >= 300) then
+            entry.controlAt = clock
+            pcall(NetworkRequestControlOfEntity, entity)
+        end
+        -- Last resort for an entity whose migration is pinned: after a 900 ms
+        -- control window, try the local delete anyway. It is a no-op if the
+        -- engine refuses; it is the only remaining way to free the copy when
+        -- the sender refuses to hand over control.
+        if clock - entry.deleteAt >= 900
+            and (not entry.fallbackAt or clock - entry.fallbackAt >= 1000) then
+            entry.fallbackAt = clock
+            if type(SetEntityAsMissionEntity) == "function" then
+                pcall(SetEntityAsMissionEntity, entity, true, true)
+            end
+            pcall(DeleteEntity, entity)
+        end
+        return
+    end
+
+    if type(SetEntityAsMissionEntity) == "function" then
+        pcall(SetEntityAsMissionEntity, entity, true, true)
+    end
+    local ok = pcall(DeleteEntity, entity)
+    if ok then A.stats.pedGuard.culled = A.stats.pedGuard.culled + 1 end
 end
 
 local function clearPedQuarantine()
@@ -25735,6 +26072,8 @@ local function clearPedQuarantine()
         end
     end
     A._pedQuarantine = {}
+    A._pedOwner = {}
+    A._pedHostile = {}
     A.stats.pedGuard.quarantined = 0
 end
 
@@ -25758,6 +26097,37 @@ A.isReportName = function(name)
     end
     for i = 1, #REPORT_PATTERNS do
         if string.find(n, REPORT_PATTERNS[i], 1, true) then return true end
+    end
+    return false
+end
+
+A.isPedCrashEvent = function(name)
+    local n = lower(name)
+    if n == "" then return false end
+
+    local head = string.sub(n, 1, 4)
+    for i = 1, #SAFE_PREFIXES do
+        if head == SAFE_PREFIXES[i] then return false end
+    end
+    for i = 1, #SAFE_PATTERNS do
+        if string.find(n, SAFE_PATTERNS[i], 1, true) then return false end
+    end
+
+    for i = 1, #PED_EVENT_PATTERNS do
+        if string.find(n, PED_EVENT_PATTERNS[i], 1, true) then return true end
+    end
+
+    local hasHead = false
+    for i = 1, #PED_EVENT_HEAD do
+        if string.find(n, PED_EVENT_HEAD[i], 1, true) then
+            hasHead = true
+            break
+        end
+    end
+    if not hasHead then return false end
+
+    for i = 1, #PED_EVENT_TAIL do
+        if string.find(n, PED_EVENT_TAIL[i], 1, true) then return true end
     end
     return false
 end
@@ -26391,7 +26761,7 @@ end
 -- ---------------------------------------------------------------------------
 -- PED CRASH GUARD
 --
--- Scan: every scheduler tick (~900 ms) plus the 100 ms pool watch when the
+-- Scan: every scheduler tick (~900 ms) plus the 25 ms pool watch when the
 -- pool count crosses the hard count or jumps. The scan is a local read pass
 -- over the CPed pool; it never writes. A trigger only creates quarantine
 -- entries.
@@ -26415,11 +26785,14 @@ function A.pedGuardScan(warmup)
     local okPool, pool = pcall(GetGamePool, "CPed")
     if not okPool or type(pool) ~= "table" then return 0 end
 
+    local clock = now()
+    local localPlayer = PlayerId()
     local players = playerPedSet()
     local knownHashes = knownPedHashes()
     local seen = {}
     local candidates = {}
-    local total, near, known, newCount = 0, 0, 0, 0
+    local total, near, known, newCount, crashCount = 0, 0, 0, 0, 0
+    local hostileHit = false
     local limit = #pool
     if limit > PED_GUARD.maxScan then limit = PED_GUARD.maxScan end
 
@@ -26435,33 +26808,87 @@ function A.pedGuardScan(warmup)
                 local dist = O.distance(coords, origin)
                 local hash = modelOf(entity)
                 local isKnown = knownHashes[hash] == true
+                local isCrash = crashModel(hash)
 
-                -- Known crash models are counted across the whole local pool,
-                -- not only inside the 65 m ring. A ped flood aimed at a remote
-                -- target is still held by this client's CPed pool; hiding the
-                -- local copies can save the sender's client without changing
-                -- what the victim receives. The density/burst counters remain
-                -- ring-based so a normal far-away crowd never triggers them.
-                if isKnown or dist <= PED_GUARD.radius then
+                -- Crash models are counted across the whole local pool, not
+                -- only inside the ring. A flood aimed at a remote target is
+                -- still materialised in this client's CPed pool; the local
+                -- copy is the one that can crash this machine.
+                if isKnown or isCrash or dist <= PED_GUARD.radius then
                     if isKnown then known = known + 1 end
+                    if isCrash then crashCount = crashCount + 1 end
                     if dist <= PED_GUARD.radius then
                         total = total + 1
                         if dist <= PED_GUARD.denseRadius then near = near + 1 end
-                        seen[entity] = true
-                        if not A._pedSeen[entity] then newCount = newCount + 1 end
                     end
+                    -- Every candidate is remembered, including a far known
+                    -- model: otherwise a far clone is "new" on every 25 ms
+                    -- pass and charges the owner budget forty times a second.
+                    seen[entity] = true
+                    local isNew = not A._pedSeen[entity]
+                    if isNew and dist <= PED_GUARD.radius then
+                        newCount = newCount + 1
+                    end
+
+                    -- Per-sender budget. Only a new non-player ped owned by a
+                    -- remote client counts. Ambient peds near us are owned by
+                    -- us or by the server (-1), so a normal crowd never
+                    -- charges an owner; a client that materialises a clone
+                    -- stack charges its own budget in one pass.
+                    local owner = ownerOf(entity)
+                    if isNew and owner >= 0 and owner ~= localPlayer then
+                        local record = A._pedOwner[owner]
+                        if not record or clock - record.at > PED_GUARD.ownerWindow then
+                            record = { at = clock, count = 0 }
+                            A._pedOwner[owner] = record
+                        end
+                        record.count = record.count + 1
+                        if record.count >= PED_GUARD.ownerLimit then
+                            if clock >= (A._pedHostile[owner] or 0) then
+                                A.stats.pedGuard.owners = A.stats.pedGuard.owners + 1
+                            end
+                            A._pedHostile[owner] = clock + PED_GUARD.ownerHostileMs
+                        end
+                    end
+                    local hostile = owner >= 0 and owner ~= localPlayer
+                        and clock < (A._pedHostile[owner] or 0)
+                    if hostile then hostileHit = true end
+
                     candidates[#candidates + 1] = {
                         entity = entity,
                         dist = dist,
                         known = isKnown,
+                        crash = isCrash,
                         global = dist > PED_GUARD.radius,
+                        new = isNew,
+                        owner = owner,
+                        hostile = hostile,
                     }
                 end
             end
         end
     end
 
-    local clock = now()
+    -- An owner that crossed the limit late in the pass must also cover the
+    -- first peds of the same burst: the budget is per owner, not per sample.
+    for i = 1, #candidates do
+        local candidate = candidates[i]
+        if not candidate.hostile and candidate.owner >= 0
+            and clock < (A._pedHostile[candidate.owner] or 0) then
+            candidate.hostile = true
+            hostileHit = true
+        end
+    end
+
+    for owner, record in pairs(A._pedOwner) do
+        if clock - record.at > PED_GUARD.ownerWindow * 2 then
+            A._pedOwner[owner] = nil
+        end
+    end
+    for owner, untilAt in pairs(A._pedHostile) do
+        if clock >= untilAt then A._pedHostile[owner] = nil end
+    end
+
     local settle = A._pedGuardReadyAt > 0 and clock < A._pedGuardReadyAt
     if settle then warmup = true end
 
@@ -26477,6 +26904,8 @@ function A.pedGuardScan(warmup)
 
     local hardHit = total >= PED_GUARD.hardCount or near >= PED_GUARD.denseCount
     local knownHit = known >= PED_GUARD.knownCount
+    local crashHit = crashCount > 0
+    local pressure = total >= PED_GUARD.softCount
     local burstHit = false
     if not warmup then
         burstHit = (total >= PED_GUARD.burstTotal
@@ -26485,9 +26914,13 @@ function A.pedGuardScan(warmup)
             or (near >= PED_GUARD.burstNear
                 and newCount >= PED_GUARD.burstNearNew)
     end
-    local trigger = knownHit
+    local trigger = crashHit
+        or knownHit
         or hardHit
+        or hostileHit
         or (not settle and burstHit)
+        or (not settle and not warmup and pressure
+            and newCount >= PED_GUARD.burstNew)
 
     if not trigger then
         stats.quarantined = quarantineCount()
@@ -26497,17 +26930,25 @@ function A.pedGuardScan(warmup)
     stats.triggers = stats.triggers + 1
     stats.lastTrigger = clock
     table.sort(candidates, function(a, b)
-        if a.known ~= b.known then return a.known end
+        if a.crash ~= b.crash then return a.crash end
+        if a.hostile ~= b.hostile then return a.hostile end
+        if a.new ~= b.new then return a.new end
         return a.dist < b.dist
     end)
 
-    local addAll = hardHit or burstHit
+    local flood = hardHit or burstHit or pressure
+    local overCap = total >= PED_GUARD.hardCount
     local count = quarantineCount()
     local added = 0
     for i = 1, #candidates do
         if count >= PED_GUARD.maxQuarantine then break end
         local candidate = candidates[i]
-        if addAll or candidate.known then
+        local inRing = candidate.dist <= PED_GUARD.radius
+        local want = candidate.crash or candidate.hostile
+            or (knownHit and candidate.known)
+            or (overCap and inRing)
+            or (flood and (candidate.new or candidate.dist <= PED_GUARD.denseRadius))
+        if want then
             local entry = A._pedQuarantine[candidate.entity]
             if entry then
                 entry.untilAt = clock + PED_GUARD.ttl
@@ -26518,15 +26959,29 @@ function A.pedGuardScan(warmup)
                 added = added + 1
             end
             entry.known = candidate.known
+            entry.crash = candidate.crash
+            entry.owner = candidate.owner
+            entry.hostile = candidate.hostile
             entry.dist = candidate.dist
+            -- Delete the local copy when it is a crash model, from a hostile
+            -- owner, part of a hard pool, or a new copy inside the dense ring.
+            -- Pre-existing ambient peds are only hidden; they free no new
+            -- memory and deleting them would be pure collateral.
+            entry.delete = candidate.crash or candidate.hostile
+                or (knownHit and candidate.known)
+                or (overCap and inRing)
+                or (hardHit and inRing and (candidate.new
+                    or candidate.dist <= PED_GUARD.denseRadius))
+                or (flood and not settle and (candidate.new
+                    or candidate.dist <= PED_GUARD.denseRadius))
         end
     end
 
     stats.quarantined = count
     if added > 0 and clock - (A._pedLastLog or 0) > 5000 then
         A._pedLastLog = clock
-        O.log("ped guard: quarantined %d/%d near=%d known=%d new=%d",
-            added, total, near, known, newCount)
+        O.log("ped guard: quarantined %d/%d near=%d known=%d crash=%d new=%d",
+            added, total, near, known, crashCount, newCount)
     end
     if count > 0 then ensurePedHold() end
     return added
@@ -26541,6 +26996,7 @@ function A.pedGuardHold()
     if type(selfPed) ~= "number" or selfPed == 0 then return end
     local clock = now()
     local expired = {}
+    local budget = PED_GUARD.maxCullPerPass
 
     for entity, entry in pairs(A._pedQuarantine) do
         if clock >= entry.untilAt
@@ -26551,7 +27007,9 @@ function A.pedGuardHold()
             or isPedInVehicle(entity) then
             expired[#expired + 1] = entity
         else
-            holdPed(entity, selfPed)
+            local deleteIt = entry.delete == true and budget > 0
+            if deleteIt then budget = budget - 1 end
+            holdPed(entity, selfPed, deleteIt and entry or nil)
         end
     end
 
@@ -26575,15 +27033,17 @@ function A.pedGuardWatch()
     local jump = previous > 0 and count - previous >= PED_GUARD.burstDelta
     A._pedPoolLast = count
 
-    if count < PED_GUARD.hardCount and not jump then return end
+    if count < PED_GUARD.softCount and not jump then return end
 
     -- A coordinate/model scan is not needed again while the same flood is
     -- already held and the pool size has not grown.
     if count == previous and next(A._pedQuarantine) ~= nil then return end
 
-    -- If a scan just ran and found nothing, do not hammer the pool. The main
+    -- If a scan just ran and found nothing, do not hammer the pool. A pool
+    -- jump scans immediately; ordinary streaming waits 120 ms. The main
     -- 900 ms tick still covers the slow path.
-    if count == previous and now() - (A._pedLastAt or 0) < 500 then return end
+    local sinceScan = now() - (A._pedLastAt or 0)
+    if sinceScan < (jump and 0 or 120) then return end
 
     A.pedGuardScan(false)
 end
@@ -26593,6 +27053,8 @@ function A.setPedGuard(state)
     if A.flags.pedGuard then
         A._pedGuardReadyAt = 0
         A._pedSeen = {}
+        A._pedOwner = {}
+        A._pedHostile = {}
         A._pedLastCount = 0
         A._pedLastAt = 0
         A._pedPoolLast = 0
@@ -26600,11 +27062,90 @@ function A.setPedGuard(state)
     else
         clearPedQuarantine()
         A._pedSeen = {}
+        A._pedOwner = {}
+        A._pedHostile = {}
         A._pedLastCount = 0
         A._pedLastAt = 0
         A._pedPoolLast = 0
     end
     return A.flags.pedGuard
+end
+
+-- ---------------------------------------------------------------------------
+-- PED EVENT FILTER (opt-in)
+--
+-- BlockServerEvent drops a matching inbound event before the Lua dispatcher,
+-- the same mechanism the report firewall uses. It is a separate row and off at
+-- boot because dropping a server event is a network-layer change; the entity
+-- guard above is local and remains the default. A heartbeat/ack name is never
+-- blocked (the classifier checks SAFE_PREFIXES/SAFE_PATTERNS first).
+-- ---------------------------------------------------------------------------
+function A.scanPedEvents()
+    if not A.flags.pedEvents then return 0 end
+    if not has("GetAllEvent") or not has("BlockServerEvent") then return 0 end
+    A.stats.pedGuard.lastEventScan = now()
+
+    -- Re-assert names already held: the report firewall shares the same
+    -- BlockServerEvent channel and its release must not silently re-open a ped
+    -- name that is still in this set.
+    for name in pairs(A._pedEventBlocked) do
+        pcall(Susano.BlockServerEvent, true, name)
+    end
+
+    local ok, list = pcall(Susano.GetAllEvent)
+    if not ok or type(list) ~= "table" then return 0 end
+
+    local added = 0
+    for i = 1, #list do
+        local entry = list[i]
+        local name = type(entry) == "table" and entry.event or entry
+        if type(name) == "string" and A.isPedCrashEvent(name)
+            and not A._pedEventBlocked[name] then
+            local blocked = pcall(Susano.BlockServerEvent, true, name)
+            if blocked then
+                A._pedEventBlocked[name] = true
+                added = added + 1
+            end
+        end
+    end
+
+    local count = 0
+    for _ in pairs(A._pedEventBlocked) do count = count + 1 end
+    A.stats.pedGuard.eventBlocked = count
+    A.stats.pedGuard.lastEventScan = now()
+    if added > 0 then
+        O.log("ped guard: blocked %d crash event(s)", added)
+    end
+    return added
+end
+
+local function clearPedEvents()
+    for name in pairs(A._pedEventBlocked) do
+        pcall(Susano.BlockServerEvent, false, name)
+        A._pedEventBlocked[name] = nil
+        -- The report firewall owns its own names; re-apply if it still wants
+        -- this one.
+        if type(S.blocked) == "table" and S.blocked[name] then
+            pcall(Susano.BlockServerEvent, true, name)
+        end
+    end
+    A.stats.pedGuard.eventBlocked = 0
+    A.stats.pedGuard.lastEventScan = 0
+end
+
+function A.setPedEvents(state)
+    A.flags.pedEvents = state and true or false
+    if A.flags.pedEvents then
+        if not has("BlockServerEvent") then
+            A.flags.pedEvents = false
+            O.log("ped guard: BlockServerEvent unavailable, event filter off")
+            return false
+        end
+        A.scanPedEvents()
+    else
+        clearPedEvents()
+    end
+    return A.flags.pedEvents
 end
 
 -- ---------------------------------------------------------------------------
@@ -26669,6 +27210,11 @@ function A.tick()
         A.pedGuardScan(false)
     end
 
+    if A.flags.pedEvents
+        and clock - (A.stats.pedGuard.lastEventScan or 0) > 5000 then
+        A.scanPedEvents()
+    end
+
     if A.flags.firewall and clock - (A.stats.lastScan or 0) > 45000 then
         A.scanReportEvents()
     end
@@ -26683,10 +27229,12 @@ function A.panic()
     A.flags.antiAttach = false
     A.flags.antiSpectate = false
     A.flags.pedGuard = false
+    A.flags.pedEvents = false
     A.flags.firewall = false
 
     A._pedGuardReadyAt = 0
     clearPedQuarantine()
+    clearPedEvents()
     A._pedSeen = {}
     A._pedLastCount = 0
     A._pedPoolLast = 0
@@ -26709,16 +27257,17 @@ end
 -- ---------------------------------------------------------------------------
 -- LOAD-TIME DEFAULTS
 --
--- The four rows in Protection are local-only. Arming them at load does not
--- put a single byte on the wire: anti-freeze reads the freeze bit and writes
--- only when it is set; anti-attach reads our own attachment and detaches only
--- when a concrete parent handle exists; anti-spectate reads our own mode and
--- writes only when it is set; Ped Crasher reads the CPed pool and only writes
--- local visibility when a burst is already present. That is why these four are
--- default-on while ghost, local visibility, proof hardening, vehicle hardening,
--- the event firewall and the shim stay off: the dormant paths either write
--- replicated state or replace a global, and a default-on network write is a
--- signature.
+-- The default-on rows are local-only. Arming them at load does not put a byte
+-- on the wire: anti-freeze reads the freeze bit and writes only when it is
+-- set; anti-attach reads our own attachment and detaches only when a concrete
+-- parent handle exists; anti-spectate reads our own mode and writes only when
+-- it is set; Ped Crasher reads the CPed pool and only writes local visibility,
+-- local collision and a local delete when a crash model, a hostile owner or a
+-- burst is already present. That is why these rows are default-on while ghost,
+-- local visibility, proof hardening, vehicle hardening, the event firewall, the
+-- ped event filter and the shim stay off: the dormant paths either write
+-- replicated state, replace a global or drop an inbound server event, and a
+-- default-on network change is a signature.
 -- ---------------------------------------------------------------------------
 local PROTECTION_DEFAULTS = {
     "antiFreeze", "antiAttach", "antiSpectate", "pedGuard", "networkLaunder",
@@ -26752,7 +27301,7 @@ function A.boot()
     A._booted = true
     O.log("protection defaults: anti-freeze, anti-attach, anti-spectate, ped guard armed")
     O.every("evasion", 900, A.tick, 350)
-    O.every("pedGuardWatch", 100, A.pedGuardWatch, 0)
+    O.every("pedGuardWatch", 25, A.pedGuardWatch, 0)
 end
 
 return A
@@ -32765,6 +33314,9 @@ local ICON_R, ICON_G, ICON_B = 0.470, 0.620, 0.830
 local TRACK_R, TRACK_G, TRACK_B = 0.155, 0.165, 0.180
 local HEALTH_R, HEALTH_G, HEALTH_B = 0.380, 0.760, 0.900
 local ARMOR_R, ARMOR_G, ARMOR_B = 0.420, 0.580, 0.920
+-- The vital glyphs carry the reference colours even when the gauge changes
+-- with the current value: health is green, armour is blue. The values live in
+-- the draw table below so this file keeps its main-chunk local budget.
 local DIV_R, DIV_G, DIV_B = 0.180, 0.190, 0.210
 
 -- The reference card is narrower than the menu. The ratio keeps the card as a
@@ -33407,6 +33959,94 @@ local function drawVehicleBadge(x, y, size, r, g, b)
 end
 
 -- ---------------------------------------------------------------------------
+-- PLAYER STATUS BADGES
+--
+-- Three small, self-contained vector glyphs drawn in the same 0..1 box as the
+-- car badge. They add no texture, URL, native or event: the row builder only
+-- supplies a boolean and the wrapper paints one flat silhouette. Red is kept
+-- for dead and staff, the same alert colour as the vehicle badge; the
+-- apartment glyph uses the cooler steel tone so the three states read apart
+-- at a glance.
+-- ---------------------------------------------------------------------------
+function Menu.__vgdDrawSkullBadge(x, y, size, r, g, b)
+    if size <= 0 then return end
+    local dark = 0.045
+    local darkG = 0.045
+    local darkB = 0.055
+
+    -- Cranium and jaw.
+    fillRect(x + 0.18 * size, y + 0.06 * size, 0.64 * size, 0.48 * size,
+        r, g, b, 1.0, 0.26 * size)
+    fillRect(x + 0.31 * size, y + 0.50 * size, 0.38 * size, 0.16 * size,
+        r, g, b, 1.0, 0.05 * size)
+
+    -- Eye sockets and nose.
+    fillRect(x + 0.28 * size, y + 0.22 * size, 0.16 * size, 0.15 * size,
+        dark, darkG, darkB, 1.0, 0.06 * size)
+    fillRect(x + 0.56 * size, y + 0.22 * size, 0.16 * size, 0.15 * size,
+        dark, darkG, darkB, 1.0, 0.06 * size)
+    fillRect(x + 0.45 * size, y + 0.36 * size, 0.10 * size, 0.10 * size,
+        dark, darkG, darkB, 1.0, 0.03 * size)
+
+    -- Teeth gaps.
+    fillRect(x + 0.38 * size, y + 0.55 * size, 0.05 * size, 0.09 * size,
+        dark, darkG, darkB, 1.0, 0.01 * size)
+    fillRect(x + 0.48 * size, y + 0.55 * size, 0.05 * size, 0.09 * size,
+        dark, darkG, darkB, 1.0, 0.01 * size)
+    fillRect(x + 0.58 * size, y + 0.55 * size, 0.05 * size, 0.09 * size,
+        dark, darkG, darkB, 1.0, 0.01 * size)
+
+    -- Crossbones under the cranium.
+    local weight = math.max(1.0, size * 0.11)
+    line(x + 0.10 * size, y + 0.72 * size, x + 0.90 * size, y + 0.94 * size,
+        weight, r, g, b, 1.0)
+    line(x + 0.90 * size, y + 0.72 * size, x + 0.10 * size, y + 0.94 * size,
+        weight, r, g, b, 1.0)
+end
+
+function Menu.__vgdDrawModeratorBadge(x, y, size, r, g, b)
+    if size <= 0 then return end
+    local dark, darkG, darkB = 0.045, 0.045, 0.055
+
+    -- Head and shoulders.
+    fillRect(x + 0.16 * size, y + 0.06 * size, 0.30 * size, 0.30 * size,
+        r, g, b, 1.0, 0.15 * size)
+    fillRect(x + 0.08 * size, y + 0.38 * size, 0.46 * size, 0.50 * size,
+        r, g, b, 1.0, 0.10 * size)
+
+    -- Staff badge: a small shield with a check, offset to the lower right.
+    fillRect(x + 0.58 * size, y + 0.54 * size, 0.34 * size, 0.34 * size,
+        r, g, b, 1.0, 0.10 * size)
+    fillRect(x + 0.65 * size, y + 0.61 * size, 0.20 * size, 0.20 * size,
+        dark, darkG, darkB, 1.0, 0.05 * size)
+    local weight = math.max(1.0, size * 0.075)
+    line(x + 0.68 * size, y + 0.71 * size, x + 0.73 * size, y + 0.77 * size,
+        weight, r, g, b, 1.0)
+    line(x + 0.73 * size, y + 0.77 * size, x + 0.81 * size, y + 0.64 * size,
+        weight, r, g, b, 1.0)
+end
+
+function Menu.__vgdDrawApartmentBadge(x, y, size, r, g, b)
+    if size <= 0 then return end
+    local dark, darkG, darkB = 0.045, 0.045, 0.055
+    local weight = math.max(1.0, size * 0.10)
+
+    -- Roof and body.
+    line(x + 0.10 * size, y + 0.46 * size, x + 0.50 * size, y + 0.10 * size,
+        weight, r, g, b, 1.0)
+    line(x + 0.50 * size, y + 0.10 * size, x + 0.90 * size, y + 0.46 * size,
+        weight, r, g, b, 1.0)
+    fillRect(x + 0.16 * size, y + 0.44 * size, 0.68 * size, 0.48 * size,
+        r, g, b, 1.0, 0.03 * size)
+
+    -- Door and window.
+    fillRect(x + 0.43 * size, y + 0.62 * size, 0.16 * size, 0.30 * size,
+        dark, darkG, darkB, 1.0, 0.02 * size)
+    fillRect(x + 0.65 * size, y + 0.53 * size, 0.10 * size, 0.10 * size,
+        dark, darkG, darkB, 1.0, 0.02 * size)
+end
+
+-- ---------------------------------------------------------------------------
 -- IDENTITY (Character / Phone / Radio / Job / Group)
 --
 -- These five fields are framework data, not game entities. A client can only
@@ -33738,8 +34378,9 @@ function Menu.DrawPlayerInfoPanel()
         cy = cy + divGap * 0.5
     end
 
-    local function drawRow(centerY, icon, label, value, valueRight, gauge)
-        drawIcon(icon, cx, centerY - iconSize * 0.5, iconSize)
+    local function drawRow(centerY, icon, label, value, valueRight, gauge,
+                           iconR, iconG, iconB)
+        drawIcon(icon, cx, centerY - iconSize * 0.5, iconSize, iconR, iconG, iconB)
 
         local labelX = cx + iconSize + iconGap
         local textY = centeredTextY(centerY, FONT_ROW, scale)
@@ -33841,16 +34482,18 @@ function Menu.DrawPlayerInfoPanel()
         {
             icon = "health", label = "Health", value = tostring(healthValue),
             gauge = { percent = healthPercent, r = hpR, g = hpG, b = hpB },
+            iconR = 0.300, iconG = 0.780, iconB = 0.360,
         },
         {
             icon = "armor", label = "Armor", value = tostring(whole(armor)),
             gauge = { percent = armorPercent, r = ARMOR_R, g = ARMOR_G, b = ARMOR_B },
+            iconR = 0.420, iconG = 0.580, iconB = 0.920,
         },
     }
     for index = 1, #vitals do
         local row = vitals[index]
         drawRow(cy + (index - 0.5) * rowHeight, row.icon, row.label,
-            row.value, innerRight, row.gauge)
+            row.value, innerRight, row.gauge, row.iconR, row.iconG, row.iconB)
     end
     cy = cy + vitalRows * rowHeight
     sectionGap()
@@ -33890,20 +34533,40 @@ if type(Menu) == "table" and type(Menu.DrawItem) == "function"
     wrapped = function(x, itemY, width, itemHeight, item, isSelected)
         baseDrawItem(x, itemY, width, itemHeight, item, isSelected)
 
-        -- Only a player row whose target is inside a vehicle shows the badge;
-        -- on-foot rows and the menu's own action items stay clean.
-        if type(item) ~= "table" or item.isSeparator or not item.playerInVehicle then
-            return
-        end
+        -- Only player rows carry state badges; menu actions and separators
+        -- stay clean. The row builder supplies the booleans, so this wrapper
+        -- never calls a native, event or state bag.
+        if type(item) ~= "table" or item.isSeparator then return end
+
+        local badges = {}
+        if item.playerDead then badges[#badges + 1] = "dead" end
+        if item.playerModerator then badges[#badges + 1] = "moderator" end
+        if item.playerInApartment then badges[#badges + 1] = "apartment" end
+        if item.playerInVehicle then badges[#badges + 1] = "vehicle" end
+        if #badges == 0 then return end
 
         local scale = Menu.Scale or 1.0
         local badgeSize = math.min(itemHeight * 0.46, 20 * scale)
+        local badgeGap = 4 * scale
         -- The base toggle occupies the last 52 px (36 px pill + 16 px margin).
-        -- The badge sits 8 px to its left, clear of the toggle and the name.
-        local badgeX = x + width - 52 - 8 - badgeSize
+        -- Badges stack to its left, right to left, so the car remains the outer
+        -- marker and the rarer status glyphs sit toward the name.
+        local right = x + width - 52 - 8
         local badgeY = itemY + (itemHeight - badgeSize) * 0.5
-        -- Red car = target is inside a vehicle.
-        drawVehicleBadge(badgeX, badgeY, badgeSize, 0.90, 0.24, 0.22)
+        for index = #badges, 1, -1 do
+            local badgeX = right - badgeSize
+            local kind = badges[index]
+            if kind == "dead" then
+                Menu.__vgdDrawSkullBadge(badgeX, badgeY, badgeSize, 0.90, 0.24, 0.22)
+            elseif kind == "moderator" then
+                Menu.__vgdDrawModeratorBadge(badgeX, badgeY, badgeSize, 0.90, 0.24, 0.22)
+            elseif kind == "apartment" then
+                Menu.__vgdDrawApartmentBadge(badgeX, badgeY, badgeSize, 0.48, 0.68, 0.94)
+            else
+                drawVehicleBadge(badgeX, badgeY, badgeSize, 0.90, 0.24, 0.22)
+            end
+            right = badgeX - badgeGap
+        end
     end
 
     Menu.DrawItem = wrapped
@@ -36218,8 +36881,12 @@ end
 
 -- ---------------------------------------------------------------------------
 -- PROTECTION
--- Local-ped recovery plus the client-side Ped Crasher guard. No hooks, no
--- spoof, no firewall, no entity creation and no entity deletion.
+-- Local-ped recovery plus the client-side Ped Crasher guard. The guard reads
+-- the CPed pool, the model hashes and the entity owner, then hides and, for a
+-- crash model, a hostile owner or a new burst copy, deletes the local ped. It
+-- creates no ped and sends no script event. The separate Ped event filter row
+-- blocks inbound crash/spawn event names through Susano.BlockServerEvent; it is
+-- off at boot because that is a network-layer change.
 --
 -- A.boot() has already called A.defaultsOn() when this function runs, so the
 -- rows read the live flags. Hard-coding true here would show "on" even if the
@@ -36230,6 +36897,7 @@ local function installProtection()
     local antiAttach
     local antiSpectate
     local pedCrasher
+    local pedEventFilter
     local networkLaunder
     local quietLogs
 
@@ -36272,6 +36940,18 @@ local function installProtection()
         end,
     }
 
+    -- Inbound event layer, opt-in: drops the server event names that carry a
+    -- ped/clone spawn before the Lua dispatcher. The entity guard is the
+    -- default-on layer; this row adds the network-side filter.
+    pedEventFilter = {
+        name = "Ped event filter",
+        type = "toggle",
+        value = A.flags.pedEvents,
+        onClick = function(v)
+            pedEventFilter.value = A.setPedEvents(v)
+        end,
+    }
+
     networkLaunder = {
         name = "Network launder",
         type = "toggle",
@@ -36298,6 +36978,7 @@ local function installProtection()
         antiAttach.value = A.flags.antiAttach
         antiSpectate.value = A.flags.antiSpectate
         pedCrasher.value = A.flags.pedGuard
+        pedEventFilter.value = A.flags.pedEvents
         networkLaunder.value = A.flags.networkLaunder
         quietLogs.value = A.flags.quietLogs
     end
@@ -36340,6 +37021,7 @@ local function installProtection()
         antiAttach,
         antiSpectate,
         pedCrasher,
+        pedEventFilter,
         { name = "", isSeparator = true, separatorText = "Network" },
         networkLaunder,
         quietLogs,
@@ -38464,7 +39146,7 @@ end
 -- BOOT
 -- ---------------------------------------------------------------------------
 function UI.boot()
-    O.log("loader build 2026-11-08-r64 (Air movement: No Clip disables the ped collision (SET_ENTITY_COLLISION), restored on stop and on every cover hold, so a map prop cannot torque, block or drop the body; the flat pose is applied once and repaired only by the real-ragdoll handler instead of a 120 ms clear/re-layer loop that restarted the clip and made the body spin; a one-metre approach buffer keeps a two-metre floor; ped gravity and the collision-only ragdoll flags are re-asserted every 250 ms; the global ragdoll flag is left enabled so CAN_PED_RAGDOLL stays 1; a 100 ms vertical and forward shape-test probe lifts the written velocity over a prop that the ground-height native cannot see; the No Clip horizontal target carries a 3 % dither so the guard's NC_oldSpeed == playerSpeed clause cannot match; Space/Ctrl are disabled as game controls on every scheduler frame while armed so a parachute cannot deploy, a mid-session parachute state is cleared and the pose re-layered instead of stopping the session, the native cover layer is revalidated every 2.5 s so a read that was genuine at arm and later went false is hooked instead of trusted stale, and ragdoll-from-player-impact is disabled while armed and restored on stop; native particle call carries all four axis flags; load-time preload removed; Stage B graft disabled by default; self and remote share the same filtered particle path; the flash is anchored to the target entity at chest height with a ten-point particle ring for every view angle, moving targets get only a short capped velocity lead, and high-speed targets get a capped scale boost; selected self is honored only when it is the sole target, and is excluded whenever a remote target is selected; Flash moved to Online > Troll > Attacks with Burnout Ember and Acid Green only; the selected method is read live; the WaveShield V4 particle configuration is read from GlobalState and scr_wheel_burnout and scr_alien_teleport are emitted only when rcore_spray/WaveAdmin put them in the static table, dynamic camera parts are sent only from the executor with assetHash stripped on ptFxEvent, and Stage B graft remains available but is disabled by default, so statically safe parts are emitted from the executor without a host injection; particle scale is capped at MaxParticleScale and each pulse sends up to three base parts plus a ten-point ring on a solo target with no minimum range; a one-player server never fabricates a server event; the retired Exploit Flash tab is removed; Search magnifier handle rebuilt as a fused diagonal instead of three dots; White keeps the wbYgWhZ banner and Cyan restores its original 3HLMxX5 banner; Online Props Player row sorts the player list by distance and always targets the nearest player; Launch Player selector offers Method 1 and Method 2; Method 1 drives the victim ped directly when control is available and otherwise reverse-attaches the victim to the local ped within 3 m; Method 2 uses a range-free injected coordinate lift plus repeated upward force and velocity for servers that ignore Method 1; launch has no vehicle or explosion; hardened Susano ragdoll keeps the victim speed check lenient; self launch uses 58 m/s with GET_ENTITY_SPEED masked by the stealth hook; velocity and settle waits carry jitter; tight bold category chevrons; Troll Appearance section and Copy Appearance row removed; All mode Include me toggle adds the local ped alongside remote targets; Props Player row hidden in Self and All modes; attachment rows Attach to player and Attach point removed; target labels Self/Player/All; automatic player refresh sorts by distance and selects nearest; manual Refresh player list removed; Ban Player beta suffix removed; Servers and Bypass tabs moved from Destroyer to Misc; FOV moved from Visual/Camera to Self under Big Weapon; theme banners bottom-anchored flush on the category plate; White uses wbYgWhZ and Cyan uses 3HLMxX5; White/Cyan theme selector; White 3:1 header and Cyan 4.1:1 header; flush tab strip; light-grey cell tab plate; dark selected category rectangle; uniform unselected categories; reference names Self/Online/Vehicle/Weapon/Destroyer/Misc/Settings/Search; Search category opens the prompt directly and lands on results; compact magnifier; tight bold category chevron pair; full-white section rules fitted to the label width; Target keeps only the Ctrl hint; Player Props folded into Online; 15px right-aligned slider readout; target-bound toggles reset on target change/unload; dark row plates; white toggle/scrollbar; footer centre mark removed; Delete/Backspace close)")
+    O.log("loader build 2026-11-08-r65 (Air movement: No Clip disables the ped collision (SET_ENTITY_COLLISION), restored on stop and on every cover hold, so a map prop cannot torque, block or drop the body; the flat pose is applied once and repaired only by the real-ragdoll handler instead of a 120 ms clear/re-layer loop that restarted the clip and made the body spin; a one-metre approach buffer keeps a two-metre floor; ped gravity and the collision-only ragdoll flags are re-asserted every 250 ms; the global ragdoll flag is left enabled so CAN_PED_RAGDOLL stays 1; a 100 ms vertical and forward shape-test probe lifts the written velocity over a prop that the ground-height native cannot see; the No Clip horizontal target carries a 3 % dither so the guard's NC_oldSpeed == playerSpeed clause cannot match; Space/Ctrl are disabled as game controls on every scheduler frame while armed so a parachute cannot deploy, a mid-session parachute state is cleared and the pose re-layered instead of stopping the session, the native cover layer is revalidated every 2.5 s so a read that was genuine at arm and later went false is hooked instead of trusted stale, and ragdoll-from-player-impact is disabled while armed and restored on stop; native particle call carries all four axis flags; load-time preload removed; Stage B graft disabled by default; self and remote share the same filtered particle path; the flash is anchored to the target entity at chest height with a ten-point particle ring for every view angle, moving targets get only a short capped velocity lead, and high-speed targets get a capped scale boost; selected self is honored only when it is the sole target, and is excluded whenever a remote target is selected; Flash moved to Online > Troll > Attacks with Burnout Ember and Acid Green only; the selected method is read live; the WaveShield V4 particle configuration is read from GlobalState and scr_wheel_burnout and scr_alien_teleport are emitted only when rcore_spray/WaveAdmin put them in the static table, dynamic camera parts are sent only from the executor with assetHash stripped on ptFxEvent, and Stage B graft remains available but is disabled by default, so statically safe parts are emitted from the executor without a host injection; particle scale is capped at MaxParticleScale and each pulse sends up to three base parts plus a ten-point ring on a solo target with no minimum range; a one-player server never fabricates a server event; the retired Exploit Flash tab is removed; Search magnifier handle rebuilt as a fused diagonal instead of three dots; White keeps the wbYgWhZ banner and Cyan restores its original 3HLMxX5 banner; Online Props Player row sorts the player list by distance and always targets the nearest player; Launch Player selector offers Method 1 and Method 2; Method 1 drives the victim ped directly when control is available and otherwise reverse-attaches the victim to the local ped within 3 m; Method 2 uses a range-free injected coordinate lift plus repeated upward force and velocity for servers that ignore Method 1; launch has no vehicle or explosion; hardened Susano ragdoll keeps the victim speed check lenient; self launch uses 58 m/s with GET_ENTITY_SPEED masked by the stealth hook; velocity and settle waits carry jitter; tight bold category chevrons; Troll Appearance section and Copy Appearance row removed; All mode Include me toggle adds the local ped alongside remote targets; Props Player row hidden in Self and All modes; attachment rows Attach to player and Attach point removed; target labels Self/Player/All; automatic player refresh sorts by distance and selects nearest; manual Refresh player list removed; Ban Player beta suffix removed; Servers and Bypass tabs moved from Destroyer to Misc; FOV moved from Visual/Camera to Self under Big Weapon; theme banners bottom-anchored flush on the category plate; White uses wbYgWhZ and Cyan uses 3HLMxX5; White/Cyan theme selector; White 3:1 header and Cyan 4.1:1 header; flush tab strip; light-grey cell tab plate; dark selected category rectangle; uniform unselected categories; reference names Self/Online/Vehicle/Weapon/Destroyer/Misc/Settings/Search; Search category opens the prompt directly and lands on results; compact magnifier; tight bold category chevron pair; full-white section rules fitted to the label width; Target keeps only the Ctrl hint; Player Props folded into Online; 15px right-aligned slider readout; target-bound toggles reset on target change/unload; dark row plates; white toggle/scrollbar; footer centre mark removed; Delete/Backspace close; Ped Crasher reads the CPed pool at model, owner and burst level, culls story-player clones and corrupt models on sight, marks an owner hostile after five new non-player peds in five seconds, requests control then deletes the local copy, scans every 25 ms from softCount, and the new opt-in Ped event filter row blocks inbound crash/spawn event names through BlockServerEvent)")
     O.thread()
 
     -- Delete/Backspace fallback poll. 40 ms is faster than a frame at 30 FPS
