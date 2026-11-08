@@ -32438,7 +32438,15 @@ pcall(loadIconTextures)
 -- ---------------------------------------------------------------------------
 local function drawIcon(name, x, y, size, cr, cg, cb)
     if size <= 0 then return end
-    local ir, ig, ib = cr or ICON_R, cg or ICON_G, cb or ICON_B
+    local ir, ig, ib = cr, cg, cb
+    if not ir then
+        local theme = type(Menu) == "table" and Menu.Colors and Menu.Colors.SelectedBg
+        if type(theme) == "table" and type(theme.r) == "number" then
+            ir, ig, ib = theme.r / 255, theme.g / 255, theme.b / 255
+        else
+            ir, ig, ib = ICON_R, ICON_G, ICON_B
+        end
+    end
 
     -- Material texture first: one tinted draw call instead of a primitive
     -- cluster. The texture is white with alpha, so r/g/b is the whole colour.
@@ -32914,7 +32922,8 @@ function Menu.DrawPlayerInfoPanel()
     end
 
     local function drawRow(centerY, icon, label, value, valueRight, gauge)
-        drawIcon(icon, cx, centerY - iconSize * 0.5, iconSize)
+        local rowIconSize = (icon == "vehicle") and (iconSize * 1.36) or iconSize
+        drawIcon(icon, cx, centerY - rowIconSize * 0.5, rowIconSize)
 
         local labelX = cx + iconSize + iconGap
         local textY = centeredTextY(centerY, FONT_ROW, scale)
@@ -33063,7 +33072,12 @@ if type(Menu) == "table" and type(Menu.DrawItem) == "function"
         -- The badge sits 8 px to its left, clear of the toggle and the name.
         local badgeX = x + width - 52 - 8 - badgeSize
         local badgeY = itemY + (itemHeight - badgeSize) * 0.5
-        drawVehicleBadge(badgeX, badgeY, badgeSize, 0.92, 0.36, 0.16)
+        local badgeTheme = type(Menu) == "table" and Menu.Colors and Menu.Colors.SelectedBg
+        local badgeR, badgeG, badgeB = 0.92, 0.36, 0.16
+        if type(badgeTheme) == "table" and type(badgeTheme.r) == "number" then
+            badgeR, badgeG, badgeB = badgeTheme.r / 255, badgeTheme.g / 255, badgeTheme.b / 255
+        end
+        drawVehicleBadge(badgeX, badgeY, badgeSize, badgeR, badgeG, badgeB)
     end
 
     Menu.DrawItem = wrapped
