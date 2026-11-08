@@ -13390,31 +13390,22 @@ CreateThread(function()
 end)
 
 -- ===========================================================================
--- BABAYAGA / POSITION CONTROL / ONE SHOT  (Online > Troll)
+-- BABAYAGA  (Online > Troll)
 -- ---------------------------------------------------------------------------
--- Babayaga arms three effects on the selected player in one click: the existing
--- Attach Player path pulls him to the front (the loop above already writes his
--- coordinates there every frame), Position Control keeps him held and re-takes
--- network control when it slips, and One Shot raises the local weapon damage
--- modifier so a single bullet is lethal.
+-- One click on the selected player. The target is placed directly in front of
+-- the local ped with the same heading, the local ped enters unarmed stealth
+-- and the native stealth-kill task is issued from a host resource VM. This is
+-- the exact task pair used by fbi4_prep2: TASK_STEALTH_KILL with
+-- AR_stealth_kill_a, followed by CLEAR_PED_TASKS on the victim. No weapon
+-- damage modifier and no synthetic damage event are involved.
 --
--- Stage A only. It reuses exactly the natives the attach loop above already
--- runs (GetEntityForwardVector, SetEntityCoordsNoOffset, SetEntityHeading),
--- the control pair already called directly elsewhere in this environment
--- (NetworkRequestControlOfEntity / NetworkHasControlOfEntity) and the weapon
--- modifier the Disable Weapon Damage row already uses. No injected chunk, no
--- network event, no Susano.* call: the effect rides the same local position
--- writes as the shipped Attach Player row, so it adds no new wire signature
--- and no new host-VM surface.
---
--- Position Control only sends a control request while it does not already own
--- the ped, so a steady hold costs no repeated traffic. Zeroing velocity stops
--- the victim walking out of the hold between coordinate writes.
+-- Stage A only owns target selection and Susano.InjectResource. The injected
+-- chunk is Stage B: it has no Susano.* access and uses only host globals and
+-- natives. It adds no asset, URL, event, or resource-scan surface.
 -- ===========================================================================
-Menu.PosCtrlTargets = Menu.PosCtrlTargets or {}
-Menu.OneShotEnabled = Menu.OneShotEnabled or false
-Menu.PosCtrlOffset = Menu.PosCtrlOffset or 1.0
-Menu.OneShotDamage = Menu.OneShotDamage or 100.0
+Menu.BabayagaTarget = Menu.BabayagaTarget or nil
+Menu.BabayagaToken = Menu.BabayagaToken or nil
+Menu.BabayagaOffset = Menu.BabayagaOffset or 0.95
 
 function Menu.PosCtrlResolve(serverId)
     if type(GetActivePlayers) ~= "function" then return nil, nil end
@@ -13445,108 +13436,97 @@ function Menu.BabayagaStart(serverId)
     if type(Susano) ~= "table" or type(Susano.InjectResource) ~= "function" then
         return
     end
+
     local code = string.format([[
         local targetServerId = %d
+        local offset = %.2f
         local loopKey = "vgd_babayaga_" .. targetServerId
         rawset(_G, loopKey, true)
 
+        local function findTargetPed()
+            for _, player in ipairs(GetActivePlayers()) do
+                if tonumber(GetPlayerServerId(player)) == targetServerId then
+                    return GetPlayerPed(player)
+                end
+            end
+            return 0
+        end
+
         CreateThread(function()
-            while rawget(_G, loopKey) do
-                Wait(0)
-                local me = PlayerPedId()
-                if not DoesEntityExist(me) then break end
+            local me = PlayerPedId()
+            if not DoesEntityExist(me) then rawset(_G, loopKey, false) return end
 
-                local targetPlayer = nil
-                for _, player in ipairs(GetActivePlayers()) do
-                    if tonumber(GetPlayerServerId(player)) == targetServerId then
-                        targetPlayer = player
-                        break
-                    end
-                end
-                if not targetPlayer then break end
+            local ped = findTargetPed()
+            if not ped or ped == 0 or ped == me or not DoesEntityExist(ped) then
+                rawset(_G, loopKey, false)
+                return
+            end
+            if type(IsPedDeadOrDying) == "function" and IsPedDeadOrDying(ped, true) then
+                rawset(_G, loopKey, false)
+                return
+            end
 
-                local ped = GetPlayerPed(targetPlayer)
-                if not ped or ped == 0 or not DoesEntityExist(ped) then break end
+            if type(NetworkRequestControlOfEntity) == "function" then
+                NetworkRequestControlOfEntity(ped)
+            end
+            if type(SetEntityVelocity) == "function" then
+                SetEntityVelocity(ped, 0.0, 0.0, 0.0)
+            end
 
-                if type(NetworkHasControlOfEntity) == "function"
-                    and type(NetworkRequestControlOfEntity) == "function"
-                    and not NetworkHasControlOfEntity(ped) then
-                    NetworkRequestControlOfEntity(ped)
-                end
+            local myCoords = GetEntityCoords(me)
+            local forward = GetEntityForwardVector(me)
+            if type(SetEntityCoordsNoOffset) == "function" then
+                SetEntityCoordsNoOffset(ped,
+                    myCoords.x + forward.x * offset,
+                    myCoords.y + forward.y * offset,
+                    myCoords.z + forward.z * offset,
+                    true, true, true)
+            end
+            if type(SetEntityHeading) == "function" then
+                SetEntityHeading(ped, GetEntityHeading(me))
+            end
 
-                local myCoords = GetEntityCoords(me)
-                local forward = GetEntityForwardVector(me)
-                if type(SetEntityVelocity) == "function" then
-                    SetEntityVelocity(ped, 0.0, 0.0, 0.0)
-                end
-                if type(SetEntityCoordsNoOffset) == "function" then
-                    SetEntityCoordsNoOffset(ped,
-                        myCoords.x + forward.x * 1.0,
-                        myCoords.y + forward.y * 1.0,
-                        myCoords.z + forward.z * 1.0,
-                        true, true, true)
-                end
-                if type(SetEntityHeading) == "function" then
-                    SetEntityHeading(ped, GetEntityHeading(me))
-                end
+            if type(SetPedStealthMovement) == "function" then
+                SetPedStealthMovement(me, true, 0)
+            end
+            if type(GiveWeaponToPed) == "function" then
+                GiveWeaponToPed(me, GetHashKey("WEAPON_UNARMED"), -1, true, true)
+            end
+            if type(SetCurrentPedWeapon) == "function" then
+                SetCurrentPedWeapon(me, GetHashKey("WEAPON_UNARMED"), true)
+            end
 
-                if type(SetPlayerWeaponDamageModifier) == "function" then
-                    SetPlayerWeaponDamageModifier(PlayerId(), 100.0)
-                end
-                if type(GetSelectedPedWeapon) == "function"
-                    and type(SetWeaponDamageModifier) == "function" then
-                    local weapon = GetSelectedPedWeapon(me)
-                    if weapon and weapon ~= 0 then
-                        SetWeaponDamageModifier(weapon, 100.0)
-                    end
-                end
-                if type(SetPedSuffersCriticalHits) == "function" then
-                    SetPedSuffersCriticalHits(ped, true)
-                end
+            Wait(60)
+
+            ped = findTargetPed()
+            if not ped or ped == 0 or ped == me or not DoesEntityExist(ped) then
+                rawset(_G, loopKey, false)
+                return
+            end
+            if type(IsPedDeadOrDying) == "function" and IsPedDeadOrDying(ped, true) then
+                rawset(_G, loopKey, false)
+                return
+            end
+
+            if type(TaskStealthKill) == "function" then
+                TaskStealthKill(me, ped, GetHashKey("AR_stealth_kill_a"), 1.0, 0)
+            end
+            if type(ClearPedTasks) == "function" then
+                ClearPedTasks(ped)
             end
             rawset(_G, loopKey, false)
         end)
-    ]], serverId)
+    ]], serverId, Menu.BabayagaOffset)
     pcall(Susano.InjectResource, "any", code)
 end
 
-function Menu.OneShotApply()
-    local me = PlayerPedId()
-    if type(SetPlayerWeaponDamageModifier) == "function" then
-        pcall(SetPlayerWeaponDamageModifier, PlayerId(), Menu.OneShotDamage)
-    end
-    if type(GetSelectedPedWeapon) == "function"
-        and type(SetWeaponDamageModifier) == "function" then
-        local weapon = GetSelectedPedWeapon(me)
-        if weapon and weapon ~= 0 then
-            pcall(SetWeaponDamageModifier, weapon, Menu.OneShotDamage)
-        end
-    end
-end
-
-function Menu.OneShotReset()
-    if type(SetPlayerWeaponDamageModifier) == "function" then
-        pcall(SetPlayerWeaponDamageModifier, PlayerId(), 1.0)
-    end
-    if type(GetSelectedPedWeapon) == "function"
-        and type(SetWeaponDamageModifier) == "function" then
-        local weapon = GetSelectedPedWeapon(PlayerPedId())
-        if weapon and weapon ~= 0 then
-            pcall(SetWeaponDamageModifier, weapon, 1.0)
-        end
-    end
-end
-
 function Menu.PosCtrlRelease()
-    for key in pairs(Menu.PosCtrlTargets) do Menu.PosCtrlTargets[key] = nil end
-    if type(attachedPlayers) == "table" and Menu.BabayagaTarget then
-        attachedPlayers[Menu.BabayagaTarget] = nil
-    end
-    Menu.BabayagaStop(Menu.BabayagaTarget)
+    local target = Menu.BabayagaTarget
     Menu.BabayagaTarget = nil
-    Menu.OneShotEnabled = false
-    Menu.OneShotNextAssert = 0
-    Menu.OneShotReset()
+    Menu.BabayagaToken = nil
+    if target then
+        Menu.BabayagaStop(target)
+    end
 end
 
 function Menu.ActionBabayaga(enabled)
@@ -13581,104 +13561,61 @@ function Menu.ActionBabayaga(enabled)
     end
     if not target then Menu.PosCtrlRelease() return end
 
-    -- The toggle itself is the release control; re-arming the same target is
-    -- a no-op instead of a second click silently turning the grab off.
-    if Menu.BabayagaTarget == target then return end
-
     local _, ped = Menu.PosCtrlResolve(target)
     if not ped or not DoesEntityExist(ped) then Menu.PosCtrlRelease() return end
+    if type(IsPedDeadOrDying) == "function" and IsPedDeadOrDying(ped, true) then
+        Menu.PosCtrlRelease()
+        return
+    end
 
-    -- Drop any previous grab before arming this one.
+    -- Release the previous target before arming this click.
     Menu.PosCtrlRelease()
 
-    -- 1) Attach path: the local passthrough keeps the target pinned while
-    -- the host loop owns the real coordinate writes and the control requests.
-    if type(attachedPlayers) ~= "table" then attachedPlayers = {} end
-    attachedPlayers[target] = ped
-
-    -- 2) Position Control: hold, zero velocity, keep control.
-    Menu.PosCtrlTargets[target] = true
+    local token = {}
     Menu.BabayagaTarget = target
+    Menu.BabayagaToken = token
 
-    -- 3) One Shot: lethal local weapon damage. SetPlayerWeaponDamageModifier
-    -- alone is not reliable for firearms on every server; the per-weapon
-    -- modifier is the one the hit path reads.
-    Menu.OneShotEnabled = true
-    Menu.OneShotApply()
-    if type(SetPedSuffersCriticalHits) == "function" then
-        pcall(SetPedSuffersCriticalHits, ped, true)
-    end
-
-    -- 4) Host loop: performs all three from the resource VM, where the
-    -- coordinate write is not rejected by the executor's native context.
-    Menu.BabayagaStart(target)
-
-    -- Place him immediately so he is in front on the very next frame. Ask
-    -- for control first; the tick repeats the request if the server refuses.
-    if type(NetworkRequestControlOfEntity) == "function" then
-        pcall(NetworkRequestControlOfEntity, ped)
-    end
-    pcall(SetEntityVelocity, ped, 0.0, 0.0, 0.0)
+    -- Immediate placement is repeated inside the host chunk after a short
+    -- wait, so the task starts on a target that is already in front and has
+    -- the local ped's heading. The host owns the native task call.
     local me = PlayerPedId()
     if DoesEntityExist(me) then
+        if type(NetworkRequestControlOfEntity) == "function" then
+            pcall(NetworkRequestControlOfEntity, ped)
+        end
+        if type(SetEntityVelocity) == "function" then
+            pcall(SetEntityVelocity, ped, 0.0, 0.0, 0.0)
+        end
         local mc = GetEntityCoords(me)
         local f = GetEntityForwardVector(me)
-        pcall(SetEntityCoordsNoOffset, ped,
-            mc.x + f.x * Menu.PosCtrlOffset,
-            mc.y + f.y * Menu.PosCtrlOffset,
-            mc.z + f.z * Menu.PosCtrlOffset,
-            true, true, true)
-        pcall(SetEntityHeading, ped, GetEntityHeading(me))
-    end
-end
-
-function Menu.PosCtrlTick()
-    if Menu.PosCtrlTargets and next(Menu.PosCtrlTargets) then
-        local me = PlayerPedId()
-        if DoesEntityExist(me) then
-            local mc = GetEntityCoords(me)
-            local f = GetEntityForwardVector(me)
-            local heading = GetEntityHeading(me)
-            for sid in pairs(Menu.PosCtrlTargets) do
-                local _, ped = Menu.PosCtrlResolve(sid)
-                local dead = ped and type(IsEntityDead) == "function" and IsEntityDead(ped)
-                if ped and DoesEntityExist(ped) and not dead then
-                    if type(NetworkHasControlOfEntity) == "function"
-                        and type(NetworkRequestControlOfEntity) == "function"
-                        and not NetworkHasControlOfEntity(ped) then
-                        pcall(NetworkRequestControlOfEntity, ped)
-                    end
-                    pcall(SetEntityVelocity, ped, 0.0, 0.0, 0.0)
-                    pcall(SetEntityCoordsNoOffset, ped,
-                        mc.x + f.x * Menu.PosCtrlOffset,
-                        mc.y + f.y * Menu.PosCtrlOffset,
-                        mc.z + f.z * Menu.PosCtrlOffset,
-                        true, true, true)
-                    pcall(SetEntityHeading, ped, heading)
-                    if type(SetPedSuffersCriticalHits) == "function" then
-                        pcall(SetPedSuffersCriticalHits, ped, true)
-                    end
-                else
-                    Menu.PosCtrlTargets[sid] = nil
-                end
-            end
+        if type(SetEntityCoordsNoOffset) == "function" then
+            pcall(SetEntityCoordsNoOffset, ped,
+                mc.x + f.x * Menu.BabayagaOffset,
+                mc.y + f.y * Menu.BabayagaOffset,
+                mc.z + f.z * Menu.BabayagaOffset,
+                true, true, true)
+        end
+        if type(SetEntityHeading) == "function" then
+            pcall(SetEntityHeading, ped, GetEntityHeading(me))
+        end
+        if type(SetPedStealthMovement) == "function" then
+            pcall(SetPedStealthMovement, me, true, 0)
         end
     end
-    if Menu.OneShotEnabled then
-        if Menu.PosCtrlTargets and next(Menu.PosCtrlTargets) then
-            Menu.OneShotApply()
-        else
-            Menu.PosCtrlRelease()
-        end
-    end
-end
 
-CreateThread(function()
-    while true do
-        Wait(0)
-        Menu.PosCtrlTick()
-    end
-end)
+    Menu.BabayagaStart(target)
+
+    -- The task is one-shot. Drop the local handle after the animation window
+    -- so the same row can be re-armed without a target change. A token keeps
+    -- a delayed clear from wiping a newer target.
+    CreateThread(function()
+        Wait(1500)
+        if Menu.BabayagaToken == token then
+            Menu.BabayagaTarget = nil
+            Menu.BabayagaToken = nil
+        end
+    end)
+end
 
                     function Menu.ActionTPToMe()
                         if not Menu.SelectedPlayer then return end
@@ -34108,29 +34045,38 @@ local ICON_B64 = {
         "jJxaXgAAAABJRU5ErkJggg==",
     }),
     vehicle = table.concat({
-        "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAMAAACdt4HsAAADAFBMVEX/////////////////////////",
-        "////////////////////////////////////////////////////////////////////////////////",
-        "////////////////////////////////////////////////////////////////////////////////",
-        "////////////////////////////////////////////////////////////////////////////////",
-        "////////////////////////////////////////////////////////////////////////////////",
-        "////////////////////////////////////////////////////////////////////////////////",
-        "////////////////////////////////////////////////////////////////////////////////",
-        "////////////////////////////////////////////////////////////////////////////////",
-        "////////////////////////////////////////////////////////////////////////////////",
-        "////////////////////////////////////////////////////////////////////////////////",
-        "////////////////////////////////////////////////////////////////////////////////",
-        "////////////////////////////////////////////////////////////////////////////////",
-        "////////////////////////////////////////////////////////////////////////////////",
-        "//////////////////////////////////////+/LkhhAAABAHRSTlMAJEltkrbb////////////////",
-        "////////////////////////////////////////////////////////////////////////////////",
-        "////////////////////////////////////////////////////////////////////////////////",
-        "////////////////////////////////////////////////////////////////////////////////",
-        "////////////////////////////////////////////////////////////////////////////2daQ",
-        "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",
+        "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",
+        "AAAAAElFTkSuQmCC",
     }),
     weapon = table.concat({
         "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAACx0lEQVR42u1ar2/bQBT+XhWT/gdDQwUj",
@@ -34308,13 +34254,14 @@ local function drawIcon(name, x, y, size, cr, cg, cb)
         end
 
     elseif name == "vehicle" then
-        -- Original side profile: body, cabin, two ringed wheels.
-        R(0.06, 0.42, 0.88, 0.24, 0.05)
-        R(0.24, 0.28, 0.46, 0.20, 0.05)
-        R(0.14, 0.60, 0.22, 0.22, 0.11)
-        C(0.19, 0.65, 0.12, 0.12, 0.06)
-        R(0.64, 0.60, 0.22, 0.22, 0.11)
-        C(0.69, 0.65, 0.12, 0.12, 0.06)
+        -- Old front-view car, rebuilt as vectors so the original silhouette
+        -- stays intact without the blur of the 64 px texture at 14 px.
+        R(0.10, 0.07, 0.80, 0.20, 0.08)
+        R(0.04, 0.24, 0.92, 0.36, 0.04)
+        C(0.18, 0.14, 0.64, 0.14, 0.025)
+        C(0.13, 0.34, 0.14, 0.14, 0.07)
+        C(0.73, 0.34, 0.14, 0.14, 0.07)
+        C(0.22, 0.52, 0.56, 0.12, 0.02)
 
     elseif name == "weapon" then
         -- Pistol: slide, muzzle, grip, trigger notch.
@@ -34341,8 +34288,14 @@ end
 local function drawVehicleBadge(x, y, size, r, g, b)
     if size <= 0 then return end
 
-    -- Original vector profile, kept sharp at list-badge size. The old Material
-    -- upload path is intentionally not used: at this size it was blurry.
+    -- Original Material car, tinted with the list's red. The primitive below
+    -- is only the upload-failure path.
+    local texture = ICON_TEXTURES.vehicle
+    if texture and Susano and type(Susano.DrawImage) == "function" then
+        local ok = pcall(Susano.DrawImage, texture, x, y, size, size, r, g, b, 1.0, 0)
+        if ok then return end
+    end
+
     fillRect(x + 0.06 * size, y + 0.44 * size, 0.88 * size, 0.24 * size,
         r, g, b, 1.0, 0.05 * size)
     fillRect(x + 0.24 * size, y + 0.30 * size, 0.46 * size, 0.20 * size,
