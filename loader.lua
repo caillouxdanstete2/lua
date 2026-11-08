@@ -23726,16 +23726,9 @@ FL.methods = {
         },
     },
 }
--- Warm the three assets once at load. The tick still requests on every pulse
--- when one is missing, but this removes the first-second delay after a reload.
-if type(RequestNamedPtfxAsset) == "function" then
-    pcall(RequestNamedPtfxAsset, CAMERA_DICT)
-    pcall(RequestNamedPtfxAsset, ALIEN_DICT)
-    pcall(RequestNamedPtfxAsset, BURNOUT_DICT)
-end
-
 FL.stats = { flashes = 0, skips = 0, fails = 0 }
 FL.graft = nil
+FL.graftDisabled = true
 FL.graftToken = 0
 FL.graftKeys = nil
 FL.flashType = FLASH_TYPE
@@ -24193,7 +24186,7 @@ local function emitParticle(method, coords)
             local z = coords.z + (tonumber(part.oz) or OFFSET_Z)
             local okay, didStart = pcall(StartNetworkedParticleFxNonLoopedAtCoord,
                 part.effect, x, y, z,
-                0.0, 0.0, 0.0, scale, false, false, false)
+                0.0, 0.0, 0.0, scale, false, false, false, false)
             if okay and didStart ~= false then sent = sent + 1 end
         end
     end
@@ -24568,7 +24561,7 @@ CreateThread(function()
             pcall(SetParticleFxNonLoopedAlpha, 1.0)
             pcall(StartNetworkedParticleFxNonLoopedAtCoord,
                 p.effect, c.x + p.x, c.y + p.y, c.z + p.z,
-                0.0, 0.0, 0.0, p.scale, false, false, false)
+                0.0, 0.0, 0.0, p.scale, false, false, false, false)
         end
         pcall(DecorSetInt, PlayerPedId(), ackTimeKey, GetGameTimer())
         pcall(DecorSetInt, PlayerPedId(), ackKey, token)
@@ -24859,7 +24852,7 @@ local function tickCore()
             local grafted = false
             local canGraft = not FL.graftFailAt
                 or now() - FL.graftFailAt > 5000
-            if #graftParts > 0 and canGraft then
+            if not FL.graftDisabled and #graftParts > 0 and canGraft then
                 if FL.graft then
                     grafted = true
                 else
@@ -37568,7 +37561,7 @@ end
 -- BOOT
 -- ---------------------------------------------------------------------------
 function UI.boot()
-    O.log("loader build 2026-11-07-r45 (Flash moved to Online > Troll > Attacks with Auto Safe and ten explicit methods; the selected method is read live; the WaveShield V4 particle configuration is read from GlobalState and scr_wheel_burnout and scr_alien_teleport are emitted only when rcore_spray/WaveAdmin put them in the static table, dynamic camera parts are sent only from the executor with assetHash stripped on ptFxEvent, and statically safe parts are mirrored through a Stage B resource graft acknowledged by entity decor; a dead or missing graft falls back to the executor without going silent; particle scale is capped at MaxParticleScale and each pulse sends up to three networked parts with no minimum range; a one-player test server gets a local Susano overlay pulse instead of a fabricated server event; the retired Exploit Flash tab is removed; Search magnifier handle rebuilt as a fused diagonal instead of three dots; White keeps the wbYgWhZ banner and Cyan restores its original 3HLMxX5 banner; Online Props Player row sorts the player list by distance and always targets the nearest player; Launch Player selector offers Method 1 and Method 2; Method 1 drives the victim ped directly when control is available and otherwise reverse-attaches the victim to the local ped within 3 m; Method 2 uses a range-free injected coordinate lift plus repeated upward force and velocity for servers that ignore Method 1; launch has no vehicle or explosion; hardened Susano ragdoll keeps the victim speed check lenient; self launch uses 58 m/s with GET_ENTITY_SPEED masked by the stealth hook; velocity and settle waits carry jitter; tight bold category chevrons; Troll Appearance section and Copy Appearance row removed; All mode Include me toggle adds the local ped alongside remote targets; Props Player row hidden in Self and All modes; attachment rows Attach to player and Attach point removed; target labels Self/Player/All; automatic player refresh sorts by distance and selects nearest; manual Refresh player list removed; Ban Player beta suffix removed; Servers and Bypass tabs moved from Destroyer to Misc; FOV moved from Visual/Camera to Self under Big Weapon; theme banners bottom-anchored flush on the category plate; White uses wbYgWhZ and Cyan uses 3HLMxX5; White/Cyan theme selector; White 3:1 header and Cyan 4.1:1 header; flush tab strip; light-grey cell tab plate; dark selected category rectangle; uniform unselected categories; reference names Self/Online/Vehicle/Weapon/Destroyer/Misc/Settings/Search; Search category opens the prompt directly and lands on results; compact magnifier; tight bold category chevron pair; full-white section rules fitted to the label width; Target keeps only the Ctrl hint; Player Props folded into Online; 15px right-aligned slider readout; target-bound toggles reset on target change/unload; dark row plates; white toggle/scrollbar; footer centre mark removed; Delete/Backspace close)")
+    O.log("loader build 2026-11-07-r46 (native particle call carries all four axis flags; load-time preload removed; Stage B graft disabled by default; Flash moved to Online > Troll > Attacks with Auto Safe and ten explicit methods; the selected method is read live; the WaveShield V4 particle configuration is read from GlobalState and scr_wheel_burnout and scr_alien_teleport are emitted only when rcore_spray/WaveAdmin put them in the static table, dynamic camera parts are sent only from the executor with assetHash stripped on ptFxEvent, and statically safe parts are mirrored through a Stage B resource graft acknowledged by entity decor; a dead or missing graft falls back to the executor without going silent; particle scale is capped at MaxParticleScale and each pulse sends up to three networked parts with no minimum range; a one-player test server gets a local Susano overlay pulse instead of a fabricated server event; the retired Exploit Flash tab is removed; Search magnifier handle rebuilt as a fused diagonal instead of three dots; White keeps the wbYgWhZ banner and Cyan restores its original 3HLMxX5 banner; Online Props Player row sorts the player list by distance and always targets the nearest player; Launch Player selector offers Method 1 and Method 2; Method 1 drives the victim ped directly when control is available and otherwise reverse-attaches the victim to the local ped within 3 m; Method 2 uses a range-free injected coordinate lift plus repeated upward force and velocity for servers that ignore Method 1; launch has no vehicle or explosion; hardened Susano ragdoll keeps the victim speed check lenient; self launch uses 58 m/s with GET_ENTITY_SPEED masked by the stealth hook; velocity and settle waits carry jitter; tight bold category chevrons; Troll Appearance section and Copy Appearance row removed; All mode Include me toggle adds the local ped alongside remote targets; Props Player row hidden in Self and All modes; attachment rows Attach to player and Attach point removed; target labels Self/Player/All; automatic player refresh sorts by distance and selects nearest; manual Refresh player list removed; Ban Player beta suffix removed; Servers and Bypass tabs moved from Destroyer to Misc; FOV moved from Visual/Camera to Self under Big Weapon; theme banners bottom-anchored flush on the category plate; White uses wbYgWhZ and Cyan uses 3HLMxX5; White/Cyan theme selector; White 3:1 header and Cyan 4.1:1 header; flush tab strip; light-grey cell tab plate; dark selected category rectangle; uniform unselected categories; reference names Self/Online/Vehicle/Weapon/Destroyer/Misc/Settings/Search; Search category opens the prompt directly and lands on results; compact magnifier; tight bold category chevron pair; full-white section rules fitted to the label width; Target keeps only the Ctrl hint; Player Props folded into Online; 15px right-aligned slider readout; target-bound toggles reset on target change/unload; dark row plates; white toggle/scrollbar; footer centre mark removed; Delete/Backspace close)")
     O.thread()
 
     -- Delete/Backspace fallback poll. 40 ms is faster than a frame at 30 FPS
