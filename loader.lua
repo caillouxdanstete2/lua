@@ -13392,21 +13392,32 @@ end)
 -- ===========================================================================
 -- BABAYAGA  (Online > Troll)
 -- ---------------------------------------------------------------------------
--- One click on a selected player who is already within reach. The local ped
--- enters unarmed stealth and the native takedown is issued from a host VM.
--- The action is TASK_STEALTH_KILL with AR_stealth_kill_a, as in fbi4_prep2.
--- The victim is flagged with CPED_CONFIG_FLAG_ForceScriptControlledKnockout
+-- One click on a selected player. The local ped is placed immediately behind
+-- the victim with a self-only coordinate write, enters unarmed stealth, and
+-- the native TASK_STEALTH_KILL with AR_stealth_kill_a is issued from a host
+-- VM. The victim is flagged with CPED_CONFIG_FLAG_ForceScriptControlledKnockout
 -- (114) before the task, so the result is a knockout rather than a death.
 --
--- The target is never moved and its ownership is never requested. Writing a
--- remote player's position or control is what makes the local copy stream out
--- and leaves the local ped holding a task. Reach is checked before arming, and
--- a self-only recovery clears the stealth pose and task if the target moves
--- away or the native call does not start.
+-- The victim is never moved and its ownership is never requested. The local
+-- ped is the only entity whose position is written. That is the distinction
+-- that keeps the victim's local copy from streaming out: a remote coordinate
+-- or control write is what produced the old spawn/despawn loop.
 --
--- No task or position write is sent to the victim: CLEAR_PED_TASKS is
--- self-only. A remote clear is the call the host resource forwards to its
--- server event handler and reports when the sender does not own the ped.
+-- TASK_STEALTH_KILL only starts when the two peds are close. The host chunk
+-- therefore places the local ped one metre behind the victim first, waits one
+-- render tick, verifies the distance, and only then arms the takedown. If the
+-- victim is in a vehicle, a local TaskLeaveVehicle is issued first; if it
+-- remains seated, a local ragdoll is the fallback instead of a remote control
+-- request.
+--
+-- If the native does not start within 600 ms, the paired clips
+-- melee@unarmed@streamed_stealth/plyr_stealth_kill_unarmed_a and
+-- victim_stealth_kill_unarmed_a are played on the two local peds, followed by
+-- a local SetPedToRagdoll. That fallback is deterministic when the native
+-- silently refuses a player target. The self cleanup runs when
+-- IsPedPerformingStealthKill and IsPedBeingStealthKilled go false, not on a
+-- fixed timer that can fire before the takedown clip has started. The victim
+-- receives no CLEAR_PED_TASKS.
 --
 -- Stage A only owns target selection and Susano.InjectResource. The injected
 -- chunk is Stage B: it has no Susano.* access and uses only host globals and
@@ -13414,7 +13425,6 @@ end)
 -- ===========================================================================
 Menu.BabayagaTarget = Menu.BabayagaTarget or nil
 Menu.BabayagaToken = Menu.BabayagaToken or nil
-Menu.BabayagaReach = Menu.BabayagaReach or 2.5
 
 function Menu.PosCtrlResolve(serverId)
     if type(GetActivePlayers) ~= "function" then return nil, nil end
@@ -13448,7 +13458,6 @@ function Menu.BabayagaStart(serverId)
 
     local code = string.format([[
         local targetServerId = %d
-        local reach = %.2f
         local loopKey = "vgd_babayaga_" .. targetServerId
         rawset(_G, loopKey, true)
 
@@ -13468,9 +13477,112 @@ function Menu.BabayagaStart(serverId)
             return math.sqrt(dx * dx + dy * dy + dz * dz)
         end
 
+        local function forwardOf(ped)
+            if type(GetEntityForwardVector) == "function" then
+                local ok, f = pcall(GetEntityForwardVector, ped)
+                if ok and f and f.x and f.y then return f.x, f.y end
+            end
+            local h = GetEntityHeading(ped) or 0.0
+            local rad = math.rad(h)
+            return -math.sin(rad), math.cos(rad)
+        end
+
+        -- Self-only placement. The victim is never written; this is the only
+        -- coordinate write in the action and it targets PlayerPedId().
+        local function placeSelfBehind(ped)
+            local me = PlayerPedId()
+            if not DoesEntityExist(me) or not DoesEntityExist(ped) then return false end
+            local tc = GetEntityCoords(ped)
+            local fx, fy = forwardOf(ped)
+            local x = tc.x - fx * 1.05
+            local y = tc.y - fy * 1.05
+            local z = tc.z + 0.05
+            if type(SetEntityCoordsNoOffset) == "function" then
+                pcall(SetEntityCoordsNoOffset, me, x, y, z, false, false, false)
+            end
+            if type(SetEntityHeading) == "function" then
+                pcall(SetEntityHeading, me, GetEntityHeading(ped) or 0.0)
+            end
+            return true
+        end
+
+        local function leaveVehicle(ped)
+            if type(GetVehiclePedIsIn) ~= "function"
+                or type(TaskLeaveVehicle) ~= "function" then
+                return
+            end
+            local veh = GetVehiclePedIsIn(ped, false)
+            if veh and veh ~= 0 then
+                -- 4160 exits through the door and does not write a remote
+                -- coordinate. It is a task on the local copy, not a control
+                -- request and not a position write.
+                pcall(TaskLeaveVehicle, ped, veh, 4160)
+            end
+        end
+
+        local function ragdollLocal(ped)
+            if type(SetPedConfigFlag) == "function" then
+                pcall(SetPedConfigFlag, ped, 114, true)
+            end
+            if type(SetPedCanRagdoll) == "function" then
+                pcall(SetPedCanRagdoll, ped, true)
+            end
+            if type(SetPedToRagdoll) == "function" then
+                pcall(SetPedToRagdoll, ped, 3500, 3500, 0, true, true, false)
+            end
+        end
+
+        -- Deterministic visual layer used only when the native task does not
+        -- report as started. The paired clips exist in
+        -- melee@unarmed@streamed_stealth; the attacker clip runs on the local
+        -- ped and the victim clip on the local copy of the selected ped. No
+        -- target position, control, event or task clear is written.
+        local function scriptedFallback(me, ped)
+            local dict = "melee@unarmed@streamed_stealth"
+            local loaded = false
+            if type(RequestAnimDict) == "function" then
+                pcall(RequestAnimDict, dict)
+                local waited = 0
+                while waited < 700 do
+                    if type(HasAnimDictLoaded) == "function"
+                        and HasAnimDictLoaded(dict) then
+                        loaded = true
+                        break
+                    end
+                    Wait(50)
+                    waited = waited + 50
+                end
+            end
+            if loaded and type(TaskPlayAnim) == "function" then
+                pcall(TaskPlayAnim, me, dict, "plyr_stealth_kill_unarmed_a",
+                    8.0, -8.0, -1, 0, 0.0, false, false, false)
+                pcall(TaskPlayAnim, ped, dict, "victim_stealth_kill_unarmed_a",
+                    8.0, -8.0, -1, 0, 0.0, false, false, false)
+                Wait(1400)
+                if type(RemoveAnimDict) == "function" then
+                    pcall(RemoveAnimDict, dict)
+                end
+            end
+            ragdollLocal(ped)
+        end
+
         CreateThread(function()
             local me = PlayerPedId()
             if not DoesEntityExist(me) then rawset(_G, loopKey, false) return end
+
+            local myVeh = 0
+            if type(GetVehiclePedIsIn) == "function" then
+                myVeh = GetVehiclePedIsIn(me, false) or 0
+            end
+            if myVeh ~= 0 and type(TaskLeaveVehicle) == "function" then
+                pcall(TaskLeaveVehicle, me, myVeh, 0)
+                Wait(320)
+                if type(IsPedInAnyVehicle) == "function"
+                    and IsPedInAnyVehicle(me, false) then
+                    rawset(_G, loopKey, false)
+                    return
+                end
+            end
 
             local ped = findTargetPed()
             if not ped or ped == 0 or ped == me or not DoesEntityExist(ped) then
@@ -13481,25 +13593,50 @@ function Menu.BabayagaStart(serverId)
                 rawset(_G, loopKey, false)
                 return
             end
+
             if type(IsPedInAnyVehicle) == "function" and IsPedInAnyVehicle(ped, false) then
-                rawset(_G, loopKey, false)
-                return
-            end
-            if distanceTo(me, ped) > reach then
-                rawset(_G, loopKey, false)
-                return
+                leaveVehicle(ped)
+                Wait(450)
+                ped = findTargetPed()
+                if not ped or ped == 0 or not DoesEntityExist(ped) then
+                    rawset(_G, loopKey, false)
+                    return
+                end
+                if type(IsPedInAnyVehicle) == "function"
+                    and IsPedInAnyVehicle(ped, false) then
+                    ragdollLocal(ped)
+                    rawset(_G, loopKey, false)
+                    return
+                end
             end
 
-            -- Face the local ped toward the target; this is a self write only.
-            -- It lets the takedown start cleanly when the target is close but
-            -- was outside the current camera cone.
-            local selfCoords = GetEntityCoords(me)
-            local targetCoords = GetEntityCoords(ped)
-            local dx = targetCoords.x - selfCoords.x
-            local dy = targetCoords.y - selfCoords.y
-            if type(GetHeadingFromVector2d) == "function"
-                and type(SetEntityHeading) == "function" then
-                pcall(SetEntityHeading, me, GetHeadingFromVector2d(dx, dy))
+            if distanceTo(me, ped) > 1.25 then
+                placeSelfBehind(ped)
+                Wait(120)
+                ped = findTargetPed()
+                if not ped or ped == 0 or not DoesEntityExist(ped) then
+                    rawset(_G, loopKey, false)
+                    return
+                end
+            end
+
+            if distanceTo(me, ped) > 2.2 then
+                placeSelfBehind(ped)
+                Wait(100)
+                ped = findTargetPed()
+            end
+            if not ped or ped == 0 or not DoesEntityExist(ped) then
+                rawset(_G, loopKey, false)
+                return
+            end
+            if type(IsPedDeadOrDying) == "function" and IsPedDeadOrDying(ped, true) then
+                rawset(_G, loopKey, false)
+                return
+            end
+            if type(IsPedInAnyVehicle) == "function" and IsPedInAnyVehicle(ped, false) then
+                ragdollLocal(ped)
+                rawset(_G, loopKey, false)
+                return
             end
 
             local previousWeapon = 0
@@ -13525,15 +13662,12 @@ function Menu.BabayagaStart(serverId)
             if type(SetPedStealthMovement) == "function" then
                 pcall(SetPedStealthMovement, me, true, 0)
             end
-            if type(GiveWeaponToPed) == "function" then
-                pcall(GiveWeaponToPed, me, GetHashKey("WEAPON_UNARMED"), -1, true, true)
-            end
             if type(SetCurrentPedWeapon) == "function" then
                 pcall(SetCurrentPedWeapon, me, GetHashKey("WEAPON_UNARMED"), true)
             end
             armedSelf = true
 
-            Wait(60)
+            Wait(80)
 
             ped = findTargetPed()
             if not ped or ped == 0 or ped == me or not DoesEntityExist(ped) then
@@ -13546,10 +13680,15 @@ function Menu.BabayagaStart(serverId)
                 rawset(_G, loopKey, false)
                 return
             end
-            if distanceTo(me, ped) > reach + 0.35 then
-                restoreSelf()
-                rawset(_G, loopKey, false)
-                return
+            if distanceTo(me, ped) > 2.4 then
+                placeSelfBehind(ped)
+                Wait(80)
+                ped = findTargetPed()
+                if not ped or ped == 0 or not DoesEntityExist(ped) then
+                    restoreSelf()
+                    rawset(_G, loopKey, false)
+                    return
+                end
             end
 
             -- 114 = CPED_CONFIG_FLAG_ForceScriptControlledKnockout. Set it on
@@ -13563,13 +13702,50 @@ function Menu.BabayagaStart(serverId)
                 pcall(TaskStealthKill, me, ped, GetHashKey("AR_stealth_kill_a"), 1.0, 0)
             end
 
-            CreateThread(function()
-                Wait(1600)
-                if armedSelf then restoreSelf() end
-            end)
+            local started = false
+            local cancelled = false
+            for i = 1, 60 do
+                Wait(50)
+                if rawget(_G, loopKey) == false then
+                    cancelled = true
+                    break
+                end
+                if not DoesEntityExist(ped) then break end
+
+                local performing = false
+                if type(IsPedPerformingStealthKill) == "function"
+                    and IsPedPerformingStealthKill(me) then
+                    performing = true
+                end
+                if type(IsPedBeingStealthKilled) == "function"
+                    and IsPedBeingStealthKilled(ped) then
+                    performing = true
+                end
+                if performing then started = true end
+
+                if type(IsPedDeadOrDying) == "function" and IsPedDeadOrDying(ped, true) then
+                    started = true
+                    break
+                end
+                if type(IsPedRagdoll) == "function" and IsPedRagdoll(ped) then
+                    started = true
+                    break
+                end
+                if not started and i >= 12 then break end
+                -- Keep the self pose through the shortest full clip even if
+                -- IS_PED_PERFORMING_STEALTH_KILL clears one tick early.
+                if started and i >= 44 and not performing then break end
+            end
+
+            if not started and not cancelled then
+                scriptedFallback(me, ped)
+            end
+
+            Wait(350)
+            if armedSelf then restoreSelf() end
             rawset(_G, loopKey, false)
         end)
-    ]], serverId, Menu.BabayagaReach)
+    ]], serverId)
     pcall(Susano.InjectResource, "any", code)
 end
 
@@ -13624,25 +13800,14 @@ function Menu.ActionBabayaga(enabled)
     -- Release the previous target before arming this click.
     Menu.PosCtrlRelease()
 
-    local token = {}
     Menu.BabayagaTarget = target
-    Menu.BabayagaToken = token
+    Menu.BabayagaToken = {}
 
-    -- Stage B checks reach before it arms anything. No remote control request
-    -- and no coordinate write is issued here, so the target cannot be streamed
-    -- out by this action.
+    -- Stage B places the local ped behind the victim with a self-only
+    -- coordinate write and then arms the native takedown. The victim is never
+    -- moved and never receives a control request, so its local copy cannot be
+    -- streamed out by this action.
     Menu.BabayagaStart(target)
-
-    -- The task is one-shot. Drop the local handle after the animation window
-    -- so the same row can be re-armed without a target change. A token keeps
-    -- a delayed reset from wiping a newer target.
-    CreateThread(function()
-        Wait(1500)
-        if Menu.BabayagaToken == token then
-            Menu.BabayagaTarget = nil
-            Menu.BabayagaToken = nil
-        end
-    end)
 end
 
                     function Menu.ActionTPToMe()
