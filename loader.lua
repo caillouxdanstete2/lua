@@ -24259,6 +24259,32 @@ local function emitParticle(method, coords)
 
     local ceiling = tonumber(FL.maxScale) or 10.0
     local sent = 0
+    local boost = 1.0
+    if type(coords) == "table" then
+        if coords.vehicle == true then boost = 1.5
+        elseif coords.highSpeed == true then boost = 1.35 end
+    end
+
+    local function startPart(part, x, y, z, scale)
+        if not part or type(part.dict) ~= "string" or type(part.effect) ~= "string" then
+            return false
+        end
+        pcall(UseParticleFxAssetNextCall, part.dict)
+        local color = part.color
+        if type(color) == "table" and #color >= 3 then
+            pcall(SetParticleFxNonLoopedColour,
+                tonumber(color[1]) or 1.0,
+                tonumber(color[2]) or 1.0,
+                tonumber(color[3]) or 1.0)
+        elseif method.white then
+            pcall(SetParticleFxNonLoopedColour, 1.0, 1.0, 1.0)
+        end
+        pcall(SetParticleFxNonLoopedAlpha, 1.0)
+        local okay, didStart = pcall(StartNetworkedParticleFxNonLoopedAtCoord,
+            part.effect, x, y, z,
+            0.0, 0.0, 0.0, scale, false, false, false, false)
+        return okay and didStart ~= false
+    end
 
     for i = 1, #parts do
         local part = parts[i]
@@ -24272,35 +24298,50 @@ local function emitParticle(method, coords)
             local scale = tonumber(part.scale) or tonumber(method.scale) or 5.0
             if ceiling > 0.0 and scale > ceiling then scale = ceiling end
             if scale < 1.0 then scale = 1.0 end
-            if type(coords) == "table" then
-                local boost = 1.0
-                if coords.vehicle == true then boost = 1.5
-                elseif coords.highSpeed == true then boost = 1.35 end
-                if boost > 1.0 then
-                    scale = scale * boost
-                    if ceiling > 0.0 and scale > ceiling then scale = ceiling end
-                end
+            if boost > 1.0 then
+                scale = scale * boost
+                if ceiling > 0.0 and scale > ceiling then scale = ceiling end
             end
-
-            pcall(UseParticleFxAssetNextCall, part.dict)
-            local color = part.color
-            if type(color) == "table" and #color >= 3 then
-                pcall(SetParticleFxNonLoopedColour,
-                    tonumber(color[1]) or 1.0,
-                    tonumber(color[2]) or 1.0,
-                    tonumber(color[3]) or 1.0)
-            elseif method.white then
-                pcall(SetParticleFxNonLoopedColour, 1.0, 1.0, 1.0)
-            end
-            pcall(SetParticleFxNonLoopedAlpha, 1.0)
 
             local x = coords.x + (tonumber(part.ox) or 0.0)
             local y = coords.y + (tonumber(part.oy) or 0.0)
             local z = coords.z + (tonumber(part.oz) or OFFSET_Z)
-            local okay, didStart = pcall(StartNetworkedParticleFxNonLoopedAtCoord,
-                part.effect, x, y, z,
-                0.0, 0.0, 0.0, scale, false, false, false, false)
-            if okay and didStart ~= false then sent = sent + 1 end
+            if startPart(part, x, y, z, scale) then sent = sent + 1 end
+        end
+    end
+
+    local ringPart = parts[1]
+    for i = 1, #parts do
+        local candidate = parts[i]
+        if candidate and candidate.effect == CAMERA_FX then
+            ringPart = candidate
+            break
+        end
+    end
+    if type(coords) == "table" and ringPart then
+        ptfxLoaded(ringPart.dict)
+        local radius = coords.vehicle == true and 1.8 or 1.0
+        local diagonal = radius * 0.70710678
+        local ringScale = tonumber(ringPart.scale) or tonumber(method.scale) or 5.0
+        if ringScale < 8.0 then ringScale = 8.0 end
+        if ceiling > 0.0 and ringScale > ceiling then ringScale = ceiling end
+        if ringScale < 1.0 then ringScale = 1.0 end
+        if boost > 1.0 then
+            ringScale = ringScale * boost
+            if ceiling > 0.0 and ringScale > ceiling then ringScale = ceiling end
+        end
+        local offsets = {
+            { radius, 0.0, 0.0 }, { -radius, 0.0, 0.0 },
+            { 0.0, radius, 0.0 }, { 0.0, -radius, 0.0 },
+            { diagonal, diagonal, 0.0 }, { -diagonal, diagonal, 0.0 },
+            { diagonal, -diagonal, 0.0 }, { -diagonal, -diagonal, 0.0 },
+            { 0.0, 0.0, radius }, { 0.0, 0.0, -radius },
+        }
+        for i = 1, #offsets do
+            local o = offsets[i]
+            if startPart(ringPart, coords.x + o[1], coords.y + o[2], coords.z + o[3], ringScale) then
+                sent = sent + 1
+            end
         end
     end
 
@@ -25035,6 +25076,7 @@ local function tickCore()
     -- Refresh coords; drop dead/unstreamed/out-of-reach. Selection survives.
     local alive = {}
     local anyRemote = false
+    local hasSelf = false
     for i = 1, #targets do
         local t = targets[i]
         local ped = t.ped
@@ -25045,6 +25087,7 @@ local function tickCore()
                     t.coords = coords
                     t.aim = predictedCoords(t, coords)
                     t.dist = 0.0
+                    hasSelf = true
                     alive[#alive + 1] = t
                 end
             end
@@ -25337,6 +25380,7 @@ local function tickCore()
         return
     elseif emitted then
         FL.stats.flashes = FL.stats.flashes + 1
+        if hasSelf then Menu.__vgd_flashLocalUntil = now() + 170 end
     else
         FL.stats.fails = FL.stats.fails + 1
     end
@@ -28954,6 +28998,7 @@ local N = (function(O,S,B)
 --   CLEAR_PED_TASKS          0xE1EF3C1216AFF2CD  (Ped) -> void
 --   SET_PED_CAN_RAGDOLL      0xB128377056A54E2A  (Ped, BOOL) -> void
 --   SET_PED_CAN_RAGDOLL_FROM_PLAYER_IMPACT 0xDF993EE5E90ABA25 (Ped, BOOL) -> void
+--   SET_PED_RAGDOLL_ON_COLLISION 0xF0A4F1BBF4FA7497 (Ped, BOOL) -> void
 --   SET_PED_MOVE_RATE_OVERRIDE 0x085BF80FA50A39D1 (Ped, float) -> void
 --   IS_ENTITY_PLAYING_ANIM   0x1F0B79228E461EC9  (Entity, char*, char*, int) -> BOOL
 --   GET_ENTITY_SPEED         0xD5037BA82E12416F  (Entity) -> float
@@ -29019,6 +29064,10 @@ local WARMUP_SPEED = 13.5
 local STAGE_B_PULSE = 1500
 local STAGE_B_WINDOW = 2.5
 local POSE_LOAD_MS = 1200
+-- A task reset can restore ped gravity (the No Clip pose lock clears tasks on
+-- a roof/wall contact). Refresh the flag on this cadence so a cleared task
+-- cannot turn gravity back on and sink the body into the floor logic.
+local GRAVITY_REFRESH_MS = 250
 
 -- Base-game freefall pose. The dictionary has free_back, free_forward,
 -- free_forward_add, free_forward_anim, free_left and free_right. The operator's
@@ -29123,6 +29172,8 @@ N.hooks = {}
 N.stageB = { event = nil, injected = false, next = 0 }
 N.coverChecked = false
 N.recheckAt = 0
+N.gravityNext = 0
+N.chuteNext = 0
 local motionStopped = false
 local stageBResource = nil
 
@@ -29472,6 +29523,7 @@ local function cleanupMotion()
             -- before the session, so nothing custom survives the stop.
             pcall(SetPedCanRagdoll, ped, true)
             pcall(SetPedCanRagdollFromPlayerImpact, ped, true)
+            pcall(SetPedRagdollOnCollision, ped, true)
         end
     end
     pcall(RemoveAnimDict, ANIM_DICT)
@@ -29563,6 +29615,8 @@ function N.arm(mode)
     N.moveLogged = false
     N.coverChecked = false
     N.recheckAt = 0
+    N.gravityNext = 0
+    N.chuteNext = 0
     N.gravityOff = false
     N.ragdollOff = false
     motionStopped = false
@@ -29592,6 +29646,7 @@ function N.arm(mode)
     -- SET_PED_CAN_RAGDOLL 0xB128377056A54E2A.
     N.ragdollOff = pcall(SetPedCanRagdoll, ped, false)
     pcall(SetPedCanRagdollFromPlayerImpact, ped, false)
+    pcall(SetPedRagdollOnCollision, ped, false)
 
     -- Clear a stale locomotion multiplier from an interrupted previous session.
     pcall(SetPedMoveRateOverride, ped, 1.0)
@@ -29648,6 +29703,8 @@ function N.stop(reason)
     N.taskStarted = false
     N.coverChecked = false
     N.recheckAt = 0
+    N.gravityNext = 0
+    N.chuteNext = 0
     N.lastTickAt = 0
     N.armAt = 0
     N.vx, N.vy, N.vz = 0.0, 0.0, 0.0
@@ -29729,7 +29786,8 @@ function N.tick(now)
         holdOrStop("ped gone")
         return
     end
-    if O.Ctx and type(O.Ctx.ped) == "number" and O.Ctx.ped ~= 0 and O.Ctx.ped ~= ped then
+    local okLocal, localPed = pcall(PlayerPedId)
+    if okLocal and type(localPed) == "number" and localPed ~= ped then
         holdOrStop("ped gone")
         return
     end
@@ -29746,10 +29804,34 @@ function N.tick(now)
         return
     end
 
+    -- A parachute that opens mid-session owns the physics and cancels the pose.
+    -- Controls 22/36 are disabled below, so this is a repair path, not the
+    -- normal flow: clear the parachute task, re-disable gravity and re-layer
+    -- the flat pose without dropping the session. The retry is rate-limited so
+    -- a canopy that takes a few frames to detach cannot cause a clear loop.
     local okChute, chute = pcall(GetPedParachuteState, ped)
-    if okChute and type(chute) == "number" and chute > 0 then
-        holdOrStop("parachute")
-        return
+    if okChute and type(chute) == "number" and chute > 0 and now >= N.chuteNext then
+        N.chuteNext = now + GRAVITY_REFRESH_MS
+        local flags = (N.mode == MODE_NARUTO) and ANIM_FLAGS_NARUTO or ANIM_FLAGS_NOCLIP
+        pcall(ClearPedTasks, ped)
+        pcall(SetPedGravity, ped, false)
+        pcall(SetPedCanRagdoll, ped, false)
+        pcall(SetPedCanRagdollFromPlayerImpact, ped, false)
+        pcall(SetPedRagdollOnCollision, ped, false)
+        pcall(TaskPlayAnim, ped, ANIM_DICT, ANIM_CLIP,
+            8.0, 8.0, -1, flags, 1.0, false, false, false)
+        N.animCheckAt = 0
+    end
+
+    -- Gravity is a ped flag, and a task reset can restore it. Keep it off on a
+    -- short jittered cadence; the same pass re-arms the ragdoll flags in case a
+    -- reset restored them too.
+    if now >= N.gravityNext then
+        N.gravityNext = now + O.jitter(GRAVITY_REFRESH_MS, 0.3)
+        pcall(SetPedGravity, ped, false)
+        pcall(SetPedCanRagdoll, ped, false)
+        pcall(SetPedCanRagdollFromPlayerImpact, ped, false)
+        pcall(SetPedRagdollOnCollision, ped, false)
     end
 
     -- Apply the freefall pose once its dictionary is streamed. The ped is
@@ -29952,6 +30034,12 @@ function N.tick(now)
         pcall(ClearPedTasks, ped)
         pcall(TaskPlayAnim, ped, ANIM_DICT, ANIM_CLIP,
             8.0, 8.0, -1, ANIM_FLAGS_NOCLIP, 1.0, false, false, false)
+        -- A ragdoll reset can restore gravity/ragdoll flags; re-assert them
+        -- immediately instead of waiting for the 250 ms refresh.
+        pcall(SetPedGravity, ped, false)
+        pcall(SetPedCanRagdoll, ped, false)
+        pcall(SetPedCanRagdollFromPlayerImpact, ped, false)
+        pcall(SetPedRagdollOnCollision, ped, false)
     end
 
     -- Movement. Flags 49 are an upper-body secondary task, so the normal
@@ -29969,9 +30057,10 @@ function N.tick(now)
     -- catches the exact frame a roof/wall collision drops the pose, then
     -- CLEAR_PED_TASKS removes the landing task and TASK_PLAY_ANIM re-layers the
     -- flat clip. A short cooldown prevents thrash if the clip never reports
-    -- playing. The lock is a read plus task writes only: no position, collision
-    -- or gravity write, and no write at all while IS_ENTITY_PLAYING_ANIM is
-    -- true, so a healthy pose is never re-blended.
+    -- playing. The lock is a read plus task writes only: no position or
+    -- collision write, and no task write at all while IS_ENTITY_PLAYING_ANIM
+    -- is true, so a healthy pose is never re-blended. The gravity re-assert
+    -- after a clear repairs a task reset that would otherwise turn gravity on.
     if N.mode == MODE_NOCLIP then
         if N.poseApplied and now >= N.animCheckAt then
             local okPlaying, playing = pcall(IsEntityPlayingAnim, ped, ANIM_DICT, ANIM_CLIP, 3)
@@ -29979,6 +30068,10 @@ function N.tick(now)
                 pcall(ClearPedTasks, ped)
                 pcall(TaskPlayAnim, ped, ANIM_DICT, ANIM_CLIP,
                     8.0, 8.0, -1, ANIM_FLAGS_NOCLIP, 1.0, false, false, false)
+                pcall(SetPedGravity, ped, false)
+                pcall(SetPedCanRagdoll, ped, false)
+                pcall(SetPedCanRagdollFromPlayerImpact, ped, false)
+                pcall(SetPedRagdollOnCollision, ped, false)
                 N.animCheckAt = now + O.jitter(ANIM_LOCK_MS, 0.3)
             end
         end
@@ -29998,6 +30091,17 @@ function N.tick(now)
     end
     N.stats.ticks = N.stats.ticks + 1
 end
+
+-- Parachute gate. Space/Ctrl are the deploy/steer keys; the air session uses
+-- them for vertical movement, so the game action is disabled every scheduler
+-- frame while armed. Per-frame, not per-tick: a 30 ms tick leaves a frame where
+-- the game could still read the key. controlDown sees the held key through
+-- IS_DISABLED_CONTROL_PRESSED.
+O.every("airnoclip_gate", 0, function()
+    if not N.active then return end
+    pcall(DisableControlAction, 0, CTL_UP, true)
+    pcall(DisableControlAction, 0, CTL_DOWN, true)
+end, 0)
 
 -- 30 ms nominal, jittered by O.every(); phase zero makes the first tick
 -- eligible immediately after arming.
@@ -38266,7 +38370,7 @@ end
 -- BOOT
 -- ---------------------------------------------------------------------------
 function UI.boot()
-    O.log("loader build 2026-11-08-r56 (Air movement: No Clip hard-locks the flat pose with CLEAR_PED_TASKS plus TASK_PLAY_ANIM only when IS_ENTITY_PLAYING_ANIM drops, a one-metre approach buffer keeps a two-metre floor, the native cover layer is revalidated every 2.5 s so a read that was genuine at arm and later went false is hooked instead of trusted stale, and ragdoll-from-player-impact is disabled while armed and restored on stop; native particle call carries all four axis flags; load-time preload removed; Stage B graft disabled by default; self and remote share the same filtered particle path; the flash is anchored to the target entity at chest height, moving targets get only a short capped velocity lead, and high-speed targets get a capped scale boost; selected self is honored before nearest-player fallback; Flash moved to Online > Troll > Attacks with Auto Safe and ten explicit methods; the selected method is read live; the WaveShield V4 particle configuration is read from GlobalState and scr_wheel_burnout and scr_alien_teleport are emitted only when rcore_spray/WaveAdmin put them in the static table, dynamic camera parts are sent only from the executor with assetHash stripped on ptFxEvent, and Stage B graft remains available but is disabled by default, so statically safe parts are emitted from the executor without a host injection; particle scale is capped at MaxParticleScale and each pulse sends up to three networked parts with no minimum range; a one-player server never fabricates a server event; the retired Exploit Flash tab is removed; Search magnifier handle rebuilt as a fused diagonal instead of three dots; White keeps the wbYgWhZ banner and Cyan restores its original 3HLMxX5 banner; Online Props Player row sorts the player list by distance and always targets the nearest player; Launch Player selector offers Method 1 and Method 2; Method 1 drives the victim ped directly when control is available and otherwise reverse-attaches the victim to the local ped within 3 m; Method 2 uses a range-free injected coordinate lift plus repeated upward force and velocity for servers that ignore Method 1; launch has no vehicle or explosion; hardened Susano ragdoll keeps the victim speed check lenient; self launch uses 58 m/s with GET_ENTITY_SPEED masked by the stealth hook; velocity and settle waits carry jitter; tight bold category chevrons; Troll Appearance section and Copy Appearance row removed; All mode Include me toggle adds the local ped alongside remote targets; Props Player row hidden in Self and All modes; attachment rows Attach to player and Attach point removed; target labels Self/Player/All; automatic player refresh sorts by distance and selects nearest; manual Refresh player list removed; Ban Player beta suffix removed; Servers and Bypass tabs moved from Destroyer to Misc; FOV moved from Visual/Camera to Self under Big Weapon; theme banners bottom-anchored flush on the category plate; White uses wbYgWhZ and Cyan uses 3HLMxX5; White/Cyan theme selector; White 3:1 header and Cyan 4.1:1 header; flush tab strip; light-grey cell tab plate; dark selected category rectangle; uniform unselected categories; reference names Self/Online/Vehicle/Weapon/Destroyer/Misc/Settings/Search; Search category opens the prompt directly and lands on results; compact magnifier; tight bold category chevron pair; full-white section rules fitted to the label width; Target keeps only the Ctrl hint; Player Props folded into Online; 15px right-aligned slider readout; target-bound toggles reset on target change/unload; dark row plates; white toggle/scrollbar; footer centre mark removed; Delete/Backspace close)")
+    O.log("loader build 2026-11-08-r58 (Air movement: No Clip hard-locks the flat pose with CLEAR_PED_TASKS plus TASK_PLAY_ANIM only when IS_ENTITY_PLAYING_ANIM drops, a one-metre approach buffer keeps a two-metre floor, ped gravity and the ragdoll flags (including ragdoll-on-collision) are re-asserted every 250 ms and immediately after any task clear so a task reset or collision cannot drop the body, Space/Ctrl are disabled as game controls on every scheduler frame while armed so a parachute cannot deploy, a mid-session parachute state is cleared and the pose re-layered instead of stopping the session, the native cover layer is revalidated every 2.5 s so a read that was genuine at arm and later went false is hooked instead of trusted stale, and ragdoll-from-player-impact is disabled while armed and restored on stop; native particle call carries all four axis flags; load-time preload removed; Stage B graft disabled by default; self and remote share the same filtered particle path; the flash is anchored to the target entity at chest height with a ten-point particle ring for every view angle, self uses a full-screen overlay pulse, moving targets get only a short capped velocity lead, and high-speed targets get a capped scale boost; selected self is honored before nearest-player fallback; Flash moved to Online > Troll > Attacks with Auto Safe and ten explicit methods; the selected method is read live; the WaveShield V4 particle configuration is read from GlobalState and scr_wheel_burnout and scr_alien_teleport are emitted only when rcore_spray/WaveAdmin put them in the static table, dynamic camera parts are sent only from the executor with assetHash stripped on ptFxEvent, and Stage B graft remains available but is disabled by default, so statically safe parts are emitted from the executor without a host injection; particle scale is capped at MaxParticleScale and each pulse sends up to three networked parts with no minimum range; a one-player server never fabricates a server event; the retired Exploit Flash tab is removed; Search magnifier handle rebuilt as a fused diagonal instead of three dots; White keeps the wbYgWhZ banner and Cyan restores its original 3HLMxX5 banner; Online Props Player row sorts the player list by distance and always targets the nearest player; Launch Player selector offers Method 1 and Method 2; Method 1 drives the victim ped directly when control is available and otherwise reverse-attaches the victim to the local ped within 3 m; Method 2 uses a range-free injected coordinate lift plus repeated upward force and velocity for servers that ignore Method 1; launch has no vehicle or explosion; hardened Susano ragdoll keeps the victim speed check lenient; self launch uses 58 m/s with GET_ENTITY_SPEED masked by the stealth hook; velocity and settle waits carry jitter; tight bold category chevrons; Troll Appearance section and Copy Appearance row removed; All mode Include me toggle adds the local ped alongside remote targets; Props Player row hidden in Self and All modes; attachment rows Attach to player and Attach point removed; target labels Self/Player/All; automatic player refresh sorts by distance and selects nearest; manual Refresh player list removed; Ban Player beta suffix removed; Servers and Bypass tabs moved from Destroyer to Misc; FOV moved from Visual/Camera to Self under Big Weapon; theme banners bottom-anchored flush on the category plate; White uses wbYgWhZ and Cyan uses 3HLMxX5; White/Cyan theme selector; White 3:1 header and Cyan 4.1:1 header; flush tab strip; light-grey cell tab plate; dark selected category rectangle; uniform unselected categories; reference names Self/Online/Vehicle/Weapon/Destroyer/Misc/Settings/Search; Search category opens the prompt directly and lands on results; compact magnifier; tight bold category chevron pair; full-white section rules fitted to the label width; Target keeps only the Ctrl hint; Player Props folded into Online; 15px right-aligned slider readout; target-bound toggles reset on target change/unload; dark row plates; white toggle/scrollbar; footer centre mark removed; Delete/Backspace close)")
     O.thread()
 
     -- Delete/Backspace fallback poll. 40 ms is faster than a frame at 30 FPS
