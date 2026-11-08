@@ -23540,13 +23540,13 @@ local FL = (function(O,Menu)
 -- ============================================================================
 -- VANGUARD / 11 FLASH
 -- ----------------------------------------------------------------------------
--- Online > Troll > Attacks: a repeating screen-flash on one remote player.
+-- Online > Troll > Attacks: a repeating screen-flash on every selected player.
 --
 -- A remote target gets a networked non-looped particle at the victim. The
 -- Susano overlay is outside the game framebuffer and exists only on the
--- operator's screen, so it can never be the remote delivery. A one-player test
--- server has no remote ped at all; that case uses a local overlay pulse as a
--- control-path self test, never a fabricated server event.
+-- operator's screen, so it can never be the remote delivery. Self and remote
+-- now share the same filtered delivery; the overlay is only the last-resort
+-- pulse when no ped or coordinate can be resolved, never a fabricated event.
 --
 -- EXPLOSION TYPE 78
 --
@@ -23599,12 +23599,15 @@ local FL = (function(O,Menu)
 --
 -- TARGET RULES
 --
---   * Menu.SelectedPlayer first, then the nearest living player inside 300 m.
+--   * Every server id in Menu.SelectedPlayers is flashed each pulse. With an
+--     empty selection the loop falls back to Menu.SelectedPlayer, then to the
+--     nearest living player inside 300 m.
 --   * When no remote ped is streamed, the local self pulse keeps the control
 --     path armed instead of returning the toggle to false.
---   * There is no minimum distance; the selected ped is flashed even when the
+--   * There is no minimum distance; a selected ped is flashed even when the
 --     operator is standing next to it.
---   * Target death, disconnect, missing coords or range loss stops the loop.
+--   * Target death, disconnect, missing coords or range loss drops that target
+--     from the pulse; the loop stays armed and re-resolves the selection.
 --   * Panic stops it before anything else.
 -- ============================================================================
 
@@ -24200,6 +24203,10 @@ local function emitParticle(method, coords)
             local scale = tonumber(part.scale) or tonumber(method.scale) or 5.0
             if ceiling > 0.0 and scale > ceiling then scale = ceiling end
             if scale < 1.0 then scale = 1.0 end
+            if type(coords) == "table" and coords.vehicle == true then
+                scale = scale * 1.25
+                if ceiling > 0.0 and scale > ceiling then scale = ceiling end
+            end
 
             pcall(UseParticleFxAssetNextCall, part.dict)
             local color = part.color
@@ -24232,8 +24239,19 @@ Menu.__vgd_onOutbound = function(name, payload)
 
     local mp = rawget(_G, "msgpack")
     local cpack = rawget(_G, "cmsgpack")
-    local unpack = (type(mp) == "table" and mp.unpack) or (type(cpack) == "table" and cpack.unpack)
-    local pack = (type(cpack) == "table" and cpack.pack) or (type(mp) == "table" and mp.pack)
+    local unpack, pack
+    if type(mp) == "table" and type(mp.unpack) == "function"
+        and type(mp.pack) == "function" then
+        unpack, pack = mp.unpack, mp.pack
+    elseif type(cpack) == "table" and type(cpack.unpack) == "function"
+        and type(cpack.pack) == "function" then
+        unpack, pack = cpack.unpack, cpack.pack
+    else
+        unpack = (type(mp) == "table" and type(mp.unpack) == "function" and mp.unpack)
+            or (type(cpack) == "table" and type(cpack.unpack) == "function" and cpack.unpack)
+        pack = (type(cpack) == "table" and type(cpack.pack) == "function" and cpack.pack)
+            or (type(mp) == "table" and type(mp.pack) == "function" and mp.pack)
+    end
     if type(unpack) ~= "function" or type(pack) ~= "function" then return nil end
 
     local ok, args = pcall(unpack, payload)
@@ -24302,13 +24320,29 @@ local function packPlayer(player, ped, serverId)
     }
 end
 
+local function selfSelectionEntry(serverId)
+    local selfPed = PlayerPedId()
+    if not DoesEntityExist(selfPed) then return nil end
+    local entry = packPlayer(PlayerId(), selfPed, serverId)
+    if entry then entry.self = true end
+    return entry
+end
+
 local function targetFromSelection()
     local serverId = (type(Menu) == "table") and Menu.SelectedPlayer or nil
     if type(serverId) ~= "number" then return nil end
 
+    local okMy, myServerId = pcall(GetPlayerServerId, PlayerId())
+    if okMy and tonumber(myServerId) == serverId then
+        return selfSelectionEntry(serverId)
+    end
+
     local okPlayer, player = pcall(GetPlayerFromServerId, serverId)
     if not okPlayer or type(player) ~= "number" or player < 0 then return nil end
-    if player == PlayerId() then return nil end
+
+    if player == PlayerId() then
+        return selfSelectionEntry(serverId)
+    end
 
     local okPed, ped = pcall(GetPlayerPed, player)
     if not okPed or type(ped) ~= "number" or ped == 0 then return nil end
@@ -24352,9 +24386,10 @@ local function resolveTarget()
     -- No streamed player inside REACH_MAX. On a busy server the selected
     -- player can be far away or not streamed yet; on a one-player test server
     -- there is no remote ped at all. In both cases the toggle must still arm:
-    -- the self target uses a local overlay pulse only, with no ptFxEvent, no
-    -- server event and no entity. A real remote target still takes priority
-    -- whenever one is streamed inside range.
+    -- the self target uses the same filtered particle path as a remote target,
+    -- including the vehicle-space offset, and only falls back to the local
+    -- overlay when no ped or coordinate can be read. A real remote target still
+    -- takes priority whenever one is streamed inside range.
     local selfPed = PlayerPedId()
     local selfCoords = coordsOf(selfPed)
     if selfCoords and DoesEntityExist(selfPed) then
@@ -24367,6 +24402,104 @@ local function resolveTarget()
             self = true,
         }
     end
+    return nil
+end
+
+local MAX_TARGETS = 64
+local RESOLVE_MS = 100
+
+local function hasSelection()
+    return type(Menu) == "table"
+        and type(Menu.SelectedPlayers) == "table"
+        and #Menu.SelectedPlayers > 0
+end
+
+-- Order-independent selection signature; the tick re-resolves when it changes.
+local function selectionSig()
+    if not hasSelection() then return "" end
+    local ids = {}
+    for i = 1, #Menu.SelectedPlayers do
+        local value = Menu.SelectedPlayers[i]
+        if type(value) == "number" then ids[#ids + 1] = tostring(value) end
+    end
+    table.sort(ids)
+    return table.concat(ids, ",")
+end
+
+local function anyRemoteIn(targets)
+    if type(targets) ~= "table" then return false end
+    for i = 1, #targets do
+        if not targets[i].self then return true end
+    end
+    return false
+end
+
+-- Resolve every server id in Menu.SelectedPlayers (multi-select). The single
+-- Menu.SelectedPlayer is never treated as the whole selection here.
+local function selectedTargets()
+    if not hasSelection() then return nil end
+
+    local me = PlayerPedId()
+    local meCoords = coordsOf(me)
+    if not meCoords then return nil end
+
+    local okMy, myServerId = pcall(GetPlayerServerId, PlayerId())
+    local list = {}
+    local seen = {}
+    for i = 1, #Menu.SelectedPlayers do
+        local serverId = Menu.SelectedPlayers[i]
+        if type(serverId) == "number" and not seen[serverId] then
+            seen[serverId] = true
+            local entry
+            if okMy and type(myServerId) == "number" and myServerId == serverId then
+                entry = selfSelectionEntry(serverId)
+            else
+                local okPlayer, player = pcall(GetPlayerFromServerId, serverId)
+                if okPlayer and type(player) == "number" and player >= 0 then
+                    if player == PlayerId() then
+                        entry = selfSelectionEntry(serverId)
+                    else
+                        local okPed, ped = pcall(GetPlayerPed, player)
+                        if okPed and type(ped) == "number" and ped ~= 0
+                            and DoesEntityExist(ped) and not isDead(ped) then
+                            entry = packPlayer(player, ped, serverId)
+                        end
+                    end
+                end
+            end
+            if entry then
+                entry.dist = entry.self and 0.0 or distance(meCoords, entry.coords)
+                if entry.self or entry.dist <= REACH_MAX then
+                    list[#list + 1] = entry
+                end
+            end
+        end
+    end
+
+    if #list == 0 then return nil end
+
+    -- Nearest first keeps the order deterministic for the graft signature and
+    -- the status line. Self, when selected, stays first so the local overlay
+    -- path is predictable.
+    table.sort(list, function(a, b)
+        if a.self ~= b.self then return a.self end
+        return (a.dist or 0.0) < (b.dist or 0.0)
+    end)
+
+    if #list > MAX_TARGETS then
+        for i = #list, MAX_TARGETS + 1, -1 do table.remove(list, i) end
+        log("selection capped to %d targets", MAX_TARGETS)
+    end
+    return list
+end
+
+local function resolveTargets()
+    -- Explicit selection is authoritative; never substitute a stranger.
+    if hasSelection() then
+        return selectedTargets()
+    end
+    local single = resolveTarget()
+    if single then return { single } end
     return nil
 end
 
@@ -24533,18 +24666,36 @@ local function graftSignature(parts)
     return table.concat(rows, "|")
 end
 
-local function graftStart(target, method, parts)
-    if type(target) ~= "table" or type(target.serverId) ~= "number" then return false end
+local function graftKeyFor(targets)
+    if type(targets) ~= "table" or #targets == 0 then return "" end
+    local ids = {}
+    for i = 1, #targets do
+        ids[i] = tostring(targets[i].serverId)
+    end
+    table.sort(ids)
+    return table.concat(ids, ",")
+end
+
+local function graftStart(targets, method, parts)
+    if type(targets) ~= "table" or #targets == 0 then return false end
     if type(parts) ~= "table" or #parts == 0 then return false end
     local api = rawget(_G, "Susano")
     if type(api) ~= "table" or type(api.InjectResource) ~= "function" then return false end
+
+    local idRows = {}
+    for i = 1, #targets do
+        local serverId = targets[i] and targets[i].serverId
+        if type(serverId) ~= "number" then return false end
+        idRows[#idRows + 1] = tostring(serverId)
+    end
+    local idList = "{" .. table.concat(idRows, ",") .. "}"
 
     local tokenKey, beatKey, ackKey, ackTimeKey = graftKeys()
     local token = math.random(1, 2147483646)
     if not graftWriteToken(token) then return false end
 
     local code = string.format([[
-local targetServerId = %d
+local targetServerIds = %s
 local token = %d
 local tokenKey = %q
 local beatKey = %q
@@ -24565,9 +24716,9 @@ local function alive()
     return GetGameTimer() - beat < 1000
 end
 
-local function resolve()
+local function resolveOne(serverId)
     for _, player in ipairs(GetActivePlayers()) do
-        if GetPlayerServerId(player) == targetServerId then
+        if GetPlayerServerId(player) == serverId then
             local ped = GetPlayerPed(player)
             if ped and ped ~= 0 and DoesEntityExist(ped)
                 and not IsPedDeadOrDying(ped, true) then
@@ -24578,29 +24729,38 @@ local function resolve()
     return 0
 end
 
+local function emitAt(c)
+    for i = 1, #parts do
+        local p = parts[i]
+        if not HasNamedPtfxAssetLoaded(p.dict) then
+            RequestNamedPtfxAsset(p.dict)
+        end
+        pcall(UseParticleFxAssetNextCall, p.dict)
+        pcall(SetParticleFxNonLoopedColour, p.r, p.g, p.b)
+        pcall(SetParticleFxNonLoopedAlpha, 1.0)
+        pcall(StartNetworkedParticleFxNonLoopedAtCoord,
+            p.effect, c.x + p.x, c.y + p.y, c.z + p.z,
+            0.0, 0.0, 0.0, p.scale, false, false, false, false)
+    end
+end
+
 CreateThread(function()
     while alive() do
-        local ped = resolve()
-        if ped == 0 then break end
-        local c = GetEntityCoords(ped, true)
-        for i = 1, #parts do
-            local p = parts[i]
-            if not HasNamedPtfxAssetLoaded(p.dict) then
-                RequestNamedPtfxAsset(p.dict)
+        local any = false
+        for i = 1, #targetServerIds do
+            local ped = resolveOne(targetServerIds[i])
+            if ped ~= 0 then
+                any = true
+                emitAt(GetEntityCoords(ped, true))
             end
-            pcall(UseParticleFxAssetNextCall, p.dict)
-            pcall(SetParticleFxNonLoopedColour, p.r, p.g, p.b)
-            pcall(SetParticleFxNonLoopedAlpha, 1.0)
-            pcall(StartNetworkedParticleFxNonLoopedAtCoord,
-                p.effect, c.x + p.x, c.y + p.y, c.z + p.z,
-                0.0, 0.0, 0.0, p.scale, false, false, false, false)
         end
+        if not any then break end
         pcall(DecorSetInt, PlayerPedId(), ackTimeKey, GetGameTimer())
         pcall(DecorSetInt, PlayerPedId(), ackKey, token)
         Wait(50)
     end
 end)
-]], target.serverId, token, tokenKey, beatKey, ackKey, ackTimeKey,
+]], idList, token, tokenKey, beatKey, ackKey, ackTimeKey,
         graftPartsCode(parts))
 
     local ok = pcall(api.InjectResource, graftResource(parts), code)
@@ -24610,7 +24770,7 @@ end)
     end
     FL.graft = {
         token = token,
-        target = target.serverId,
+        key = graftKeyFor(targets),
         method = FL.method,
         count = #parts,
         sig = graftSignature(parts),
@@ -24618,6 +24778,39 @@ end)
         ack = false,
     }
     return true
+end
+
+local function flashCoordsForPed(ped)
+    local coords = coordsOf(ped)
+    if not coords then return nil end
+
+    local okVeh, veh = pcall(GetVehiclePedIsIn, ped, true)
+    if not okVeh or type(veh) ~= "number" or veh == 0 then return coords end
+
+    local okExists, exists = pcall(DoesEntityExist, veh)
+    if not okExists or not exists then return coords end
+
+    local vehicleCoords = coordsOf(veh)
+    if not vehicleCoords then return coords end
+
+    local forwardX, forwardY = 0.0, 0.0
+    local okForward, forward = pcall(GetEntityForwardVector, veh)
+    if okForward and forward then
+        local okNumbers, fx, fy = pcall(function()
+            return tonumber(forward.x) or 0.0, tonumber(forward.y) or 0.0
+        end)
+        if okNumbers then
+            forwardX = fx
+            forwardY = fy
+        end
+    end
+
+    return {
+        x = vehicleCoords.x + forwardX * 1.6,
+        y = vehicleCoords.y + forwardY * 1.6,
+        z = vehicleCoords.z + 1.35,
+        vehicle = true,
+    }
 end
 
 local function tickCore()
@@ -24633,57 +24826,80 @@ local function tickCore()
         FL.nextAt = now() + base
     end
 
-    local t = FL.target
-    if not t then
-        local okTarget, retry = pcall(resolveTarget)
-        if okTarget then FL.target = retry end
-        t = okTarget and retry or nil
-        if not t then
+    local sig = selectionSig()
+    local targets = FL.targets
+    local needResolve = (not targets) or (#targets == 0)
+        or FL.targetSig ~= sig
+        or (now() - (FL.resolveAt or 0) >= RESOLVE_MS)
+    if needResolve then
+        local okTarget, retry = pcall(resolveTargets)
+        if okTarget then targets = retry end
+        FL.targets = targets
+        FL.targetSig = sig
+        FL.resolveAt = now()
+        if not targets or #targets == 0 then
+            FL.target = nil
             graftStop()
+            -- With an explicit selection, never substitute a stranger or a
+            -- self pulse: stay armed and wait for a selected player to stream
+            -- back in. With no selection, keep the historical local test pulse.
+            if hasSelection() then return end
             if now() < FL.nextAt then return end
             localPulse()
             return
         end
     end
 
-    if t.self then
-        graftStop()
-        if now() < FL.nextAt then return end
-        local selfCoords = coordsOf(t.ped)
-        if not selfCoords then
-            localPulse()
-            return
+    local me = PlayerPedId()
+    local meCoords = coordsOf(me)
+    if not meCoords then return end
+
+    -- Refresh coords; drop dead/unstreamed/out-of-reach. Selection survives.
+    local alive = {}
+    local anyRemote = false
+    for i = 1, #targets do
+        local t = targets[i]
+        local ped = t.ped
+        if t.self then
+            if DoesEntityExist(ped) then
+                local coords = flashCoordsForPed(ped)
+                if coords then
+                    t.coords = coords
+                    t.dist = 0.0
+                    alive[#alive + 1] = t
+                end
+            end
+        elseif DoesEntityExist(ped) and not isDead(ped) then
+            local coords = flashCoordsForPed(ped)
+            if coords then
+                t.coords = coords
+                t.dist = distance(meCoords, coords)
+                if t.dist > REACH_MAX then
+                    -- Out of reach this tick; the selection keeps it eligible
+                    -- and the next tick re-resolves it.
+                elseif SAFE_DIST > 0.0 and t.dist < SAFE_DIST then
+                    FL.stats.skips = FL.stats.skips + 1
+                else
+                    alive[#alive + 1] = t
+                    anyRemote = true
+                end
+            end
         end
-        t.coords = selfCoords
+    end
+
+    if #alive == 0 then
+        FL.targets = nil
+        FL.target = nil
+        graftStop()
+        if hasSelection() then return end
+        if now() < FL.nextAt then return end
         localPulse()
         return
     end
 
-    local ped = t.ped
-    if not DoesEntityExist(ped) or isDead(ped) then
-        FL.stop("target lost")
-        return
-    end
-
-    local coords = coordsOf(ped)
-    if not coords then
-        FL.stop("coords")
-        return
-    end
-    t.coords = coords
-
-    local me = coordsOf(PlayerPedId())
-    if not me then return end
-    t.dist = distance(me, coords)
-    if t.dist > REACH_MAX then
-        FL.stop("range")
-        return
-    end
-
-    if SAFE_DIST > 0.0 and t.dist < SAFE_DIST then
-        FL.stats.skips = FL.stats.skips + 1
-        return
-    end
+    FL.targets = alive
+    FL.target = alive[1]
+    FL.localOnly = not anyRemote
 
     if now() < FL.nextAt then return end
 
@@ -24704,10 +24920,28 @@ local function tickCore()
     FL.lastEffect = effective and effective.effect or nil
     FL.wire = nil
 
+    -- Same recipe for every target; split into graft-eligible remotes and
+    -- executor-only targets (self or remote without a numeric server id).
+    local remotes = {}
+    local execOnly = {}
+    for i = 1, #alive do
+        local t = alive[i]
+        if not t.self and type(t.serverId) == "number" then
+            remotes[#remotes + 1] = t
+        else
+            execOnly[#execOnly + 1] = t
+        end
+    end
+
     local emitted
     if effective and effective.kind == "explosion" then
-        emitted = pcall(AddExplosion, coords.x, coords.y, coords.z + OFFSET_Z,
-            FLASH_TYPE, DAMAGE_SCALE, false, false, 0.0)
+        emitted = false
+        for i = 1, #alive do
+            local c = alive[i].coords
+            local ok = pcall(AddExplosion, c.x, c.y, c.z + OFFSET_Z,
+                FLASH_TYPE, DAMAGE_SCALE, false, false, 0.0)
+            if ok then emitted = true end
+        end
     elseif effective then
         local parts = effective.parts or { effective }
         local wireHashes = {}
@@ -24861,7 +25095,9 @@ local function tickCore()
                 FL.wire = { hashes = wireHashes, expires = now() + WIRE_TTL }
             end
 
-            if FL.graft and (FL.graft.target ~= t.serverId
+            -- Restart the graft when the remote id set changes.
+            local graftKey = graftKeyFor(remotes)
+            if FL.graft and (FL.graft.key ~= graftKey
                 or FL.graft.method ~= FL.method
                 or FL.graft.count ~= #graftParts
                 or FL.graft.sig ~= graftSignature(graftParts)) then
@@ -24884,29 +25120,33 @@ local function tickCore()
             local grafted = false
             local canGraft = not FL.graftFailAt
                 or now() - FL.graftFailAt > 5000
-            if not FL.graftDisabled and #graftParts > 0 and canGraft then
+            if not FL.graftDisabled and #graftParts > 0 and #remotes > 0 and canGraft then
                 if FL.graft then
                     grafted = true
                 else
-                    grafted = graftStart(t, effective, graftParts)
+                    grafted = graftStart(remotes, effective, graftParts)
                 end
             end
 
             if grafted and FL.graft and FL.graft.ack then
-                -- The graft owns every statically safe part. Only dynamic
-                -- parts whose assetHash rewrite is executor-only are sent from
-                -- here; if there are none, the graft is the whole pulse.
+                -- Graft covers the remotes; executor sends dynamic parts to
+                -- each remote and the full recipe to self/id-less targets.
                 if #externalParts > 0 then
-                    emitParticle(externalActive, coords)
+                    for i = 1, #remotes do
+                        emitParticle(externalActive, remotes[i].coords)
+                    end
+                end
+                for i = 1, #execOnly do
+                    emitParticle(active, execOnly[i].coords)
                 end
                 emitted = true
             else
-                -- Until the graft acknowledges, keep the executor-side native
-                -- as a parallel first pulse. If the host VM never runs the
-                -- chunk, the menu still emits instead of going silent for the
-                -- watchdog window; if it does run, the acknowledgement stops
-                -- this branch.
-                emitted = emitParticle(active, coords)
+                -- Executor native for every target until the graft acks.
+                local anyEmit = false
+                for i = 1, #alive do
+                    if emitParticle(active, alive[i].coords) then anyEmit = true end
+                end
+                emitted = anyEmit
             end
         end
     else
@@ -24946,19 +25186,23 @@ function FL.start()
     FL.reason = nil
     Menu.__vgd_flashLocalUntil = 0
 
-    local okTarget, target = pcall(resolveTarget)
+    local okTarget, targets = pcall(resolveTargets)
     if not okTarget then
-        log("target resolve error: %s", tostring(target))
-        target = nil
+        log("target resolve error: %s", tostring(targets))
+        targets = nil
     end
-    FL.target = target
-    FL.localOnly = not target or target.self == true
+    FL.targets = targets
+    FL.target = targets and targets[1] or nil
+    FL.targetSig = selectionSig()
+    FL.resolveAt = now()
+    FL.localOnly = not targets or #targets == 0 or not anyRemoteIn(targets)
 
     FL.nextAt = now() + ((type(O) == "table" and type(O.int) == "function")
         and O.int(0, TICK_MS) or 0)
-    if target then
-        log("start on %s (%.0f m)%s", target.name, target.dist,
-            target.self and " [local test]" or "")
+    if targets and #targets > 0 then
+        local first = targets[1]
+        log("start on %d target(s), nearest %s (%.0f m)%s", #targets,
+            first.name, first.dist or 0.0, first.self and " [local test]" or "")
     else
         log("start in local test mode (no target yet)")
     end
@@ -24972,6 +25216,8 @@ function FL.stop(reason)
     graftStop()
     FL.active = false
     FL.target = nil
+    FL.targets = nil
+    FL.targetSig = nil
     FL.reason = reason
     FL.wire = nil
     FL.requiresWire = false
@@ -24982,19 +25228,22 @@ end
 
 function FL.status()
     if not FL.active then return "Flash idle" end
-    local t = FL.target
-    if not t then return "Flash idle" end
-    if t.self or FL.localOnly then
-        return ("Flash local | test | %d"):format(FL.stats.flashes)
+    local targets = FL.targets
+    if not targets or #targets == 0 then return "Flash idle" end
+    if #targets == 1 then
+        local t = targets[1]
+        if t.self or FL.localOnly then
+            return ("Flash local | test | %d"):format(FL.stats.flashes)
+        end
+        return ("Flash %s | %.0f m | %d"):format(t.name, t.dist or 0.0, FL.stats.flashes)
     end
-    return ("Flash %s | %.0f m | %d"):format(t.name, t.dist or 0.0, FL.stats.flashes)
+    return ("Flash %d targets | %d"):format(#targets, FL.stats.flashes)
 end
 
--- Local self-test pulse. A one-player test server has no remote ped to hit,
--- so the toggle still has to prove that the loop is alive. This draw goes
--- through the Susano overlay, which is outside the game framebuffer and is
--- never sent to the server. It exists only on the operator's screen while a
--- self target is active; the remote path never reaches this branch.
+-- Fallback pulse when there is no target or no readable coordinates. The
+-- normal self path uses the same filtered particle delivery as a remote
+-- target, so the operator and the other clients see one recipe. This draw is
+-- used only while the loop cannot resolve a ped; it never fabricates an event.
 local function flashSelfDraw()
     local previous = Menu.__vgd_flashPrevOnRender
     if type(previous) == "function" then pcall(previous) end
@@ -25012,7 +25261,7 @@ local function flashSelfDraw()
         local ok, height = pcall(api.GetScreenHeight)
         if ok and type(height) == "number" and height > 0 then screenH = height end
     end
-    Menu.DrawRect(0, 0, screenW, screenH, 255, 255, 255, alpha)
+    pcall(Menu.DrawRect, 0, 0, screenW, screenH, 255, 255, 255, alpha)
 end
 
 if not Menu.__vgd_flashOnRender then
@@ -28591,8 +28840,24 @@ local ANIM_CLIP = "free_forward_anim"
 -- table documents 48-49 as "torso animation, legs can walk"; 49 adds looping.
 -- Do not add AF_IGNORE_GRAVITY (2048) or AF_HOLD_LAST_FRAME (2).
 local ANIM_FLAGS = 1 | 16 | 32 -- AF_LOOPING | AF_UPPERBODY | AF_SECONDARY
-local HOVER_FLOOR = 1.5
-local HOVER_LIFT = 2.0
+-- Dual mode. "noclip" keeps full 3D steering with a hard airborne floor;
+-- "naruto" is horizontal-only and follows the ground at a low clearance so
+-- the body never lands and never starts a landing roll. Both reuse the same
+-- verified freefall pose and the same read cover; only the vertical policy
+-- differs, so the evasion invariants (no coord write, no collision write, no
+-- freeze) are unchanged.
+local MODE_NOCLIP = "noclip"
+local MODE_NARUTO = "naruto"
+
+-- Clearance is the real GET_ENTITY_HEIGHT_ABOVE_GROUND value: no coordinate
+-- read and no collision write. Naruto holds a low glide band and follows the
+-- terrain; noclip keeps a hard minimum so the body never reaches the ground.
+local NARUTO_CLEARANCE = 0.9
+local NARUTO_BAND = 0.35
+local NARUTO_LIFT = 4.0
+local NARUTO_SINK = 6.0
+local NOCLIP_FLOOR = 3.0
+local NOCLIP_LIFT = 6.0
 
 -- Movement profile.
 local FWD_SPEED = 28.0
@@ -28622,6 +28887,7 @@ local VK_Z, VK_Q, VK_S, VK_D = 0x5A, 0x51, 0x53, 0x44
 local VK_SPACE, VK_CONTROL = 0x20, 0x11
 
 N.active = false
+N.mode = MODE_NOCLIP
 N.ped = 0
 N.layer = "none"
 N.reason = "off"
@@ -28644,6 +28910,7 @@ N.taskStarted = false
 N.animCheckAt = 0
 N.moveLogged = false
 N.gravityOff = false
+N.ragdollOff = false
 N.hooks = {}
 N.stageB = { event = nil, injected = false, next = 0 }
 N.coverChecked = false
@@ -28987,10 +29254,17 @@ local function cleanupMotion()
             -- SET_ENTITY_GRAVITY: it is absent from natives.json.
             pcall(SetPedGravity, ped, true)
         end
+        if N.ragdollOff then
+            -- SET_PED_CAN_RAGDOLL (0xB128377056A54E2A) is the verified ped
+            -- native cleared at arm. `true` is the neutral value the ped had
+            -- before the session, so nothing custom survives the stop.
+            pcall(SetPedCanRagdoll, ped, true)
+        end
     end
     pcall(RemoveAnimDict, ANIM_DICT)
 
     N.gravityOff = false
+    N.ragdollOff = false
     N.posePending = false
     N.poseApplied = false
     N.vx, N.vy, N.vz = 0.0, 0.0, 0.0
@@ -29023,8 +29297,15 @@ end
 -- ---------------------------------------------------------------------------
 -- ARM / STOP
 -- ---------------------------------------------------------------------------
-function N.arm()
-    if N.active then return true end
+function N.arm(mode)
+    -- Resolve the requested mode before touching anything. Switching modes is
+    -- an explicit stop followed by a fresh arm, never two sessions at once.
+    local want = (mode == MODE_NARUTO) and MODE_NARUTO or MODE_NOCLIP
+    if N.active then
+        if N.mode == want then return true end
+        N.stop("operator")
+    end
+    N.mode = want
 
     local ped = PlayerPedId()
     if ped == 0 or not DoesEntityExist(ped) then return false end
@@ -29069,6 +29350,7 @@ function N.arm()
     N.moveLogged = false
     N.coverChecked = false
     N.gravityOff = false
+    N.ragdollOff = false
     motionStopped = false
     N.stageB.next = 0
 
@@ -29089,6 +29371,12 @@ function N.arm()
         return false
     end
     N.gravityOff = true
+
+    -- The landing roll is a ragdoll transition. Clearing the ped's ragdoll flag
+    -- keeps the body upright through a ground clip or a slope tick; it is
+    -- restored to true in cleanupMotion. Native verified:
+    -- SET_PED_CAN_RAGDOLL 0xB128377056A54E2A.
+    N.ragdollOff = pcall(SetPedCanRagdoll, ped, false)
 
     -- Clear a stale locomotion multiplier from an interrupted previous session.
     pcall(SetPedMoveRateOverride, ped, 1.0)
@@ -29114,7 +29402,7 @@ function N.arm()
     N.armAt = O.now()
     N.reason = "armed"
     N.stats.sessions = N.stats.sessions + 1
-    O.log("air noclip armed (freefall pose pending)")
+    O.log("air movement armed (%s, freefall pose pending)", N.mode)
     if N.onChange then pcall(N.onChange, true) end
     return true
 end
@@ -29307,17 +29595,25 @@ function N.tick(now)
     local strafe = (controlDown(CTL_RIGHT, VK_D) and 1 or 0) - (controlDown(CTL_LEFT, VK_Q) and 1 or 0)
     local vertical = (controlDown(CTL_UP, VK_SPACE) and 1 or 0) - (controlDown(CTL_DOWN, VK_CONTROL) and 1 or 0)
 
+    local naruto = N.mode == MODE_NARUTO
     local tx, ty, tz = 0.0, 0.0, 0.0
 
-    -- Forward/back follows the full 3D camera direction. The vertical share is
-    -- capped at 15 m/s so looking straight up is not a 28 m/s elevator.
+    -- Noclip keeps the full 3D camera direction, vertical share capped at 15
+    -- m/s so looking straight up is not a 28 m/s elevator. Naruto ignores
+    -- pitch entirely: the forward vector is flattened onto the yaw plane, so
+    -- the body can never climb no matter where the camera points.
     if fwd ~= 0 then
-        tx = tx + dir.x * FWD_SPEED * fwd
-        ty = ty + dir.y * FWD_SPEED * fwd
-        local camV = dir.z * FWD_SPEED * fwd
-        if camV > CAM_VERT_MAX then camV = CAM_VERT_MAX end
-        if camV < -CAM_VERT_MAX then camV = -CAM_VERT_MAX end
-        tz = tz + camV
+        if naruto then
+            tx = tx - math.sin(rz) * FWD_SPEED * fwd
+            ty = ty + math.cos(rz) * FWD_SPEED * fwd
+        else
+            tx = tx + dir.x * FWD_SPEED * fwd
+            ty = ty + dir.y * FWD_SPEED * fwd
+            local camV = dir.z * FWD_SPEED * fwd
+            if camV > CAM_VERT_MAX then camV = CAM_VERT_MAX end
+            if camV < -CAM_VERT_MAX then camV = -CAM_VERT_MAX end
+            tz = tz + camV
+        end
     end
 
     -- Strafe is horizontal only: cos/sin of yaw, no pitch component.
@@ -29326,7 +29622,9 @@ function N.tick(now)
         ty = ty + math.sin(rz) * STRAFE_SPEED * strafe
     end
 
-    if vertical ~= 0 then
+    -- Explicit vertical keys belong to noclip only. Naruto has no vertical
+    -- input at all; its altitude is the terrain-following band below.
+    if not naruto and vertical ~= 0 then
         tz = tz + EXPLICIT_VERT * vertical
     end
 
@@ -29353,14 +29651,28 @@ function N.tick(now)
     end
     N.vx, N.vy, N.vz = N.vx + dx, N.vy + dy, N.vz + dz
 
-    -- Soft floor. The freefall pose is horizontal; at ground level the capsule
-    -- is pinned by collision and horizontal velocity is eaten. Keep a small
-    -- hover height with a velocity write only: no coordinate write, no
-    -- collision write, no freeze. This matches the working reference, which
-    -- floats above the street, and is still below the teleport/speed caps.
+    -- Clearance. Height above ground is the real engine value, so this is a
+    -- velocity correction only: no coordinate read, no coordinate write, no
+    -- collision write and no freeze. Naruto rides a low band and follows the
+    -- terrain down slopes; noclip keeps a hard floor so it never lands. The
+    -- freefall pose is horizontal, so the clearance also keeps the capsule
+    -- from eating the horizontal velocity on contact.
     local okH, height = pcall(GetEntityHeightAboveGround, ped)
-    if okH and type(height) == "number" and height < HOVER_FLOOR then
-        if N.vz < HOVER_LIFT then N.vz = HOVER_LIFT end
+    if okH and type(height) == "number" then
+        if naruto then
+            if height < NARUTO_CLEARANCE - NARUTO_BAND then
+                if N.vz < NARUTO_LIFT then N.vz = NARUTO_LIFT end
+            elseif height > NARUTO_CLEARANCE + NARUTO_BAND then
+                if N.vz > -NARUTO_SINK then N.vz = -NARUTO_SINK end
+            else
+                -- Inside the band: cancel residual vertical speed in both
+                -- directions so an approach from above cannot overshoot into
+                -- the ground and start a landing transition.
+                N.vz = 0.0
+            end
+        elseif height < NOCLIP_FLOOR then
+            if N.vz < NOCLIP_LIFT then N.vz = NOCLIP_LIFT end
+        end
     end
 
     local speed = math.sqrt(N.vx * N.vx + N.vy * N.vy + N.vz * N.vz)
@@ -34886,12 +35198,16 @@ local function installSeed()
 end
 
 -- ---------------------------------------------------------------------------
--- PLAYER > MOVEMENT > SKYFALL
+-- PLAYER > MOVEMENT > NARUTO RUN / NO CLIP
 --
--- The old Movement tab was deleted with the legacy noclip. This is a new,
--- single row: a fake-air noclip that plays the freefall pose, disables ped
--- gravity and writes velocity from ZQSD/camera/Space/Ctrl. The row is
--- rebuilt on every load, so a stale copy cannot survive a reload.
+-- Two rows over one module (src/16_air_noclip.lua). Both keep the verified
+-- freefall pose, the 28 m/s velocity profile, the 1.2 s warmup and the
+-- 423/falling/in-air read cover. They differ only in vertical policy:
+--   Naruto Run  horizontal only, no pitch and no Space/Ctrl lift, rides a low
+--               clearance band so it never lands and never rolls.
+--   No Clip     full 3D steering with a hard airborne floor, so it never
+--               reaches the ground and keeps the fall reads alive.
+-- The rows are rebuilt on every load, so a stale copy cannot survive a reload.
 -- ---------------------------------------------------------------------------
 local function installMovement()
     local category = findCategory("Player")
@@ -34904,35 +35220,61 @@ local function installMovement()
         end
     end
 
-    local skyfall
-    skyfall = {
-        name = "Skyfall",
+    local naruto, noclip
+    local function refresh()
+        local active = N.isActive()
+        naruto.value = active and N.mode == "naruto"
+        noclip.value = active and N.mode == "noclip"
+    end
+
+    naruto = {
+        name = "Naruto Run",
         type = "toggle",
-        value = N.isActive(),
+        value = false,
         onClick = function(value)
-            local active
             if value then
-                active = N.arm()
-            else
-                N.stop("operator")
-                active = false
+                local active = N.arm("naruto")
+                refresh()
+                return active
             end
-            skyfall.value = active
-            return active
+            if N.isActive() and N.mode == "naruto" then
+                N.stop("operator")
+            end
+            refresh()
+            return false
         end,
     }
 
-    -- Auto-stop paths (death, vehicle, parachute, budget, panic) update the
-    -- visible toggle without re-entering onClick.
-    N.onChange = function(active)
-        skyfall.value = active
+    noclip = {
+        name = "No Clip",
+        type = "toggle",
+        value = false,
+        onClick = function(value)
+            if value then
+                local active = N.arm("noclip")
+                refresh()
+                return active
+            end
+            if N.isActive() and N.mode == "noclip" then
+                N.stop("operator")
+            end
+            refresh()
+            return false
+        end,
+    }
+
+    -- Auto-stop paths (death, vehicle, parachute, budget, panic) clear both
+    -- rows. Arming one mode stops the other first, so at most one row is on.
+    N.onChange = function()
+        refresh()
     end
 
     category.tabs[#category.tabs + 1] = {
         name = "Movement",
         items = {
-            { name = "", isSeparator = true, separatorText = "Fake-air noclip" },
-            skyfall,
+            { name = "", isSeparator = true, separatorText = "Air movement" },
+            naruto,
+            noclip,
         },
     }
     return true
@@ -37630,7 +37972,7 @@ end
 -- BOOT
 -- ---------------------------------------------------------------------------
 function UI.boot()
-    O.log("loader build 2026-11-07-r46 (native particle call carries all four axis flags; load-time preload removed; Stage B graft disabled by default; Flash moved to Online > Troll > Attacks with Auto Safe and ten explicit methods; the selected method is read live; the WaveShield V4 particle configuration is read from GlobalState and scr_wheel_burnout and scr_alien_teleport are emitted only when rcore_spray/WaveAdmin put them in the static table, dynamic camera parts are sent only from the executor with assetHash stripped on ptFxEvent, and statically safe parts are mirrored through a Stage B resource graft acknowledged by entity decor; a dead or missing graft falls back to the executor without going silent; particle scale is capped at MaxParticleScale and each pulse sends up to three networked parts with no minimum range; a one-player test server gets a local Susano overlay pulse instead of a fabricated server event; the retired Exploit Flash tab is removed; Search magnifier handle rebuilt as a fused diagonal instead of three dots; White keeps the wbYgWhZ banner and Cyan restores its original 3HLMxX5 banner; Online Props Player row sorts the player list by distance and always targets the nearest player; Launch Player selector offers Method 1 and Method 2; Method 1 drives the victim ped directly when control is available and otherwise reverse-attaches the victim to the local ped within 3 m; Method 2 uses a range-free injected coordinate lift plus repeated upward force and velocity for servers that ignore Method 1; launch has no vehicle or explosion; hardened Susano ragdoll keeps the victim speed check lenient; self launch uses 58 m/s with GET_ENTITY_SPEED masked by the stealth hook; velocity and settle waits carry jitter; tight bold category chevrons; Troll Appearance section and Copy Appearance row removed; All mode Include me toggle adds the local ped alongside remote targets; Props Player row hidden in Self and All modes; attachment rows Attach to player and Attach point removed; target labels Self/Player/All; automatic player refresh sorts by distance and selects nearest; manual Refresh player list removed; Ban Player beta suffix removed; Servers and Bypass tabs moved from Destroyer to Misc; FOV moved from Visual/Camera to Self under Big Weapon; theme banners bottom-anchored flush on the category plate; White uses wbYgWhZ and Cyan uses 3HLMxX5; White/Cyan theme selector; White 3:1 header and Cyan 4.1:1 header; flush tab strip; light-grey cell tab plate; dark selected category rectangle; uniform unselected categories; reference names Self/Online/Vehicle/Weapon/Destroyer/Misc/Settings/Search; Search category opens the prompt directly and lands on results; compact magnifier; tight bold category chevron pair; full-white section rules fitted to the label width; Target keeps only the Ctrl hint; Player Props folded into Online; 15px right-aligned slider readout; target-bound toggles reset on target change/unload; dark row plates; white toggle/scrollbar; footer centre mark removed; Delete/Backspace close)")
+    O.log("loader build 2026-11-08-r50 (native particle call carries all four axis flags; load-time preload removed; Stage B graft disabled by default; self and remote share the same filtered particle path; vehicle targets take a vehicle-space pulse; selected self is honored before nearest-player fallback; Flash moved to Online > Troll > Attacks with Auto Safe and ten explicit methods; the selected method is read live; the WaveShield V4 particle configuration is read from GlobalState and scr_wheel_burnout and scr_alien_teleport are emitted only when rcore_spray/WaveAdmin put them in the static table, dynamic camera parts are sent only from the executor with assetHash stripped on ptFxEvent, and Stage B graft remains available but is disabled by default, so statically safe parts are emitted from the executor without a host injection; particle scale is capped at MaxParticleScale and each pulse sends up to three networked parts with no minimum range; a one-player server never fabricates a server event; the retired Exploit Flash tab is removed; Search magnifier handle rebuilt as a fused diagonal instead of three dots; White keeps the wbYgWhZ banner and Cyan restores its original 3HLMxX5 banner; Online Props Player row sorts the player list by distance and always targets the nearest player; Launch Player selector offers Method 1 and Method 2; Method 1 drives the victim ped directly when control is available and otherwise reverse-attaches the victim to the local ped within 3 m; Method 2 uses a range-free injected coordinate lift plus repeated upward force and velocity for servers that ignore Method 1; launch has no vehicle or explosion; hardened Susano ragdoll keeps the victim speed check lenient; self launch uses 58 m/s with GET_ENTITY_SPEED masked by the stealth hook; velocity and settle waits carry jitter; tight bold category chevrons; Troll Appearance section and Copy Appearance row removed; All mode Include me toggle adds the local ped alongside remote targets; Props Player row hidden in Self and All modes; attachment rows Attach to player and Attach point removed; target labels Self/Player/All; automatic player refresh sorts by distance and selects nearest; manual Refresh player list removed; Ban Player beta suffix removed; Servers and Bypass tabs moved from Destroyer to Misc; FOV moved from Visual/Camera to Self under Big Weapon; theme banners bottom-anchored flush on the category plate; White uses wbYgWhZ and Cyan uses 3HLMxX5; White/Cyan theme selector; White 3:1 header and Cyan 4.1:1 header; flush tab strip; light-grey cell tab plate; dark selected category rectangle; uniform unselected categories; reference names Self/Online/Vehicle/Weapon/Destroyer/Misc/Settings/Search; Search category opens the prompt directly and lands on results; compact magnifier; tight bold category chevron pair; full-white section rules fitted to the label width; Target keeps only the Ctrl hint; Player Props folded into Online; 15px right-aligned slider readout; target-bound toggles reset on target change/unload; dark row plates; white toggle/scrollbar; footer centre mark removed; Delete/Backspace close)")
     O.thread()
 
     -- Delete/Backspace fallback poll. 40 ms is faster than a frame at 30 FPS
