@@ -7469,8 +7469,9 @@ local function ToggleEasyHandling(enable)
 
             if _G.EasyHandlingEnabled then
                 CreateThread(function()
-                    while _G.EasyHandlingEnabled and not Unloaded do
+                    while not Unloaded do
                         Wait(0)
+                        if not _G.EasyHandlingEnabled then break end
                         local ped = PlayerPedId()
                         if ped and ped ~= 0 then
                             local veh = GetVehiclePedIsIn(ped, false)
@@ -32387,28 +32388,29 @@ local ICON_B64 = {
         "jJxaXgAAAABJRU5ErkJggg==",
     }),
     vehicle = table.concat({
-        "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAEv0lEQVR42u1avWobQRD+1hx6CruQUHWV",
-        "3sA2BjVSlSaVweAuYDAEAoGAMRgCAUPAkC4Q8AO4sRqBsfMGV10l5EJ6CjWTwrNmMtk97fl+5CQ7sOju",
-        "tLc7Ozs/38weEClSpEiRIkWK9J+SaWpgIurUyqgxq1ctAN+CqzLuGrdOYdQuABdzL9WGorHqEoJpcvH8",
-        "PFXdt9cMtxTXuR5XCrMOIZg6Fm8ZEQveBtAHsMPdeuq1rrp/9Aw/598FgBkLJzfGrOrShNoEwAwNARwD",
-        "GDXgr3IW1HcAUztnKwJwSVs+4+vPAE48jOtdnnum6jm0JHX0uwLw0ecvymiHqSmMvQPwha8nvMAF3888",
-        "9l1E0k9YU7LCsdr1wRjzNZTP0ppCRB3f4PI/IhoT0YrbadF7VU2NiAY8x4qIMiIahPCKhpix7UYuvmnk",
-        "xnNe8pw3kpfKPsDj0aVKPnth7nPKqj8B8FZ658ag69McAwA/mL83xphbMe/QYXJ5kNN0qHYmmlW7Mf8/",
-        "EM/HDs3orFPPAO1yNit8wZN8JnnNWEu8prJVwEufJZwKTZAe+ZDvJwCmRTtWxgHZ/rJ5uj7w3Ck7YSge",
-        "Ld+jIvCVFPAy4xCWOnZpwCEvB3DuU/2mzIHHzRkTjAAcEdFDAX5YBglALWTKLx5yCLLhZ1+8cififLtp",
-        "7BOvU9aCEfMpaQLgJ2tKXiocyp1ju9G2ZcPeJfuCTtsCEGHxRvCTiegw1usIMgHpvBxeVfuBA4vViWjm",
-        "UbWqGpJ6gJIFSF1H3y7/vySi3BXlvEhQSUoivFC8Hgp7F+p+pyI89tEb6aQLBaDw/RjARcnJygoqZLfr",
-        "mOvIGJO5coSkwAfsN8QQGhzXN9eeNIUQHDAU9v0v0C6A1BUBtjxZU1/s0tWmQl1FmnBDERhKPN5/R9jP",
-        "NYB7NomDltX3pTZ/xzwvBX7pu6JBERCSNOWWAthjlRq9wh3XwGe4Lsoka0JPCuDQGPOe7zN2JjOebJdD",
-        "U7rB3X6UC1fZ7HEwNBcmoNHVyqI9PQA/Gzv6t9H+QHsqmxyr/peu2kESKOkzK2UiepaywONLVa5qmp5r",
-        "go5aoDXTI5dWazMPFcCIVX0XwJyIdJk6I6LzlsxhAuDaLoQz021VOwzmI0E5QJE6vK3MA+5aEMDcFmw4",
-        "MvWqCD5BNYSV1pTwlKEDAdIqCzvB3wlta6PkBSGnu6GFh2ahpcyhjAA+qXx/WyCsGdvjiXJWddJIRYF7",
-        "MbeuQ+yFpvFJibAzVclE5sge7W78UCdCdTk/KeCpMebWg2ny0mh1HRDylazxe4l6xWcFtRdF1YFI5ivF",
-        "e06sKgGhKwC5XoyIw6dC3a4AfPOU1uoogl6LAu0FEfUBfNPghq9lwdRLW2uqNbkFHbrxJPpQ9Lqp0yHO",
-        "4DI8lcJtuf4IwNBmd47zhO8v9QHzgCRCL/7clp2a+qCJx74lIohy3QX/N60cBsVCZTZ4pgTSc3zlMRcH",
-        "JmAG0ZAQoFCnFcKx4qdXJQrMPeEHBenzWcuxv1sA0120cJlnop0a/957vvYIidGvtTz24CqNmzXf++w7",
-        "6vcu2tnAohYl+s6CvytyHIt1NnH0FQkb/Fb4X91xl+qbtj52fm0LjxQpUqRIkSJF+u/pF/rFrAdQLb2P",
-        "AAAAAElFTkSuQmCC",
+        "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",
+        "B5kpXuLStGX3AAAAAElFTkSuQmCC",
     }),
     weapon = table.concat({
         "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAACx0lEQVR42u1ar2/bQBT+XhWT/gdDQwUj",
@@ -33106,9 +33108,9 @@ if type(Menu) == "table" and type(Menu.DrawItem) == "function"
     wrapped = function(x, itemY, width, itemHeight, item, isSelected)
         baseDrawItem(x, itemY, width, itemHeight, item, isSelected)
 
-        -- Only player rows carry a playerId; the badge must never appear on
-        -- the menu's own action items (Spectate, Teleport, Select...).
-        if type(item) ~= "table" or item.isSeparator or item.playerId == nil then
+        -- Only a player row whose target is inside a vehicle shows the badge;
+        -- on-foot rows and the menu's own action items stay clean.
+        if type(item) ~= "table" or item.isSeparator or not item.playerInVehicle then
             return
         end
 
@@ -33118,13 +33120,8 @@ if type(Menu) == "table" and type(Menu.DrawItem) == "function"
         -- The badge sits 8 px to its left, clear of the toggle and the name.
         local badgeX = x + width - 52 - 8 - badgeSize
         local badgeY = itemY + (itemHeight - badgeSize) * 0.5
-        -- Red car = target is inside a vehicle; dim grey car = target on foot,
-        -- so the row states in-vehicle vs not at a glance without reading text.
-        local badgeR, badgeG, badgeB = 0.34, 0.36, 0.40
-        if item.playerInVehicle then
-            badgeR, badgeG, badgeB = 0.90, 0.24, 0.22
-        end
-        drawVehicleBadge(badgeX, badgeY, badgeSize, badgeR, badgeG, badgeB)
+        -- Red car = target is inside a vehicle.
+        drawVehicleBadge(badgeX, badgeY, badgeSize, 0.90, 0.24, 0.22)
     end
 
     Menu.DrawItem = wrapped
