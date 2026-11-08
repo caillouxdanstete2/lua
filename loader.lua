@@ -841,6 +841,7 @@ do
         local vgdHandleInput = Menu.HandleInput
         Menu.HandleInput = function()
             if Menu.__vgdDeleteTick and Menu.__vgdDeleteTick(true) then return end
+            if type(Menu.__vgdSearchCapture) == "function" and Menu.__vgdSearchCapture() then return end
             local beforeOpen = Menu.OpenedCategory
             local result = vgdHandleInput()
             if beforeOpen ~= Menu.OpenedCategory
@@ -2592,13 +2593,6 @@ Menu.Categories = {
             { name = "Airstrike", type = "action" },
             { name = "Assault Driver", type = "action" },
             
-            { name = "", isSeparator = true, separatorText = "Props" },
-            { name = "Rainbow Tube", type = "action" },
-            { name = "Trapped in Tube", type = "action" },
-            { name = "Attach Toilet", type = "action" },
-            { name = "Clear All Attached", type = "action" },
-            { name = "Delete All Tubes", type = "action" },
-            
             { name = "", isSeparator = true, separatorText = "Attach Animations" },
             { name = "Twerk", type = "toggle", value = false, targetBound = true },
             { name = "Baise", type = "toggle", value = false, targetBound = true },
@@ -2612,7 +2606,7 @@ Menu.Categories = {
             { name = "Teleport Into", type = "action" },
             
             { name = "", isSeparator = true, separatorText = "Teleportation" },
-            { name = "TP to", type = "selector", options = {"ocean", "mazebank", "sandyshores"}, selected = 1 },
+            { name = "TP to", type = "selector", options = {"Ocean", "Maze Bank", "Sandy Shores"}, selected = 1 },
             
             { name = "", isSeparator = true, separatorText = "Actions" },
             { name = "Remote Vehicle", type = "action" },
@@ -13907,13 +13901,13 @@ end
                         end
                     end
 
-Menu.TPLocation = "ocean"
+Menu.TPLocation = "Ocean"
 
 function Menu.ActionTPTo()
     if not Menu.SelectedPlayer then return end
     
     local targetServerId = Menu.SelectedPlayer
-    local tpLocation = Menu.TPLocation or "ocean"
+    local tpLocation = Menu.TPLocation or "Ocean"
     
     if type(Susano) == "table" and type(Susano.InjectResource) == "function" then
         local code = string.format([[
@@ -13947,9 +13941,9 @@ if not DoesEntityExist(targetVehicle) then
 end
 
 local locations = {
-    ocean = {coords = vector3(-3000.0, -3000.0, 0.0), name = "Ocean"},
-    mazebank = {coords = vector3(-75.0, -818.0, 326.0), name = "Maze Bank"},
-    sandyshores = {coords = vector3(1960.0, 3740.0, 32.0), name = "Sandy Shores"}
+    ["Ocean"] = {coords = vector3(-3000.0, -3000.0, 0.0), name = "Ocean"},
+    ["Maze Bank"] = {coords = vector3(-75.0, -818.0, 326.0), name = "Maze Bank"},
+    ["Sandy Shores"] = {coords = vector3(1960.0, 3740.0, 32.0), name = "Sandy Shores"}
 }
 
 local destCoords = locations[tpLocation].coords
@@ -33055,10 +33049,19 @@ function Menu.DrawPlayerInfoPanel()
     local armor = finite(info.armor, 0)
     local armorPercent = clamp01(armor / 100.0)
 
+    local hpR, hpG, hpB
+    if healthPercent > 0.5 then
+        hpR, hpG, hpB = 0.30, 0.78, 0.36
+    elseif healthPercent > 0.25 then
+        hpR, hpG, hpB = 0.95, 0.62, 0.18
+    else
+        hpR, hpG, hpB = 0.90, 0.24, 0.22
+    end
+
     local vitals = {
         {
             icon = "health", label = "Health", value = tostring(whole(shownHealth)),
-            gauge = { percent = healthPercent, r = HEALTH_R, g = HEALTH_G, b = HEALTH_B },
+            gauge = { percent = healthPercent, r = hpR, g = hpG, b = hpB },
         },
         {
             icon = "armor", label = "Armor", value = tostring(whole(armor)),
@@ -36889,7 +36892,6 @@ end
 -- ---------------------------------------------------------------------------
 function Menu.__vgdInstallSearch()
     local existing = findCategory("Search")
-    local tab = existing and existing.tabs and existing.tabs[1]
 
     local function focusItem(category, targetTab, targetItem)
         for categoryIndex, candidate in ipairs(Menu.Categories or {}) do
@@ -36915,26 +36917,31 @@ function Menu.__vgdInstallSearch()
         return false
     end
 
-    local function applySearch(query)
-        local searchAction = tab.items and tab.items[1]
-        if not (searchAction and searchAction.name == "Search features..."
-            and type(searchAction.onClick) == "function") then
-            searchAction = {
-                name = "Search features...",
-                type = "action",
-                onClick = function()
-                    if type(Menu.__vgdOpenSearch) == "function" then Menu.__vgdOpenSearch() end
-                end,
-            }
-        end
-        local rows = { searchAction }
-        local clean = tostring(query or "")
-        clean = clean:gsub("^%s+", ""):gsub("%s+$", "")
-        local needle = string.lower(clean)
+    local tab = existing and existing.tabs and existing.tabs[1]
+    tab = tab or { name = "Search", items = {} }
+    tab.name = "Search"
 
-        if needle == "" then
-            rows[#rows + 1] = { name = "Type a name, then press Enter", type = "action" }
-        else
+    local inputRow = { name = "Search features...", type = "action", onClick = function() end }
+
+    local function searchText()
+        return Menu.__vgdSearchText or ""
+    end
+
+    local function isSearchOpen()
+        if not Menu.OpenedCategory then return false end
+        local category = Menu.Categories and Menu.Categories[Menu.OpenedCategory]
+        return category ~= nil and category.name == "Search"
+    end
+
+    local function inputSelected()
+        return isSearchOpen() and tab.items and tab.items[1] == inputRow and Menu.CurrentItem == 1
+    end
+
+    local function rebuildResults()
+        local clean = searchText():gsub("^%s+", ""):gsub("%s+$", "")
+        local needle = string.lower(clean)
+        local rows = { inputRow }
+        if needle ~= "" then
             for _, category in ipairs(Menu.Categories or {}) do
                 if category.name ~= "Main Menu" and category.name ~= "Search" then
                     local categoryLabel = (Menu.CategoryLabels and Menu.CategoryLabels[category.name]) or category.name
@@ -36949,6 +36956,7 @@ function Menu.__vgdInstallSearch()
                                     name = itemName .. "  [" .. categoryLabel .. " / " .. targetTab.name .. "]",
                                     type = "action",
                                     onClick = function()
+                                        Menu.__vgdSearchText = ""
                                         focusItem(categoryRef, tabRef, itemRef)
                                     end,
                                 }
@@ -36962,42 +36970,96 @@ function Menu.__vgdInstallSearch()
             end
         end
         tab.items = rows
-        Menu.CurrentItem = 1
+        if Menu.CurrentItem < 1 or Menu.CurrentItem > #rows then
+            Menu.CurrentItem = 1
+        end
         Menu.ItemScrollOffset = 0
     end
 
-    local function showResultsPage()
-        for categoryIndex, category in ipairs(Menu.Categories or {}) do
-            if category.name == "Search" then
-                Menu.CurrentCategory = categoryIndex
-                Menu.OpenedCategory = categoryIndex
-                Menu.CurrentTab = 1
-                Menu.CurrentItem = 1
-                Menu.ItemScrollOffset = 0
-                Menu.CategorySelectorY = 0
-                Menu.CategoryScrollOffset = 0
+    -- Inline text capture: consumes only keys that produce text (and Backspace
+    -- while there is something to delete). Returns true when it handled a key,
+    -- so the base navigation is skipped for that single frame and hotkeys or
+    -- the A/E confirm keys never fire while the player is typing a query.
+    local function captureText()
+        if not (Susano and Susano.GetAsyncKeyState) then return false end
+        if #searchText() > 0 and Menu.IsKeyJustPressed(0x08) then
+            Menu.__vgdSearchText = searchText():sub(1, -2)
+            rebuildResults()
+            return true
+        end
+        local shift = false
+        if Susano.GetAsyncKeyState(0x10) or Susano.GetAsyncKeyState(0xA0) or Susano.GetAsyncKeyState(0xA1) then
+            shift = true
+        end
+        for i = 0x41, 0x5A do
+            if Menu.IsKeyJustPressed(i) then
+                local ch = string.char(i)
+                if not shift then ch = string.lower(ch) end
+                Menu.__vgdSearchText = searchText() .. ch
+                rebuildResults()
                 return true
             end
+        end
+        for i = 0x30, 0x39 do
+            if Menu.IsKeyJustPressed(i) then
+                Menu.__vgdSearchText = searchText() .. string.char(i)
+                rebuildResults()
+                return true
+            end
+        end
+        if Menu.IsKeyJustPressed(0x20) then
+            Menu.__vgdSearchText = searchText() .. " "
+            rebuildResults()
+            return true
+        end
+        if Menu.IsKeyJustPressed(0xBD) then
+            Menu.__vgdSearchText = searchText() .. (shift and "_" or "-")
+            rebuildResults()
+            return true
         end
         return false
     end
 
-    local function openSearch()
-        if type(Menu.OpenInput) ~= "function" then return false end
-        Menu.OpenInput("Search", "Feature name:", function(query)
-            applySearch(query)
-            showResultsPage()
-        end)
+    Menu.__vgdSearchCapture = function()
+        if inputSelected() then
+            return captureText()
+        end
+        return false
+    end
+
+    Menu.__vgdOpenSearch = function()
+        Menu.__vgdSearchText = ""
+        rebuildResults()
+        Menu.CurrentItem = 1
+        Menu.ItemScrollOffset = 0
         return true
     end
 
-    tab = tab or { name = "Search", items = {} }
-    tab.name = "Search"
-    tab.items = {
-        { name = "Search features...", type = "action", onClick = openSearch }
-    }
-    Menu.__vgdOpenSearch = openSearch
-    Menu.__vgdApplySearch = applySearch
+    Menu.__vgdApplySearch = rebuildResults
+
+    -- Draw the input row as an inline field: the typed text replaces the
+    -- placeholder and a blinking caret shows while the row is focused.
+    if type(Menu.DrawItem) == "function" and not Menu.__vgdSearchDrawWrapped then
+        local baseDrawItem = Menu.DrawItem
+        Menu.DrawItem = function(x, itemY, width, itemHeight, item, isSelected)
+            if item == inputRow then
+                local shown = searchText()
+                if shown == "" then shown = "Search features..." end
+                if inputSelected() and (math.floor((GetGameTimer() or 0) / 500) % 2 == 0) then
+                    shown = shown .. "|"
+                end
+                local original = item.name
+                item.name = shown
+                baseDrawItem(x, itemY, width, itemHeight, item, isSelected)
+                item.name = original
+                return
+            end
+            baseDrawItem(x, itemY, width, itemHeight, item, isSelected)
+        end
+        Menu.__vgdSearchDrawWrapped = true
+    end
+
+    tab.items = { inputRow }
 
     if existing then
         existing.hasTabs = true
