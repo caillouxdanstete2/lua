@@ -13392,17 +13392,21 @@ end)
 -- ===========================================================================
 -- BABAYAGA  (Online > Troll)
 -- ---------------------------------------------------------------------------
--- One click on the selected player. The target is placed directly in front of
--- the local ped with the same heading, the local ped enters unarmed stealth
--- and the native stealth-kill task is issued from a host resource VM. The
--- action is TASK_STEALTH_KILL with AR_stealth_kill_a, as in fbi4_prep2. The
--- victim is flagged with CPED_CONFIG_FLAG_ForceScriptControlledKnockout (114)
--- before the task, so the result is a knockout rather than a death state.
+-- One click on a selected player who is already within reach. The local ped
+-- enters unarmed stealth and the native takedown is issued from a host VM.
+-- The action is TASK_STEALTH_KILL with AR_stealth_kill_a, as in fbi4_prep2.
+-- The victim is flagged with CPED_CONFIG_FLAG_ForceScriptControlledKnockout
+-- (114) before the task, so the result is a knockout rather than a death.
 --
--- CLEAR_PED_TASKS is deliberately not called on the victim. A remote clear is
--- the one call the host resource forwards to its server event handler and
--- reports when the sender does not own the ped; the knockout task completes
--- on its own, so no victim-side cleanup is needed.
+-- The target is never moved and its ownership is never requested. Writing a
+-- remote player's position or control is what makes the local copy stream out
+-- and leaves the local ped holding a task. Reach is checked before arming, and
+-- a self-only recovery clears the stealth pose and task if the target moves
+-- away or the native call does not start.
+--
+-- No task or position write is sent to the victim: CLEAR_PED_TASKS is
+-- self-only. A remote clear is the call the host resource forwards to its
+-- server event handler and reports when the sender does not own the ped.
 --
 -- Stage A only owns target selection and Susano.InjectResource. The injected
 -- chunk is Stage B: it has no Susano.* access and uses only host globals and
@@ -13410,7 +13414,7 @@ end)
 -- ===========================================================================
 Menu.BabayagaTarget = Menu.BabayagaTarget or nil
 Menu.BabayagaToken = Menu.BabayagaToken or nil
-Menu.BabayagaOffset = Menu.BabayagaOffset or 0.95
+Menu.BabayagaReach = Menu.BabayagaReach or 2.5
 
 function Menu.PosCtrlResolve(serverId)
     if type(GetActivePlayers) ~= "function" then return nil, nil end
@@ -13444,7 +13448,7 @@ function Menu.BabayagaStart(serverId)
 
     local code = string.format([[
         local targetServerId = %d
-        local offset = %.2f
+        local reach = %.2f
         local loopKey = "vgd_babayaga_" .. targetServerId
         rawset(_G, loopKey, true)
 
@@ -13455,6 +13459,13 @@ function Menu.BabayagaStart(serverId)
                 end
             end
             return 0
+        end
+
+        local function distanceTo(a, b)
+            local ca = GetEntityCoords(a)
+            local cb = GetEntityCoords(b)
+            local dx, dy, dz = cb.x - ca.x, cb.y - ca.y, cb.z - ca.z
+            return math.sqrt(dx * dx + dy * dy + dz * dz)
         end
 
         CreateThread(function()
@@ -13470,45 +13481,73 @@ function Menu.BabayagaStart(serverId)
                 rawset(_G, loopKey, false)
                 return
             end
+            if type(IsPedInAnyVehicle) == "function" and IsPedInAnyVehicle(ped, false) then
+                rawset(_G, loopKey, false)
+                return
+            end
+            if distanceTo(me, ped) > reach then
+                rawset(_G, loopKey, false)
+                return
+            end
 
-            if type(NetworkRequestControlOfEntity) == "function" then
-                NetworkRequestControlOfEntity(ped)
-            end
-            if type(SetEntityVelocity) == "function" then
-                SetEntityVelocity(ped, 0.0, 0.0, 0.0)
+            -- Face the local ped toward the target; this is a self write only.
+            -- It lets the takedown start cleanly when the target is close but
+            -- was outside the current camera cone.
+            local selfCoords = GetEntityCoords(me)
+            local targetCoords = GetEntityCoords(ped)
+            local dx = targetCoords.x - selfCoords.x
+            local dy = targetCoords.y - selfCoords.y
+            if type(GetHeadingFromVector2d) == "function"
+                and type(SetEntityHeading) == "function" then
+                pcall(SetEntityHeading, me, GetHeadingFromVector2d(dx, dy))
             end
 
-            local myCoords = GetEntityCoords(me)
-            local forward = GetEntityForwardVector(me)
-            if type(SetEntityCoordsNoOffset) == "function" then
-                SetEntityCoordsNoOffset(ped,
-                    myCoords.x + forward.x * offset,
-                    myCoords.y + forward.y * offset,
-                    myCoords.z + forward.z * offset,
-                    true, true, true)
+            local previousWeapon = 0
+            if type(GetSelectedPedWeapon) == "function" then
+                previousWeapon = GetSelectedPedWeapon(me) or 0
             end
-            if type(SetEntityHeading) == "function" then
-                SetEntityHeading(ped, GetEntityHeading(me))
+
+            local armedSelf = false
+            local function restoreSelf()
+                local selfPed = PlayerPedId()
+                if not DoesEntityExist(selfPed) then return end
+                if type(ClearPedTasks) == "function" then
+                    pcall(ClearPedTasks, selfPed)
+                end
+                if type(SetPedStealthMovement) == "function" then
+                    pcall(SetPedStealthMovement, selfPed, false, 0)
+                end
+                if previousWeapon ~= 0 and type(SetCurrentPedWeapon) == "function" then
+                    pcall(SetCurrentPedWeapon, selfPed, previousWeapon, true)
+                end
             end
 
             if type(SetPedStealthMovement) == "function" then
-                SetPedStealthMovement(me, true, 0)
+                pcall(SetPedStealthMovement, me, true, 0)
             end
             if type(GiveWeaponToPed) == "function" then
-                GiveWeaponToPed(me, GetHashKey("WEAPON_UNARMED"), -1, true, true)
+                pcall(GiveWeaponToPed, me, GetHashKey("WEAPON_UNARMED"), -1, true, true)
             end
             if type(SetCurrentPedWeapon) == "function" then
-                SetCurrentPedWeapon(me, GetHashKey("WEAPON_UNARMED"), true)
+                pcall(SetCurrentPedWeapon, me, GetHashKey("WEAPON_UNARMED"), true)
             end
+            armedSelf = true
 
             Wait(60)
 
             ped = findTargetPed()
             if not ped or ped == 0 or ped == me or not DoesEntityExist(ped) then
+                restoreSelf()
                 rawset(_G, loopKey, false)
                 return
             end
             if type(IsPedDeadOrDying) == "function" and IsPedDeadOrDying(ped, true) then
+                restoreSelf()
+                rawset(_G, loopKey, false)
+                return
+            end
+            if distanceTo(me, ped) > reach + 0.35 then
+                restoreSelf()
                 rawset(_G, loopKey, false)
                 return
             end
@@ -13523,9 +13562,14 @@ function Menu.BabayagaStart(serverId)
             if type(TaskStealthKill) == "function" then
                 pcall(TaskStealthKill, me, ped, GetHashKey("AR_stealth_kill_a"), 1.0, 0)
             end
+
+            CreateThread(function()
+                Wait(1600)
+                if armedSelf then restoreSelf() end
+            end)
             rawset(_G, loopKey, false)
         end)
-    ]], serverId, Menu.BabayagaOffset)
+    ]], serverId, Menu.BabayagaReach)
     pcall(Susano.InjectResource, "any", code)
 end
 
@@ -13584,34 +13628,9 @@ function Menu.ActionBabayaga(enabled)
     Menu.BabayagaTarget = target
     Menu.BabayagaToken = token
 
-    -- Immediate placement is repeated inside the host chunk after a short
-    -- wait, so the task starts on a target that is already in front and has
-    -- the local ped's heading. The host owns the native task call.
-    local me = PlayerPedId()
-    if DoesEntityExist(me) then
-        if type(NetworkRequestControlOfEntity) == "function" then
-            pcall(NetworkRequestControlOfEntity, ped)
-        end
-        if type(SetEntityVelocity) == "function" then
-            pcall(SetEntityVelocity, ped, 0.0, 0.0, 0.0)
-        end
-        local mc = GetEntityCoords(me)
-        local f = GetEntityForwardVector(me)
-        if type(SetEntityCoordsNoOffset) == "function" then
-            pcall(SetEntityCoordsNoOffset, ped,
-                mc.x + f.x * Menu.BabayagaOffset,
-                mc.y + f.y * Menu.BabayagaOffset,
-                mc.z + f.z * Menu.BabayagaOffset,
-                true, true, true)
-        end
-        if type(SetEntityHeading) == "function" then
-            pcall(SetEntityHeading, ped, GetEntityHeading(me))
-        end
-        if type(SetPedStealthMovement) == "function" then
-            pcall(SetPedStealthMovement, me, true, 0)
-        end
-    end
-
+    -- Stage B checks reach before it arms anything. No remote control request
+    -- and no coordinate write is issued here, so the target cannot be streamed
+    -- out by this action.
     Menu.BabayagaStart(target)
 
     -- The task is one-shot. Drop the local handle after the animation window
@@ -34144,14 +34163,26 @@ pcall(loadIconTextures)
 -- ---------------------------------------------------------------------------
 -- ICONS
 --
--- Most glyphs are composed from filled rectangles and, for the gauge, a handful
--- of strokes. The car is the original car texture, embedded as a base64 PNG and
+-- The car and radio use the original textures, embedded as base64 PNGs and
 -- uploaded once through Susano; no URL is fetched and no external asset is
--- touched. The remaining glyphs live in a 0..1 box scaled by the icon size, so
--- they stay crisp at any Menu.Scale.
+-- touched. The remaining glyphs are composed from filled rectangles and, for
+-- the gauge, a handful of strokes. They live in a 0..1 box scaled by the icon
+-- size, so they stay crisp at any Menu.Scale.
 -- ---------------------------------------------------------------------------
 local function drawIcon(name, x, y, size, cr, cg, cb)
     if size <= 0 then return end
+
+    -- The car and the speed gauge are the two dense glyphs in the status
+    -- panel. Grow them around the slot centre so the silhouette reads at the
+    -- same 14 px row height without changing the row pitch or label column.
+    if name == "vehicle" then
+        local grow = size * 0.45
+        x, y, size = x - grow * 0.5, y - grow * 0.5, size + grow
+    elseif name == "speed" then
+        local grow = size * 0.30
+        x, y, size = x - grow * 0.5, y - grow * 0.5, size + grow
+    end
+
     local ir, ig, ib = cr, cg, cb
     if not ir then
         local theme = type(Menu) == "table" and Menu.Colors and Menu.Colors.SelectedBg
@@ -34162,11 +34193,11 @@ local function drawIcon(name, x, y, size, cr, cg, cb)
         end
     end
 
-    -- Original car texture first: one tinted draw call instead of a primitive
+    -- Original texture first: one tinted draw call instead of a primitive
     -- cluster. The texture is white with alpha, so r/g/b is the whole colour.
-    -- Radio and speed keep the vector path because their fine strokes stay
-    -- sharper than the uploaded texture at 16 logical pixels.
-    local texture = (name ~= "radio" and name ~= "speed")
+    -- Radio uses its old texture. Speed keeps the vector gauge because its
+    -- strokes stay sharper than the uploaded texture at 16 logical pixels.
+    local texture = (name ~= "speed")
         and ICON_TEXTURES[name] or nil
     if texture and Susano and type(Susano.DrawImage) == "function" then
         local ok = pcall(Susano.DrawImage, texture, x, y, size, size, ir, ig, ib, 1.0, 0)
@@ -34274,12 +34305,16 @@ local function drawIcon(name, x, y, size, cr, cg, cb)
 end
 
 -- Original car texture for the player-list badge, tinted with the list's red.
--- No hand-built fallback: the texture is loaded once at module start.
+-- No hand-built fallback: the texture is loaded once at module start. The
+-- badge is drawn slightly larger than its row slot so the car is legible.
 local function drawVehicleBadge(x, y, size, r, g, b)
     if size <= 0 then return end
     local texture = ICON_TEXTURES.vehicle
     if texture and Susano and type(Susano.DrawImage) == "function" then
-        pcall(Susano.DrawImage, texture, x, y, size, size, r, g, b, 1.0, 0)
+        local drawn = size * 1.20
+        local offset = (drawn - size) * 0.5
+        pcall(Susano.DrawImage, texture, x - offset, y - offset,
+            drawn, drawn, r, g, b, 1.0, 0)
     end
 end
 
