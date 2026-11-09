@@ -16079,56 +16079,73 @@ local function _launchPropAt(targetPed)
     end)
 end
 
--- Remote launch drive. The victim ped is owned by the victim's client, so a
--- velocity write only replicates once this client owns the entity. The
--- reference menus use NetworkRequestControlOfEntity -> short wait ->
--- SetEntityVelocity; the same sequence is repeated between writes so a slow
--- control hand-off still lands. A ped in a vehicle is driven through the
--- vehicle instead, because a seat clamps a ped velocity write.
-Menu.__vgdLaunchDrive = function(targetPed, opts)
+-- Network launch. A velocity write on a remote ped is local prediction only:
+-- the victim's client owns the ped and snaps it back to the ground. The
+-- reference menus launch through the network by physically jamming the local
+-- ped into the victim (ATTACH_ENTITY_TO_ENTITY_PHYSICALLY, detach, repeat):
+-- the collision impulse lands on the networked victim on the owner's side, so
+-- the launch replicates. The operator is hidden and restored after the burst.
+Menu.__vgdLaunchAttach = function(targetPed, opts)
     opts = opts or {}
     if not targetPed or targetPed == 0 or not DoesEntityExist(targetPed) then
         return false
     end
-    local lift = tonumber(opts.lift) or (Menu.LaunchAttachLift or 55.0)
-    local cycles = tonumber(opts.cycles) or 12
-    local hold = tonumber(opts.hold) or 24
-    local force = tonumber(opts.force) or 5000.0
+    local me = PlayerPedId()
+    if not me or me == 0 or not DoesEntityExist(me) then return false end
+    if IsPedInAnyVehicle(me, false) then return false end
 
-    local ent = targetPed
-    local inVeh = false
-    pcall(function()
-        local veh = GetVehiclePedIsIn(targetPed, false)
-        if veh and veh ~= 0 and DoesEntityExist(veh) then
-            ent = veh
-            inVeh = true
-        end
-    end)
+    local cycles = tonumber(opts.cycles) or 15
 
-    local hadControl = NetworkHasControlOfEntity(ent) == true
-    if not hadControl then
-        pcall(NetworkRequestControlOfEntity, ent)
-        Wait(90 + math.random(0, 40))
-        hadControl = NetworkHasControlOfEntity(ent) == true
+    local myCoords = GetEntityCoords(me)
+    local targetCoords = GetEntityCoords(targetPed, true)
+    if not myCoords or not targetCoords then return false end
+
+    local teleported, originalCoords = false, nil
+    if _launchVecDistance(myCoords, targetCoords) > 10.0 then
+        originalCoords = myCoords
+        local angle = math.random() * 2 * math.pi
+        local radiusOffset = math.random(5, 9)
+        local nx = targetCoords.x + math.cos(angle) * radiusOffset
+        local ny = targetCoords.y + math.sin(angle) * radiusOffset
+        pcall(SetEntityCoordsNoOffset, me, nx, ny, targetCoords.z,
+            false, false, false)
+        pcall(SetEntityVisible, me, false, false)
+        teleported = true
+        Wait(100)
     end
 
     StealthAcquire("speed")
     pcall(function()
-        if not inVeh then pcall(ClearPedTasksImmediately, targetPed) end
+        ClearPedTasksImmediately(me)
         for _ = 1, cycles do
-            if not DoesEntityExist(ent) then break end
-            pcall(NetworkRequestControlOfEntity, ent)
-            if NetworkHasControlOfEntity(ent) == true then hadControl = true end
-            pcall(SetEntityVelocity, ent, 0.0, 0.0, lift)
-            if inVeh then
-                pcall(ApplyForceToEntity, ent, 1, 0.0, 0.0, force,
-                    0.0, 0.0, 0.0, 0, false, true, true, false, true)
-            end
-            Wait(hold + math.random(0, 15))
+            if not DoesEntityExist(targetPed) then break end
+            local c = GetEntityCoords(targetPed, true)
+            if not c then break end
+            pcall(SetEntityCoords, me, c.x, c.y, c.z + 0.5,
+                false, false, false, false)
+            Wait(50)
+            AttachEntityToEntityPhysically(me, targetPed, 0,
+                0.0, 0.0, 0.0, 150.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                1, false, false, 1, 2)
+            Wait(50)
+            pcall(DetachEntity, me, true, true)
+            Wait(100)
+        end
+        Wait(500)
+        ClearPedTasksImmediately(me)
+        if originalCoords then
+            pcall(SetEntityCoords, me, originalCoords.x, originalCoords.y,
+                originalCoords.z + 1.0, false, false, false, false)
+            Wait(100)
+            pcall(SetEntityCoords, me, originalCoords.x, originalCoords.y,
+                originalCoords.z, false, false, false, false)
         end
     end)
+    if teleported then
+        pcall(SetEntityVisible, me, true, false)
+    end
     StealthRelease("speed")
-    return hadControl
+    return true
 end
 
 function Menu.ActionLaunch(method)
@@ -16162,7 +16179,7 @@ function Menu.ActionLaunch(method)
 
     if method == 1 then
         CreateThread(function()
-            pcall(Menu.__vgdLaunchDrive, targetPed, { lift = 55.0, cycles = 12 })
+            pcall(Menu.__vgdLaunchAttach, targetPed, { cycles = 12 })
             pcall(_launchPropAt, targetPed)
         end)
         return
@@ -16170,68 +16187,13 @@ function Menu.ActionLaunch(method)
 
     if method == 2 then
         CreateThread(function()
-            pcall(Menu.__vgdLaunchDrive, targetPed,
-                { lift = 68.0, cycles = 16, force = 12000.0 })
+            pcall(Menu.__vgdLaunchAttach, targetPed, { cycles = 18 })
         end)
         return
     end
 
     CreateThread(function()
-        local drove = false
-        local okDrive, hadControl = pcall(Menu.__vgdLaunchDrive, targetPed,
-            { lift = Menu.LaunchAttachLift or 55.0, cycles = 12 })
-        if okDrive then drove = hadControl == true end
-        if drove then return end
-
-        local me = PlayerPedId()
-        if not me or me == 0 or not DoesEntityExist(me) then return end
-        if IsPedInAnyVehicle(me, false) then return end
-
-        local meCoords = GetEntityCoords(me, true)
-        local victimCoords = GetEntityCoords(targetPed, true)
-        if not meCoords or not victimCoords then return end
-        if _launchVecDistance(meCoords, victimCoords) > (Menu.LaunchAttachRange or 3.0) then
-            Notify("Move closer to launch", C.blue)
-            return
-        end
-
-        if type(Susano) == "table" and type(Susano.RequestRagdoll) == "function" then
-            local okGuid, guid = pcall(GetEntityGuid, targetPed)
-            if okGuid and type(guid) == "number" and guid ~= 0 then
-                pcall(Susano.RequestRagdoll, guid)
-            end
-        end
-
-        StealthAcquire("speed")
-        pcall(function()
-            ClearPedTasksImmediately(me)
-            local lift = Menu.LaunchAttachLift or 45.0
-            for _ = 1, (Menu.LaunchAttachCycles or 3) do
-                if not DoesEntityExist(targetPed) then break end
-
-                local c = GetEntityCoords(targetPed, true)
-                if not c then break end
-                pcall(SetEntityCoordsNoOffset, me, c.x, c.y, c.z + 0.4,
-                    false, false, false)
-
-                AttachEntityToEntityPhysically(targetPed, me, 0, 0,
-                    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-                    100000.0, false, false, true, true, 0)
-
-                local attachMs = (Menu.LaunchAttachMs or 220) + math.random(-15, 15)
-                local untilAt = GetGameTimer() + attachMs
-                while GetGameTimer() < untilAt do
-                    if not DoesEntityExist(targetPed) then break end
-                    SetEntityVelocity(me, 0.0, 0.0, lift)
-                    Wait(24 + math.random(0, 12))
-                end
-                pcall(DetachEntity, targetPed, true, true)
-                Wait((Menu.LaunchSettleMs or 120) + math.random(-20, 20))
-            end
-        end)
-        pcall(DetachEntity, targetPed, true, true)
-        pcall(DetachEntity, me, true, true)
-        StealthRelease("speed")
+        pcall(Menu.__vgdLaunchAttach, targetPed, { cycles = 15 })
     end)
 end
 
