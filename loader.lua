@@ -279,15 +279,35 @@ do
             local drawX = x + framePad + (availW - drawW) / 2
             local drawY = y + framePad + (availH - drawH) / 2
             Susano.DrawImage(Menu.bannerTexture, drawX, drawY, drawW, drawH, 1, 1, 1, 1, imgRounding)]],
-        [[            local availW = width - 2
-            local availH = height - radius - 1
+        [[            -- Cyan uses a 4.1:1 banner; full-bleed hid the rounded top
+            -- frame and made the image read as if it sat outside the card.
+            -- Cyan keeps an 8 px inset and its natural aspect inside the frame.
+            -- White keeps the full-width plate it was tuned for.
+            local _cyan = (Menu.CurrentTheme == "Cyan")
+            local _pad = _cyan and (8 * scale) or 0
+            local imgRounding = _cyan and (6 * scale) or 0
+            local availW = width - 2 - _pad * 2
+            local availH = height - radius - 1 - _pad * 2
             if availW < 1 then availW = 1 end
             if availH < 1 then availH = 1 end
-            local imgRounding = 0
-            local drawX = x + 1
-            local drawY = y + radius
+            local drawX = x + 1 + _pad
+            local drawY = y + radius + _pad
             local drawW = availW
             local drawH = availH
+            if _cyan then
+                local _imgW = Menu.bannerWidth or availW
+                local _imgH = Menu.bannerHeight or availH
+                if _imgW < 1 then _imgW = availW end
+                if _imgH < 1 then _imgH = availH end
+                local _aspect = _imgW / _imgH
+                if (availW / availH) > _aspect then
+                    drawH = availH; drawW = availH * _aspect
+                else
+                    drawW = availW; drawH = availW / _aspect
+                end
+                drawX = x + 1 + _pad + (availW - drawW) * 0.5
+                drawY = y + radius + _pad + (availH - drawH) * 0.5
+            end
             Susano.DrawImage(Menu.bannerTexture, drawX, drawY, drawW, drawH, 1, 1, 1, 1, imgRounding)]]
     )
 
@@ -1323,7 +1343,11 @@ do
         Cyan = {
             r = 104, g = 168, b = 203,
             image = "https://i.imgur.com/3HLMxX5.png",
-            headerHeight = 100,
+            -- 1032x252 is 4.10:1. At the 360 px menu width the inner frame
+            -- after the 8 px inset needs 107 px to fill that aspect; the old
+            -- 100 px left side bands and made the image look detached from
+            -- the card. The extra 7 px keeps the banner flush to the inset.
+            headerHeight = 107,
         },
     }
 
@@ -1411,6 +1435,9 @@ do
 
     function Menu.ApplyTheme(themeName)
         local theme = themes[themeName] or themes.White
+        -- The banner draw branches on the active theme: Cyan is inset and
+        -- aspect-locked inside the frame; White keeps the full-width plate.
+        Menu.CurrentTheme = (theme == themes.Cyan) and "Cyan" or "White"
         -- HeaderPink is the no-banner fallback only. Keep it anthracite so a
         -- slow or missing banner never paints a bright slab over the frame.
         Menu.Colors.HeaderPink = { r = 18, g = 18, b = 20 }
@@ -15951,7 +15978,7 @@ end
 --   APPLY_FORCE_TO_ENTITY (Entity,int,f,f,f,f,f,f,int,B,B,B,B,B)
 --   ATTACH_ENTITY_TO_ENTITY_PHYSICALLY (19 args)
 --   DETACH_ENTITY (Entity,B,B)
-Menu.LaunchCooldownMs   = 4000
+Menu.LaunchCooldownMs   = 1000
 Menu.LaunchLastAt       = 0
 Menu.LaunchAttachRange  = 3.0
 Menu.LaunchAttachLift   = 45.0
@@ -16052,13 +16079,65 @@ local function _launchPropAt(targetPed)
     end)
 end
 
+-- Remote launch drive. The victim ped is owned by the victim's client, so a
+-- velocity write only replicates once this client owns the entity. The
+-- reference menus use NetworkRequestControlOfEntity -> short wait ->
+-- SetEntityVelocity; the same sequence is repeated between writes so a slow
+-- control hand-off still lands. A ped in a vehicle is driven through the
+-- vehicle instead, because a seat clamps a ped velocity write.
+Menu.__vgdLaunchDrive = function(targetPed, opts)
+    opts = opts or {}
+    if not targetPed or targetPed == 0 or not DoesEntityExist(targetPed) then
+        return false
+    end
+    local lift = tonumber(opts.lift) or (Menu.LaunchAttachLift or 55.0)
+    local cycles = tonumber(opts.cycles) or 12
+    local hold = tonumber(opts.hold) or 24
+    local force = tonumber(opts.force) or 5000.0
+
+    local ent = targetPed
+    local inVeh = false
+    pcall(function()
+        local veh = GetVehiclePedIsIn(targetPed, false)
+        if veh and veh ~= 0 and DoesEntityExist(veh) then
+            ent = veh
+            inVeh = true
+        end
+    end)
+
+    local hadControl = NetworkHasControlOfEntity(ent) == true
+    if not hadControl then
+        pcall(NetworkRequestControlOfEntity, ent)
+        Wait(90 + math.random(0, 40))
+        hadControl = NetworkHasControlOfEntity(ent) == true
+    end
+
+    StealthAcquire("speed")
+    pcall(function()
+        if not inVeh then pcall(ClearPedTasksImmediately, targetPed) end
+        for _ = 1, cycles do
+            if not DoesEntityExist(ent) then break end
+            pcall(NetworkRequestControlOfEntity, ent)
+            if NetworkHasControlOfEntity(ent) == true then hadControl = true end
+            pcall(SetEntityVelocity, ent, 0.0, 0.0, lift)
+            if inVeh then
+                pcall(ApplyForceToEntity, ent, 1, 0.0, 0.0, force,
+                    0.0, 0.0, 0.0, 0, false, true, true, false, true)
+            end
+            Wait(hold + math.random(0, 15))
+        end
+    end)
+    StealthRelease("speed")
+    return hadControl
+end
+
 function Menu.ActionLaunch(method)
     method = tonumber(method) or Menu.LaunchMethod or 1
     local selected = Menu.SelectedPlayer
     if type(selected) ~= "number" then return end
 
     local stamp = GetGameTimer()
-    if stamp - (Menu.LaunchLastAt or 0) < (Menu.LaunchCooldownMs or 4000) then
+    if stamp - (Menu.LaunchLastAt or 0) < (Menu.LaunchCooldownMs or 1000) then
         return
     end
 
@@ -16079,57 +16158,31 @@ function Menu.ActionLaunch(method)
         return
     end
     if IsEntityDead(targetPed) then return end
-    if method > 1 and IsPedInAnyVehicle(targetPed, false) then return end
-
     Menu.LaunchLastAt = stamp
 
     if method == 1 then
-        CreateThread(function() pcall(_launchPropAt, targetPed) end)
+        CreateThread(function()
+            pcall(Menu.__vgdLaunchDrive, targetPed, { lift = 55.0, cycles = 12 })
+            pcall(_launchPropAt, targetPed)
+        end)
         return
     end
 
-    if method == 2 and type(Susano) == "table" and type(Susano.InjectResource) == "function" then
-        if type(Susano.RequestRagdoll) == "function" then
-            local okGuid, guid = pcall(GetEntityGuid, targetPed)
-            if okGuid and type(guid) == "number" and guid ~= 0 then
-                pcall(Susano.RequestRagdoll, guid)
-            end
-        end
-
-        Susano.InjectResource("any", string.format([[
-            local targetServerId = %d
-
-            CreateThread(function()
-                local targetPlayerId = nil
-                for _, player in ipairs(GetActivePlayers()) do
-                    if GetPlayerServerId(player) == targetServerId then
-                        targetPlayerId = player
-                        break
-                    end
-                end
-                if not targetPlayerId then return end
-
-                local targetPed = GetPlayerPed(targetPlayerId)
-                if not targetPed or targetPed == 0 or not DoesEntityExist(targetPed) then return end
-
-                local coords = GetEntityCoords(targetPed, true)
-                if not coords then return end
-                SetEntityCoords(targetPed, coords.x, coords.y, coords.z + 5.0,
-                    false, false, false, false)
-
-                for _ = 1, 10 do
-                    if not DoesEntityExist(targetPed) then break end
-                    ApplyForceToEntity(targetPed, 1, 0.0, 0.0, 50000.0,
-                        0.0, 0.0, 0.0, 0, false, true, true, false, true)
-                    SetEntityVelocity(targetPed, 0.0, 0.0, 1000.0)
-                    Wait(10)
-                end
-            end)
-        ]], selected))
+    if method == 2 then
+        CreateThread(function()
+            pcall(Menu.__vgdLaunchDrive, targetPed,
+                { lift = 68.0, cycles = 16, force = 12000.0 })
+        end)
         return
     end
 
     CreateThread(function()
+        local drove = false
+        local okDrive, hadControl = pcall(Menu.__vgdLaunchDrive, targetPed,
+            { lift = Menu.LaunchAttachLift or 55.0, cycles = 12 })
+        if okDrive then drove = hadControl == true end
+        if drove then return end
+
         local me = PlayerPedId()
         if not me or me == 0 or not DoesEntityExist(me) then return end
         if IsPedInAnyVehicle(me, false) then return end
@@ -16149,61 +16202,33 @@ function Menu.ActionLaunch(method)
             end
         end
 
-        -- Control of the victim's ped is the only path that makes the victim
-        -- replicate its own launch. Ask once per short tick, then fall back to
-        -- the reverse physical attach when ownership is refused.
-        local hasControl = false
-        for _ = 1, 4 do
-            if NetworkHasControlOfEntity(targetPed) then hasControl = true break end
-            pcall(NetworkRequestControlOfEntity, targetPed)
-            Wait(24 + math.random(0, 12))
-        end
-
         StealthAcquire("speed")
-        if hasControl then
-            pcall(function()
-                local lift = Menu.LaunchAttachLift or 45.0
-                for _ = 1, 10 do
+        pcall(function()
+            ClearPedTasksImmediately(me)
+            local lift = Menu.LaunchAttachLift or 45.0
+            for _ = 1, (Menu.LaunchAttachCycles or 3) do
+                if not DoesEntityExist(targetPed) then break end
+
+                local c = GetEntityCoords(targetPed, true)
+                if not c then break end
+                pcall(SetEntityCoordsNoOffset, me, c.x, c.y, c.z + 0.4,
+                    false, false, false)
+
+                AttachEntityToEntityPhysically(targetPed, me, 0, 0,
+                    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                    100000.0, false, false, true, true, 0)
+
+                local attachMs = (Menu.LaunchAttachMs or 220) + math.random(-15, 15)
+                local untilAt = GetGameTimer() + attachMs
+                while GetGameTimer() < untilAt do
                     if not DoesEntityExist(targetPed) then break end
-                    SetEntityVelocity(targetPed, 0.0, 0.0, lift)
+                    SetEntityVelocity(me, 0.0, 0.0, lift)
                     Wait(24 + math.random(0, 12))
                 end
-            end)
-        else
-            pcall(function()
-                ClearPedTasksImmediately(me)
-                local lift = Menu.LaunchAttachLift or 45.0
-                for _ = 1, (Menu.LaunchAttachCycles or 3) do
-                    if not DoesEntityExist(targetPed) then break end
-
-                    -- Keep the contact anchored to the victim. This is a
-                    -- short local align (range is capped at 3 m), not a far
-                    -- teleport.
-                    local c = GetEntityCoords(targetPed, true)
-                    if not c then break end
-                    pcall(SetEntityCoordsNoOffset, me, c.x, c.y, c.z + 0.4,
-                        false, false, false)
-
-                    -- Reverse attach: the victim is entity1 and follows the
-                    -- local operator. Attaching the operator to the victim
-                    -- only launched the operator because the victim was the
-                    -- fixed anchor.
-                    AttachEntityToEntityPhysically(targetPed, me, 0, 0,
-                        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-                        100000.0, false, false, true, true, 0)
-
-                    local attachMs = (Menu.LaunchAttachMs or 220) + math.random(-15, 15)
-                    local untilAt = GetGameTimer() + attachMs
-                    while GetGameTimer() < untilAt do
-                        if not DoesEntityExist(targetPed) then break end
-                        SetEntityVelocity(me, 0.0, 0.0, lift)
-                        Wait(24 + math.random(0, 12))
-                    end
-                    pcall(DetachEntity, targetPed, true, true)
-                    Wait((Menu.LaunchSettleMs or 120) + math.random(-20, 20))
-                end
-            end)
-        end
+                pcall(DetachEntity, targetPed, true, true)
+                Wait((Menu.LaunchSettleMs or 120) + math.random(-20, 20))
+            end
+        end)
         pcall(DetachEntity, targetPed, true, true)
         pcall(DetachEntity, me, true, true)
         StealthRelease("speed")
@@ -39584,7 +39609,7 @@ end
 -- BOOT
 -- ---------------------------------------------------------------------------
 function UI.boot()
-    O.log("loader build 2026-11-08-r67 (Air movement: No Clip disables the ped collision (SET_ENTITY_COLLISION), restored on stop and on every cover hold, so a map prop cannot torque, block or drop the body; the flat pose is applied once and repaired only by the real-ragdoll handler instead of a 120 ms clear/re-layer loop that restarted the clip and made the body spin; a one-metre approach buffer keeps a two-metre floor; ped gravity and the collision-only ragdoll flags are re-asserted every 250 ms; the global ragdoll flag is left enabled so CAN_PED_RAGDOLL stays 1; a 100 ms vertical and forward shape-test probe lifts the written velocity over a prop that the ground-height native cannot see; the No Clip horizontal target carries a 3 % dither so the guard's NC_oldSpeed == playerSpeed clause cannot match; Space/Ctrl are disabled as game controls on every scheduler frame while armed so a parachute cannot deploy, a mid-session parachute state is cleared and the pose re-layered instead of stopping the session, the native cover layer is revalidated every 2.5 s so a read that was genuine at arm and later went false is hooked instead of trusted stale, and ragdoll-from-player-impact is disabled while armed and restored on stop; native particle call carries all four axis flags; load-time preload removed; Stage B graft disabled by default; self and remote share the same filtered particle path; the flash is anchored to the target entity at chest height with a ten-point particle ring for every view angle, moving targets get only a short capped velocity lead, and high-speed targets get a capped scale boost; selected self is honored only when it is the sole target, and is excluded whenever a remote target is selected; Flash moved to Online > Troll > Attacks with Burnout Ember and Acid Green only; the selected method is read live; the WaveShield V4 particle configuration is read from GlobalState and scr_wheel_burnout and scr_alien_teleport are emitted only when rcore_spray/WaveAdmin put them in the static table, dynamic camera parts are sent only from the executor with assetHash stripped on ptFxEvent, and Stage B graft remains available but is disabled by default, so statically safe parts are emitted from the executor without a host injection; particle scale is capped at MaxParticleScale and each pulse sends up to three base parts plus a ten-point ring on a solo target with no minimum range; a one-player server never fabricates a server event; the retired Exploit Flash tab is removed; Search magnifier handle rebuilt as a fused diagonal instead of three dots; White keeps the wbYgWhZ banner and Cyan restores its original 3HLMxX5 banner; Online Props Player row sorts the player list by distance and always targets the nearest player; Launch Player selector offers Method 1 and Method 2; Method 1 drives the victim ped directly when control is available and otherwise reverse-attaches the victim to the local ped within 3 m; Method 2 uses a range-free injected coordinate lift plus repeated upward force and velocity for servers that ignore Method 1; launch has no vehicle or explosion; hardened Susano ragdoll keeps the victim speed check lenient; self launch uses 58 m/s with GET_ENTITY_SPEED masked by the stealth hook; velocity and settle waits carry jitter; tight bold category chevrons; Troll Appearance section and Copy Appearance row removed; All mode Include me toggle adds the local ped alongside remote targets; Props Player row hidden in Self and All modes; attachment rows Attach to player and Attach point removed; target labels Self/Player/All; automatic player refresh sorts by distance and selects nearest; manual Refresh player list removed; Ban Player beta suffix removed; Servers and Bypass tabs moved from Destroyer to Misc; FOV moved from Visual/Camera to Self under Big Weapon; theme banners bottom-anchored flush on the category plate; White uses wbYgWhZ and Cyan uses 3HLMxX5; White/Cyan theme selector; White 3:1 header and Cyan 4.1:1 header; flush tab strip; light-grey cell tab plate; dark selected category rectangle; uniform unselected categories; reference names Self/Online/Vehicle/Weapon/Destroyer/Misc/Settings/Search; Search category opens the prompt directly and lands on results; compact magnifier; tight bold category chevron pair; full-white section rules fitted to the label width; Target keeps only the Ctrl hint; Player Props folded into Online; 15px right-aligned slider readout; target-bound toggles reset on target change/unload; dark row plates; white toggle/scrollbar; footer centre mark removed; Delete/Backspace close; Ped Crasher reads the CPed pool at model, owner and burst level, culls story-player clones and corrupt models on sight, marks an owner hostile after five new non-player peds in five seconds, requests control then deletes the local copy, scans every 25 ms from softCount, and the new opt-in Ped event filter row blocks inbound crash/spawn event names through BlockServerEvent; Ped Flood now preflights the target inside a 250 m streamed band, marks each spawned ped as a mission entity so the sender copy survives at the target position, spawns at the target Z band on roofs, and the Ped Crasher exempts the operator's own active flood within 30 m of the selected target so the defense no longer deletes the outgoing attack; the player card car glyph is stretched vertically, and the selected tab plate reuses the scrollbar thumb colour so both whites match)")
+    O.log("loader build 2026-11-08-r68 (Air movement: No Clip disables the ped collision (SET_ENTITY_COLLISION), restored on stop and on every cover hold, so a map prop cannot torque, block or drop the body; the flat pose is applied once and repaired only by the real-ragdoll handler instead of a 120 ms clear/re-layer loop that restarted the clip and made the body spin; a one-metre approach buffer keeps a two-metre floor; ped gravity and the collision-only ragdoll flags are re-asserted every 250 ms; the global ragdoll flag is left enabled so CAN_PED_RAGDOLL stays 1; a 100 ms vertical and forward shape-test probe lifts the written velocity over a prop that the ground-height native cannot see; the No Clip horizontal target carries a 3 % dither so the guard's NC_oldSpeed == playerSpeed clause cannot match; Space/Ctrl are disabled as game controls on every scheduler frame while armed so a parachute cannot deploy, a mid-session parachute state is cleared and the pose re-layered instead of stopping the session, the native cover layer is revalidated every 2.5 s so a read that was genuine at arm and later went false is hooked instead of trusted stale, and ragdoll-from-player-impact is disabled while armed and restored on stop; native particle call carries all four axis flags; load-time preload removed; Stage B graft disabled by default; self and remote share the same filtered particle path; the flash is anchored to the target entity at chest height with a ten-point particle ring for every view angle, moving targets get only a short capped velocity lead, and high-speed targets get a capped scale boost; selected self is honored only when it is the sole target, and is excluded whenever a remote target is selected; Flash moved to Online > Troll > Attacks with Burnout Ember and Acid Green only; the selected method is read live; the WaveShield V4 particle configuration is read from GlobalState and scr_wheel_burnout and scr_alien_teleport are emitted only when rcore_spray/WaveAdmin put them in the static table, dynamic camera parts are sent only from the executor with assetHash stripped on ptFxEvent, and Stage B graft remains available but is disabled by default, so statically safe parts are emitted from the executor without a host injection; particle scale is capped at MaxParticleScale and each pulse sends up to three base parts plus a ten-point ring on a solo target with no minimum range; a one-player server never fabricates a server event; the retired Exploit Flash tab is removed; Search magnifier handle rebuilt as a fused diagonal instead of three dots; White keeps the wbYgWhZ banner and Cyan restores its original 3HLMxX5 banner; Online Props Player row sorts the player list by distance and always targets the nearest player; Launch Player selector offers Method 1 and Method 2; Method 1 drives the victim ped directly when control is available and otherwise reverse-attaches the victim to the local ped within 3 m; Method 2 uses a range-free injected coordinate lift plus repeated upward force and velocity for servers that ignore Method 1; launch has no vehicle or explosion; hardened Susano ragdoll keeps the victim speed check lenient; self launch uses 58 m/s with GET_ENTITY_SPEED masked by the stealth hook; velocity and settle waits carry jitter; tight bold category chevrons; Troll Appearance section and Copy Appearance row removed; All mode Include me toggle adds the local ped alongside remote targets; Props Player row hidden in Self and All modes; attachment rows Attach to player and Attach point removed; target labels Self/Player/All; automatic player refresh sorts by distance and selects nearest; manual Refresh player list removed; Ban Player beta suffix removed; Servers and Bypass tabs moved from Destroyer to Misc; FOV moved from Visual/Camera to Self under Big Weapon; theme banners bottom-anchored flush on the category plate; White uses wbYgWhZ and Cyan uses 3HLMxX5; White/Cyan theme selector; White 3:1 header and Cyan 4.1:1 header; flush tab strip; light-grey cell tab plate; dark selected category rectangle; uniform unselected categories; reference names Self/Online/Vehicle/Weapon/Destroyer/Misc/Settings/Search; Search category opens the prompt directly and lands on results; compact magnifier; tight bold category chevron pair; full-white section rules fitted to the label width; Target keeps only the Ctrl hint; Player Props folded into Online; 15px right-aligned slider readout; target-bound toggles reset on target change/unload; dark row plates; white toggle/scrollbar; footer centre mark removed; Delete/Backspace close; Ped Crasher reads the CPed pool at model, owner and burst level, culls story-player clones and corrupt models on sight, marks an owner hostile after five new non-player peds in five seconds, requests control then deletes the local copy, scans every 25 ms from softCount, and the new opt-in Ped event filter row blocks inbound crash/spawn event names through BlockServerEvent; Ped Flood now preflights the target inside a 250 m streamed band, marks each spawned ped as a mission entity so the sender copy survives at the target position, spawns at the target Z band on roofs, and the Ped Crasher exempts the operator's own active flood within 30 m of the selected target so the defense no longer deletes the outgoing attack; the player card car glyph is stretched vertically, and the selected tab plate reuses the scrollbar thumb colour so both whites match; the Cyan banner is inset inside the header frame and the Cyan header height matches its 1032x252 aspect so the image fills the frame without side bands)")
     O.thread()
 
     -- Delete/Backspace fallback poll. 40 ms is faster than a frame at 30 FPS
