@@ -2638,7 +2638,7 @@ Menu.Categories = {
             { name = "Babayaga", type = "toggle", value = false, risk = true, targetBound = true, onClick = function(value)
                 Menu.ActionBabayaga(value)
             end },
-            { name = "Launch Player", type = "selector", options = {"Launch", "Impulse", "Vehicle"}, selected = 1, onClick = function(index, option)
+            { name = "Launch Player", type = "selector", options = {"Vehicle", "Attach", "Ragdoll"}, selected = 1, onClick = function(index, option)
                 Menu.LaunchMethod = index
                 Menu.ActionLaunch(index)
             end },
@@ -16133,25 +16133,31 @@ end
 -- launch now runs inside a resource via Susano.InjectResource -- see
 -- Menu.ActionLaunch below.)
 
--- Remote launch. A player's ped is owned by that player's own client, so the
--- only way to move a remote player over the network is to make their client
--- resolve the collision itself. The proven path -- the one every working
--- bypass in the reference set uses (bypassac/leakcorp/Rise HandleLaunchPlayer,
--- and this loader's own ActionBugPlayer "launch"/"hard launch") -- runs the
--- fling from inside a real resource, never the executor sandbox: the executor
--- is not a resource, so entities it creates do not network and the victim
--- never receives them. Susano.InjectResource("any", ...) runs the code as a
--- resource, where the local ped position is networked and the victim's client
--- collides their own ped against it and is launched.
+-- Remote launch -- NO spawn, NO damage, NO network-damage event. Just lift the
+-- target into the air using physics on entities that already exist.
 --
--- Three genuinely different primitives, all proven in the reference menus:
---   Launch  -> local ped physically attached to the victim and detached in a
---              loop; the victim's client resolves the capsule overlap.
---   Impulse -> invisible, silent, no-damage rocket blast at the victim's feet
---              (the skidmenu "Fling Player"); their client applies the impulse.
---   Vehicle -> a networked vehicle attached physically to the victim and
---              detached in a loop (the reference "Bug"/"Attach" body fling),
---              then removed so nothing is left behind.
+-- Why earlier attempts failed: objects created from the Susano sandbox -- and
+-- even from an injected resource on a locked-down server -- are not registered
+-- as networked entities, so they only ever appeared on the operator's screen
+-- and the victim never collided with them. Explosions and synthetic network
+-- damage do reach the victim but they deal damage, fire server events and are
+-- trivial to flag, so they are gone entirely. What remains is physics on
+-- already-networked entities, plus the executor's own cross-client ragdoll.
+--
+-- Everything runs in the sandbox on purpose. These paths only need native calls
+-- on entities that already exist (the local ped, the victim ped, a world
+-- vehicle); a sandbox native write on the local ped, or on a vehicle the client
+-- controls, replicates exactly like a resource write. Running here also removes
+-- Susano.InjectResource's silent no-op when the server exposes no injectable VM.
+--
+--   Vehicle -> grab an EXISTING empty world vehicle, take network control, then
+--              drive it up through the victim so their own client is pushed up
+--              by the contact. No spawn, no horizontal impact.
+--   Attach  -> teleport the local ped into the victim and physically attach and
+--              detach it in a loop; the victim's client resolves the capsule
+--              overlap and ejects them upward. No spawn, no damage.
+--   Ragdoll -> Susano.RequestRagdoll on the victim's engine GUID. Limp, no
+--              damage, no entity, no server event.
 function Menu.ActionLaunch(method)
     method = tonumber(method) or Menu.LaunchMethod or 1
     local selected = Menu.SelectedPlayer
@@ -16161,87 +16167,42 @@ function Menu.ActionLaunch(method)
     if stamp - (Menu.LaunchLastAt or 0) < (Menu.LaunchCooldownMs or 1000) then
         return
     end
+    Menu.LaunchLastAt = stamp
 
     local myServer = GetPlayerServerId(PlayerId())
     if selected == myServer then
-        Menu.LaunchLastAt = stamp
-        CreateThread(function()
-            pcall(_launchSelf)
-        end)
+        CreateThread(function() pcall(_launchSelf) end)
         return
     end
 
-    Menu.LaunchLastAt = stamp
-
-    local mode = "ped"
+    local mode = "vehicle"
     if method == 2 then
-        mode = "impulse"
+        mode = "attach"
     elseif method == 3 then
-        mode = "vehicle"
+        mode = "ragdoll"
     end
 
-    if not (type(Susano) == "table" and type(Susano.InjectResource) == "function") then
-        return
-    end
+    CreateThread(function()
+        local clientId = GetPlayerFromServerId(selected)
+        if not clientId or clientId == -1 then return end
+        local targetPed = GetPlayerPed(clientId)
+        if not targetPed or not DoesEntityExist(targetPed) then return end
 
-    Susano.InjectResource("any", string.format([[
-        local targetServerId = %d
-        local mode = "%s"
-
-        CreateThread(function()
-            local clientId = GetPlayerFromServerId(targetServerId)
-            if not clientId or clientId == -1 then return end
-            local targetPed = GetPlayerPed(clientId)
-            if not targetPed or not DoesEntityExist(targetPed) then return end
-
-            if mode == "impulse" then
-                for i = 1, 3 do
-                    if not DoesEntityExist(targetPed) then break end
-                    local c = GetEntityCoords(targetPed)
-                    if not c then break end
-                    AddExplosion(c.x, c.y, c.z, 4, 0.1, false, true, 0.0)
-                    Wait(120)
-                end
-                return
+        if mode == "ragdoll" then
+            if type(Susano) ~= "table" or type(Susano.RequestRagdoll) ~= "function" then return end
+            if type(GetEntityGuid) ~= "function" then return end
+            for _ = 1, 3 do
+                if not DoesEntityExist(targetPed) then break end
+                local ok, guid = pcall(GetEntityGuid, targetPed)
+                if ok and guid and guid ~= 0 then pcall(Susano.RequestRagdoll, guid) end
+                Wait(120)
             end
+            return
+        end
 
-            if IsPedInAnyVehicle(targetPed, false) then return end
+        if mode == "attach" then
             local myPed = PlayerPedId()
             if not myPed then return end
-
-            if mode == "vehicle" then
-                local model = GetHashKey("asea")
-                RequestModel(model)
-                local w = 0
-                while not HasModelLoaded(model) and w < 60 do
-                    Wait(10)
-                    w = w + 1
-                end
-                if not HasModelLoaded(model) then return end
-                local tc = GetEntityCoords(targetPed)
-                if not tc then
-                    SetModelAsNoLongerNeeded(model)
-                    return
-                end
-                local veh = CreateVehicle(model, tc.x, tc.y, tc.z + 1.0, 0.0, true, true)
-                SetModelAsNoLongerNeeded(model)
-                if not veh or veh == 0 then return end
-                SetEntityAsMissionEntity(veh, true, true)
-                for i = 1, 30 do
-                    if not DoesEntityExist(targetPed) then break end
-                    DetachEntity(veh, true, true)
-                    Wait(5)
-                    AttachEntityToEntityPhysically(veh, targetPed, 0, 0, 0, 1800.0, 1600.0, 1200.0, 300.0, 300.0, 300.0, true, true, true, false, 0)
-                    Wait(5)
-                end
-                DetachEntity(veh, true, true)
-                if DoesEntityExist(veh) then
-                    SetEntityAsMissionEntity(veh, true, true)
-                    DeleteEntity(veh)
-                end
-                return
-            end
-
             local myCoords = GetEntityCoords(myPed)
             local targetCoords = GetEntityCoords(targetPed)
             if not myCoords or not targetCoords then return end
@@ -16249,46 +16210,94 @@ function Menu.ActionLaunch(method)
             local distance = #(myCoords - targetCoords)
             local teleported = false
             local originalCoords = nil
-
             if distance > 10.0 then
                 originalCoords = myCoords
                 local angle = math.random() * 2 * math.pi
-                local radiusOffset = math.random(5, 9)
-                local xOffset = math.cos(angle) * radiusOffset
-                local yOffset = math.sin(angle) * radiusOffset
-                local newCoords = vector3(targetCoords.x + xOffset, targetCoords.y + yOffset, targetCoords.z)
-                SetEntityCoordsNoOffset(myPed, newCoords.x, newCoords.y, newCoords.z, false, false, false)
+                local r = math.random(5, 9)
+                SetEntityCoordsNoOffset(myPed,
+                    targetCoords.x + math.cos(angle) * r,
+                    targetCoords.y + math.sin(angle) * r,
+                    targetCoords.z, false, false, false)
                 SetEntityVisible(myPed, false, 0)
                 teleported = true
                 Wait(100)
             end
 
             ClearPedTasksImmediately(myPed)
-            for i = 1, 8 do
+            for _ = 1, 12 do
                 if not DoesEntityExist(targetPed) then break end
-                local cur = GetEntityCoords(targetPed)
-                if not cur then break end
-                SetEntityCoords(myPed, cur.x, cur.y, cur.z + 0.5, false, false, false, false)
-                Wait(100)
-                AttachEntityToEntityPhysically(myPed, targetPed, 0, 0.0, 0.0, 0.0, 150.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1, false, false, 1, 2)
-                Wait(100)
+                local c = GetEntityCoords(targetPed)
+                if not c then break end
+                SetEntityCoords(myPed, c.x, c.y, c.z + 0.4, false, false, false, false)
+                Wait(40)
+                AttachEntityToEntityPhysically(myPed, targetPed, 0,
+                    0.0, 0.0, 0.0, 150.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                    1, false, false, 1, 2)
+                Wait(40)
                 DetachEntity(myPed, true, true)
-                Wait(200)
+                Wait(80)
             end
 
-            Wait(500)
+            Wait(400)
             ClearPedTasksImmediately(myPed)
-
             if originalCoords then
-                SetEntityCoords(myPed, originalCoords.x, originalCoords.y, originalCoords.z + 1.0, false, false, false, false)
-                Wait(100)
-                SetEntityCoords(myPed, originalCoords.x, originalCoords.y, originalCoords.z, false, false, false, false)
+                SetEntityCoords(myPed, originalCoords.x, originalCoords.y,
+                    originalCoords.z + 1.0, false, false, false, false)
+                Wait(80)
+                SetEntityCoords(myPed, originalCoords.x, originalCoords.y,
+                    originalCoords.z, false, false, false, false)
             end
-            if teleported then
-                SetEntityVisible(myPed, true, 0)
-            end
-        end)
-    ]], selected, mode))
+            if teleported then SetEntityVisible(myPed, true, 0) end
+            return
+        end
+
+        -- mode == "vehicle": reuse an EXISTING empty world vehicle.
+        local tc = GetEntityCoords(targetPed)
+        if not tc then return end
+        local veh = GetClosestVehicle(tc.x, tc.y, tc.z, 80.0, 0, 70)
+        if not veh or veh == 0 then
+            local mc = GetEntityCoords(PlayerPedId())
+            if mc then veh = GetClosestVehicle(mc.x, mc.y, mc.z, 120.0, 0, 70) end
+        end
+        if not veh or veh == 0 or not DoesEntityExist(veh) then return end
+
+        local driver = GetPedInVehicleSeat(veh, -1)
+        if driver and driver ~= 0 and driver ~= PlayerPedId() then return end
+
+        NetworkRequestControlOfEntity(veh)
+        local w = 0
+        while not NetworkHasControlOfEntity(veh) and w < 40 do
+            Wait(10)
+            w = w + 1
+        end
+        if not NetworkHasControlOfEntity(veh) then return end
+
+        SetEntityAsMissionEntity(veh, true, true)
+        SetEntityCollision(veh, true, true)
+        FreezeEntityPosition(veh, false)
+        local orig = GetEntityCoords(veh)
+
+        for i = 1, 8 do
+            if not DoesEntityExist(targetPed) or not DoesEntityExist(veh) then break end
+            local c = GetEntityCoords(targetPed)
+            if not c then break end
+            -- Chassis just under the victim, driven straight up: the victim's
+            -- own client is lifted by the contact. Vertical only, so there is
+            -- no high-speed horizontal impact to apply damage.
+            SetEntityCoordsNoOffset(veh, c.x, c.y, c.z - 0.9, false, false, false)
+            SetEntityVelocity(veh, 0.0, 0.0, 14.0 + i * 1.5)
+            ApplyForceToEntity(veh, 1, 0.0, 0.0, 2600.0,
+                0.0, 0.0, 0.0, 0, false, true, true, false, true)
+            Wait(45)
+        end
+
+        Wait(150)
+        if DoesEntityExist(veh) and orig then
+            NetworkRequestControlOfEntity(veh)
+            SetEntityVelocity(veh, 0.0, 0.0, 0.0)
+            SetEntityCoordsNoOffset(veh, orig.x, orig.y, orig.z, false, false, false)
+        end
+    end)
 end
 
 function Menu.ActionPedArmed()
