@@ -2659,6 +2659,7 @@ Menu.Categories = {
         { name = "Vehicle", items = {
             { name = "", isSeparator = true, separatorText = "Bugs" },
             { name = "Bug Vehicle", type = "selector", options = {"#1", "#2"}, selected = 1 },
+            { name = "Kick Vehicle", type = "selector", options = {"#1", "#2"}, selected = 1 },
             { name = "Warp", type = "selector", options = {"Classic", "Boost"}, selected = 1 },
             { name = "Teleport Into", type = "action" },
             
@@ -2670,7 +2671,6 @@ Menu.Categories = {
             { name = "Steal Vehicle", type = "action" },
             { name = "NPC Drive", type = "action" },
             { name = "Delete Vehicle", type = "action" },
-            { name = "Kick Vehicle", type = "selector", options = {"#1", "#2"}, selected = 1 },
             { name = "Remove Tires", type = "action" },
             { name = "Give", type = "selector", options = {"Vehicle", "Ramp", "Wall", "Wall 2"}, selected = 1 }
         }}
@@ -25018,7 +25018,6 @@ local function resolveTarget()
 
     local selected = targetFromSelection()
     if selected then
-        if selected.self and FL.remoteOnly then return nil end
         selected.dist = distance(meCoords, selected.coords)
         if selected.dist <= REACH_MAX then return selected end
     end
@@ -25138,20 +25137,6 @@ local function selectedTargets()
     if not meCoords then return nil end
 
     local okMy, myServerId = pcall(GetPlayerServerId, PlayerId())
-    local selectionHasRemote = false
-    for i = 1, #Menu.SelectedPlayers do
-        local value = Menu.SelectedPlayers[i]
-        if type(value) == "number"
-            and not (okMy and type(myServerId) == "number" and value == myServerId) then
-            selectionHasRemote = true
-            break
-        end
-    end
-    local primary = type(Menu) == "table" and Menu.SelectedPlayer or nil
-    if type(primary) == "number"
-        and not (okMy and type(myServerId) == "number" and primary == myServerId) then
-        selectionHasRemote = true
-    end
     local list = {}
     local seen = {}
     for i = 1, #Menu.SelectedPlayers do
@@ -25191,17 +25176,9 @@ local function selectedTargets()
         return (a.dist or 0.0) < (b.dist or 0.0)
     end)
 
-    -- "Select All" seeds the list with the local server id. A self pulse on
-    -- top of a real remote selection is never wanted; self remains eligible
-    -- only when it is the sole selected target.
-    if selectionHasRemote or FL.remoteOnly then
-        local filtered = {}
-        for i = 1, #list do
-            if not list[i].self then filtered[#filtered + 1] = list[i] end
-        end
-        list = filtered
-        if #list == 0 then return nil end
-    end
+    -- Select All seeds the local server id alongside the remotes, so the
+    -- operator's own ped is part of the explicit selection and is flashed
+    -- with the rest instead of being filtered out.
 
     if #list > MAX_TARGETS then
         for i = #list, MAX_TARGETS + 1, -1 do table.remove(list, i) end
@@ -25694,7 +25671,7 @@ local function tickCore()
     for i = 1, #targets do
         local t = targets[i]
         local ped, player = liveTargetPed(t, okMy and myServerId or nil)
-        if ped and not (t.self and FL.remoteOnly) then
+        if ped then
             t.ped = ped
             if type(player) == "number" then t.player = player end
             local coords = flashCoordsForPed(ped)
