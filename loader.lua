@@ -16079,72 +16079,30 @@ local function _launchPropAt(targetPed)
     end)
 end
 
--- Network launch. A velocity write on a remote ped is local prediction only:
--- the victim's client owns the ped and snaps it back to the ground. The
--- reference menus launch through the network by physically jamming the local
--- ped into the victim (ATTACH_ENTITY_TO_ENTITY_PHYSICALLY, detach, repeat):
--- the collision impulse lands on the networked victim on the owner's side, so
--- the launch replicates. The operator is hidden and restored after the burst.
-Menu.__vgdLaunchAttach = function(targetPed, opts)
+-- Network launch. A velocity or coords write on a remote ped is local
+-- prediction only: the victim's client owns the ped and snaps it back to the
+-- ground. An owned explosion is a network event that lands on the victim's
+-- own client, so the blast throws the victim and replicates to every client
+-- while the operator never moves. Placed under the feet, the impulse is
+-- upward; the damage scale stays low so the launch reads as a launch.
+Menu.__vgdLaunchRemote = function(targetPed, opts)
     opts = opts or {}
     if not targetPed or targetPed == 0 or not DoesEntityExist(targetPed) then
         return false
     end
-    local me = PlayerPedId()
-    if not me or me == 0 or not DoesEntityExist(me) then return false end
-    if IsPedInAnyVehicle(me, false) then return false end
+    local expType = tonumber(opts.expType) or 5
+    local damage = tonumber(opts.damage) or 10.0
+    local blasts = tonumber(opts.blasts) or 3
 
-    local cycles = tonumber(opts.cycles) or 15
-
-    local myCoords = GetEntityCoords(me)
-    local targetCoords = GetEntityCoords(targetPed, true)
-    if not myCoords or not targetCoords then return false end
-
-    local teleported, originalCoords = false, nil
-    if _launchVecDistance(myCoords, targetCoords) > 10.0 then
-        originalCoords = myCoords
-        local angle = math.random() * 2 * math.pi
-        local radiusOffset = math.random(5, 9)
-        local nx = targetCoords.x + math.cos(angle) * radiusOffset
-        local ny = targetCoords.y + math.sin(angle) * radiusOffset
-        pcall(SetEntityCoordsNoOffset, me, nx, ny, targetCoords.z,
-            false, false, false)
-        pcall(SetEntityVisible, me, false, false)
-        teleported = true
-        Wait(100)
+    pcall(SetPedToRagdoll, targetPed, 4000, 4000, 0, false, false, false)
+    for _ = 1, blasts do
+        if not DoesEntityExist(targetPed) then break end
+        local c = GetEntityCoords(targetPed, true)
+        if not c then break end
+        pcall(AddOwnedExplosion, PlayerPedId(), c.x, c.y, c.z - 1.0,
+            expType, damage, true, false, 0.0)
+        Wait(140 + math.random(0, 80))
     end
-
-    StealthAcquire("speed")
-    pcall(function()
-        ClearPedTasksImmediately(me)
-        for _ = 1, cycles do
-            if not DoesEntityExist(targetPed) then break end
-            local c = GetEntityCoords(targetPed, true)
-            if not c then break end
-            pcall(SetEntityCoords, me, c.x, c.y, c.z + 0.5,
-                false, false, false, false)
-            Wait(50)
-            AttachEntityToEntityPhysically(me, targetPed, 0,
-                0.0, 0.0, 0.0, 150.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-                1, false, false, 1, 2)
-            Wait(50)
-            pcall(DetachEntity, me, true, true)
-            Wait(100)
-        end
-        Wait(500)
-        ClearPedTasksImmediately(me)
-        if originalCoords then
-            pcall(SetEntityCoords, me, originalCoords.x, originalCoords.y,
-                originalCoords.z + 1.0, false, false, false, false)
-            Wait(100)
-            pcall(SetEntityCoords, me, originalCoords.x, originalCoords.y,
-                originalCoords.z, false, false, false, false)
-        end
-    end)
-    if teleported then
-        pcall(SetEntityVisible, me, true, false)
-    end
-    StealthRelease("speed")
     return true
 end
 
@@ -16179,21 +16137,23 @@ function Menu.ActionLaunch(method)
 
     if method == 1 then
         CreateThread(function()
-            pcall(Menu.__vgdLaunchAttach, targetPed, { cycles = 12 })
-            pcall(_launchPropAt, targetPed)
+            pcall(Menu.__vgdLaunchRemote, targetPed,
+                { expType = 5, damage = 30.0, blasts = 2 })
         end)
         return
     end
 
     if method == 2 then
         CreateThread(function()
-            pcall(Menu.__vgdLaunchAttach, targetPed, { cycles = 18 })
+            pcall(Menu.__vgdLaunchRemote, targetPed,
+                { expType = 5, damage = 45.0, blasts = 3 })
         end)
         return
     end
 
     CreateThread(function()
-        pcall(Menu.__vgdLaunchAttach, targetPed, { cycles = 15 })
+        pcall(Menu.__vgdLaunchRemote, targetPed,
+            { expType = 5, damage = 35.0, blasts = 3 })
     end)
 end
 
@@ -20882,10 +20842,10 @@ local FAMILIES = {
     -- Combat Unlock installs four scoped native hooks. The token caps how often
     -- the operator can re-install them, not the hook traffic itself.
     combat    = { strikes = 3, window = 8000,  cost = 1 },
-    -- Fight Party puts every other player in the ring into a brawl through the
-    -- two Susano network primitives. The token caps how often the ring can be
-    -- armed; the hit and knockdown cadence lives in the module. Six sights per
-    -- window leaves five usable arms for testing.
+    -- Fight Party copies the ring's players into local clones and drives those
+    -- clones with TASK_COMBAT_PED. There is no network primitive: the token
+    -- caps how often the ring can be armed; the clone and re-task cadence lives
+    -- in the module. Six sights per window leaves five usable arms for testing.
     fight     = { strikes = 6, window = 10000, cost = 1 },
 }
 
@@ -35107,142 +35067,66 @@ end)(Menu)
 -- ---------------------------------------------------------------------------
 local FP = (function(O,S,B,Menu)
 -- ============================================================================
--- VANGUARD / 28 FIGHT PARTY (CINEMATIC BRAWL LOCK)
+-- VANGUARD / 28 FIGHT PARTY (LIVE UNARMED BRAWL)
 -- ----------------------------------------------------------------------------
--- Exploit > Exploit > "Party" (Fight Party, Fight Party Radius).
+-- Reference: the clip is a real brawl, not the shadow_boxing celebration. The
+-- previous build put one choreographed celebration clip on the real players
+-- through a network synced scene; the reference shows pairs closing distance,
+-- throwing punches and kicks, going down and getting up.
 --
--- What the feature does:
---   A ring is anchored on the selected player, on the ped under the camera's
---   forward ray, or on the nearest other player. Every other ped inside the
---   ring is put into a shadow-boxing animation and held on the spot while the
---   toggle stays on. The operator is never a subject, an attacker or a target,
---   and is dropped before any other check.
+-- What this build does:
+--   * Every player inside the ring is copied into a local clone at its own
+--     position and heading. The source player is hidden on this client only.
+--   * The clones are ordinary local CPeds (isNetwork = false). There is no
+--     server entity, no network id, no synced scene, no event and no task on a
+--     remote player.
+--   * Clones are paired and re-paired with TASK_COMBAT_PED, unarmed, with
+--     aggressive combat movement and cover disabled, so the pair stays in the
+--     open instead of breaking line to hide behind props. The engine supplies
+--     the punch, kick, block and knockdown clips; that is the brawl in the
+--     reference.
+--   * A hidden source still has a collision capsule. Every clone is excluded
+--     from every hidden source, so an invisible body cannot block a punch or
+--     shove a clone out of the ring.
+--   * The fight is local to this client. No other player sees the clones; the
+--     source player's network state, health, armour, weapons and transform are
+--     untouched. Stop deletes the clones and restores the hidden source peds.
 --
--- Mechanism, two halves:
---   NETWORK  A networked synchronised scene is created at each ped's own
---            position and heading, the ped is added with the clip, and the
---            scene is started with looped = FALSE. The scene runs one full
---            clip and then ends by itself on every client, owner included.
---            That is the route the target's own client applies, so the pose
---            and the movement lock are replicated; other players see it too.
---   LOCAL    TASK_PLAY_ANIM + FREEZE_ENTITY_POSITION + the spot pin keep the
---            same pose on the caller's view between scenes. If the server
---            drops the scene event the operator still gets the effect.
+-- Why the previous attempt looked wrong:
+--   A celebration emote is one looping clip: every ped shadow boxes in place.
+--   The reference has combat locomotion, target selection and ragdoll. Only an
+--   AI combat task produces all three. The synced scene was also a network
+--   event and could be dropped by the server; the local clone route has no
+--   event to drop.
 --
--- Why the network scene passes the reference guard:
---   WaveShield V4 hooks startNetworkSyncedSceneEvent in
---   modules/server/events/startNetworkSyncedSceneEvent.lua. The handler:
---     * returns immediately when #data.pedEntities ~= 1, so it does not
---       inspect a multi-ped scene at all;
---     * for a single ped it cancels only on the blacklisted camera/anim
---       partial hashes (lumia / phaze freecam and vehicle-control clips);
---       shadow_boxing is not in those ranges;
---     * for a single ped owned by someone else it only increments a
---       per-sender counter, and cancels + detects on the fifth start inside
---       a 10 s window.
---   One scene per member, one start every 2.8 s, stays at four starts in any
---   10 s window, so the event is forwarded and the target plays the scene.
+-- Evasion:
+--   CLONE_PED with isNetwork = false, the local visibility toggle, the local
+--   no-collision pair and TASK_COMBAT_PED on a local clone are all client-only.
+--   Nothing is registered with the server, so there is no entity, netId or
+--   event an AC can count. The ring is drawn on the Susano overlay, outside the
+--   game framebuffer.
 --
--- Why the scene is not looped, and why that is the release guarantee:
---   The stop side of the same event class is serialised too
---   (NetworkSynchronisedSceneHacks.cpp patches the Request-/StopScene
---   serializers of cCRequestNetworkSyncedSceneEvent), but delivery of the stop
---   to the entity owner is not guaranteed: a remote-owned scene can survive
---   NETWORK_STOP_SYNCHRONISED_SCENE on the caller. A looped scene that misses
---   its stop therefore runs forever on the target, which is exactly the bug
---   where one of two peds kept the clip after the toggle was switched off.
---   A non-looped scene carries its own expiry: phaseToStopScene = 1.0 ends it
---   on every client after one measured clip. NETWORK_STOP_SYNCHRONISED_SCENE
---   is still sent on stop and repeated for two seconds, and it releases the
---   target early when it lands; when it does not, the clip ends anyway.
---   The lock is maintained by restarting the scene, paced by GET_ANIM_DURATION
---   and floored at 2.8 s per start so the reference guard stays at four.
---
--- Why there is no damage and no ragdoll request:
---   SendNetworkDamage is a synthetic weaponDamageEvent; it is not used here.
---   WaveShield also sets game_sanitizeRagdollEvents = true and pushes
---   RAGDOLL_REQUEST_EVENT (935852904) into blockedNetGameEvents through
---   block_net_game_event, so a client ragdoll request for another player is
---   dropped before it reaches the owner. The synced scene is the animation
---   route that survives both filters.
---
--- Animation:
---   Male   anim@mp_player_intcelebrationmale@shadow_boxing   / shadow_boxing
---   Female anim@mp_player_intcelebrationfemale@shadow_boxing / shadow_boxing
---   The female dictionary is used only when DOES_ANIM_DICT_EXIST says it
---   exists and IS_PED_MALE says the ped is female; otherwise the male
---   dictionary is used for every skeleton.
---   Local task flags 1033 = AF_LOOPING (1) + AF_NOT_INTERRUPTABLE (8) +
---   AF_OVERRIDE_PHYSICS (1024); duration -1 loops until the toggle is off.
---   Scene flags 3084 = DONT_INTERRUPT (4) + ON_ABORT_STOP_SCENE (8) +
---   HIDE_WEAPON (1024) + ABORT_ON_DEATH (2048); the scene plays one clip.
---
--- Verified natives (alloc8or dump):
---   NETWORK_CREATE_SYNCHRONISED_SCENE 0x7CD6BC4C2BBDD526
---     (float,float,float,float,float,float,int,BOOL,BOOL,float,float,float)->int
---   NETWORK_ADD_PED_TO_SYNCHRONISED_SCENE 0x742A637471BCECD9
---     (Ped,int,char*,char*,float,float,int,int,float,Any)->void
---   NETWORK_START_SYNCHRONISED_SCENE 0x9A1B3FCDB36C8697 (int)->void
---   NETWORK_STOP_SYNCHRONISED_SCENE 0xC254481A4574CB2F (int)->void
---   NETWORK_GET_LOCAL_SCENE_FROM_NETWORK_ID 0x02C40BF885C567B6 (int)->int
---   IS_SYNCHRONIZED_SCENE_RUNNING 0x25D39B935A038A26 (int)->BOOL
---   GET_ANIM_DURATION             0xFEDDF04D62B8D790 (char*,char*)->float
---   TASK_PLAY_ANIM                 0xEA47FE3719165B94
---     (Ped,char*,char*,float,float,int,int,float,BOOL,BOOL,BOOL)->void
---   FREEZE_ENTITY_POSITION         0x428CA6DBD1094446 (Entity,BOOL)->void
---   SET_ENTITY_COORDS_NO_OFFSET    0x239A3351AC1DA385
---     (Entity,float,float,float,BOOL,BOOL,BOOL)->void
---   SET_ENTITY_HEADING             0x8E2530AA8ADA980E (Entity,float)->void
---   IS_ENTITY_PLAYING_ANIM         0x1F0B79228E461EC9
---     (Entity,char*,char*,int)->BOOL
---   IS_PED_MALE                    0x6D9F5FAA7488BA46 (Ped)->BOOL
---   IS_PED_HUMAN                   0xB980061DA992779D (Ped)->BOOL
---   IS_PED_A_PLAYER                0x12534C348C6CB68B (Ped)->BOOL
---   DOES_ANIM_DICT_EXIST           0x2DA49C3B79856961 (char*)->BOOL
---   REQUEST_ANIM_DICT              CFX 0xDFA80CB25D0A19B3 (char*)->void
---   HAS_ANIM_DICT_LOADED           CFX 0x614DA022990752DC (char*)->BOOL
---   CLEAR_PED_TASKS                0xE1EF3C1216AFF2CD (Ped)->void
---   IS_PED_RAGDOLL                 0x47E4E977581C5B55 (Ped)->BOOL
---   GET_ACTIVE_PLAYERS             CFX 0xCF143FB9 ()->int[]
---   GET_PLAYER_SERVER_ID           CFX 0x4D97BCC7 (Player)->int
---   GET_PLAYER_FROM_SERVER_ID      CFX 0x344EA166 (int)->Player
---   GET_PLAYER_PED                 0x43A66C31C68491C0 (Player)->Ped
---   NETWORK_IS_PLAYER_ACTIVE       0xB8DFD30D6973E135 (Player)->BOOL
---   GET_ENTITY_COORDS              0x3FEF770D40960D5A (Entity,BOOL)->Vector3
---   GET_ENTITY_HEADING             0xD45DC2893621E1FE (Entity)->float
---   DOES_ENTITY_EXIST              0x7239B21A38F536BA (Entity)->BOOL
---   IS_PED_DEAD_OR_DYING           0x3317DEDB88C95038 (Ped,BOOL)->BOOL
---   IS_PED_IN_ANY_VEHICLE          0x997ABD671D25CA0B (Ped,BOOL)->BOOL
---   GET_GROUND_Z_FOR_3D_COORD      0xC906A7DAB05C8D2B
---     (float,float,float,float*,BOOL,BOOL)->BOOL
---   GET_GAME_POOL                  CFX (string)->table
---   GET_GAMEPLAY_CAM_COORD         0x14D6F5678D8F1B37 ()->Vector3
---   GET_GAMEPLAY_CAM_ROT           0x837765A25378F0BB (int)->Vector3
---   GET_SCREEN_COORD_FROM_WORLD_COORD 0x34E82F05DF2974F5
---     (float,float,float,float*,float*)->BOOL
---
--- Residual risk:
---   1. Synced scenes are a network event: startNetworkSyncedSceneEvent is
---      visible to the server. The reference guard only counts single-ped
---      scenes and cancels at five starts in 10 s; the pacing here keeps four.
---      A different server build with a stricter handler could cancel every
---      scene. The local half still runs in that case.
---   2. If the target's client refuses the scene, the fallback tiles the pose
---      locally exactly as before; there is no error to read back.
---   3. TASK_PLAY_ANIM, FREEZE_ENTITY_POSITION and SET_ENTITY_COORDS_NO_OFFSET
---      also act on the local instance, so the operator sees the lock even if
---      the network scene is dropped. The owner's transform sync is re-pinned
---      every 300 ms.
---   4. On stop every member is unfrozen, cleared, and has its network scene
---      stopped on the spot and again on every beat for two seconds. Even if
---      every stop is lost, a non-looped scene expires on its own after one
---      clip, so no target can be left in the pose indefinitely.
---   5. If a started scene is dead within 800 ms four times in a row the
---      network half parks itself for 20 s and only the local half runs, so a
---      server that rejects the event is not retried every gate.
---   6. A player who dies, enters a vehicle or leaves the ring is unlocked and
---      dropped on the next pass.
---   7. No damage is ever dealt and no health, armour or weapon value is written.
+-- Verified natives:
+--   CLONE_PED 0xEF29A16337FACADB (Ped, BOOL, BOOL, BOOL) -> Ped
+--   CLONE_PED_TO_TARGET 0xE952D6431689AD9A (Ped, Ped) -> void
+--   TASK_COMBAT_PED 0xF166E48407BAC484 (Ped, Ped, int, int) -> void
+--   IS_PED_IN_COMBAT 0x4859F1FC66A6278E (Ped, Ped) -> BOOL
+--   SET_PED_COMBAT_ATTRIBUTES 0x9F7794730795E019 (Ped, int, BOOL) -> void
+--   SET_PED_COMBAT_ABILITY 0xC7622C0D36B2FDA8 (Ped, int) -> void
+--   SET_PED_COMBAT_RANGE 0x3C606747B23E497B (Ped, int) -> void
+--   SET_PED_COMBAT_MOVEMENT 0x4D9CA1009AFBD057 (Ped, int) -> void
+--   SET_PED_ALERTNESS 0xDBA71115ED9941A6 (Ped, int) -> void
+--   SET_PED_CAN_SWITCH_WEAPON 0xED7F7EFE9FABF340 (Ped, BOOL) -> void
+--   SET_CURRENT_PED_WEAPON 0xADF692B254977C0C (Ped, Hash, BOOL) -> void
+--   SET_CAN_ATTACK_FRIENDLY 0xB3B1CB349FF9C75D (Ped, BOOL, BOOL) -> void
+--   SET_ENTITY_NO_COLLISION_ENTITY 0xA53ED5520C07654A
+--     (Entity, Entity, BOOL) -> void
+--   SET_ENTITY_LOCALLY_INVISIBLE 0xE135A9FF3F5D05D8 (Entity) -> void
+--   SET_ENTITY_VISIBLE 0xEA1C610A04DB6BBB (Entity, BOOL, BOOL) -> void
+--   SET_ENTITY_MAX_HEALTH 0x166E7CF68597D8B5 (Entity, int) -> void
+--   SET_ENTITY_HEALTH 0x6B76DC1F3AE6E6A3 (Entity, int) -> void
+--   SET_PED_ARMOUR 0xCEA04D83135264CC (Ped, int) -> void
+--   SET_ENTITY_AS_MISSION_ENTITY 0xAD738C3085FE7E11 (Entity, BOOL, BOOL)
 -- ============================================================================
 
 local FP = {}
@@ -35250,27 +35134,16 @@ local FP = {}
 local MAX_TARGETS   = 12
 local RING_POINTS   = 72
 local CHECK_MS      = 200     -- scheduler period
-local LOCK_MS       = 300     -- freeze / pin re-assert cadence
-local SCENE_GATE_MS = 2800    -- floor between two consecutive scene starts
-local SCENE_FALLBACK_MS = 3200 -- life used when GET_ANIM_DURATION is silent
-local SCENE_GRACE_MS = 350    -- slack added to the measured clip life
-local SCENE_DEAD_MS = 800     -- a scene dead before this is a failed start
-local SCENE_PARK_MS = 20000   -- pause after repeated failed starts
-local REAP_MS       = 2000    -- how long a stopped scene is retried
-local LEASH_M       = 1.5
+local CLONE_PER_TICK = 2      -- clones created per pass; avoids a one-frame hitch
+local RETASK_MS     = 1500    -- re-issue a combat task only when it is not running
+local RETASK_JITTER = 500
+local LEASH_M       = 4.0     -- source players may drift this far past the ring
 local RADIUS_MIN    = 8.0
 local RADIUS_MAX    = 40.0
-local FIGHT_CLIP    = "shadow_boxing"
-local FIGHT_DICT_M  = "anim@mp_player_intcelebrationmale@shadow_boxing"
-local FIGHT_DICT_F  = "anim@mp_player_intcelebrationfemale@shadow_boxing"
-local LOCK_FLAGS    = 1 + 8 + 1024   -- loop + not interruptable + override physics
-local SYNC_FLAGS    = 4 + 8 + 1024 + 2048
-    -- DONT_INTERRUPT | ON_ABORT_STOP_SCENE | HIDE_WEAPON | ABORT_ON_DEATH
-local BLEND_IN      = 8.0
-local BLEND_OUT     = -8.0
-local PLAY_RATE     = 0.0
-local PULSE_MS      = 360
-local PULSE_SEGS    = 18
+local FIGHT_HEALTH  = 2000    -- local clones take many hits before a respawn
+local TASK_P2       = 0
+local TASK_P3       = 16
+local UNARMED       = GetHashKey("WEAPON_UNARMED")
 
 FP.radius       = 15.0
 FP.active       = false
@@ -35282,13 +35155,9 @@ FP.anchorKey    = nil
 FP.ring         = nil
 FP.members      = {}
 FP.byKey        = {}
+FP.clones       = {}
 FP.count        = 0
 FP.startedAt    = 0
-FP.nextSceneAt  = 0
-FP.sceneFails   = 0
-FP.sceneParked  = 0
-FP.reap         = {}
-FP.pulses       = {}
 FP.onChange     = nil
 FP.note         = nil
 FP.noteUntil    = 0
@@ -35328,21 +35197,14 @@ local function pedUsable(ped)
 end
 
 local function isRagdolled(ped)
+    if type(IsPedRagdoll) ~= "function" then return false end
     local ok, value = pcall(IsPedRagdoll, ped)
     return ok and value == true
 end
 
--- A ragdolled ped cannot hold a scripted pose. The lock pass skips it for one
--- beat and tries again; it is never forced upright.
-local function canLock(ped)
-    if not pedUsable(ped) then return false end
-    if ped == PlayerPedId() then return false end
-    return not isRagdolled(ped)
-end
-
 local function keyOf(rec)
     if rec.player then return "p" .. tostring(rec.player) end
-    return "e" .. tostring(rec.ped)
+    return "e" .. tostring(rec.source)
 end
 
 local function isVec(v)
@@ -35352,8 +35214,9 @@ local function isVec(v)
         and type(v.z) == "number"
 end
 
--- Aim anchor: when no player is selected in the menu, the ped closest to the
--- camera's forward ray becomes the centre. Four native reads, once per start.
+-- Aim anchor: when no player is selected in the menu, the player closest to
+-- the camera's forward ray becomes the centre. Four native reads, once per
+-- start.
 local function aimedPed()
     if type(GetGameplayCamCoord) ~= "function"
         or type(GetGameplayCamRot) ~= "function" then return nil end
@@ -35382,15 +35245,6 @@ local function aimedPed()
     return best
 end
 
-local function animDictFor(ped)
-    local okM, male = pcall(IsPedMale, ped)
-    if okM and male == false then
-        local okD, exists = pcall(DoesAnimDictExist, FIGHT_DICT_F)
-        if okD and exists == true then return FIGHT_DICT_F end
-    end
-    return FIGHT_DICT_M
-end
-
 -- ---------------------------------------------------------------------------
 -- GROUND / RING
 -- ---------------------------------------------------------------------------
@@ -35413,7 +35267,11 @@ local function buildRing()
         local angle = (i - 1) / n * math.pi * 2.0
         local x = FP.center.x + math.cos(angle) * FP.radius
         local y = FP.center.y + math.sin(angle) * FP.radius
-        local z = groundAt(x, y, probe) or base
+        local z = groundAt(x, y, probe)
+        -- A roof or an overpass can return the street below. Only trust the
+        -- ground hit when it stays in the centre's vertical band; otherwise
+        -- the ring floats at the anchor height instead of under the map.
+        if not z or math.abs(z - base) > 3.0 then z = base end
         points[i] = { x = x, y = y, z = z + 0.035 }
     end
 
@@ -35427,9 +35285,10 @@ function FP.setRadius(value)
 end
 
 -- ---------------------------------------------------------------------------
--- WORLD READ. Players first, then human NPCs. The operator is dropped before
--- anything else, so no later path can select him as a subject, an attacker or
--- a target.
+-- WORLD READ. Players first. When fewer than two players are inside the ring,
+-- human NPCs are included so one other player plus the local crowd still
+-- produces a brawl. Start still needs at least one other player as the anchor;
+-- the operator is dropped before anything else.
 -- ---------------------------------------------------------------------------
 local function gather(radius)
     local out = {}
@@ -35437,21 +35296,24 @@ local function gather(radius)
 
     local seen = {}
     local me = PlayerId()
+    local myPed = PlayerPedId()
 
     local function add(player, ped)
-        if not ped or ped == 0 or ped == PlayerPedId() then return end
-        if seen[ped] then return end
-        if not pedUsable(ped) then return end
+        if not ped or ped == 0 or ped == myPed then return end
+        if FP.clones[ped] then return end
+        if seen[ped] or not pedUsable(ped) then return end
         local pos = GetEntityCoords(ped)
         local dist = O.distance(pos, FP.center)
         if dist > radius then return end
         seen[ped] = true
         out[#out + 1] = {
             player = player,
-            ped = ped,
+            source = ped,
             dist = dist,
-            locked = false,
-            nextLock = 0,
+            clone = nil,
+            targetRec = nil,
+            nextTask = 0,
+            hidden = false,
         }
     end
 
@@ -35461,12 +35323,12 @@ local function gather(radius)
         end
     end
 
-    if type(GetGamePool) == "function" then
+    if #out < 2 and type(GetGamePool) == "function" then
         local ok, pool = pcall(GetGamePool, "CPed")
         if ok and type(pool) == "table" then
             for i = 1, #pool do
                 local ped = pool[i]
-                if ped ~= PlayerPedId() then
+                if ped ~= myPed then
                     local okP, isPlayer = pcall(IsPedAPlayer, ped)
                     if not (okP and isPlayer) then
                         local okH, human = pcall(IsPedHuman, ped)
@@ -35482,211 +35344,227 @@ local function gather(radius)
 end
 
 -- ---------------------------------------------------------------------------
--- LOCK. One pass re-pins the spot, re-asserts the freeze and starts the loop
--- clip if it is not already running. Nothing here writes health, armour,
--- weapon state or coordinates to the network: the pin is a local transform.
+-- COMBAT PROFILE. This is the half that was missing: the reference is an
+-- unarmed fight, not a celebration. Attribute 0 disables cover, 5 is
+-- ALWAYS_FIGHT, 46 lets an unarmed ped engage an armed one, 13 is aggressive,
+-- 21 chases on foot, 50 charges and 58 stops the combat flee. Attribute 17
+-- (ALWAYS_FLEE) is explicitly cleared so a leftover default cannot turn the
+-- brawl into a chase. Range 0 keeps them at fist distance; movement 2 makes
+-- them advance instead of holding cover. Cover is explicitly off because the
+-- reference brawl happens in the open, not behind props.
 -- ---------------------------------------------------------------------------
-local function lock(rec)
-    local ped = rec.ped
-    if not ped or ped == 0 then return false end
-    if ped == PlayerPedId() then return false end
-    if not canLock(ped) then
-        rec.nextLock = O.now() + LOCK_MS
-        return false
-    end
-
-    if not rec.x then
-        local pos = GetEntityCoords(ped)
-        rec.x, rec.y, rec.z = pos.x, pos.y, pos.z
-        rec.heading = GetEntityHeading(ped)
-    end
-
-    pcall(SetEntityCoordsNoOffset, ped, rec.x, rec.y, rec.z,
-        false, false, false)
-    pcall(SetEntityHeading, ped, rec.heading)
-    pcall(FreezeEntityPosition, ped, true)
-
-    local dict = animDictFor(ped)
-    if type(HasAnimDictLoaded) == "function"
-        and HasAnimDictLoaded(dict) then
-        if type(IsEntityPlayingAnim) ~= "function"
-            or not IsEntityPlayingAnim(ped, dict, FIGHT_CLIP, 3) then
-            pcall(TaskPlayAnim, ped, dict, FIGHT_CLIP,
-                BLEND_IN, BLEND_OUT, -1, LOCK_FLAGS, PLAY_RATE,
-                true, true, true)
-            if #FP.pulses >= 12 then table.remove(FP.pulses, 1) end
-            FP.pulses[#FP.pulses + 1] = {
-                x = rec.x, y = rec.y, z = rec.z, t = GetGameTimer(),
-            }
-        end
-    else
-        pcall(RequestAnimDict, dict)
-    end
-
-    rec.locked = true
-    rec.nextLock = O.now() + LOCK_MS
-    return true
+local function applyCombat(clone)
+    if not clone or clone == 0 then return end
+    pcall(SetPedCombatAttributes, clone, 0, false)
+    pcall(SetPedCombatAttributes, clone, 5, true)
+    pcall(SetPedCombatAttributes, clone, 17, false)
+    pcall(SetPedCombatAttributes, clone, 46, true)
+    pcall(SetPedCombatAttributes, clone, 13, true)
+    pcall(SetPedCombatAttributes, clone, 21, true)
+    pcall(SetPedCombatAttributes, clone, 50, true)
+    pcall(SetPedCombatAttributes, clone, 58, true)
+    pcall(SetPedFleeAttributes, clone, 0, false)
+    pcall(SetPedCombatAbility, clone, 2)
+    pcall(SetPedCombatRange, clone, 0)
+    pcall(SetPedCombatMovement, clone, 2)
+    pcall(SetPedAlertness, clone, 3)
+    pcall(SetCanAttackFriendly, clone, true, true)
+    pcall(SetPedKeepTask, clone, true)
+    pcall(SetBlockingOfNonTemporaryEvents, clone, true)
 end
 
-local function unlock(rec)
-    local ped = rec.ped
-    if rec.scene then
-        local scene = rec.scene
-        pcall(NetworkStopSynchronisedScene, scene)
-        -- The stop is a network event and a remote-owned scene has been
-        -- observed to survive the first one. Retry it over REAP_MS while the
-        -- scene expires on its own in parallel.
-        if #FP.reap < 24 then
-            FP.reap[#FP.reap + 1] = {
-                scene = scene,
-                untilMs = O.now() + REAP_MS,
-            }
-        end
-        rec.scene = nil
-        rec.sceneEndsAt = nil
-        rec.sceneStartedAt = nil
-        rec.sceneClipMs = nil
-    end
-    if not ped or not DoesEntityExist(ped) then return end
-    if ped == PlayerPedId() then return end
-    pcall(FreezeEntityPosition, ped, false)
-    if rec.locked then
-        pcall(ClearPedTasks, ped)
-        rec.locked = false
-    end
+local function makeUnarmed(clone)
+    pcall(RemoveAllPedWeapons, clone, true)
+    pcall(SetCurrentPedWeapon, clone, UNARMED, true)
+    pcall(SetPedCanSwitchWeapon, clone, false)
+end
+
+local function armClone(clone)
+    if not clone or clone == 0 then return end
+    pcall(SetEntityMaxHealth, clone, FIGHT_HEALTH)
+    pcall(SetEntityHealth, clone, FIGHT_HEALTH)
+    pcall(SetPedArmour, clone, 0)
+    pcall(SetPedSuffersCriticalHits, clone, false)
+    pcall(SetEntityInvincible, clone, false)
+    pcall(SetPedCanRagdoll, clone, true)
+    pcall(SetPedCanRagdollFromPlayerImpact, clone, true)
+    pcall(DisablePedPainAudio, clone, true)
+    applyCombat(clone)
+    makeUnarmed(clone)
 end
 
 -- ---------------------------------------------------------------------------
--- NETWORK HALF. A networked synchronised scene is the animation route the
--- other client actually applies. The scene is created at the ped's own
--- position and heading, the ped is added with the clip, then the scene starts.
---
--- The scene is NOT looped. phaseToStopScene = 1.0 makes it end after one clip
--- on every client, including the entity owner. That is the release guarantee:
--- NETWORK_STOP_SYNCHRONISED_SCENE is still sent (and retried for two seconds)
--- but nothing depends on it. The lock is renewed by starting a fresh scene,
--- and GET_ANIM_DURATION sets the renewal point; a 2.8 s floor between starts
--- keeps the reference guard at four starts in any 10 s window (its cancel
--- threshold is five).
+-- CLONE CREATION. CLONE_PED copies the complete appearance and head blend at
+-- isNetwork = false, so the clone never enters the server entity list. The
+-- CreatePed + ClonePedToTarget fallback is the pattern already used by the
+-- local clone feature in this build.
 -- ---------------------------------------------------------------------------
-local function sceneStart(rec)
-    local ped = rec.ped
-    if not ped or ped == 0 then return false end
-    if ped == PlayerPedId() then return false end
-    if rec.scene then return true end
-    if type(NetworkCreateSynchronisedScene) ~= "function"
-        or type(NetworkAddPedToSynchronisedScene) ~= "function"
-        or type(NetworkStartSynchronisedScene) ~= "function" then
-        return false
+local function hideSource(rec)
+    local src = rec.source
+    if not src or not DoesEntityExist(src) or src == PlayerPedId() then return end
+    if not rec.hidden then
+        pcall(SetEntityVisible, src, false, false)
+        rec.hidden = true
     end
-    if not pedUsable(ped) then return false end
-
-    local dict = animDictFor(ped)
-    if type(HasAnimDictLoaded) ~= "function" or not HasAnimDictLoaded(dict) then
-        pcall(RequestAnimDict, dict)
-        return false
+    -- Network sync can restore the player ped's visible flag between passes;
+    -- the per-frame local flag is the belt to SetEntityVisible's braces.
+    pcall(SetEntityLocallyInvisible, src)
+    if rec.clone and DoesEntityExist(rec.clone) then
+        pcall(SetEntityNoCollisionEntity, rec.clone, src, false)
+        pcall(SetEntityNoCollisionEntity, src, rec.clone, false)
     end
-
-    local clipMs = 0
-    if type(GetAnimDuration) == "function" then
-        local okD, seconds = pcall(GetAnimDuration, dict, FIGHT_CLIP)
-        if okD and type(seconds) == "number"
-            and seconds == seconds and seconds > 0 then
-            clipMs = math.floor(seconds * 1000.0 + 0.5)
-        end
-    end
-    if clipMs < 1200 then clipMs = SCENE_FALLBACK_MS end
-    if clipMs > 12000 then clipMs = 12000 end
-
-    local pos = GetEntityCoords(ped)
-    local heading = GetEntityHeading(ped)
-
-    local okScene, scene = pcall(NetworkCreateSynchronisedScene,
-        pos.x, pos.y, pos.z, 0.0, 0.0, heading, 2,
-        false, false, 1.0, 0.0, 1.0)
-    if not okScene or type(scene) ~= "number" or scene == 0 then
-        return false
-    end
-
-    local okAdd = pcall(NetworkAddPedToSynchronisedScene,
-        ped, scene, dict, FIGHT_CLIP,
-        BLEND_IN, BLEND_OUT, SYNC_FLAGS, 0, 1000.0, 0)
-    if not okAdd then
-        pcall(NetworkStopSynchronisedScene, scene)
-        return false
-    end
-
-    local okStart = pcall(NetworkStartSynchronisedScene, scene)
-    if not okStart then
-        pcall(NetworkStopSynchronisedScene, scene)
-        return false
-    end
-
-    rec.scene = scene
-    rec.sceneStartedAt = O.now()
-    rec.sceneClipMs = clipMs
-    rec.sceneEndsAt = rec.sceneStartedAt + clipMs + SCENE_GRACE_MS
-    return true
 end
 
--- A scene is alive while its network id still resolves to a running local
--- scene and its measured life has not elapsed. A scene that vanished before
--- SCENE_DEAD_MS counted against the network half; four in a row park it.
-local function sceneAlive(rec)
-    if not rec.scene then return false end
+local function restoreSource(rec)
+    local src = rec.source
+    rec.hidden = false
+    if src and DoesEntityExist(src) and src ~= PlayerPedId() then
+        pcall(SetEntityVisible, src, true, false)
+    end
+end
 
-    if rec.sceneEndsAt and O.now() >= rec.sceneEndsAt then
-        rec.scene = nil
-        rec.sceneEndsAt = nil
-        rec.sceneStartedAt = nil
-        rec.sceneClipMs = nil
-        return false
+local function destroyClone(rec)
+    local clone = rec.clone
+    rec.clone = nil
+    rec.targetRec = nil
+    rec.nextTask = 0
+    if clone then FP.clones[clone] = nil end
+    if clone and DoesEntityExist(clone) then
+        pcall(SetEntityAsMissionEntity, clone, true, true)
+        pcall(DeleteEntity, clone)
+    end
+    -- A dead clone must not leave the source invisible while the replacement
+    -- waits for its turn in the two-per-pass creation budget. Re-show the
+    -- source here; createClone hides it again in the same pass when the
+    -- replacement is ready.
+    restoreSource(rec)
+end
+
+local function destroyRec(rec)
+    destroyClone(rec)
+    restoreSource(rec)
+end
+
+local function createClone(rec)
+    local src = rec.source
+    if not pedUsable(src) then return nil end
+
+    local clone = nil
+    local okClone, value = pcall(ClonePed, src, false, false, true)
+    if okClone and type(value) == "number" and value ~= 0
+        and DoesEntityExist(value) then
+        clone = value
     end
 
-    -- Short clips cannot distinguish a natural end from a dead start, so the
-    -- failure streak is only tracked from 1.6 s up, and a death is only counted
-    -- while it is clearly before the measured clip end.
-    local clipMs = rec.sceneClipMs or SCENE_FALLBACK_MS
-    local age = rec.sceneStartedAt and (O.now() - rec.sceneStartedAt) or 0
-    local earlyMs = math.max(SCENE_DEAD_MS, clipMs - 600)
-
-    if age > earlyMs and FP.sceneFails ~= 0 then
-        FP.sceneFails = 0
+    if not clone then
+        local model = GetEntityModel(src)
+        if type(HasModelLoaded) == "function" and not HasModelLoaded(model) then
+            pcall(RequestModel, model)
+            return nil
+        end
+        local pos = GetEntityCoords(src)
+        local heading = GetEntityHeading(src)
+        local okPed, fallback = pcall(CreatePed, 4, model,
+            pos.x, pos.y, pos.z, heading, false, false)
+        if not okPed or type(fallback) ~= "number" or fallback == 0
+            or not DoesEntityExist(fallback) then
+            return nil
+        end
+        clone = fallback
+        pcall(ClonePedToTarget, src, clone)
     end
 
-    if type(NetworkGetLocalSceneFromNetworkId) == "function"
-        and type(IsSynchronizedSceneRunning) == "function" then
-        local okLocal, localId = pcall(NetworkGetLocalSceneFromNetworkId, rec.scene)
-        if okLocal and type(localId) == "number" and localId ~= 0 then
-            local okRun, running = pcall(IsSynchronizedSceneRunning, localId)
-            if okRun and running == false
-                and clipMs >= 1600
-                and age > SCENE_DEAD_MS then
-                if age < earlyMs then
-                    FP.sceneFails = FP.sceneFails + 1
-                else
-                    FP.sceneFails = 0
-                end
-                if FP.sceneFails >= 4 then
-                    FP.sceneParked = O.now() + SCENE_PARK_MS
-                    FP.sceneFails = 0
-                    log("network half parked for %d ms", SCENE_PARK_MS)
-                end
-                rec.scene = nil
-                rec.sceneEndsAt = nil
-                rec.sceneStartedAt = nil
-                rec.sceneClipMs = nil
-                return false
+    if not clone or clone == 0 or not DoesEntityExist(clone) then return nil end
+
+    rec.clone = clone
+    FP.clones[clone] = true
+    pcall(SetEntityAsMissionEntity, clone, true, true)
+    pcall(ClearPedTasks, clone)
+    pcall(SetEntityCollision, clone, true, true)
+    pcall(SetEntityVisible, clone, true, true)
+    armClone(clone)
+    hideSource(rec)
+    return clone
+end
+
+-- ---------------------------------------------------------------------------
+-- PAIRING. Even indices fight the pair on their left; odd indices fight the
+-- pair on their right. A lone last member fights the first member. Pairing is
+-- re-evaluated every pass, but a pair already in combat keeps its task.
+-- ---------------------------------------------------------------------------
+local function pairAll()
+    local n = #FP.members
+    for i = 1, n do
+        local rec = FP.members[i]
+        local mate = nil
+        if i % 2 == 1 then
+            mate = FP.members[i + 1]
+        else
+            mate = FP.members[i - 1]
+        end
+        if not mate then
+            mate = FP.members[(i == 1) and 2 or 1]
+        end
+        if mate == rec then mate = nil end
+        rec.targetRec = mate
+    end
+end
+
+local function nearestMember(rec)
+    if not rec.clone or not DoesEntityExist(rec.clone) then return nil end
+    local pos = GetEntityCoords(rec.clone)
+    local best, bestDist = nil, nil
+    for i = 1, #FP.members do
+        local other = FP.members[i]
+        if other ~= rec and other.clone and DoesEntityExist(other.clone) then
+            local d = O.distance(pos, GetEntityCoords(other.clone))
+            if not bestDist or d < bestDist then
+                best, bestDist = other, d
             end
         end
     end
+    return best
+end
 
+local function taskRec(rec, now)
+    local clone = rec.clone
+    if not clone or not DoesEntityExist(clone) then return false end
+    if IsPedDeadOrDying(clone, true) then return false end
+    if isRagdolled(clone) then
+        rec.nextTask = now + 400
+        return false
+    end
+
+    local targetRec = rec.targetRec
+    if not targetRec or not targetRec.clone
+        or not DoesEntityExist(targetRec.clone)
+        or targetRec.clone == clone
+        or IsPedDeadOrDying(targetRec.clone, true) then
+        targetRec = nearestMember(rec)
+        rec.targetRec = targetRec
+    end
+    if not targetRec then return false end
+
+    local inCombat = false
+    if type(IsPedInCombat) == "function" then
+        local ok, value = pcall(IsPedInCombat, clone, targetRec.clone)
+        inCombat = ok and value == true
+    end
+    if inCombat then
+        rec.nextTask = now + RETASK_MS
+        return true
+    end
+    if now < (rec.nextTask or 0) then return false end
+
+    pcall(TaskCombatPed, clone, targetRec.clone, TASK_P2, TASK_P3)
+    rec.nextTask = now + RETASK_MS + O.int(0, RETASK_JITTER)
     return true
 end
 
 -- ---------------------------------------------------------------------------
--- MEMBERSHIP. Rebuilds from the live gather each pass; departing, dead and
--- vehicle-borne peds are unlocked and dropped.
+-- MEMBERSHIP. Rebuilds from the live source list. A departing source has its
+-- clone deleted and its visibility restored. A respawned source (same player,
+-- new ped handle) has its old clone replaced.
 -- ---------------------------------------------------------------------------
 local function reconcile(list)
     local fresh = {}
@@ -35697,11 +35575,16 @@ local function reconcile(list)
         local key = keyOf(rec)
         local candidate = fresh[key]
         if candidate then
-            rec.ped = candidate.ped
-            rec.dist = candidate.dist
+            if candidate.source ~= rec.source then
+                destroyClone(rec)
+                restoreSource(rec)
+                rec.source = candidate.source
+                rec.hidden = false
+            end
             rec.player = candidate.player
+            rec.dist = candidate.dist
         else
-            unlock(rec)
+            destroyRec(rec)
             FP.byKey[key] = nil
             table.remove(FP.members, i)
         end
@@ -35712,7 +35595,7 @@ local function reconcile(list)
         local candidate = list[i]
         local key = keyOf(candidate)
         if not FP.byKey[key] then
-            candidate.nextLock = O.now() + O.int(120, 900)
+            candidate.nextTask = 0
             FP.members[#FP.members + 1] = candidate
             FP.byKey[key] = candidate
         end
@@ -35723,53 +35606,66 @@ local function reconcile(list)
 end
 
 -- ---------------------------------------------------------------------------
--- TICK. The reap pass runs even while idle: a scene stopped by an earlier
--- session keeps receiving its stop while it is still inside its retry window.
--- The local lock only runs while a member has no live scene, so the two
--- animation routes never fight over the same skeleton. The network pass starts
--- one scene per gate (2.8 s) for the first member that has none.
+-- TICK. Create at most two clones per pass, hide each source once its clone
+-- exists, then keep every live clone in combat. A dead clone is replaced; a
+-- ragdolled clone is left to recover and is re-tasked afterwards.
 -- ---------------------------------------------------------------------------
 local function tick(now)
-    for i = #FP.reap, 1, -1 do
-        local entry = FP.reap[i]
-        if now >= entry.untilMs then
-            table.remove(FP.reap, i)
-        else
-            pcall(NetworkStopSynchronisedScene, entry.scene)
-        end
-    end
-
     if not FP.active then return end
     if not FP.center then FP.stop("no centre") return end
 
     local list = gather(FP.radius + LEASH_M)
     local count = reconcile(list)
-    if count == 0 then FP.stop("empty") return end
+    if count < 2 then FP.stop("empty") return end
 
     if not FP.byKey[FP.anchorKey] then
         local first = FP.members[1]
         FP.anchorKey = keyOf(first)
-        FP.anchorPed = first.ped
+        FP.anchorPed = first.source
         FP.anchorPlayer = first.player
+    end
+
+    local made = 0
+    for i = 1, count do
+        local rec = FP.members[i]
+        if rec.clone and DoesEntityExist(rec.clone)
+            and IsPedDeadOrDying(rec.clone, true) then
+            destroyClone(rec)
+        end
+        if not rec.clone or not DoesEntityExist(rec.clone) then
+            if made < CLONE_PER_TICK then
+                if createClone(rec) then made = made + 1 end
+            end
+        end
+    end
+
+    pairAll()
+
+    -- A hidden source still owns a collision capsule. Keep every clone from
+    -- bumping an invisible body while the visible clone does the fighting.
+    for i = 1, count do
+        local rec = FP.members[i]
+        local src = rec.source
+        if rec.hidden and src and DoesEntityExist(src) then
+            for j = 1, count do
+                local other = FP.members[j]
+                local clone = other.clone
+                if clone and DoesEntityExist(clone) and clone ~= rec.clone then
+                    pcall(SetEntityNoCollisionEntity, src, clone, false)
+                    pcall(SetEntityNoCollisionEntity, clone, src, false)
+                end
+            end
+        end
     end
 
     for i = 1, count do
         local rec = FP.members[i]
-        local alive = sceneAlive(rec)
-        if not alive and now >= (rec.nextLock or 0) then lock(rec) end
-    end
-
-    if now >= (FP.nextSceneAt or 0) and now >= (FP.sceneParked or 0) then
-        for i = 1, count do
-            local rec = FP.members[i]
-            if not rec.scene and canLock(rec.ped) then
-                if sceneStart(rec) then
-                    log("scene started: ped=%s scene=%s",
-                        tostring(rec.player or rec.ped), tostring(rec.scene))
-                end
-                FP.nextSceneAt = now + SCENE_GATE_MS
-                break
+        if rec.clone and DoesEntityExist(rec.clone) then
+            if rec.hidden ~= true then hideSource(rec) end
+            if rec.hidden and rec.source and DoesEntityExist(rec.source) then
+                pcall(SetEntityLocallyInvisible, rec.source)
             end
+            taskRec(rec, now)
         end
     end
 end
@@ -35790,7 +35686,7 @@ function FP.stop(reason)
     local was = FP.active
     FP.active = false
 
-    for i = 1, #FP.members do unlock(FP.members[i]) end
+    for i = 1, #FP.members do destroyRec(FP.members[i]) end
 
     FP.ring = nil
     FP.center = nil
@@ -35799,10 +35695,9 @@ function FP.stop(reason)
     FP.anchorPlayer = nil
     FP.anchorKey = nil
     FP.byKey = {}
+    FP.clones = {}
     FP.members = {}
     FP.count = 0
-    FP.nextSceneAt = 0
-    FP.pulses = {}
     FP.note = nil
 
     if FP.canRender and Menu then Menu.PreventResetFrame = false end
@@ -35822,7 +35717,7 @@ function FP.start()
     FP.anchorPlayer = nil
     FP.anchorPed = nil
     FP.anchorKey = nil
-    FP.pulses = {}
+    FP.note = nil
 
     local selectedSid = nil
     local anchorPed = nil
@@ -35861,7 +35756,7 @@ function FP.start()
 
     if not anchorPed then
         note("NO PLAYER IN RANGE")
-        log("start refused: no other ped")
+        log("start refused: no other player")
         return false
     end
 
@@ -35870,18 +35765,21 @@ function FP.start()
     buildRing()
 
     local list = gather(FP.radius)
-    if #list == 0 then
+    if #list < 2 then
         FP.stop("no targets")
         note("NO PLAYER IN RANGE")
         log("start refused: nothing inside the ring")
         return false
     end
 
-    local anchor = nil
+    local anchorKey = nil
     for i = 1, #list do
-        if list[i].ped == anchorPed then anchor = list[i] break end
+        if list[i].source == anchorPed then
+            anchorKey = keyOf(list[i])
+            break
+        end
     end
-    if not anchor then anchor = list[1] end
+    if not anchorKey then anchorKey = keyOf(list[1]) end
 
     if not B.spend("fight") then
         log("budget refused")
@@ -35889,42 +35787,33 @@ function FP.start()
         return false
     end
 
-    -- Request both dictionaries now; the per-ped pick decides which one is
-    -- used. Requesting early means the first lock pass usually has the clip.
-    pcall(RequestAnimDict, FIGHT_DICT_M)
-    pcall(RequestAnimDict, FIGHT_DICT_F)
-
-    FP.anchorPed = anchor.ped
-    FP.anchorPlayer = anchor.player
-    FP.anchorKey = keyOf(anchor)
-    FP.centerSid = selectedSid
     FP.members = {}
     FP.byKey = {}
     FP.startedAt = O.now()
-    FP.nextSceneAt = O.now()
-    FP.sceneFails = 0
-    FP.sceneParked = 0
 
     for i = 1, math.min(#list, MAX_TARGETS) do
         local rec = list[i]
-        rec.nextLock = O.now() + O.int(120, 900)
+        rec.nextTask = O.now() + O.int(120, 600)
         FP.members[#FP.members + 1] = rec
         FP.byKey[keyOf(rec)] = rec
     end
 
     FP.count = #FP.members
+    FP.anchorPed = anchorPed
+    FP.anchorPlayer = selectedSid and GetPlayerFromServerId(selectedSid) or nil
+    FP.anchorKey = anchorKey
+    FP.centerSid = selectedSid
     FP.active = true
     if FP.canRender and Menu then Menu.PreventResetFrame = true end
 
     notify()
-    log("started: peds=%d radius=%.0f anchor=%s clip=%s",
-        FP.count, FP.radius, tostring(FP.anchorPlayer or "npc"), FIGHT_CLIP)
+    log("started: peds=%d radius=%.0f anchor=%s mode=brawl",
+        FP.count, FP.radius, tostring(selectedSid or "auto"))
     return true
 end
 
 -- ---------------------------------------------------------------------------
--- RENDER. Ring, first-lock pulses and a status line on the Susano overlay.
--- No world draw, no capture.
+-- RENDER. Ring, then the status line. No world draw, no capture.
 -- ---------------------------------------------------------------------------
 local screenSize
 
@@ -35986,42 +35875,6 @@ local function drawCentered(text, y, size, r, g, b, a)
     pcall(Susano.DrawText, x, y, text, size, r, g, b, a)
 end
 
-local function drawPulses(nowMs)
-    if type(Susano.DrawLine) ~= "function" then return end
-    local keep = {}
-
-    for i = 1, #FP.pulses do
-        local pulse = FP.pulses[i]
-        local age = nowMs - pulse.t
-        if age >= 0 and age <= PULSE_MS then
-            keep[#keep + 1] = pulse
-            local frac = age / PULSE_MS
-            local radius = 0.35 + 1.55 * frac
-            local alpha = (1.0 - frac) * 0.85
-            local prevOk, px, py = false, 0.0, 0.0
-            for k = 1, PULSE_SEGS + 1 do
-                local angle = (k - 1) / PULSE_SEGS * math.pi * 2.0
-                local ok, sx, sy = project({
-                    x = pulse.x + math.cos(angle) * radius,
-                    y = pulse.y + math.sin(angle) * radius,
-                    z = pulse.z,
-                })
-                if ok then
-                    if prevOk then
-                        pcall(Susano.DrawLine, px, py, sx, sy,
-                            1.0, 0.55, 0.18, alpha, 2.0)
-                    end
-                    prevOk, px, py = true, sx, sy
-                else
-                    prevOk = false
-                end
-            end
-        end
-    end
-
-    FP.pulses = keep
-end
-
 function FP.render()
     if not FP.canRender then return end
 
@@ -36034,6 +35887,16 @@ function FP.render()
     end
 
     if not FP.active or not FP.ring then return end
+
+    -- SET_ENTITY_LOCALLY_INVISIBLE is a per-frame flag. The tick pass sets it
+    -- every 200 ms; this pass re-asserts it every rendered frame so a network
+    -- visibility update cannot flash a hidden source for a frame.
+    for i = 1, #FP.members do
+        local rec = FP.members[i]
+        if rec.hidden and rec.source and DoesEntityExist(rec.source) then
+            pcall(SetEntityLocallyInvisible, rec.source)
+        end
+    end
 
     local now = nowMs / 1000.0
     local pulse = 0.52 + 0.08 * math.sin(now * 3.4)
@@ -36052,15 +35915,12 @@ function FP.render()
         end
     end
 
-    drawPulses(nowMs)
-
     local _, height = screenSize()
     if #FP.members == 0 then
         drawCentered("FIGHT PARTY | NO TARGET IN RING",
             height * 0.855, 18, 0.96, 0.52, 0.52, 0.92)
     else
-        drawCentered(("FIGHT PARTY | %d LOCKED | SHADOW BOXING")
-            :format(#FP.members),
+        drawCentered(("FIGHT PARTY | %d FIGHTING"):format(#FP.members),
             height * 0.855, 18, 0.94, 0.98, 1.0, 0.92)
     end
 end
@@ -36175,17 +36035,21 @@ function FP.install()
     return true
 end
 
--- Dictionary warm-up. Cheap, once per load, and outside any server event.
-pcall(RequestAnimDict, FIGHT_DICT_M)
-pcall(RequestAnimDict, FIGHT_DICT_F)
-
--- The scheduler owns the only periodic work. Phase is randomised so the
--- beat never lines up with another feature's timer.
+-- The scheduler owns the only periodic work. No dictionary warm-up is needed:
+-- the clone uses the source ped's already-streamed model, and the combat clips
+-- come from the engine, not from a requested anim dictionary.
 O.every("fightparty", CHECK_MS, tick, O.int(0, CHECK_MS))
+
+-- Test seam: lets the local harness drive one pass without starting the whole
+-- scheduler thread. It is a function reference, not a menu row or state.
+if type(Menu) == "table" then
+    Menu.__vgd_fightPartyTick = tick
+end
 
 return FP
 
 end)(O,S,B,Menu)
+
 
 -- ---------------------------------------------------------------------------
 -- PART: 07_menu.lua
@@ -37191,12 +37055,13 @@ end
 -- EXPLOIT > EXPLOIT > FIGHT PARTY
 --
 -- One toggle and one radius slider, installed at the top of the Exploit tab
--- after the flash rows exist. The module puts every OTHER ped in the ring into
--- a networked, self-expiring synchronised scene (shadow boxing, movement
--- locked) and keeps a local task + freeze as the fallback; the operator is
--- never a subject, attacker or target, no damage is emitted and no ragdoll is
--- requested. The module owns its own rows so a re-injection cannot duplicate
--- them.
+-- after the flash rows exist. The module copies every OTHER ped in the ring
+-- into a local, non-networked clone, hides the source on this client only, and
+-- pairs the clones with TASK_COMBAT_PED as an unarmed brawl. There is no
+-- synchronised scene, no network event, no remote task and no damage write; a
+-- dead clone is replaced, and stop deletes the clones and restores the source
+-- peds. The operator is never a subject, attacker or target. The module owns
+-- its rows so a re-injection cannot duplicate them.
 -- ---------------------------------------------------------------------------
 local function installFightParty()
     return FP.install()
@@ -39571,7 +39436,7 @@ end
 -- BOOT
 -- ---------------------------------------------------------------------------
 function UI.boot()
-    O.log("loader build 2026-11-08-r68 (Air movement: No Clip disables the ped collision (SET_ENTITY_COLLISION), restored on stop and on every cover hold, so a map prop cannot torque, block or drop the body; the flat pose is applied once and repaired only by the real-ragdoll handler instead of a 120 ms clear/re-layer loop that restarted the clip and made the body spin; a one-metre approach buffer keeps a two-metre floor; ped gravity and the collision-only ragdoll flags are re-asserted every 250 ms; the global ragdoll flag is left enabled so CAN_PED_RAGDOLL stays 1; a 100 ms vertical and forward shape-test probe lifts the written velocity over a prop that the ground-height native cannot see; the No Clip horizontal target carries a 3 % dither so the guard's NC_oldSpeed == playerSpeed clause cannot match; Space/Ctrl are disabled as game controls on every scheduler frame while armed so a parachute cannot deploy, a mid-session parachute state is cleared and the pose re-layered instead of stopping the session, the native cover layer is revalidated every 2.5 s so a read that was genuine at arm and later went false is hooked instead of trusted stale, and ragdoll-from-player-impact is disabled while armed and restored on stop; native particle call carries all four axis flags; load-time preload removed; Stage B graft disabled by default; self and remote share the same filtered particle path; the flash is anchored to the target entity at chest height with a ten-point particle ring for every view angle, moving targets get only a short capped velocity lead, and high-speed targets get a capped scale boost; selected self is honored only when it is the sole target, and is excluded whenever a remote target is selected; Flash moved to Online > Troll > Attacks with Burnout Ember and Acid Green only; the selected method is read live; the WaveShield V4 particle configuration is read from GlobalState and scr_wheel_burnout and scr_alien_teleport are emitted only when rcore_spray/WaveAdmin put them in the static table, dynamic camera parts are sent only from the executor with assetHash stripped on ptFxEvent, and Stage B graft remains available but is disabled by default, so statically safe parts are emitted from the executor without a host injection; particle scale is capped at MaxParticleScale and each pulse sends up to three base parts plus a ten-point ring on a solo target with no minimum range; a one-player server never fabricates a server event; the retired Exploit Flash tab is removed; Search magnifier handle rebuilt as a fused diagonal instead of three dots; White keeps the wbYgWhZ banner and Cyan restores its original 3HLMxX5 banner; Online Props Player row sorts the player list by distance and always targets the nearest player; Launch Player selector offers Method 1 and Method 2; Method 1 drives the victim ped directly when control is available and otherwise reverse-attaches the victim to the local ped within 3 m; Method 2 uses a range-free injected coordinate lift plus repeated upward force and velocity for servers that ignore Method 1; launch has no vehicle or explosion; hardened Susano ragdoll keeps the victim speed check lenient; self launch uses 58 m/s with GET_ENTITY_SPEED masked by the stealth hook; velocity and settle waits carry jitter; tight bold category chevrons; Troll Appearance section and Copy Appearance row removed; All mode Include me toggle adds the local ped alongside remote targets; Props Player row hidden in Self and All modes; attachment rows Attach to player and Attach point removed; target labels Self/Player/All; automatic player refresh sorts by distance and selects nearest; manual Refresh player list removed; Ban Player beta suffix removed; Servers and Bypass tabs moved from Destroyer to Misc; FOV moved from Visual/Camera to Self under Big Weapon; theme banners bottom-anchored flush on the category plate; White uses wbYgWhZ and Cyan uses 3HLMxX5; White/Cyan theme selector; White 3:1 header and Cyan 4.1:1 header; flush tab strip; light-grey cell tab plate; dark selected category rectangle; uniform unselected categories; reference names Self/Online/Vehicle/Weapon/Destroyer/Misc/Settings/Search; Search category opens the prompt directly and lands on results; compact magnifier; tight bold category chevron pair; full-white section rules fitted to the label width; Target keeps only the Ctrl hint; Player Props folded into Online; 15px right-aligned slider readout; target-bound toggles reset on target change/unload; dark row plates; white toggle/scrollbar; footer centre mark removed; Delete/Backspace close; Ped Crasher reads the CPed pool at model, owner and burst level, culls story-player clones and corrupt models on sight, marks an owner hostile after five new non-player peds in five seconds, requests control then deletes the local copy, scans every 25 ms from softCount, and the new opt-in Ped event filter row blocks inbound crash/spawn event names through BlockServerEvent; Ped Flood now preflights the target inside a 250 m streamed band, marks each spawned ped as a mission entity so the sender copy survives at the target position, spawns at the target Z band on roofs, and the Ped Crasher exempts the operator's own active flood within 30 m of the selected target so the defense no longer deletes the outgoing attack; the player card car glyph is stretched vertically, and the selected tab plate reuses the scrollbar thumb colour so both whites match; the Cyan banner is inset inside the header frame and the Cyan header height matches its 1032x252 aspect so the image fills the frame without side bands)")
+    O.log("loader build 2026-11-08-r72 (Air movement: No Clip disables the ped collision (SET_ENTITY_COLLISION), restored on stop and on every cover hold, so a map prop cannot torque, block or drop the body; the flat pose is applied once and repaired only by the real-ragdoll handler instead of a 120 ms clear/re-layer loop that restarted the clip and made the body spin; a one-metre approach buffer keeps a two-metre floor; ped gravity and the collision-only ragdoll flags are re-asserted every 250 ms; the global ragdoll flag is left enabled so CAN_PED_RAGDOLL stays 1; a 100 ms vertical and forward shape-test probe lifts the written velocity over a prop that the ground-height native cannot see; the No Clip horizontal target carries a 3 % dither so the guard's NC_oldSpeed == playerSpeed clause cannot match; Space/Ctrl are disabled as game controls on every scheduler frame while armed so a parachute cannot deploy, a mid-session parachute state is cleared and the pose re-layered instead of stopping the session, the native cover layer is revalidated every 2.5 s so a read that was genuine at arm and later went false is hooked instead of trusted stale, and ragdoll-from-player-impact is disabled while armed and restored on stop; native particle call carries all four axis flags; load-time preload removed; Stage B graft disabled by default; self and remote share the same filtered particle path; the flash is anchored to the target entity at chest height with a ten-point particle ring for every view angle, moving targets get only a short capped velocity lead, and high-speed targets get a capped scale boost; selected self is honored only when it is the sole target, and is excluded whenever a remote target is selected; Flash moved to Online > Troll > Attacks with Burnout Ember and Acid Green only; the selected method is read live; the WaveShield V4 particle configuration is read from GlobalState and scr_wheel_burnout and scr_alien_teleport are emitted only when rcore_spray/WaveAdmin put them in the static table, dynamic camera parts are sent only from the executor with assetHash stripped on ptFxEvent, and Stage B graft remains available but is disabled by default, so statically safe parts are emitted from the executor without a host injection; particle scale is capped at MaxParticleScale and each pulse sends up to three base parts plus a ten-point ring on a solo target with no minimum range; a one-player server never fabricates a server event; the retired Exploit Flash tab is removed; Search magnifier handle rebuilt as a fused diagonal instead of three dots; White keeps the wbYgWhZ banner and Cyan restores its original 3HLMxX5 banner; Online Props Player row sorts the player list by distance and always targets the nearest player; Launch Player selector offers Method 1 and Method 2; Method 1 drives the victim ped directly when control is available and otherwise reverse-attaches the victim to the local ped within 3 m; Method 2 uses a range-free injected coordinate lift plus repeated upward force and velocity for servers that ignore Method 1; launch has no vehicle or explosion; hardened Susano ragdoll keeps the victim speed check lenient; self launch uses 58 m/s with GET_ENTITY_SPEED masked by the stealth hook; velocity and settle waits carry jitter; tight bold category chevrons; Troll Appearance section and Copy Appearance row removed; All mode Include me toggle adds the local ped alongside remote targets; Props Player row hidden in Self and All modes; attachment rows Attach to player and Attach point removed; target labels Self/Player/All; automatic player refresh sorts by distance and selects nearest; manual Refresh player list removed; Ban Player beta suffix removed; Servers and Bypass tabs moved from Destroyer to Misc; FOV moved from Visual/Camera to Self under Big Weapon; theme banners bottom-anchored flush on the category plate; White uses wbYgWhZ and Cyan uses 3HLMxX5; White/Cyan theme selector; White 3:1 header and Cyan 4.1:1 header; flush tab strip; light-grey cell tab plate; dark selected category rectangle; uniform unselected categories; reference names Self/Online/Vehicle/Weapon/Destroyer/Misc/Settings/Search; Search category opens the prompt directly and lands on results; compact magnifier; tight bold category chevron pair; full-white section rules fitted to the label width; Target keeps only the Ctrl hint; Player Props folded into Online; 15px right-aligned slider readout; target-bound toggles reset on target change/unload; dark row plates; white toggle/scrollbar; footer centre mark removed; Delete/Backspace close; Ped Crasher reads the CPed pool at model, owner and burst level, culls story-player clones and corrupt models on sight, marks an owner hostile after five new non-player peds in five seconds, requests control then deletes the local copy, scans every 25 ms from softCount, and the new opt-in Ped event filter row blocks inbound crash/spawn event names through BlockServerEvent; Ped Flood now preflights the target inside a 250 m streamed band, marks each spawned ped as a mission entity so the sender copy survives at the target position, spawns at the target Z band on roofs, and the Ped Crasher exempts the operator's own active flood within 30 m of the selected target so the defense no longer deletes the outgoing attack; the player card car glyph is stretched vertically, and the selected tab plate reuses the scrollbar thumb colour so both whites match; the Cyan banner is inset inside the header frame and the Cyan header height matches its 1032x252 aspect so the image fills the frame without side bands; Fight Party is now a local unarmed clone brawl, sources hidden on this client, paired TASK_COMBAT_PED with aggressive melee movement, cover disabled so the pair stays in the open, always-flee explicitly cleared so a leftover default cannot turn the brawl into a chase, hidden sources excluded from clone collision so an invisible body cannot block the brawl, local invisibility re-asserted every rendered frame so a network visibility update cannot flash a source, a dead clone re-shows its source until the replacement is created so a failed respawn never leaves an invisible player, clones deleted and sources restored on stop)")
     O.thread()
 
     -- Delete/Backspace fallback poll. 40 ms is faster than a frame at 30 FPS
@@ -39636,3 +39501,4 @@ end)(O,S,E,D,F,V,M,SN,C,G,FL,A,ST,SB,VS,K,N,L,VC,CU,UC,FA,TP,FP,Menu)
 
 end)()
 -- <<< VANGUARD MODULE END
+
