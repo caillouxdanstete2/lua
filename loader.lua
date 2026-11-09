@@ -2988,7 +2988,15 @@ function Menu.DrawTabs(category, x, startY, width, tabHeight)
 
     local scale = Menu.Scale or 1.0
     local ui = Menu.Ui or {}
-    local tabWidth = width / count
+    -- The strip must end on the same pixel column as the banner and the item
+    -- plate. Both of those are drawn at scaledPos.width - 1, but the width
+    -- handed in here is the raw scaledPos.width, so a strip drawn at that
+    -- width overhangs the panel by one pixel on the right and its square
+    -- corner pokes past the banner into the scene. Trim one pixel so the
+    -- last tab of every category lands flush instead of sticking out.
+    local stripW = width - 1
+    if stripW < 1 then stripW = width end
+    local tabWidth = stripW / count
     -- The tab strip is a full-width plate that meets the banner edge. Rounding
     -- its top corners left two dark notches under the now-square banner bottom;
     -- square corners make the two plates read as one continuous panel.
@@ -3006,7 +3014,9 @@ function Menu.DrawTabs(category, x, startY, width, tabHeight)
 
     local function geom(index)
         local tx = x + (index - 1) * tabWidth
-        local tw = (index == count) and (x + width - tx) or (tabWidth + 0.5 * scale)
+        -- Exact partition: the cells sum to the trimmed strip width, so the
+        -- last tab can never reach past the banner/panel column.
+        local tw = (index == count) and (x + stripW - tx) or tabWidth
         return tx, tw
     end
 
@@ -3030,8 +3040,8 @@ function Menu.DrawTabs(category, x, startY, width, tabHeight)
         pillEdge = { selectedBg.r / 255, selectedBg.g / 255, selectedBg.b / 255, 1.0 }
     end
 
-    fill(x, startY, width, tabHeight, barBorder[1], barBorder[2], barBorder[3], barBorder[4], radius)
-    fill(x + 1, startY + 1, width - 2, tabHeight - 2, bar[1], bar[2], bar[3], bar[4], math.max(0, radius - 1))
+    fill(x, startY, stripW, tabHeight, barBorder[1], barBorder[2], barBorder[3], barBorder[4], radius)
+    fill(x + 1, startY + 1, stripW - 2, tabHeight - 2, bar[1], bar[2], bar[3], bar[4], math.max(0, radius - 1))
 
     local selected = Menu.CurrentTab or 1
     if selected < 1 then selected = 1 end
@@ -3099,6 +3109,11 @@ function Menu.DrawTabs(category, x, startY, width, tabHeight)
         end
 
         local gx = tx + (tw - textWidth) * 0.5
+        -- Keep a long label inside its own cell and inside the strip even if
+        -- the measured width is larger than the cell; the last tab must never
+        -- paint past the banner/panel column.
+        if gx + textWidth > x + stripW then gx = x + stripW - textWidth end
+        if gx < x then gx = x end
         local textY = startY + tabHeight * 0.5 - textScale * 0.5 + 1 * scale
         Menu.DrawText(gx, textY, tab.name, textSize, cr, cg, cb, 1.0)
     end
@@ -4524,17 +4539,123 @@ local function ToggleSpectate(enable)
 end
 
 -- Passive row-state readers. The list only reflects what the client already
--- knows: a dead ped, an interior handle, and the replicated group string.
+-- knows: a dead ped, a property handle and the replicated group string.
 function Menu.__vgdPlayerDeadFlag(ped)
     if type(IsPedDeadOrDying) ~= "function" then return false end
     local ok, dead = pcall(IsPedDeadOrDying, ped, false)
     return ok and dead == true
 end
 
+-- Property marker. GET_INTERIOR_FROM_ENTITY alone is not a property test:
+-- every road tunnel, subway and car park is an interior too. A property is
+-- flagged only when one of these is true:
+--   * the interior name hash is one of the default apartment/stilt shells
+--     (apa_v_mp_h_01..08, apa_v_mp_stilts_a/b);
+--   * the server replicates a property key on the player or ped state bag
+--     (some housing resources mirror the property id that way).
+-- The room is not treated as a property just because its handle is non-zero,
+-- which removes the tunnel false positive without writing anything.
+-- These tables live on Menu instead of new locals: the base chunk is already
+-- at the Lua 200-local ceiling, and a property helper must not push it over.
+Menu.__vgdPropertyInteriorHashes = {
+    [0x5B8AA41F] = true, -- apa_v_mp_h_01
+    [0x49BD0084] = true, -- apa_v_mp_h_02
+    [0xC1C57093] = true, -- apa_v_mp_h_03
+    [0xE003AD13] = true, -- apa_v_mp_h_04
+    [0xA64FB9A8] = true, -- apa_v_mp_h_05
+    [0x9448959A] = true, -- apa_v_mp_h_06
+    [0x7DD168BC] = true, -- apa_v_mp_h_07
+    [0x6B8C4432] = true, -- apa_v_mp_h_08
+    [0xC9005949] = true, -- apa_v_mp_stilts_a
+    [0xA6B714B7] = true, -- apa_v_mp_stilts_b
+}
+
+Menu.__vgdPropertyStateKeys = {
+    "inProperty", "insideProperty", "inside_property", "currentProperty",
+    "current_property", "property", "propertyId", "property_id",
+    "propertyName", "property_name", "house", "houseId", "house_id",
+    "houseName", "house_name", "apartment", "apartmentId", "apartment_id",
+    "apartmentName", "apartment_name",
+}
+
+Menu.__vgdPropertyCache = {}
+
+Menu.__vgdPropertyStateBag = function(ped)
+    local entity = rawget(_G, "Entity")
+    if type(entity) ~= "function" then
+        local okIndex, value = pcall(function() return _G.Entity end)
+        if okIndex and type(value) == "function" then entity = value end
+    end
+    if type(entity) ~= "function" then return nil end
+    local ok, handle = pcall(entity, ped)
+    if not ok or handle == nil then return nil end
+    local okState, state = pcall(function() return handle.state end)
+    if okState then return state end
+    return nil
+end
+
+Menu.__vgdPropertyStateMarks = function(value)
+    if value == nil or value == false or value == 0 then return false end
+    if type(value) == "string" then
+        local text = string.lower(value)
+        if text == "" or text == "0" or text == "-1"
+            or text == "none" or text == "false" or text == "nil"
+            or text == "outside" or text == "public" or text == "street" then
+            return false
+        end
+    end
+    return true
+end
+
 function Menu.__vgdPlayerInteriorFlag(ped)
-    if type(GetInteriorFromEntity) ~= "function" then return false end
-    local ok, interior = pcall(GetInteriorFromEntity, ped)
-    return ok and type(interior) == "number" and interior ~= 0
+    if type(ped) ~= "number" or ped == 0 then return false end
+    local now = 0
+    if type(GetGameTimer) == "function" then
+        local ok, value = pcall(GetGameTimer)
+        if ok and type(value) == "number" then now = value end
+    end
+
+    -- The list rebuild runs off the render thread. Cache one read per ped per
+    -- half second so a full lobby does not issue an interior query per row
+    -- per frame.
+    local cached = Menu.__vgdPropertyCache[ped]
+    if now ~= 0 and cached and now >= cached.at
+        and (now - cached.at) < 500 then
+        return cached.value
+    end
+
+    local flagged = false
+
+    if type(GetInteriorFromEntity) == "function" then
+        local ok, interior = pcall(GetInteriorFromEntity, ped)
+        if ok and type(interior) == "number" and interior ~= 0 then
+            if type(GetInteriorLocationAndNamehash) == "function" then
+                local okName, _, nameHash =
+                    pcall(GetInteriorLocationAndNamehash, interior)
+                if okName and type(nameHash) == "number"
+                    and Menu.__vgdPropertyInteriorHashes[nameHash] then
+                    flagged = true
+                end
+            end
+        end
+    end
+
+    if not flagged then
+        local bag = Menu.__vgdPropertyStateBag(ped)
+        if bag ~= nil then
+            for index = 1, #Menu.__vgdPropertyStateKeys do
+                local key = Menu.__vgdPropertyStateKeys[index]
+                local ok, value = pcall(function() return bag[key] end)
+                if ok and Menu.__vgdPropertyStateMarks(value) then
+                    flagged = true
+                    break
+                end
+            end
+        end
+    end
+
+    Menu.__vgdPropertyCache[ped] = { at = now, value = flagged }
+    return flagged
 end
 
 function Menu.__vgdIdentityIsModerator(identity)
@@ -16079,30 +16200,62 @@ local function _launchPropAt(targetPed)
     end)
 end
 
--- Network launch. A velocity or coords write on a remote ped is local
--- prediction only: the victim's client owns the ped and snaps it back to the
--- ground. An owned explosion is a network event that lands on the victim's
--- own client, so the blast throws the victim and replicates to every client
--- while the operator never moves. Placed under the feet, the impulse is
--- upward; the damage scale stays low so the launch reads as a launch.
-Menu.__vgdLaunchRemote = function(targetPed, opts)
+-- A player ped is always owned by that player's own client, so no direct
+-- velocity/coords write from this client ever replicates -- it is overwritten
+-- by the real owner on the next snapshot. The only client-side path that moves
+-- a remote player over the network is a networked prop at their feet: the
+-- victim's own client streams the prop, collides their ped with it and applies
+-- the push authoritatively. The prop must stay visible and collidable, or the
+-- victim's client skips the contact.
+Menu.__vgdLaunchProp = function(targetPed, opts)
     opts = opts or {}
     if not targetPed or targetPed == 0 or not DoesEntityExist(targetPed) then
         return false
     end
-    local expType = tonumber(opts.expType) or 5
-    local damage = tonumber(opts.damage) or 10.0
-    local blasts = tonumber(opts.blasts) or 3
+    local model = GetHashKey(opts.model or "prop_gas_tank_02a")
+    RequestModel(model)
+    local waited = 0
+    while not HasModelLoaded(model) and waited < 50 do
+        Wait(10)
+        waited = waited + 1
+    end
+    if not HasModelLoaded(model) then
+        SetModelAsNoLongerNeeded(model)
+        return false
+    end
 
-    pcall(SetPedToRagdoll, targetPed, 4000, 4000, 0, false, false, false)
-    for _ = 1, blasts do
+    local count = tonumber(opts.count) or 1
+    local speed = tonumber(opts.speed) or 60.0
+    local force = tonumber(opts.force) or 6000.0
+    local spawned = {}
+    for _ = 1, count do
         if not DoesEntityExist(targetPed) then break end
         local c = GetEntityCoords(targetPed, true)
         if not c then break end
-        pcall(AddOwnedExplosion, PlayerPedId(), c.x, c.y, c.z - 1.0,
-            expType, damage, true, false, 0.0)
-        Wait(140 + math.random(0, 80))
+        local obj = CreateObject(model, c.x, c.y, c.z - 0.5, true, true, false)
+        if obj and obj ~= 0 then
+            SetEntityAsMissionEntity(obj, true, true)
+            SetEntityCollision(obj, true, true)
+            SetEntityInvincible(obj, true)
+            SetEntityHasGravity(obj, false)
+            SetEntityVelocity(obj, 0.0, 0.0, speed)
+            ApplyForceToEntity(obj, 1, 0.0, 0.0, force,
+                0.0, 0.0, 0.0, 0, false, true, true, false, true)
+            spawned[#spawned + 1] = obj
+        end
+        Wait(90 + math.random(0, 40))
     end
+    SetModelAsNoLongerNeeded(model)
+    CreateThread(function()
+        Wait(2500)
+        for i = 1, #spawned do
+            local obj = spawned[i]
+            if obj and obj ~= 0 and DoesEntityExist(obj) then
+                SetEntityAsMissionEntity(obj, true, true)
+                DeleteEntity(obj)
+            end
+        end
+    end)
     return true
 end
 
@@ -16137,23 +16290,23 @@ function Menu.ActionLaunch(method)
 
     if method == 1 then
         CreateThread(function()
-            pcall(Menu.__vgdLaunchRemote, targetPed,
-                { expType = 5, damage = 30.0, blasts = 2 })
+            pcall(Menu.__vgdLaunchProp, targetPed,
+                { model = "prop_gas_tank_02a", count = 1, speed = 60.0, force = 6000.0 })
         end)
         return
     end
 
     if method == 2 then
         CreateThread(function()
-            pcall(Menu.__vgdLaunchRemote, targetPed,
-                { expType = 5, damage = 45.0, blasts = 3 })
+            pcall(Menu.__vgdLaunchProp, targetPed,
+                { model = "prop_gas_tank_02a", count = 1, speed = 90.0, force = 15000.0 })
         end)
         return
     end
 
     CreateThread(function()
-        pcall(Menu.__vgdLaunchRemote, targetPed,
-            { expType = 5, damage = 35.0, blasts = 3 })
+        pcall(Menu.__vgdLaunchProp, targetPed,
+            { model = "prop_gas_tank_02a", count = 2, speed = 70.0, force = 8000.0 })
     end)
 end
 
@@ -34085,6 +34238,9 @@ local ICON_B64 = {
         "sBkJsVpgppCRG+IfiJnKpcAmlYBFVBbnYsKsEKARpTGx3oO3ORz4M1+ZqS4FcI2UpIMmd2xzgZmSuL+I",
         "os0bpJoDBNzLQEs3ii2UCuBuFVes07STg6dFxScBF+e3ejgcDv/KA00RESYix5NaAAAAAElFTkSuQmCC",
     }),
+    home = table.concat({
+        "iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAYAAADgdz34AAAAs0lEQVR4AexSbQqFMAx7T8+xw4jXFk+zYygzgSnFbt0U/OEXhJY2TSSs+V38vczAez8QR1KtiiiE0EB4Qu2J2FfdFkkQ64AZwu365+w5A7p1lqumAQQGiI25Y+7Iye05TxrgcIuEJAvg9jBhfEktNQRZRWIZcAeTFnczoCJTBiBnI6GYhdStMrAEzuw+g2Jq1RE55/4SReVIqDaI/MPlMyhG9sCI5FOU/T4LuZP9nnf/iBYAAAD//042qnwAAAAGSURBVAMAuiVwMYTKOFcAAAAASUVORK5CYII=",
+    }),
     weapon = table.concat({
         "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAACx0lEQVR42u1ar2/bQBT+XhWT/gdDQwUj",
         "JiNFQVWJVakaGZgGpsCRaDiqBkpKopLCofKoUlQSVQNBIyEmA0FD/Q9GAt7Iebu93jlx7uzE8fukky3f",
@@ -34157,8 +34313,28 @@ pcall(loadIconTextures)
 -- the gauge, a handful of strokes. They live in a 0..1 box scaled by the icon
 -- size, so they stay crisp at any Menu.Scale.
 -- ---------------------------------------------------------------------------
+-- One box for every vehicle-glyph draw. The card's Vehicle row and the
+-- player-list badge both go through this function, so the silhouette keeps
+-- the same width-to-height ratio in both places instead of drifting apart.
+local function vehicleGlyphBox(x, y, size)
+    local grow = size * 0.45
+    local width = size + grow
+    local height = width * 1.35
+    return x - grow * 0.5,
+        y - grow * 0.5 + (width - height) * 0.5,
+        width, height
+end
+
 local function drawIcon(name, x, y, size, cr, cg, cb)
     if size <= 0 then return end
+
+    -- Keep the texture rectangle from the unmodified slot. The vector
+    -- fallback below still uses the grown slot so a failed texture upload
+    -- keeps the old optical weight.
+    local vehicleX, vehicleY, vehicleW, vehicleH
+    if name == "vehicle" then
+        vehicleX, vehicleY, vehicleW, vehicleH = vehicleGlyphBox(x, y, size)
+    end
 
     -- The car and the speed gauge are the two dense glyphs in the status
     -- panel. Grow them around the slot centre so the silhouette reads at the
@@ -34195,8 +34371,8 @@ local function drawIcon(name, x, y, size, cr, cg, cb)
         local drawW, drawH = size, size
         local drawX, drawY = x, y
         if name == "vehicle" then
-            drawH = size * 1.35
-            drawY = y + (size - drawH) * 0.5
+            drawX, drawY, drawW, drawH =
+                vehicleX, vehicleY, vehicleW, vehicleH
         end
         local ok = pcall(Susano.DrawImage, texture, drawX, drawY, drawW, drawH, ir, ig, ib, 1.0, 0)
         if ok then return end
@@ -34303,16 +34479,17 @@ local function drawIcon(name, x, y, size, cr, cg, cb)
 end
 
 -- Original car texture for the player-list badge, tinted with the list's red.
--- No hand-built fallback: the texture is loaded once at module start. The
--- badge is drawn slightly larger than its row slot so the car is legible.
+-- The badge uses the card's vehicle box (45 % wider slot, 1.35 vertical
+-- stretch) so the list car and the right-hand card car are the same object at
+-- two sizes. No hand-built fallback: the texture is loaded once at module
+-- start, and a failed upload leaves the badge blank instead of flat.
 local function drawVehicleBadge(x, y, size, r, g, b)
     if size <= 0 then return end
     local texture = ICON_TEXTURES.vehicle
     if texture and Susano and type(Susano.DrawImage) == "function" then
-        local drawn = size * 1.20
-        local offset = (drawn - size) * 0.5
-        pcall(Susano.DrawImage, texture, x - offset, y - offset,
-            drawn, drawn, r, g, b, 1.0, 0)
+        local drawX, drawY, drawW, drawH = vehicleGlyphBox(x, y, size)
+        pcall(Susano.DrawImage, texture, drawX, drawY,
+            drawW, drawH, r, g, b, 1.0, 0)
     end
 end
 
@@ -34386,6 +34563,20 @@ end
 
 function Menu.__vgdDrawApartmentBadge(x, y, size, r, g, b)
     if size <= 0 then return end
+
+    -- The embedded home glyph is a 24 x 24 white PNG with alpha; the tint is
+    -- the only colour it needs. A small inset keeps its optical weight level
+    -- with the skull and moderator badges in the same row. The vector house
+    -- below remains the fallback when the texture upload is refused.
+    local texture = ICON_TEXTURES.home
+    if texture and Susano and type(Susano.DrawImage) == "function" then
+        local inset = size * 0.08
+        local ok = pcall(Susano.DrawImage, texture,
+            x + inset, y + inset, size - inset * 2, size - inset * 2,
+            r, g, b, 1.0, 0)
+        if ok then return end
+    end
+
     local dark, darkG, darkB = 0.045, 0.045, 0.055
     local weight = math.max(1.0, size * 0.10)
 
@@ -35067,48 +35258,61 @@ end)(Menu)
 -- ---------------------------------------------------------------------------
 local FP = (function(O,S,B,Menu)
 -- ============================================================================
--- VANGUARD / 28 FIGHT PARTY (LIVE UNARMED BRAWL)
+-- VANGUARD / 28 FIGHT PARTY (LIVE UNARMED BRAWL, NETWORK CLONES)
 -- ----------------------------------------------------------------------------
 -- Reference: the clip is a real brawl, not the shadow_boxing celebration. The
--- previous build put one choreographed celebration clip on the real players
--- through a network synced scene; the reference shows pairs closing distance,
--- throwing punches and kicks, going down and getting up.
+-- build copies every ped inside the ring into a NETWORKED clone, hides the
+-- source, and lets the clones fight with the engine's unarmed combat AI. The
+-- clone owns the task, so punches, kicks, blocks, knockdowns and locomotion
+-- replicate through normal ped sync instead of a scripted scene.
 --
 -- What this build does:
---   * Every player inside the ring is copied into a local clone at its own
---     position and heading. The source player is hidden on this client only.
---   * The clones are ordinary local CPeds (isNetwork = false). There is no
---     server entity, no network id, no synced scene, no event and no task on a
---     remote player.
---   * Clones are paired and re-paired with TASK_COMBAT_PED, unarmed, with
---     aggressive combat movement and cover disabled, so the pair stays in the
---     open instead of breaking line to hide behind props. The engine supplies
---     the punch, kick, block and knockdown clips; that is the brawl in the
---     reference.
---   * A hidden source still has a collision capsule. Every clone is excluded
---     from every hidden source, so an invisible body cannot block a punch or
---     shove a clone out of the ring.
---   * The fight is local to this client. No other player sees the clones; the
---     source player's network state, health, armour, weapons and transform are
---     untouched. Stop deletes the clones and restores the hidden source peds.
+--   * CLONE_PED(src, isNetwork = true, scriptHost = true, headBlend = true) per
+--     member, at the source's position and heading.
+--   * NETWORK_REGISTER_ENTITY_AS_NETWORKED is called only when the returned
+--     ped is not networked yet; NETWORK_GET_NETWORK_ID_FROM_ENTITY then gives
+--     the shared handle.
+--   * SET_NETWORK_ID_CAN_MIGRATE(netId, false) pins the clone to this client.
+--     A 1 s watchdog re-requests control only when another machine took it.
+--   * The source ped is hidden locally (SET_ENTITY_VISIBLE false plus the
+--     per-frame SET_ENTITY_LOCALLY_INVISIBLE) and for other clients
+--     (NetworkSetEntityInvisibleToNetwork true). The visible clone keeps the
+--     source position, so no duplicate body is left on screen.
+--   * Clones are paired with TASK_COMBAT_PED, unarmed, cover off, aggressive
+--     movement on. Pairing is re-evaluated every pass; a dead clone is deleted
+--     and re-created; a ragdolled clone is left to recover.
+--   * Stop deletes the clones, restores both visibility flags on the source
+--     and clears the ring. No real player's health, armour, weapon, transform
+--     or task is written.
 --
--- Why the previous attempt looked wrong:
---   A celebration emote is one looping clip: every ped shadow boxes in place.
---   The reference has combat locomotion, target selection and ragdoll. Only an
---   AI combat task produces all three. The synced scene was also a network
---   event and could be dropped by the server; the local clone route has no
---   event to drop.
+-- Why not the old synced scene:
+--   shadow_boxing is one looping celebration clip: every ped punches air in
+--   place. The reference has target selection, closing distance and ragdoll.
+--   A synced scene also travels as an event and can be dropped by the server.
+--   A networked clone with an AI combat task gives the real brawl and needs no
+--   custom event.
 --
 -- Evasion:
---   CLONE_PED with isNetwork = false, the local visibility toggle, the local
---   no-collision pair and TASK_COMBAT_PED on a local clone are all client-only.
---   Nothing is registered with the server, so there is no entity, netId or
---   event an AC can count. The ring is drawn on the Susano overlay, outside the
---   game framebuffer.
+--   * No resource, no script event, no state-bag write and no TriggerEvent.
+--   * The only server-visible act is ordinary entity creation and normal ped
+--     sync, exactly what a server sees from any script that spawns a ped.
+--   * The clone is a mission entity owned by this client; the source player is
+--     never tasked, never damaged and never moved.
+--   * The ring is drawn on the Susano overlay, outside the game framebuffer.
 --
 -- Verified natives:
 --   CLONE_PED 0xEF29A16337FACADB (Ped, BOOL, BOOL, BOOL) -> Ped
 --   CLONE_PED_TO_TARGET 0xE952D6431689AD9A (Ped, Ped) -> void
+--   NETWORK_REGISTER_ENTITY_AS_NETWORKED 0x06FAACD625D80CAA (Entity) -> void
+--   NETWORK_GET_NETWORK_ID_FROM_ENTITY 0xA11700682F3AD45C (Entity) -> int
+--   NETWORK_GET_ENTITY_IS_NETWORKED 0xC7827959479DCC78 (Entity) -> BOOL
+--   NETWORK_HAS_CONTROL_OF_ENTITY 0x01BF60A500E28887 (Entity) -> BOOL
+--   NETWORK_REQUEST_CONTROL_OF_ENTITY 0xB69317BF5E782347 (Entity) -> BOOL
+--   SET_NETWORK_ID_CAN_MIGRATE 0x299EEB23175895FC (int, BOOL) -> void
+--   NetworkSetEntityInvisibleToNetwork 0xF1CA12B18AEF5298
+--     (Entity, BOOL) -> void
+--   SET_ENTITY_LOCALLY_INVISIBLE 0xE135A9FF3F5D05D8 (Entity) -> void
+--   SET_ENTITY_LOCALLY_VISIBLE 0x241E289B5C059EDC (Entity) -> void
 --   TASK_COMBAT_PED 0xF166E48407BAC484 (Ped, Ped, int, int) -> void
 --   IS_PED_IN_COMBAT 0x4859F1FC66A6278E (Ped, Ped) -> BOOL
 --   SET_PED_COMBAT_ATTRIBUTES 0x9F7794730795E019 (Ped, int, BOOL) -> void
@@ -35121,12 +35325,20 @@ local FP = (function(O,S,B,Menu)
 --   SET_CAN_ATTACK_FRIENDLY 0xB3B1CB349FF9C75D (Ped, BOOL, BOOL) -> void
 --   SET_ENTITY_NO_COLLISION_ENTITY 0xA53ED5520C07654A
 --     (Entity, Entity, BOOL) -> void
---   SET_ENTITY_LOCALLY_INVISIBLE 0xE135A9FF3F5D05D8 (Entity) -> void
 --   SET_ENTITY_VISIBLE 0xEA1C610A04DB6BBB (Entity, BOOL, BOOL) -> void
 --   SET_ENTITY_MAX_HEALTH 0x166E7CF68597D8B5 (Entity, int) -> void
 --   SET_ENTITY_HEALTH 0x6B76DC1F3AE6E6A3 (Entity, int) -> void
 --   SET_PED_ARMOUR 0xCEA04D83135264CC (Ped, int) -> void
 --   SET_ENTITY_AS_MISSION_ENTITY 0xAD738C3085FE7E11 (Entity, BOOL, BOOL)
+--
+-- Residual risk:
+--   1. Networked clone creation is visible to the entity manager. The cost is
+--      capped at MAX_TARGETS live clones and one creation per 200 ms pass.
+--   2. Network invisibility of the source is a network flag. On a client that
+--      rebuilds player visibility from its own ped the source can overlap the
+--      clone for a frame; the local per-frame flag still hides it here.
+--   3. If the server refuses the network flag, the clone stays local. The
+--      fight remains visible to the operator and the feature logs the mode.
 -- ============================================================================
 
 local FP = {}
@@ -35134,7 +35346,9 @@ local FP = {}
 local MAX_TARGETS   = 12
 local RING_POINTS   = 72
 local CHECK_MS      = 200     -- scheduler period
-local CLONE_PER_TICK = 2      -- clones created per pass; avoids a one-frame hitch
+local CLONE_PER_TICK = 1      -- networked clones are heavier; one per pass
+local NET_CONTROL_MS = 1000   -- ownership watchdog
+local NET_HIDE_MS   = 250     -- re-assert source invisibility faster than a sync beat
 local RETASK_MS     = 1500    -- re-issue a combat task only when it is not running
 local RETASK_JITTER = 500
 local LEASH_M       = 4.0     -- source players may drift this far past the ring
@@ -35314,6 +35528,11 @@ local function gather(radius)
             targetRec = nil,
             nextTask = 0,
             hidden = false,
+            netHidden = false,
+            netId = 0,
+            network = false,
+            nextControl = 0,
+            nextNetHide = 0,
         }
     end
 
@@ -35395,16 +35614,28 @@ end
 
 -- ---------------------------------------------------------------------------
 -- CLONE CREATION. CLONE_PED copies the complete appearance and head blend at
--- isNetwork = false, so the clone never enters the server entity list. The
--- CreatePed + ClonePedToTarget fallback is the pattern already used by the
--- local clone feature in this build.
+-- isNetwork = true, so the clone is a normal networked ped: the engine owns
+-- its task replication and every client sees the same punches, blocks and
+-- ragdoll. The CreatePed + ClonePedToTarget fallback also uses the network
+-- flag; it only runs when CLONE_PED itself returns an unusable handle.
 -- ---------------------------------------------------------------------------
 local function hideSource(rec)
     local src = rec.source
     if not src or not DoesEntityExist(src) or src == PlayerPedId() then return end
     if not rec.hidden then
         pcall(SetEntityVisible, src, false, false)
+        if rec.network
+            and type(NetworkSetEntityInvisibleToNetwork) == "function" then
+            pcall(NetworkSetEntityInvisibleToNetwork, src, true)
+            rec.netHidden = true
+        end
         rec.hidden = true
+    elseif rec.network and not rec.netHidden
+        and type(NetworkSetEntityInvisibleToNetwork) == "function" then
+        -- A later load or a ped respawn can leave the flag unset; re-arm it
+        -- once here and let the tick refresh it at 1 Hz.
+        pcall(NetworkSetEntityInvisibleToNetwork, src, true)
+        rec.netHidden = true
     end
     -- Network sync can restore the player ped's visible flag between passes;
     -- the per-frame local flag is the belt to SetEntityVisible's braces.
@@ -35418,7 +35649,13 @@ end
 local function restoreSource(rec)
     local src = rec.source
     rec.hidden = false
+    rec.netHidden = false
+    rec.nextNetHide = 0
     if src and DoesEntityExist(src) and src ~= PlayerPedId() then
+        if type(NetworkSetEntityInvisibleToNetwork) == "function" then
+            pcall(NetworkSetEntityInvisibleToNetwork, src, false)
+        end
+        pcall(SetEntityLocallyVisible, src)
         pcall(SetEntityVisible, src, true, false)
     end
 end
@@ -35428,13 +35665,24 @@ local function destroyClone(rec)
     rec.clone = nil
     rec.targetRec = nil
     rec.nextTask = 0
+    rec.netId = 0
+    rec.network = false
+    rec.nextControl = 0
     if clone then FP.clones[clone] = nil end
     if clone and DoesEntityExist(clone) then
+        -- The creator normally owns a fresh network clone. Request control
+        -- anyway so a client that migrated ownership cannot keep a dead clone
+        -- alive on the other machines.
+        pcall(NetworkRequestControlOfEntity, clone)
         pcall(SetEntityAsMissionEntity, clone, true, true)
         pcall(DeleteEntity, clone)
+        if DoesEntityExist(clone) then
+            pcall(NetworkRequestControlOfEntity, clone)
+            pcall(DeleteEntity, clone)
+        end
     end
     -- A dead clone must not leave the source invisible while the replacement
-    -- waits for its turn in the two-per-pass creation budget. Re-show the
+    -- waits for its turn in the one-per-pass creation budget. Re-show the
     -- source here; createClone hides it again in the same pass when the
     -- replacement is ready.
     restoreSource(rec)
@@ -35450,7 +35698,7 @@ local function createClone(rec)
     if not pedUsable(src) then return nil end
 
     local clone = nil
-    local okClone, value = pcall(ClonePed, src, false, false, true)
+    local okClone, value = pcall(ClonePed, src, true, true, true)
     if okClone and type(value) == "number" and value ~= 0
         and DoesEntityExist(value) then
         clone = value
@@ -35465,7 +35713,7 @@ local function createClone(rec)
         local pos = GetEntityCoords(src)
         local heading = GetEntityHeading(src)
         local okPed, fallback = pcall(CreatePed, 4, model,
-            pos.x, pos.y, pos.z, heading, false, false)
+            pos.x, pos.y, pos.z, heading, true, true)
         if not okPed or type(fallback) ~= "number" or fallback == 0
             or not DoesEntityExist(fallback) then
             return nil
@@ -35477,14 +35725,88 @@ local function createClone(rec)
     if not clone or clone == 0 or not DoesEntityExist(clone) then return nil end
 
     rec.clone = clone
+    rec.network = false
+    rec.netId = 0
     FP.clones[clone] = true
     pcall(SetEntityAsMissionEntity, clone, true, true)
     pcall(ClearPedTasks, clone)
     pcall(SetEntityCollision, clone, true, true)
     pcall(SetEntityVisible, clone, true, true)
+    if type(NetworkSetEntityInvisibleToNetwork) == "function" then
+        pcall(NetworkSetEntityInvisibleToNetwork, clone, false)
+    end
+
+    -- CLONE_PED with isNetwork already registers the entity. Only call the
+    -- explicit register when the probe says it is still local, then read the
+    -- shared id. A zero id leaves the clone in local mode instead of failing
+    -- the whole feature.
+    local networked = false
+    if type(NetworkGetEntityIsNetworked) == "function" then
+        local okNet, valueNet = pcall(NetworkGetEntityIsNetworked, clone)
+        networked = okNet and valueNet == true
+    end
+    local netId = 0
+    if type(NetworkGetNetworkIdFromEntity) == "function" then
+        local okId, valueId = pcall(NetworkGetNetworkIdFromEntity, clone)
+        if okId and type(valueId) == "number" then netId = valueId end
+    end
+    if netId == 0 and not networked
+        and type(NetworkRegisterEntityAsNetworked) == "function" then
+        pcall(NetworkRegisterEntityAsNetworked, clone)
+        if type(NetworkGetNetworkIdFromEntity) == "function" then
+            local okId, valueId = pcall(NetworkGetNetworkIdFromEntity, clone)
+            if okId and type(valueId) == "number" then netId = valueId end
+        end
+    end
+    rec.netId = netId
+    rec.network = netId ~= 0
+    if rec.network then
+        pcall(SetNetworkIdCanMigrate, netId, false)
+    end
+    rec.nextControl = 0
+    rec.nextNetHide = 0
+
     armClone(clone)
     hideSource(rec)
     return clone
+end
+
+-- The clone is created by this client, so it starts with ownership. Another
+-- machine can still take it if the net id migrates before the flag is written,
+-- and the local task would then stop replicating. The watchdog asks only when
+-- the answer is false, and re-pins the net id at the same cadence.
+local function ensureControl(rec, now)
+    local clone = rec.clone
+    if not clone or not DoesEntityExist(clone) then return end
+    if now < (rec.nextControl or 0) then return end
+    rec.nextControl = now + NET_CONTROL_MS
+
+    -- The network id can become readable one pass after CLONE_PED returns.
+    -- Re-read it here so a slow registration still ends in network mode.
+    if rec.netId == 0
+        and type(NetworkGetNetworkIdFromEntity) == "function" then
+        local ok, value = pcall(NetworkGetNetworkIdFromEntity, clone)
+        if ok and type(value) == "number" and value ~= 0 then
+            rec.netId = value
+            rec.network = true
+            pcall(SetNetworkIdCanMigrate, value, false)
+            if rec.hidden and rec.source and DoesEntityExist(rec.source) then
+                pcall(NetworkSetEntityInvisibleToNetwork, rec.source, true)
+                rec.netHidden = true
+                rec.nextNetHide = now + NET_HIDE_MS
+            end
+        end
+    end
+
+    if type(NetworkHasControlOfEntity) == "function" then
+        local ok, has = pcall(NetworkHasControlOfEntity, clone)
+        if ok and has == false then
+            pcall(NetworkRequestControlOfEntity, clone)
+        end
+    end
+    if rec.netId and rec.netId ~= 0 then
+        pcall(SetNetworkIdCanMigrate, rec.netId, false)
+    end
 end
 
 -- ---------------------------------------------------------------------------
@@ -35662,8 +35984,15 @@ local function tick(now)
         local rec = FP.members[i]
         if rec.clone and DoesEntityExist(rec.clone) then
             if rec.hidden ~= true then hideSource(rec) end
+            ensureControl(rec, now)
             if rec.hidden and rec.source and DoesEntityExist(rec.source) then
                 pcall(SetEntityLocallyInvisible, rec.source)
+                if rec.network and now >= (rec.nextNetHide or 0)
+                    and type(NetworkSetEntityInvisibleToNetwork) == "function" then
+                    pcall(NetworkSetEntityInvisibleToNetwork, rec.source, true)
+                    rec.netHidden = true
+                    rec.nextNetHide = now + NET_HIDE_MS
+                end
             end
             taskRec(rec, now)
         end
@@ -35678,8 +36007,12 @@ function FP.isActive()
 end
 
 function FP.status()
-    return ("active=%s peds=%d radius=%.0f"):format(
-        tostring(FP.active), #FP.members, FP.radius)
+    local network = 0
+    for i = 1, #FP.members do
+        if FP.members[i].network then network = network + 1 end
+    end
+    return ("active=%s peds=%d net=%d radius=%.0f"):format(
+        tostring(FP.active), #FP.members, network, FP.radius)
 end
 
 function FP.stop(reason)
@@ -35807,7 +36140,7 @@ function FP.start()
     if FP.canRender and Menu then Menu.PreventResetFrame = true end
 
     notify()
-    log("started: peds=%d radius=%.0f anchor=%s mode=brawl",
+    log("started: peds=%d radius=%.0f anchor=%s mode=network-clone",
         FP.count, FP.radius, tostring(selectedSid or "auto"))
     return true
 end
@@ -39436,7 +39769,7 @@ end
 -- BOOT
 -- ---------------------------------------------------------------------------
 function UI.boot()
-    O.log("loader build 2026-11-08-r72 (Air movement: No Clip disables the ped collision (SET_ENTITY_COLLISION), restored on stop and on every cover hold, so a map prop cannot torque, block or drop the body; the flat pose is applied once and repaired only by the real-ragdoll handler instead of a 120 ms clear/re-layer loop that restarted the clip and made the body spin; a one-metre approach buffer keeps a two-metre floor; ped gravity and the collision-only ragdoll flags are re-asserted every 250 ms; the global ragdoll flag is left enabled so CAN_PED_RAGDOLL stays 1; a 100 ms vertical and forward shape-test probe lifts the written velocity over a prop that the ground-height native cannot see; the No Clip horizontal target carries a 3 % dither so the guard's NC_oldSpeed == playerSpeed clause cannot match; Space/Ctrl are disabled as game controls on every scheduler frame while armed so a parachute cannot deploy, a mid-session parachute state is cleared and the pose re-layered instead of stopping the session, the native cover layer is revalidated every 2.5 s so a read that was genuine at arm and later went false is hooked instead of trusted stale, and ragdoll-from-player-impact is disabled while armed and restored on stop; native particle call carries all four axis flags; load-time preload removed; Stage B graft disabled by default; self and remote share the same filtered particle path; the flash is anchored to the target entity at chest height with a ten-point particle ring for every view angle, moving targets get only a short capped velocity lead, and high-speed targets get a capped scale boost; selected self is honored only when it is the sole target, and is excluded whenever a remote target is selected; Flash moved to Online > Troll > Attacks with Burnout Ember and Acid Green only; the selected method is read live; the WaveShield V4 particle configuration is read from GlobalState and scr_wheel_burnout and scr_alien_teleport are emitted only when rcore_spray/WaveAdmin put them in the static table, dynamic camera parts are sent only from the executor with assetHash stripped on ptFxEvent, and Stage B graft remains available but is disabled by default, so statically safe parts are emitted from the executor without a host injection; particle scale is capped at MaxParticleScale and each pulse sends up to three base parts plus a ten-point ring on a solo target with no minimum range; a one-player server never fabricates a server event; the retired Exploit Flash tab is removed; Search magnifier handle rebuilt as a fused diagonal instead of three dots; White keeps the wbYgWhZ banner and Cyan restores its original 3HLMxX5 banner; Online Props Player row sorts the player list by distance and always targets the nearest player; Launch Player selector offers Method 1 and Method 2; Method 1 drives the victim ped directly when control is available and otherwise reverse-attaches the victim to the local ped within 3 m; Method 2 uses a range-free injected coordinate lift plus repeated upward force and velocity for servers that ignore Method 1; launch has no vehicle or explosion; hardened Susano ragdoll keeps the victim speed check lenient; self launch uses 58 m/s with GET_ENTITY_SPEED masked by the stealth hook; velocity and settle waits carry jitter; tight bold category chevrons; Troll Appearance section and Copy Appearance row removed; All mode Include me toggle adds the local ped alongside remote targets; Props Player row hidden in Self and All modes; attachment rows Attach to player and Attach point removed; target labels Self/Player/All; automatic player refresh sorts by distance and selects nearest; manual Refresh player list removed; Ban Player beta suffix removed; Servers and Bypass tabs moved from Destroyer to Misc; FOV moved from Visual/Camera to Self under Big Weapon; theme banners bottom-anchored flush on the category plate; White uses wbYgWhZ and Cyan uses 3HLMxX5; White/Cyan theme selector; White 3:1 header and Cyan 4.1:1 header; flush tab strip; light-grey cell tab plate; dark selected category rectangle; uniform unselected categories; reference names Self/Online/Vehicle/Weapon/Destroyer/Misc/Settings/Search; Search category opens the prompt directly and lands on results; compact magnifier; tight bold category chevron pair; full-white section rules fitted to the label width; Target keeps only the Ctrl hint; Player Props folded into Online; 15px right-aligned slider readout; target-bound toggles reset on target change/unload; dark row plates; white toggle/scrollbar; footer centre mark removed; Delete/Backspace close; Ped Crasher reads the CPed pool at model, owner and burst level, culls story-player clones and corrupt models on sight, marks an owner hostile after five new non-player peds in five seconds, requests control then deletes the local copy, scans every 25 ms from softCount, and the new opt-in Ped event filter row blocks inbound crash/spawn event names through BlockServerEvent; Ped Flood now preflights the target inside a 250 m streamed band, marks each spawned ped as a mission entity so the sender copy survives at the target position, spawns at the target Z band on roofs, and the Ped Crasher exempts the operator's own active flood within 30 m of the selected target so the defense no longer deletes the outgoing attack; the player card car glyph is stretched vertically, and the selected tab plate reuses the scrollbar thumb colour so both whites match; the Cyan banner is inset inside the header frame and the Cyan header height matches its 1032x252 aspect so the image fills the frame without side bands; Fight Party is now a local unarmed clone brawl, sources hidden on this client, paired TASK_COMBAT_PED with aggressive melee movement, cover disabled so the pair stays in the open, always-flee explicitly cleared so a leftover default cannot turn the brawl into a chase, hidden sources excluded from clone collision so an invisible body cannot block the brawl, local invisibility re-asserted every rendered frame so a network visibility update cannot flash a source, a dead clone re-shows its source until the replacement is created so a failed respawn never leaves an invisible player, clones deleted and sources restored on stop)")
+    O.log("loader build 2026-11-09-r73 (Air movement: No Clip disables the ped collision (SET_ENTITY_COLLISION), restored on stop and on every cover hold, so a map prop cannot torque, block or drop the body; the flat pose is applied once and repaired only by the real-ragdoll handler instead of a 120 ms clear/re-layer loop that restarted the clip and made the body spin; a one-metre approach buffer keeps a two-metre floor; ped gravity and the collision-only ragdoll flags are re-asserted every 250 ms; the global ragdoll flag is left enabled so CAN_PED_RAGDOLL stays 1; a 100 ms vertical and forward shape-test probe lifts the written velocity over a prop that the ground-height native cannot see; the No Clip horizontal target carries a 3 % dither so the guard's NC_oldSpeed == playerSpeed clause cannot match; Space/Ctrl are disabled as game controls on every scheduler frame while armed so a parachute cannot deploy, a mid-session parachute state is cleared and the pose re-layered instead of stopping the session, the native cover layer is revalidated every 2.5 s so a read that was genuine at arm and later went false is hooked instead of trusted stale, and ragdoll-from-player-impact is disabled while armed and restored on stop; native particle call carries all four axis flags; load-time preload removed; Stage B graft disabled by default; self and remote share the same filtered particle path; the flash is anchored to the target entity at chest height with a ten-point particle ring for every view angle, moving targets get only a short capped velocity lead, and high-speed targets get a capped scale boost; selected self is honored only when it is the sole target, and is excluded whenever a remote target is selected; Flash moved to Online > Troll > Attacks with Burnout Ember and Acid Green only; the selected method is read live; the WaveShield V4 particle configuration is read from GlobalState and scr_wheel_burnout and scr_alien_teleport are emitted only when rcore_spray/WaveAdmin put them in the static table, dynamic camera parts are sent only from the executor with assetHash stripped on ptFxEvent, and Stage B graft remains available but is disabled by default, so statically safe parts are emitted from the executor without a host injection; particle scale is capped at MaxParticleScale and each pulse sends up to three base parts plus a ten-point ring on a solo target with no minimum range; a one-player server never fabricates a server event; the retired Exploit Flash tab is removed; Search magnifier handle rebuilt as a fused diagonal instead of three dots; White keeps the wbYgWhZ banner and Cyan restores its original 3HLMxX5 banner; Online Props Player row sorts the player list by distance and always targets the nearest player; Launch Player selector offers Method 1 and Method 2; Method 1 drives the victim ped directly when control is available and otherwise reverse-attaches the victim to the local ped within 3 m; Method 2 uses a range-free injected coordinate lift plus repeated upward force and velocity for servers that ignore Method 1; launch has no vehicle or explosion; hardened Susano ragdoll keeps the victim speed check lenient; self launch uses 58 m/s with GET_ENTITY_SPEED masked by the stealth hook; velocity and settle waits carry jitter; tight bold category chevrons; Troll Appearance section and Copy Appearance row removed; All mode Include me toggle adds the local ped alongside remote targets; Props Player row hidden in Self and All modes; attachment rows Attach to player and Attach point removed; target labels Self/Player/All; automatic player refresh sorts by distance and selects nearest; manual Refresh player list removed; Ban Player beta suffix removed; Servers and Bypass tabs moved from Destroyer to Misc; FOV moved from Visual/Camera to Self under Big Weapon; theme banners bottom-anchored flush on the category plate; White uses wbYgWhZ and Cyan uses 3HLMxX5; White/Cyan theme selector; White 3:1 header and Cyan 4.1:1 header; flush tab strip; light-grey cell tab plate; dark selected category rectangle; uniform unselected categories; reference names Self/Online/Vehicle/Weapon/Destroyer/Misc/Settings/Search; Search category opens the prompt directly and lands on results; compact magnifier; tight bold category chevron pair; full-white section rules fitted to the label width; Target keeps only the Ctrl hint; Player Props folded into Online; 15px right-aligned slider readout; target-bound toggles reset on target change/unload; dark row plates; white toggle/scrollbar; footer centre mark removed; Delete/Backspace close; Ped Crasher reads the CPed pool at model, owner and burst level, culls story-player clones and corrupt models on sight, marks an owner hostile after five new non-player peds in five seconds, requests control then deletes the local copy, scans every 25 ms from softCount, and the new opt-in Ped event filter row blocks inbound crash/spawn event names through BlockServerEvent; Ped Flood now preflights the target inside a 250 m streamed band, marks each spawned ped as a mission entity so the sender copy survives at the target position, spawns at the target Z band on roofs, and the Ped Crasher exempts the operator's own active flood within 30 m of the selected target so the defense no longer deletes the outgoing attack; the player card car glyph is stretched vertically, and the selected tab plate reuses the scrollbar thumb colour so both whites match; the Cyan banner is inset inside the header frame and the Cyan header height matches its 1032x252 aspect so the image fills the frame without side bands; Fight Party is now a networked unarmed clone brawl: CLONE_PED(isNetwork=true) copies each ped, SET_NETWORK_ID_CAN_MIGRATE pins the clone to the operator, TASK_COMBAT_PED drives the clone so punches and ragdoll replicate, the source is hidden locally and through NetworkSetEntityInvisibleToNetwork, ownership is re-requested only when lost, and stop deletes the clones and restores both source flags; the player card and list badge share one vehicle glyph box, and the home badge now uses the embedded house texture and only marks default apartment interiors or a replicated property state key, never a tunnel)")
     O.thread()
 
     -- Delete/Backspace fallback poll. 40 ms is faster than a frame at 30 FPS
