@@ -16203,10 +16203,17 @@ end
 -- A player ped is always owned by that player's own client, so no direct
 -- velocity/coords write from this client ever replicates -- it is overwritten
 -- by the real owner on the next snapshot. The only client-side path that moves
--- a remote player over the network is a networked prop at their feet: the
--- victim's own client streams the prop, collides their ped with it and applies
--- the push authoritatively. The prop must stay visible and collidable, or the
--- victim's client skips the contact.
+-- a remote player over the network is a networked prop placed inside their
+-- capsule: the victim's own client streams the prop, resolves the penetration
+-- and ejects the ped, and that ejection replicates from the victim, not from us.
+--
+-- Two hard rules learned from the working crash recipe (frozen collidable prop
+-- + SetNetworkIdCanMigrate): the prop must stay collidable and must not be
+-- given a huge velocity. 60-90 m/s moves ~1 m per frame while a ped capsule is
+-- ~0.6 m, so the prop tunnels straight through the ped between snapshots and
+-- nothing is ever pushed. The reliable path is a frozen prop overlapping the
+-- body (depenetration eject), or a slow prop (<=20 m/s) driven up through the
+-- feet so it cannot tunnel.
 Menu.__vgdLaunchProp = function(targetPed, opts)
     opts = opts or {}
     if not targetPed or targetPed == 0 or not DoesEntityExist(targetPed) then
@@ -16215,7 +16222,7 @@ Menu.__vgdLaunchProp = function(targetPed, opts)
     local model = GetHashKey(opts.model or "prop_gas_tank_02a")
     RequestModel(model)
     local waited = 0
-    while not HasModelLoaded(model) and waited < 50 do
+    while not HasModelLoaded(model) and waited < 60 do
         Wait(10)
         waited = waited + 1
     end
@@ -16224,33 +16231,68 @@ Menu.__vgdLaunchProp = function(targetPed, opts)
         return false
     end
 
-    local count = tonumber(opts.count) or 1
-    local speed = tonumber(opts.speed) or 60.0
-    local force = tonumber(opts.force) or 6000.0
+    local mode = opts.mode or "freeze"
+    local count = tonumber(opts.count) or 3
+    local speed = tonumber(opts.speed) or 18.0
+    local life = tonumber(opts.life) or 3500
+    -- Heights above the ped's feet. Covering feet, torso and head guarantees the
+    -- prop overlaps the capsule whatever the model's own origin offset is, so
+    -- no single bad offset can miss the body.
+    local heights = opts.heights or { 0.0, 0.7, 1.4 }
     local spawned = {}
-    for _ = 1, count do
+
+    local function armProp(obj)
+        if not obj or obj == 0 then return end
+        SetEntityAsMissionEntity(obj, true, true)
+        SetEntityCollision(obj, true, true)
+        SetEntityInvincible(obj, true)
+        SetEntityHasGravity(obj, false)
+        if NetworkGetEntityIsNetworked(obj) then
+            local netId = NetworkGetNetworkIdFromEntity(obj)
+            if netId and netId ~= 0 then SetNetworkIdCanMigrate(netId, true) end
+        end
+        spawned[#spawned + 1] = obj
+    end
+
+    for i = 1, count do
         if not DoesEntityExist(targetPed) then break end
         local c = GetEntityCoords(targetPed, true)
         if not c then break end
-        local obj = CreateObject(model, c.x, c.y, c.z - 0.5, true, true, false)
-        if obj and obj ~= 0 then
-            SetEntityAsMissionEntity(obj, true, true)
-            SetEntityCollision(obj, true, true)
-            SetEntityInvincible(obj, true)
-            SetEntityHasGravity(obj, false)
-            SetEntityVelocity(obj, 0.0, 0.0, speed)
-            ApplyForceToEntity(obj, 1, 0.0, 0.0, force,
-                0.0, 0.0, 0.0, 0, false, true, true, false, true)
-            spawned[#spawned + 1] = obj
+        local h = heights[((i - 1) % #heights) + 1] or 0.5
+        if mode == "force" then
+            -- Spawn below the feet and drive it up slowly so it sweeps through
+            -- the legs instead of tunnelling past them.
+            local obj = CreateObject(model, c.x, c.y, c.z - 1.2, true, true, false)
+            if obj and obj ~= 0 then
+                armProp(obj)
+                SetEntityVelocity(obj, 0.0, 0.0, speed)
+                for _ = 1, 4 do
+                    if not DoesEntityExist(obj) then break end
+                    ApplyForceToEntity(obj, 1, 0.0, 0.0, speed * 120.0,
+                        0.0, 0.0, 0.0, 0, false, true, true, false, true)
+                    Wait(60)
+                end
+            end
+        else
+            -- Frozen inside the capsule: the victim's client resolves the
+            -- overlap and ejects the ped, which is the depenetration launch.
+            local obj = CreateObject(model, c.x, c.y, c.z + h, true, true, false)
+            if obj and obj ~= 0 then
+                armProp(obj)
+                FreezeEntityPosition(obj, true)
+            end
         end
-        Wait(90 + math.random(0, 40))
+        Wait(50 + math.random(0, 40))
     end
     SetModelAsNoLongerNeeded(model)
     CreateThread(function()
-        Wait(2500)
+        Wait(life)
         for i = 1, #spawned do
             local obj = spawned[i]
             if obj and obj ~= 0 and DoesEntityExist(obj) then
+                -- Take control back before deleting in case ownership migrated
+                -- to the victim so the prop does not linger on their screen.
+                NetworkRequestControlOfEntity(obj)
                 SetEntityAsMissionEntity(obj, true, true)
                 DeleteEntity(obj)
             end
@@ -16291,7 +16333,7 @@ function Menu.ActionLaunch(method)
     if method == 1 then
         CreateThread(function()
             pcall(Menu.__vgdLaunchProp, targetPed,
-                { model = "prop_gas_tank_02a", count = 1, speed = 60.0, force = 6000.0 })
+                { model = "prop_gas_tank_02a", count = 3, mode = "freeze", life = 3500 })
         end)
         return
     end
@@ -16299,14 +16341,16 @@ function Menu.ActionLaunch(method)
     if method == 2 then
         CreateThread(function()
             pcall(Menu.__vgdLaunchProp, targetPed,
-                { model = "prop_gas_tank_02a", count = 1, speed = 90.0, force = 15000.0 })
+                { model = "prop_gas_tank_02a", count = 3, mode = "force", speed = 18.0, life = 3500 })
         end)
         return
     end
 
     CreateThread(function()
         pcall(Menu.__vgdLaunchProp, targetPed,
-            { model = "prop_gas_tank_02a", count = 2, speed = 70.0, force = 8000.0 })
+            { model = "prop_ld_container", count = 1, mode = "freeze", heights = { 0.3 }, life = 3500 })
+        pcall(Menu.__vgdLaunchProp, targetPed,
+            { model = "prop_gas_tank_02a", count = 2, mode = "freeze", life = 3500 })
     end)
 end
 
@@ -35361,6 +35405,7 @@ local UNARMED       = GetHashKey("WEAPON_UNARMED")
 
 FP.radius       = 15.0
 FP.active       = false
+FP.includeSelf  = false
 FP.center       = nil
 FP.centerSid    = nil
 FP.anchorPed    = nil
@@ -35512,8 +35557,9 @@ local function gather(radius)
     local me = PlayerId()
     local myPed = PlayerPedId()
 
-    local function add(player, ped)
-        if not ped or ped == 0 or ped == myPed then return end
+    local function add(player, ped, allowSelf)
+        if not ped or ped == 0 then return end
+        if ped == myPed and not allowSelf then return end
         if FP.clones[ped] then return end
         if seen[ped] or not pedUsable(ped) then return end
         local pos = GetEntityCoords(ped)
@@ -35535,6 +35581,11 @@ local function gather(radius)
             nextNetHide = 0,
         }
     end
+
+    -- A solo party still needs a second body. When the ring holds exactly one
+    -- other ped, the operator's own ped is copied as the opponent instead of
+    -- refusing the start; the source stays put and is restored on stop.
+    if FP.includeSelf then add(me, myPed, true) end
 
     for _, player in ipairs(GetActivePlayers()) do
         if player ~= me and NetworkIsPlayerActive(player) then
@@ -35621,7 +35672,7 @@ end
 -- ---------------------------------------------------------------------------
 local function hideSource(rec)
     local src = rec.source
-    if not src or not DoesEntityExist(src) or src == PlayerPedId() then return end
+    if not src or not DoesEntityExist(src) then return end
     if not rec.hidden then
         pcall(SetEntityVisible, src, false, false)
         if rec.network
@@ -35651,7 +35702,7 @@ local function restoreSource(rec)
     rec.hidden = false
     rec.netHidden = false
     rec.nextNetHide = 0
-    if src and DoesEntityExist(src) and src ~= PlayerPedId() then
+    if src and DoesEntityExist(src) then
         if type(NetworkSetEntityInvisibleToNetwork) == "function" then
             pcall(NetworkSetEntityInvisibleToNetwork, src, false)
         end
@@ -36024,6 +36075,7 @@ function FP.stop(reason)
     FP.ring = nil
     FP.center = nil
     FP.centerSid = nil
+    FP.includeSelf = false
     FP.anchorPed = nil
     FP.anchorPlayer = nil
     FP.anchorKey = nil
@@ -36050,6 +36102,7 @@ function FP.start()
     FP.anchorPlayer = nil
     FP.anchorPed = nil
     FP.anchorKey = nil
+    FP.includeSelf = false
     FP.note = nil
 
     local selectedSid = nil
@@ -36099,6 +36152,15 @@ function FP.start()
 
     local list = gather(FP.radius)
     if #list < 2 then
+        -- One other body inside the ring is enough when the operator joins as
+        -- the second fighter. This is the common solo-plus-one-friend case
+        -- that used to stop on "nothing inside the ring" while the two peds
+        -- were standing next to each other.
+        FP.includeSelf = true
+        list = gather(FP.radius)
+    end
+    if #list < 2 then
+        FP.includeSelf = false
         FP.stop("no targets")
         note("NO PLAYER IN RANGE")
         log("start refused: nothing inside the ring")
@@ -36286,21 +36348,31 @@ local function isPartyRow(item)
         or (item.isSeparator and item.separatorText == "Party")
 end
 
+local function sweepPartyList(category)
+    local lists = {}
+    if type(category.items) == "table" then lists[#lists + 1] = category.items end
+    if type(category.tabs) == "table" then
+        for _, tab in ipairs(category.tabs) do
+            if type(tab.items) == "table" then lists[#lists + 1] = tab.items end
+        end
+    end
+    for _, items in ipairs(lists) do
+        for i = #items, 1, -1 do
+            if isPartyRow(items[i]) then table.remove(items, i) end
+        end
+    end
+end
+
 local function sweepPartyRows()
     if type(Menu) ~= "table" then return end
     for _, category in ipairs(Menu.Categories or {}) do
-        local lists = {}
-        if type(category.items) == "table" then lists[#lists + 1] = category.items end
-        if type(category.tabs) == "table" then
-            for _, tab in ipairs(category.tabs) do
-                if type(tab.items) == "table" then lists[#lists + 1] = tab.items end
-            end
-        end
-        for _, items in ipairs(lists) do
-            for i = #items, 1, -1 do
-                if isPartyRow(items[i]) then table.remove(items, i) end
-            end
-        end
+        sweepPartyList(category)
+    end
+    -- ExtraCategories are merged into Menu.Categories by the library on the
+    -- next rebuild. A stale radius row there kept its old value and could
+    -- re-enter the menu at 40 m, so sweep both stores.
+    for _, category in ipairs(Menu.ExtraCategories or {}) do
+        sweepPartyList(category)
     end
 end
 
@@ -36346,6 +36418,9 @@ function FP.install()
 
     FP.onChange = function(active)
         toggle.value = active
+        -- Keep the slider readout on the radius actually used. A stale row or
+        -- a refused start must not leave the UI pinned at the 40 m maximum.
+        if radiusRow then radiusRow.value = FP.radius end
     end
 
     table.insert(host.items, 1, radiusRow)
@@ -39769,7 +39844,7 @@ end
 -- BOOT
 -- ---------------------------------------------------------------------------
 function UI.boot()
-    O.log("loader build 2026-11-09-r73 (Air movement: No Clip disables the ped collision (SET_ENTITY_COLLISION), restored on stop and on every cover hold, so a map prop cannot torque, block or drop the body; the flat pose is applied once and repaired only by the real-ragdoll handler instead of a 120 ms clear/re-layer loop that restarted the clip and made the body spin; a one-metre approach buffer keeps a two-metre floor; ped gravity and the collision-only ragdoll flags are re-asserted every 250 ms; the global ragdoll flag is left enabled so CAN_PED_RAGDOLL stays 1; a 100 ms vertical and forward shape-test probe lifts the written velocity over a prop that the ground-height native cannot see; the No Clip horizontal target carries a 3 % dither so the guard's NC_oldSpeed == playerSpeed clause cannot match; Space/Ctrl are disabled as game controls on every scheduler frame while armed so a parachute cannot deploy, a mid-session parachute state is cleared and the pose re-layered instead of stopping the session, the native cover layer is revalidated every 2.5 s so a read that was genuine at arm and later went false is hooked instead of trusted stale, and ragdoll-from-player-impact is disabled while armed and restored on stop; native particle call carries all four axis flags; load-time preload removed; Stage B graft disabled by default; self and remote share the same filtered particle path; the flash is anchored to the target entity at chest height with a ten-point particle ring for every view angle, moving targets get only a short capped velocity lead, and high-speed targets get a capped scale boost; selected self is honored only when it is the sole target, and is excluded whenever a remote target is selected; Flash moved to Online > Troll > Attacks with Burnout Ember and Acid Green only; the selected method is read live; the WaveShield V4 particle configuration is read from GlobalState and scr_wheel_burnout and scr_alien_teleport are emitted only when rcore_spray/WaveAdmin put them in the static table, dynamic camera parts are sent only from the executor with assetHash stripped on ptFxEvent, and Stage B graft remains available but is disabled by default, so statically safe parts are emitted from the executor without a host injection; particle scale is capped at MaxParticleScale and each pulse sends up to three base parts plus a ten-point ring on a solo target with no minimum range; a one-player server never fabricates a server event; the retired Exploit Flash tab is removed; Search magnifier handle rebuilt as a fused diagonal instead of three dots; White keeps the wbYgWhZ banner and Cyan restores its original 3HLMxX5 banner; Online Props Player row sorts the player list by distance and always targets the nearest player; Launch Player selector offers Method 1 and Method 2; Method 1 drives the victim ped directly when control is available and otherwise reverse-attaches the victim to the local ped within 3 m; Method 2 uses a range-free injected coordinate lift plus repeated upward force and velocity for servers that ignore Method 1; launch has no vehicle or explosion; hardened Susano ragdoll keeps the victim speed check lenient; self launch uses 58 m/s with GET_ENTITY_SPEED masked by the stealth hook; velocity and settle waits carry jitter; tight bold category chevrons; Troll Appearance section and Copy Appearance row removed; All mode Include me toggle adds the local ped alongside remote targets; Props Player row hidden in Self and All modes; attachment rows Attach to player and Attach point removed; target labels Self/Player/All; automatic player refresh sorts by distance and selects nearest; manual Refresh player list removed; Ban Player beta suffix removed; Servers and Bypass tabs moved from Destroyer to Misc; FOV moved from Visual/Camera to Self under Big Weapon; theme banners bottom-anchored flush on the category plate; White uses wbYgWhZ and Cyan uses 3HLMxX5; White/Cyan theme selector; White 3:1 header and Cyan 4.1:1 header; flush tab strip; light-grey cell tab plate; dark selected category rectangle; uniform unselected categories; reference names Self/Online/Vehicle/Weapon/Destroyer/Misc/Settings/Search; Search category opens the prompt directly and lands on results; compact magnifier; tight bold category chevron pair; full-white section rules fitted to the label width; Target keeps only the Ctrl hint; Player Props folded into Online; 15px right-aligned slider readout; target-bound toggles reset on target change/unload; dark row plates; white toggle/scrollbar; footer centre mark removed; Delete/Backspace close; Ped Crasher reads the CPed pool at model, owner and burst level, culls story-player clones and corrupt models on sight, marks an owner hostile after five new non-player peds in five seconds, requests control then deletes the local copy, scans every 25 ms from softCount, and the new opt-in Ped event filter row blocks inbound crash/spawn event names through BlockServerEvent; Ped Flood now preflights the target inside a 250 m streamed band, marks each spawned ped as a mission entity so the sender copy survives at the target position, spawns at the target Z band on roofs, and the Ped Crasher exempts the operator's own active flood within 30 m of the selected target so the defense no longer deletes the outgoing attack; the player card car glyph is stretched vertically, and the selected tab plate reuses the scrollbar thumb colour so both whites match; the Cyan banner is inset inside the header frame and the Cyan header height matches its 1032x252 aspect so the image fills the frame without side bands; Fight Party is now a networked unarmed clone brawl: CLONE_PED(isNetwork=true) copies each ped, SET_NETWORK_ID_CAN_MIGRATE pins the clone to the operator, TASK_COMBAT_PED drives the clone so punches and ragdoll replicate, the source is hidden locally and through NetworkSetEntityInvisibleToNetwork, ownership is re-requested only when lost, and stop deletes the clones and restores both source flags; the player card and list badge share one vehicle glyph box, and the home badge now uses the embedded house texture and only marks default apartment interiors or a replicated property state key, never a tunnel)")
+    O.log("loader build 2026-11-09-r73 (Air movement: No Clip disables the ped collision (SET_ENTITY_COLLISION), restored on stop and on every cover hold, so a map prop cannot torque, block or drop the body; the flat pose is applied once and repaired only by the real-ragdoll handler instead of a 120 ms clear/re-layer loop that restarted the clip and made the body spin; a one-metre approach buffer keeps a two-metre floor; ped gravity and the collision-only ragdoll flags are re-asserted every 250 ms; the global ragdoll flag is left enabled so CAN_PED_RAGDOLL stays 1; a 100 ms vertical and forward shape-test probe lifts the written velocity over a prop that the ground-height native cannot see; the No Clip horizontal target carries a 3 % dither so the guard's NC_oldSpeed == playerSpeed clause cannot match; Space/Ctrl are disabled as game controls on every scheduler frame while armed so a parachute cannot deploy, a mid-session parachute state is cleared and the pose re-layered instead of stopping the session, the native cover layer is revalidated every 2.5 s so a read that was genuine at arm and later went false is hooked instead of trusted stale, and ragdoll-from-player-impact is disabled while armed and restored on stop; native particle call carries all four axis flags; load-time preload removed; Stage B graft disabled by default; self and remote share the same filtered particle path; the flash is anchored to the target entity at chest height with a ten-point particle ring for every view angle, moving targets get only a short capped velocity lead, and high-speed targets get a capped scale boost; selected self is honored only when it is the sole target, and is excluded whenever a remote target is selected; Flash moved to Online > Troll > Attacks with Burnout Ember and Acid Green only; the selected method is read live; the WaveShield V4 particle configuration is read from GlobalState and scr_wheel_burnout and scr_alien_teleport are emitted only when rcore_spray/WaveAdmin put them in the static table, dynamic camera parts are sent only from the executor with assetHash stripped on ptFxEvent, and Stage B graft remains available but is disabled by default, so statically safe parts are emitted from the executor without a host injection; particle scale is capped at MaxParticleScale and each pulse sends up to three base parts plus a ten-point ring on a solo target with no minimum range; a one-player server never fabricates a server event; the retired Exploit Flash tab is removed; Search magnifier handle rebuilt as a fused diagonal instead of three dots; White keeps the wbYgWhZ banner and Cyan restores its original 3HLMxX5 banner; Online Props Player row sorts the player list by distance and always targets the nearest player; Launch Player selector offers Method 1 and Method 2; Method 1 drives the victim ped directly when control is available and otherwise reverse-attaches the victim to the local ped within 3 m; Method 2 uses a range-free injected coordinate lift plus repeated upward force and velocity for servers that ignore Method 1; launch has no vehicle or explosion; hardened Susano ragdoll keeps the victim speed check lenient; self launch uses 58 m/s with GET_ENTITY_SPEED masked by the stealth hook; velocity and settle waits carry jitter; tight bold category chevrons; Troll Appearance section and Copy Appearance row removed; All mode Include me toggle adds the local ped alongside remote targets; Props Player row hidden in Self and All modes; attachment rows Attach to player and Attach point removed; target labels Self/Player/All; automatic player refresh sorts by distance and selects nearest; manual Refresh player list removed; Ban Player beta suffix removed; Servers and Bypass tabs moved from Destroyer to Misc; FOV moved from Visual/Camera to Self under Big Weapon; theme banners bottom-anchored flush on the category plate; White uses wbYgWhZ and Cyan uses 3HLMxX5; White/Cyan theme selector; White 3:1 header and Cyan 4.1:1 header; flush tab strip; light-grey cell tab plate; dark selected category rectangle; uniform unselected categories; reference names Self/Online/Vehicle/Weapon/Destroyer/Misc/Settings/Search; Search category opens the prompt directly and lands on results; compact magnifier; tight bold category chevron pair; full-white section rules fitted to the label width; Target keeps only the Ctrl hint; Player Props folded into Online; 15px right-aligned slider readout; target-bound toggles reset on target change/unload; dark row plates; white toggle/scrollbar; footer centre mark removed; Delete/Backspace close; Ped Crasher reads the CPed pool at model, owner and burst level, culls story-player clones and corrupt models on sight, marks an owner hostile after five new non-player peds in five seconds, requests control then deletes the local copy, scans every 25 ms from softCount, and the new opt-in Ped event filter row blocks inbound crash/spawn event names through BlockServerEvent; Ped Flood now preflights the target inside a 250 m streamed band, marks each spawned ped as a mission entity so the sender copy survives at the target position, spawns at the target Z band on roofs, and the Ped Crasher exempts the operator's own active flood within 30 m of the selected target so the defense no longer deletes the outgoing attack; the player card car glyph is stretched vertically, and the selected tab plate reuses the scrollbar thumb colour so both whites match; the Cyan banner is inset inside the header frame and the Cyan header height matches its 1032x252 aspect so the image fills the frame without side bands; Fight Party is now a networked unarmed clone brawl: CLONE_PED(isNetwork=true) copies each ped, SET_NETWORK_ID_CAN_MIGRATE pins the clone to the operator, TASK_COMBAT_PED drives the clone so punches and ragdoll replicate, the source is hidden locally and through NetworkSetEntityInvisibleToNetwork, ownership is re-requested only when lost, and stop deletes the clones and restores both source flags; the player card and list badge share one vehicle glyph box, and the home badge now uses the embedded house texture and only marks default apartment interiors or a replicated property state key, never a tunnel; a one-player ring now copies the operator as the second fighter instead of refusing, stale Party rows are swept from ExtraCategories, and the radius readout is re-synced to the live value on every start/stop)")
     O.thread()
 
     -- Delete/Backspace fallback poll. 40 ms is faster than a frame at 30 FPS
