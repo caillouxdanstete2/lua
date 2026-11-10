@@ -22169,6 +22169,11 @@ end
 -- network event overflow kick. Numeric Limit/MaxThreatScore values are left
 -- untouched for the same reason.
 -- ---------------------------------------------------------------------------
+-- Live ban on 2026-11-10: the config-gate graft is retired. The server
+-- detected the injection and the account was banned. Do not re-enable this
+-- path on a production server. The payload stays in the file only as a
+-- reference for a future, separately proven vector.
+V.WS_VECTOR_ENABLED = false
 V.wsArmed = false
 V.wsInjected = {}
 
@@ -22181,7 +22186,7 @@ local function wsFlag(value)
     return type(value) == "table" and "true" or "false"
 end
 
-wsSay("choke-1 loaded  Susano=" .. wsFlag(rawget(_G, "Susano"))
+wsSay("choke-1 loaded  mode=disabled  Susano=" .. wsFlag(rawget(_G, "Susano"))
     .. "  Citizen=" .. wsFlag(rawget(_G, "Citizen")))
 
 V.wsPayload = [==[
@@ -22511,8 +22516,20 @@ end
 
 function V.waveshieldGraft(ac)
     if type(ac) ~= "table" or ac.vendor ~= "waveshield" then return false end
+    if not V.WS_VECTOR_ENABLED then
+        O.log("waveshield: config-gate vector retired after live ban; no thread queued")
+        wsSay("choke-1 disabled  reason=retired-after-live-ban  no-injection")
+        return false
+    end
     if GetResourceState(ac.resource) ~= "started" then
         O.log("waveshield: %s is not started", ac.resource)
+        return false
+    end
+    local lower = string.lower(ac.resource)
+    if string.find(lower, "manual", 1, true) or string.find(lower, "honey", 1, true)
+        or string.find(lower, "decoy", 1, true) or string.find(lower, "trap", 1, true) then
+        O.log("waveshield: %s looks like a detection resource; injection refused", ac.resource)
+        wsSay("choke-1 blocked  reason=detection-resource  target=" .. ac.resource)
         return false
     end
     if V.wsInjected[ac.resource] then return true end
@@ -22544,6 +22561,7 @@ end
 -- the same detection-gate payload; the marker is per resource so a restart of
 -- one instance does not re-inject the other.
 function V.wsEnsure()
+    if not V.WS_VECTOR_ENABLED then return false end
     if not V.wsArmed then return false end
     local armedAny = false
     local seen = false
@@ -26331,7 +26349,7 @@ A.flags = {
     pedGuard      = false,
     pedEvents     = false,
     firewall      = false,
-    networkLaunder = true,
+    networkLaunder = false,
     quietLogs     = false,
 }
 
@@ -27881,20 +27899,15 @@ end
 -- ---------------------------------------------------------------------------
 -- LOAD-TIME DEFAULTS
 --
--- The default-on rows are local-only. Arming them at load does not put a byte
--- on the wire: anti-freeze reads the freeze bit and writes only when it is
--- set; anti-attach reads our own attachment and detaches only when a concrete
--- parent handle exists; anti-spectate reads our own mode and writes only when
--- it is set; Ped Crasher reads the CPed pool and only writes local visibility,
--- local collision and a local delete when a crash model, a hostile owner or a
--- burst is already present. That is why these rows are default-on while ghost,
--- local visibility, proof hardening, vehicle hardening, the event firewall, the
--- ped event filter and the shim stay off: the dormant paths either write
--- replicated state, replace a global or drop an inbound server event, and a
--- default-on network change is a signature.
+-- Only local read-then-write rows arm at load: anti-freeze reads the freeze
+-- bit and writes only when it is set; anti-attach detaches only when a
+-- concrete parent handle exists; anti-spectate writes only when our own mode
+-- is set. Ped Crasher and network launder are opt-in. Ped Crasher can delete
+-- networked peds locally and network launder rewrites outbound events; both
+-- are visible enough that a live ban makes a default-on arm indefensible.
 -- ---------------------------------------------------------------------------
 local PROTECTION_DEFAULTS = {
-    "antiFreeze", "antiAttach", "antiSpectate", "pedGuard", "networkLaunder",
+    "antiFreeze", "antiAttach", "antiSpectate",
 }
 
 function A.defaultsOn()
@@ -27923,7 +27936,7 @@ function A.boot()
 
     if A._booted then return end
     A._booted = true
-    O.log("protection defaults: anti-freeze, anti-attach, anti-spectate, ped guard armed")
+    O.log("protection defaults: anti-freeze, anti-attach, anti-spectate; ped guard opt-in")
     O.every("evasion", 900, A.tick, 350)
     O.every("pedGuardWatch", 25, A.pedGuardWatch, 0)
 end
@@ -37009,7 +37022,7 @@ local function installBypassProfiles()
     -- was removed instead of pretending the channel is severed.
     tab.items = {
         {
-            name = "WaveShield",
+            name = "WaveShield (disabled)",
             type = "action",
             onClick = function() V.applyVendor("waveshield") end,
         },
