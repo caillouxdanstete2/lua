@@ -1678,6 +1678,32 @@ do
         "aimbot","aim_bot","teleport_detect","tp_detect","noclip_detect","ammo_check",
         "ammo_hack","position_check",
     }
+    -- WaveShield's DetectPlayer reports through TriggerServerEvent with a
+    -- shape no normal script uses: {detection, details, action, duration},
+    -- where details carries __reason / __detection / eventName / functionName.
+    -- Dropping that frame at the executor's outbound hook is a client-side
+    -- report choke: no resource injection, no Config write, no native hook and
+    -- no thread inside the guard VM. The guard still sets its local ban state
+    -- after the call, so its own 20s self-check sees the state and does not
+    -- trip ForceSocialClubUpdate.
+    local function wsReportPayload(payload)
+        if type(payload) ~= "table" then return false end
+        local details = payload[2]
+        if type(details) ~= "table" then return false end
+        if details.__reason ~= nil or details.__detection ~= nil
+            or details.eventName ~= nil or details.functionName ~= nil then
+            return true
+        end
+        return false
+    end
+    Menu.__vgd_wsReportPayload = wsReportPayload
+
+    local function wsGuardRunning()
+        if type(GetResourceState) ~= "function" then return false end
+        return GetResourceState("monitor") == "started"
+            or GetResourceState("WaveShield") == "started"
+    end
+
     if type(Susano) == "table" and type(Susano.OnTriggerServerEvent) == "function" then
         Susano.OnTriggerServerEvent(function(name, payload)
             local outName, outPayload = name, payload
@@ -1690,6 +1716,10 @@ do
                         outName, outPayload = nextName, nextPayload or payload
                     end
                 end
+            end
+
+            if Menu.__vgd_wsReportOn ~= false and wsGuardRunning() and wsReportPayload(outPayload) then
+                return false
             end
 
             if not _Stealth.blockAC then return outName, outPayload end
@@ -22174,6 +22204,7 @@ end
 -- path on a production server. The payload stays in the file only as a
 -- reference for a future, separately proven vector.
 V.WS_VECTOR_ENABLED = false
+Menu.__vgd_wsReportOn = true
 V.wsArmed = false
 V.wsInjected = {}
 
@@ -22181,13 +22212,6 @@ local function wsSay(msg)
     if O.quiet then return end
     pcall(print, "[ws-bypass] " .. msg)
 end
-
-local function wsFlag(value)
-    return type(value) == "table" and "true" or "false"
-end
-
-wsSay("choke-1 loaded  mode=disabled  Susano=" .. wsFlag(rawget(_G, "Susano"))
-    .. "  Citizen=" .. wsFlag(rawget(_G, "Citizen")))
 
 V.wsPayload = [==[
 (function()
@@ -37016,15 +37040,29 @@ local function installBypassProfiles()
 
     -- Replace the whole tab. This also removes old combined entries left
     -- behind by a previous loader instance without requiring a GTA restart.
-    -- Ghostlink is deliberately absent: it was a WaveShield-only report-channel
+    -- WaveShield is deliberately absent. The config-gate graft was detected by
+    -- the server monitor and banned the live account; the load-time and
+    -- detection-gate paths were both retired. Leaving a disabled row only
+    -- invited another click, so the row is gone until a different vector is
+    -- proven on a disposable server.
+    --
+    -- Ghostlink is also absent: it was a WaveShield-only report-channel
     -- null-router whose token discovery/hook probe fails closed on builds that
     -- do not expose the tokens, which left a dead toggle in the menu. The row
     -- was removed instead of pretending the channel is severed.
     tab.items = {
         {
-            name = "WaveShield (disabled)",
-            type = "action",
-            onClick = function() V.applyVendor("waveshield") end,
+            name = "WaveShield (report choke)",
+            type = "toggle",
+            value = Menu.__vgd_wsReportOn ~= false,
+            onClick = function(v)
+                Menu.__vgd_wsReportOn = v and true or false
+                if Menu.__vgd_wsReportOn then
+                    wsSay("choke-1 armed  mode=report-choke  hooks=1")
+                else
+                    wsSay("choke-1 disabled  mode=report-choke")
+                end
+            end,
         },
         {
             name = "FiveGuard",
@@ -40484,13 +40522,6 @@ function UI.boot()
     O.every("scan", 30000, function()
         if #S.acs == 0 then S.scan() end
     end, 4000)
-
-    -- Guard restarts drop the injected thread with the resource VM. Sample the
-    -- state faster than a restart takes so the marker is cleared on the stopped
-    -- state and exactly one new thread is armed when the resource returns.
-    O.every("wsEnsure", 750, function()
-        V.wsEnsure()
-    end, 0)
 
     O.log("menu rework %s loaded - guard: %s", MENU_REV, S.describe())
 end
