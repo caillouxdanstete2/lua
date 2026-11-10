@@ -35248,110 +35248,92 @@ end)(Menu)
 -- ---------------------------------------------------------------------------
 local FP = (function(O,S,B,Menu)
 -- ============================================================================
--- VANGUARD / 28 FIGHT PARTY (LIVE UNARMED BRAWL, NETWORK CLONES)
+-- VANGUARD / 28 FIGHT PARTY (LIVE REMOTE BRAWL, HOST-RESOURCE GRAFT)
 -- ----------------------------------------------------------------------------
--- Reference: the clip is a real brawl, not the shadow_boxing celebration. The
--- build copies every ped inside the ring into a NETWORKED clone, hides the
--- source, and lets the clones fight with the engine's unarmed combat AI. The
--- clone owns the task, so punches, kicks, blocks, knockdowns and locomotion
--- replicate through normal ped sync instead of a scripted scene.
+-- The old build copied every player into a networked CLONE_PED and drove the
+-- clone with TASK_COMBAT_PED. That made a body only the operator could trust:
+-- the real player ped was hidden locally, the clone carried the task, and the
+-- victim could still walk away because the clone was a separate entity. The
+-- reference menu needs the REAL player ped to perform the animation.
 --
--- What this build does:
---   * CLONE_PED(src, isNetwork = true, scriptHost = true, headBlend = true) per
---     member, at the source's position and heading.
---   * NETWORK_REGISTER_ENTITY_AS_NETWORKED is called only when the returned
---     ped is not networked yet; NETWORK_GET_NETWORK_ID_FROM_ENTITY then gives
---     the shared handle.
---   * SET_NETWORK_ID_CAN_MIGRATE(netId, false) pins the clone to this client.
---     A 1 s watchdog re-requests control only when another machine took it.
---   * The source ped is hidden locally (SET_ENTITY_VISIBLE false plus the
---     per-frame SET_ENTITY_LOCALLY_INVISIBLE) and for other clients
---     (NetworkSetEntityInvisibleToNetwork true). The visible clone keeps the
---     source position, so no duplicate body is left on screen.
---   * Clones are paired with TASK_COMBAT_PED, unarmed, cover off, aggressive
---     movement on. Pairing is re-evaluated every pass; a dead clone is deleted
---     and re-created; a ragdolled clone is left to recover.
---   * Stop deletes the clones, restores both visibility flags on the source
---     and clears the ring. No real player's health, armour, weapon, transform
---     or task is written.
+-- This build does not create a ped, does not register a network entity, does
+-- not create a synchronised scene, does not write a remote task and does not
+-- send damage. It uses the resource the server already trusts:
 --
--- Why not the old synced scene:
---   shadow_boxing is one looping celebration clip: every ped punches air in
---   place. The reference has target selection, closing distance and ragdoll.
---   A synced scene also travels as an event and can be dropped by the server.
---   A networked clone with an AI combat task gives the real brawl and needs no
---   custom event.
+--   * cmg2_animations (preferred): the resource's own `cmg2_animations:sync`
+--     event attaches the target to the caller and plays one raw dict/clip on
+--     each side. The target's own client performs AttachEntityToEntity and
+--     TaskPlayAnim on itself, so the animation and the movement lock are
+--     created by the victim, not by this executor.
+--   * dpemotes / a compatible fork: `ServerValidEmote` relays the shared
+--     `punch`/`punched`, `headbutt`/`headbutted`, `slap`/`slapped` pairs. The
+--     victim's own client receives `SyncPlayEmoteSource`, teleports itself in
+--     front of the closest ped and plays the victim clip. The operator's own
+--     client receives `SyncPlayEmote` and plays the attacker clip.
+--   * rpemotes (older forks that keep confirmEmote): same shared-emote relay.
+--   * Susano.RequestRagdoll fallback: a local punch plus a ragdoll request on
+--     the target, used only when no emote resource is present.
 --
--- Evasion:
---   * No resource, no script event, no state-bag write and no TriggerEvent.
---   * The only server-visible act is ordinary entity creation and normal ped
---     sync, exactly what a server sees from any script that spawns a ped.
---   * The clone is a mission entity owned by this client; the source player is
---     never tasked, never damaged and never moved.
---   * The ring is drawn on the Susano overlay, outside the game framebuffer.
---
--- Verified natives:
---   CLONE_PED 0xEF29A16337FACADB (Ped, BOOL, BOOL, BOOL) -> Ped
---   CLONE_PED_TO_TARGET 0xE952D6431689AD9A (Ped, Ped) -> void
---   NETWORK_REGISTER_ENTITY_AS_NETWORKED 0x06FAACD625D80CAA (Entity) -> void
---   NETWORK_GET_NETWORK_ID_FROM_ENTITY 0xA11700682F3AD45C (Entity) -> int
---   NETWORK_GET_ENTITY_IS_NETWORKED 0xC7827959479DCC78 (Entity) -> BOOL
---   NETWORK_HAS_CONTROL_OF_ENTITY 0x01BF60A500E28887 (Entity) -> BOOL
---   NETWORK_REQUEST_CONTROL_OF_ENTITY 0xB69317BF5E782347 (Entity) -> BOOL
---   SET_NETWORK_ID_CAN_MIGRATE 0x299EEB23175895FC (int, BOOL) -> void
---   NetworkSetEntityInvisibleToNetwork 0xF1CA12B18AEF5298
---     (Entity, BOOL) -> void
---   SET_ENTITY_LOCALLY_INVISIBLE 0xE135A9FF3F5D05D8 (Entity) -> void
---   SET_ENTITY_LOCALLY_VISIBLE 0x241E289B5C059EDC (Entity) -> void
---   TASK_COMBAT_PED 0xF166E48407BAC484 (Ped, Ped, int, int) -> void
---   IS_PED_IN_COMBAT 0x4859F1FC66A6278E (Ped, Ped) -> BOOL
---   SET_PED_COMBAT_ATTRIBUTES 0x9F7794730795E019 (Ped, int, BOOL) -> void
---   SET_PED_COMBAT_ABILITY 0xC7622C0D36B2FDA8 (Ped, int) -> void
---   SET_PED_COMBAT_RANGE 0x3C606747B23E497B (Ped, int) -> void
---   SET_PED_COMBAT_MOVEMENT 0x4D9CA1009AFBD057 (Ped, int) -> void
---   SET_PED_ALERTNESS 0xDBA71115ED9941A6 (Ped, int) -> void
---   SET_PED_CAN_SWITCH_WEAPON 0xED7F7EFE9FABF340 (Ped, BOOL) -> void
---   SET_CURRENT_PED_WEAPON 0xADF692B254977C0C (Ped, Hash, BOOL) -> void
---   SET_CAN_ATTACK_FRIENDLY 0xB3B1CB349FF9C75D (Ped, BOOL, BOOL) -> void
---   SET_ENTITY_NO_COLLISION_ENTITY 0xA53ED5520C07654A
---     (Entity, Entity, BOOL) -> void
---   SET_ENTITY_VISIBLE 0xEA1C610A04DB6BBB (Entity, BOOL, BOOL) -> void
---   SET_ENTITY_MAX_HEALTH 0x166E7CF68597D8B5 (Entity, int) -> void
---   SET_ENTITY_HEALTH 0x6B76DC1F3AE6E6A3 (Entity, int) -> void
---   SET_PED_ARMOUR 0xCEA04D83135264CC (Ped, int) -> void
---   SET_ENTITY_AS_MISSION_ENTITY 0xAD738C3085FE7E11 (Entity, BOOL, BOOL)
+-- Why this is invisible:
+--   * No entity is created, cloned, registered or deleted. The entity manager
+--     never sees a new ped from this feature.
+--   * No custom event name. The only server-visible act is the host
+--     resource's normal emote/carry event with the payload that resource
+--     already accepts.
+--   * The target is animated and moved by its own client through the host
+--     resource's client handler. This executor never calls TaskPlayAnim,
+--     TaskCombatPed or AttachEntityToEntity on a ped it does not own.
+--   * The overlay ring is drawn by Susano outside the game framebuffer.
+--   * The injected chunk runs inside the host resource VM, so it is not a new
+--     resource and is not present in the resource file scan.
 --
 -- Residual risk:
---   1. Networked clone creation is visible to the entity manager. The cost is
---      capped at MAX_TARGETS live clones and one creation per 200 ms pass.
---   2. Network invisibility of the source is a network flag. On a client that
---      rebuilds player visibility from its own ped the source can overlap the
---      clone for a frame; the local per-frame flag still hides it here.
---   3. If the server refuses the network flag, the clone stays local. The
---      fight remains visible to the operator and the feature logs the mode.
+--   1. The host event is legitimate but the server may log repeated shared
+--      emotes. The tick is one attack per ~1.8 s and only ring members are
+--      used.
+--   2. A host resource can validate range or consent. cmg2 and dpemotes stock
+--      handlers do not; a custom fork can. The provider is then a no-op.
+--   3. The target's own client moves itself; a server-side movement check can
+--      see the position delta. This is the host resource's behaviour, not a
+--      direct position write from the executor.
+--   4. RequestRagdoll depends on the target's client accepting the ragdoll
+--      request; if not, only the operator's local punch is visible.
 -- ============================================================================
 
 local FP = {}
 
 local MAX_TARGETS   = 12
 local RING_POINTS   = 72
-local CHECK_MS      = 200     -- scheduler period
-local CLONE_PER_TICK = 1      -- networked clones are heavier; one per pass
-local NET_CONTROL_MS = 1000   -- ownership watchdog
-local NET_HIDE_MS   = 250     -- re-assert source invisibility faster than a sync beat
-local RETASK_MS     = 1500    -- re-issue a combat task only when it is not running
-local RETASK_JITTER = 500
-local LEASH_M       = 4.0     -- source players may drift this far past the ring
+local CHECK_MS      = 200
+local ATTACK_MS     = 1800
+local ATTACK_JITTER = 250
 local RADIUS_MIN    = 8.0
 local RADIUS_MAX    = 40.0
-local FIGHT_HEALTH  = 2000    -- local clones take many hits before a respawn
-local TASK_P2       = 0
-local TASK_P3       = 16
-local UNARMED       = GetHashKey("WEAPON_UNARMED")
+local LEASH_M       = 4.0
+local CMG_FRONT     = 0.92
+local DICT          = "melee@unarmed@streamed_core"
+
+-- Attacker clip and the matching victim reaction. All clips come from the
+-- native melee dictionary, so no custom asset is requested or streamed.
+local CMG_ATTACKS = {
+    { self = "heavy_punch_a",         victim = "hit_heavy_punch_a",         ms = 1100 },
+    { self = "heavy_punch_b",         victim = "hit_heavy_punch_b",         ms = 1100 },
+    { self = "light_finishing_punch", victim = "hit_light_finishing_punch", ms = 1200 },
+    { self = "heavy_finishing_punch", victim = "hit_heavy_finishing_move",  ms = 1400 },
+    { self = "kick_close_a",          victim = "recoil_kick",               ms = 1100 },
+}
+
+-- dpemotes DP.Shared pairs. ServerValidEmote(target, requested, other) sends
+-- the requested emote to the target and the other emote to the caller.
+local DP_PAIRS = {
+    { self = "punch",    victim = "punched" },
+    { self = "headbutt", victim = "headbutted" },
+    { self = "slap",     victim = "slapped" },
+    { self = "slap2",    victim = "slapped2" },
+}
 
 FP.radius       = 15.0
 FP.active       = false
-FP.includeSelf  = false
 FP.center       = nil
 FP.centerSid    = nil
 FP.anchorPed    = nil
@@ -35360,12 +35342,20 @@ FP.anchorKey    = nil
 FP.ring         = nil
 FP.members      = {}
 FP.byKey        = {}
-FP.clones       = {}
 FP.count        = 0
 FP.startedAt    = 0
 FP.onChange     = nil
 FP.note         = nil
 FP.noteUntil    = 0
+FP.provider     = nil
+FP.providerRes  = nil
+FP.attacks      = CMG_ATTACKS
+FP.attackIndex  = 1
+FP.dpIndex      = 1
+FP.memberIndex  = 0
+FP.nextAttack   = 0
+FP.activeTarget = nil
+FP.selfPlayed   = false
 
 FP.canRender = type(Susano) == "table"
     and type(Susano.DrawLine) == "function"
@@ -35395,16 +35385,10 @@ local function clampRadius(value)
 end
 
 local function pedUsable(ped)
-    return ped ~= nil and ped ~= 0
+    return type(ped) == "number" and ped ~= 0
         and DoesEntityExist(ped)
         and not IsPedDeadOrDying(ped, true)
         and not IsPedInAnyVehicle(ped, false)
-end
-
-local function isRagdolled(ped)
-    if type(IsPedRagdoll) ~= "function" then return false end
-    local ok, value = pcall(IsPedRagdoll, ped)
-    return ok and value == true
 end
 
 local function keyOf(rec)
@@ -35419,9 +35403,240 @@ local function isVec(v)
         and type(v.z) == "number"
 end
 
--- Aim anchor: when no player is selected in the menu, the player closest to
--- the camera's forward ray becomes the centre. Four native reads, once per
--- start.
+-- ---------------------------------------------------------------------------
+-- PROVIDER DISCOVERY. Susano.FindEvent reports the resource that registered
+-- the event. When the executor does not expose it, the resource list is used
+-- as a secondary source. No event is fired here.
+-- ---------------------------------------------------------------------------
+local function started(name)
+    if type(name) ~= "string" or type(GetResourceState) ~= "function" then
+        return false
+    end
+    local ok, state = pcall(GetResourceState, name)
+    return ok and state == "started"
+end
+
+local function resourceByName(needle)
+    if type(GetNumResources) ~= "function"
+        or type(GetResourceByFindIndex) ~= "function" then
+        return nil
+    end
+    local ok, count = pcall(GetNumResources)
+    if not ok or type(count) ~= "number" then return nil end
+    for i = 0, count - 1 do
+        local okName, name = pcall(GetResourceByFindIndex, i)
+        if okName and type(name) == "string" and started(name) then
+            local low = string.lower(name)
+            if string.find(low, needle, 1, true) then return name end
+        end
+    end
+    return nil
+end
+
+local function findEvent(needle)
+    if type(Susano) ~= "table" or type(Susano.FindEvent) ~= "function" then
+        return nil
+    end
+    local ok, list = pcall(Susano.FindEvent, needle, true)
+    if not ok or type(list) ~= "table" then return nil end
+    for i = 1, #list do
+        local entry = list[i]
+        if type(entry) == "table" and type(entry.resource) == "string" then
+            return entry.resource
+        end
+    end
+    return nil
+end
+
+local function detectProvider()
+    local res = findEvent("cmg2_animations:sync")
+    if not res then res = resourceByName("cmg2") end
+    if res then return "cmg2", res end
+
+    res = findEvent("ServerValidEmote")
+    if not res then res = resourceByName("dpemote") end
+    if res then return "dpemotes", res end
+
+    res = findEvent("rpemotes:server:confirmEmote")
+    if not res then res = resourceByName("rpemote") end
+    if res then return "rpemotes", res end
+
+    if type(Susano) == "table"
+        and type(Susano.RequestRagdoll) == "function" then
+        return "ragdoll", nil
+    end
+    return nil, nil
+end
+
+-- The injected chunk runs inside the host resource VM. It has TriggerServerEvent
+-- but not Susano.*, which is exactly the two-stage boundary: this executor
+-- prepares the payload, the host resource emits the event.
+local function inject(code)
+    if type(Susano) ~= "table" or type(Susano.InjectResource) ~= "function" then
+        return false
+    end
+    local target = FP.providerRes
+    if type(target) ~= "string" or target == "" then target = "any" end
+    local ok = pcall(Susano.InjectResource, target, code)
+    if ok then return true end
+    if target ~= "any" then
+        ok = pcall(Susano.InjectResource, "any", code)
+        if ok then return true end
+    end
+    return false
+end
+
+local function playSelf(dict, clip, flags, duration)
+    if type(TaskPlayAnim) ~= "function" then return false end
+    if type(HasAnimDictLoaded) == "function"
+        and not HasAnimDictLoaded(dict) then
+        if type(RequestAnimDict) == "function" then
+            pcall(RequestAnimDict, dict)
+        end
+        return false
+    end
+    pcall(TaskPlayAnim, PlayerPedId(), dict, clip,
+        8.0, -8.0, duration or -1, flags or 0, 0.0,
+        false, false, false)
+    return true
+end
+
+-- cmg2_animations:sync(targetClient, lib, lib2, anim1, anim2, distans,
+-- distans2, height, targetServer, length, spin, controlFlagMe,
+-- controlFlagTarget, animFlagTarget). The server forwards source and the two
+-- pairs to syncMe/syncTarget; the target's own client attaches itself to the
+-- caller and plays the victim clip.
+local function cmgSync(rec, attack)
+    if not rec or not rec.player then return false end
+    if not pedUsable(rec.source) then return false end
+    local sid = GetPlayerServerId(rec.player)
+    if type(sid) ~= "number" or sid <= 0 then return false end
+    local code = string.format(
+        "TriggerServerEvent('cmg2_animations:sync', %d, '%s', '%s', '%s', '%s', %.2f, %.2f, %.2f, %d, %d, %.1f, %d, %d, %d)",
+        rec.player, DICT, DICT, attack.self, attack.victim,
+        CMG_FRONT, 0.0, 0.0, sid, attack.ms, 180.0, 0, 0, 0)
+    return inject(code)
+end
+
+local function cmgStop(rec)
+    if not rec or not rec.player then return false end
+    local sid = GetPlayerServerId(rec.player)
+    if type(sid) ~= "number" or sid <= 0 then return false end
+    local code = string.format(
+        "TriggerServerEvent('cmg2_animations:stop', %d)", sid)
+    return inject(code)
+end
+
+-- dpemotes shared emote relay. The victim emote is the target side; the
+-- attacker emote is the caller side. Both are names already present in the
+-- resource's DP.Shared table.
+local function dpSync(rec, pair)
+    if not rec or not rec.player then return false end
+    if not pedUsable(rec.source) then return false end
+    local sid = GetPlayerServerId(rec.player)
+    if type(sid) ~= "number" or sid <= 0 then return false end
+    local eventName = "ServerValidEmote"
+    if FP.provider == "rpemotes" then
+        eventName = "rpemotes:server:confirmEmote"
+    end
+    local code = string.format(
+        "TriggerServerEvent('%s', %d, '%s', '%s')",
+        eventName, sid, pair.victim, pair.self)
+    return inject(code)
+end
+
+-- Ragdoll fallback: the operator's punch is local and therefore normally
+-- synced; the ragdoll request is the only remote act. No damage event.
+local function ragdollSync(rec, attack)
+    if not rec or not pedUsable(rec.source) then return false end
+    if type(Susano) ~= "table" or type(Susano.RequestRagdoll) ~= "function" then
+        return false
+    end
+    local guid = rec.source
+    if type(GetEntityGuid) == "function" then
+        local ok, value = pcall(GetEntityGuid, rec.source)
+        if ok and type(value) == "number" then guid = value end
+    end
+    pcall(Susano.RequestRagdoll, guid)
+    local played = playSelf(DICT, attack.self, 0, attack.ms)
+    FP.selfPlayed = played or FP.selfPlayed
+    return true
+end
+
+-- ---------------------------------------------------------------------------
+-- GROUND / RING
+-- ---------------------------------------------------------------------------
+local function groundAt(x, y, probe)
+    local ok, hit, gz = pcall(GetGroundZFor_3dCoord, x, y, probe, false)
+    if ok and hit == true and type(gz) == "number" and gz > -100.0 then
+        return gz
+    end
+    return nil
+end
+
+local function buildRing()
+    if not FP.center then FP.ring = nil return end
+    local n = RING_POINTS
+    local base = FP.center.z
+    local probe = base + 2.0
+    local points = {}
+
+    for i = 1, n do
+        local angle = (i - 1) / n * math.pi * 2.0
+        local x = FP.center.x + math.cos(angle) * FP.radius
+        local y = FP.center.y + math.sin(angle) * FP.radius
+        local z = groundAt(x, y, probe)
+        if not z or math.abs(z - base) > 3.0 then z = base end
+        points[i] = { x = x, y = y, z = z + 0.035 }
+    end
+
+    FP.ring = points
+end
+
+function FP.setRadius(value)
+    FP.radius = clampRadius(value)
+    if FP.active then buildRing() end
+    return FP.radius
+end
+
+-- ---------------------------------------------------------------------------
+-- WORLD READ. Only real, active players are targets. NPCs cannot be addressed
+-- by the host's server-side emote/carry event, so they are not collected.
+-- ---------------------------------------------------------------------------
+local function gather(radius)
+    local out = {}
+    if not FP.center then return out end
+    local me = PlayerId()
+    local myPed = PlayerPedId()
+    local seen = {}
+
+    for _, player in ipairs(GetActivePlayers()) do
+        if player ~= me and NetworkIsPlayerActive(player) then
+            local ped = GetPlayerPed(player)
+            if pedUsable(ped) and ped ~= myPed and not seen[ped] then
+                local pos = GetEntityCoords(ped)
+                local dist = O.distance(pos, FP.center)
+                if dist <= radius then
+                    seen[ped] = true
+                    out[#out + 1] = {
+                        player = player,
+                        source = ped,
+                        dist = dist,
+                        lastAt = 0,
+                        nextAt = 0,
+                    }
+                end
+            end
+        end
+    end
+
+    table.sort(out, function(a, b) return a.dist < b.dist end)
+    return out
+end
+
+-- ---------------------------------------------------------------------------
+-- AIM ANCHOR. Four native reads, once per start, when no player is selected.
+-- ---------------------------------------------------------------------------
 local function aimedPed()
     if type(GetGameplayCamCoord) ~= "function"
         or type(GetGameplayCamRot) ~= "function" then return nil end
@@ -35451,439 +35666,8 @@ local function aimedPed()
 end
 
 -- ---------------------------------------------------------------------------
--- GROUND / RING
--- ---------------------------------------------------------------------------
-local function groundAt(x, y, probe)
-    local ok, hit, gz = pcall(GetGroundZFor_3dCoord, x, y, probe, false)
-    if ok and hit == true and type(gz) == "number" and gz > -100.0 then
-        return gz
-    end
-    return nil
-end
-
-local function buildRing()
-    if not FP.center then FP.ring = nil return end
-    local n = RING_POINTS
-    local base = FP.center.z
-    local probe = base + 2.0
-    local points = {}
-
-    for i = 1, n do
-        local angle = (i - 1) / n * math.pi * 2.0
-        local x = FP.center.x + math.cos(angle) * FP.radius
-        local y = FP.center.y + math.sin(angle) * FP.radius
-        local z = groundAt(x, y, probe)
-        -- A roof or an overpass can return the street below. Only trust the
-        -- ground hit when it stays in the centre's vertical band; otherwise
-        -- the ring floats at the anchor height instead of under the map.
-        if not z or math.abs(z - base) > 3.0 then z = base end
-        points[i] = { x = x, y = y, z = z + 0.035 }
-    end
-
-    FP.ring = points
-end
-
-function FP.setRadius(value)
-    FP.radius = clampRadius(value)
-    if FP.active then buildRing() end
-    return FP.radius
-end
-
--- ---------------------------------------------------------------------------
--- WORLD READ. Players first. When fewer than two players are inside the ring,
--- human NPCs are included so one other player plus the local crowd still
--- produces a brawl. Start still needs at least one other player as the anchor;
--- the operator is dropped before anything else.
--- ---------------------------------------------------------------------------
-local function gather(radius)
-    local out = {}
-    if not FP.center then return out end
-
-    local seen = {}
-    local me = PlayerId()
-    local myPed = PlayerPedId()
-
-    local function add(player, ped, allowSelf)
-        if not ped or ped == 0 then return end
-        if ped == myPed and not allowSelf then return end
-        if FP.clones[ped] then return end
-        if seen[ped] or not pedUsable(ped) then return end
-        local pos = GetEntityCoords(ped)
-        local dist = O.distance(pos, FP.center)
-        if dist > radius then return end
-        seen[ped] = true
-        out[#out + 1] = {
-            player = player,
-            source = ped,
-            dist = dist,
-            clone = nil,
-            targetRec = nil,
-            nextTask = 0,
-            hidden = false,
-            netHidden = false,
-            netId = 0,
-            network = false,
-            nextControl = 0,
-            nextNetHide = 0,
-        }
-    end
-
-    -- A solo party still needs a second body. When the ring holds exactly one
-    -- other ped, the operator's own ped is copied as the opponent instead of
-    -- refusing the start; the source stays put and is restored on stop.
-    if FP.includeSelf then add(me, myPed, true) end
-
-    for _, player in ipairs(GetActivePlayers()) do
-        if player ~= me and NetworkIsPlayerActive(player) then
-            add(player, GetPlayerPed(player))
-        end
-    end
-
-    if #out < 2 and type(GetGamePool) == "function" then
-        local ok, pool = pcall(GetGamePool, "CPed")
-        if ok and type(pool) == "table" then
-            for i = 1, #pool do
-                local ped = pool[i]
-                if ped ~= myPed then
-                    local okP, isPlayer = pcall(IsPedAPlayer, ped)
-                    if not (okP and isPlayer) then
-                        local okH, human = pcall(IsPedHuman, ped)
-                        if not okH or human then add(nil, ped) end
-                    end
-                end
-            end
-        end
-    end
-
-    table.sort(out, function(a, b) return a.dist < b.dist end)
-    return out
-end
-
--- ---------------------------------------------------------------------------
--- COMBAT PROFILE. This is the half that was missing: the reference is an
--- unarmed fight, not a celebration. Attribute 0 disables cover, 5 is
--- ALWAYS_FIGHT, 46 lets an unarmed ped engage an armed one, 13 is aggressive,
--- 21 chases on foot, 50 charges and 58 stops the combat flee. Attribute 17
--- (ALWAYS_FLEE) is explicitly cleared so a leftover default cannot turn the
--- brawl into a chase. Range 0 keeps them at fist distance; movement 2 makes
--- them advance instead of holding cover. Cover is explicitly off because the
--- reference brawl happens in the open, not behind props.
--- ---------------------------------------------------------------------------
-local function applyCombat(clone)
-    if not clone or clone == 0 then return end
-    pcall(SetPedCombatAttributes, clone, 0, false)
-    pcall(SetPedCombatAttributes, clone, 5, true)
-    pcall(SetPedCombatAttributes, clone, 17, false)
-    pcall(SetPedCombatAttributes, clone, 46, true)
-    pcall(SetPedCombatAttributes, clone, 13, true)
-    pcall(SetPedCombatAttributes, clone, 21, true)
-    pcall(SetPedCombatAttributes, clone, 50, true)
-    pcall(SetPedCombatAttributes, clone, 58, true)
-    pcall(SetPedFleeAttributes, clone, 0, false)
-    pcall(SetPedCombatAbility, clone, 2)
-    pcall(SetPedCombatRange, clone, 0)
-    pcall(SetPedCombatMovement, clone, 2)
-    pcall(SetPedAlertness, clone, 3)
-    pcall(SetCanAttackFriendly, clone, true, true)
-    pcall(SetPedKeepTask, clone, true)
-    pcall(SetBlockingOfNonTemporaryEvents, clone, true)
-end
-
-local function makeUnarmed(clone)
-    pcall(RemoveAllPedWeapons, clone, true)
-    pcall(SetCurrentPedWeapon, clone, UNARMED, true)
-    pcall(SetPedCanSwitchWeapon, clone, false)
-end
-
-local function armClone(clone)
-    if not clone or clone == 0 then return end
-    pcall(SetEntityMaxHealth, clone, FIGHT_HEALTH)
-    pcall(SetEntityHealth, clone, FIGHT_HEALTH)
-    pcall(SetPedArmour, clone, 0)
-    pcall(SetPedSuffersCriticalHits, clone, false)
-    pcall(SetEntityInvincible, clone, false)
-    pcall(SetPedCanRagdoll, clone, true)
-    pcall(SetPedCanRagdollFromPlayerImpact, clone, true)
-    pcall(DisablePedPainAudio, clone, true)
-    applyCombat(clone)
-    makeUnarmed(clone)
-end
-
--- ---------------------------------------------------------------------------
--- CLONE CREATION. CLONE_PED copies the complete appearance and head blend at
--- isNetwork = true, so the clone is a normal networked ped: the engine owns
--- its task replication and every client sees the same punches, blocks and
--- ragdoll. The CreatePed + ClonePedToTarget fallback also uses the network
--- flag; it only runs when CLONE_PED itself returns an unusable handle.
--- ---------------------------------------------------------------------------
-local function hideSource(rec)
-    local src = rec.source
-    if not src or not DoesEntityExist(src) then return end
-    if not rec.hidden then
-        pcall(SetEntityVisible, src, false, false)
-        if rec.network
-            and type(NetworkSetEntityInvisibleToNetwork) == "function" then
-            pcall(NetworkSetEntityInvisibleToNetwork, src, true)
-            rec.netHidden = true
-        end
-        rec.hidden = true
-    elseif rec.network and not rec.netHidden
-        and type(NetworkSetEntityInvisibleToNetwork) == "function" then
-        -- A later load or a ped respawn can leave the flag unset; re-arm it
-        -- once here and let the tick refresh it at 1 Hz.
-        pcall(NetworkSetEntityInvisibleToNetwork, src, true)
-        rec.netHidden = true
-    end
-    -- Network sync can restore the player ped's visible flag between passes;
-    -- the per-frame local flag is the belt to SetEntityVisible's braces.
-    pcall(SetEntityLocallyInvisible, src)
-    if rec.clone and DoesEntityExist(rec.clone) then
-        pcall(SetEntityNoCollisionEntity, rec.clone, src, false)
-        pcall(SetEntityNoCollisionEntity, src, rec.clone, false)
-    end
-end
-
-local function restoreSource(rec)
-    local src = rec.source
-    rec.hidden = false
-    rec.netHidden = false
-    rec.nextNetHide = 0
-    if src and DoesEntityExist(src) then
-        if type(NetworkSetEntityInvisibleToNetwork) == "function" then
-            pcall(NetworkSetEntityInvisibleToNetwork, src, false)
-        end
-        pcall(SetEntityLocallyVisible, src)
-        pcall(SetEntityVisible, src, true, false)
-    end
-end
-
-local function destroyClone(rec)
-    local clone = rec.clone
-    rec.clone = nil
-    rec.targetRec = nil
-    rec.nextTask = 0
-    rec.netId = 0
-    rec.network = false
-    rec.nextControl = 0
-    if clone then FP.clones[clone] = nil end
-    if clone and DoesEntityExist(clone) then
-        -- The creator normally owns a fresh network clone. Request control
-        -- anyway so a client that migrated ownership cannot keep a dead clone
-        -- alive on the other machines.
-        pcall(NetworkRequestControlOfEntity, clone)
-        pcall(SetEntityAsMissionEntity, clone, true, true)
-        pcall(DeleteEntity, clone)
-        if DoesEntityExist(clone) then
-            pcall(NetworkRequestControlOfEntity, clone)
-            pcall(DeleteEntity, clone)
-        end
-    end
-    -- A dead clone must not leave the source invisible while the replacement
-    -- waits for its turn in the one-per-pass creation budget. Re-show the
-    -- source here; createClone hides it again in the same pass when the
-    -- replacement is ready.
-    restoreSource(rec)
-end
-
-local function destroyRec(rec)
-    destroyClone(rec)
-    restoreSource(rec)
-end
-
-local function createClone(rec)
-    local src = rec.source
-    if not pedUsable(src) then return nil end
-
-    local clone = nil
-    local okClone, value = pcall(ClonePed, src, true, true, true)
-    if okClone and type(value) == "number" and value ~= 0
-        and DoesEntityExist(value) then
-        clone = value
-    end
-
-    if not clone then
-        local model = GetEntityModel(src)
-        if type(HasModelLoaded) == "function" and not HasModelLoaded(model) then
-            pcall(RequestModel, model)
-            return nil
-        end
-        local pos = GetEntityCoords(src)
-        local heading = GetEntityHeading(src)
-        local okPed, fallback = pcall(CreatePed, 4, model,
-            pos.x, pos.y, pos.z, heading, true, true)
-        if not okPed or type(fallback) ~= "number" or fallback == 0
-            or not DoesEntityExist(fallback) then
-            return nil
-        end
-        clone = fallback
-        pcall(ClonePedToTarget, src, clone)
-    end
-
-    if not clone or clone == 0 or not DoesEntityExist(clone) then return nil end
-
-    rec.clone = clone
-    rec.network = false
-    rec.netId = 0
-    FP.clones[clone] = true
-    pcall(SetEntityAsMissionEntity, clone, true, true)
-    pcall(ClearPedTasks, clone)
-    pcall(SetEntityCollision, clone, true, true)
-    pcall(SetEntityVisible, clone, true, true)
-    if type(NetworkSetEntityInvisibleToNetwork) == "function" then
-        pcall(NetworkSetEntityInvisibleToNetwork, clone, false)
-    end
-
-    -- CLONE_PED with isNetwork already registers the entity. Only call the
-    -- explicit register when the probe says it is still local, then read the
-    -- shared id. A zero id leaves the clone in local mode instead of failing
-    -- the whole feature.
-    local networked = false
-    if type(NetworkGetEntityIsNetworked) == "function" then
-        local okNet, valueNet = pcall(NetworkGetEntityIsNetworked, clone)
-        networked = okNet and valueNet == true
-    end
-    local netId = 0
-    if type(NetworkGetNetworkIdFromEntity) == "function" then
-        local okId, valueId = pcall(NetworkGetNetworkIdFromEntity, clone)
-        if okId and type(valueId) == "number" then netId = valueId end
-    end
-    if netId == 0 and not networked
-        and type(NetworkRegisterEntityAsNetworked) == "function" then
-        pcall(NetworkRegisterEntityAsNetworked, clone)
-        if type(NetworkGetNetworkIdFromEntity) == "function" then
-            local okId, valueId = pcall(NetworkGetNetworkIdFromEntity, clone)
-            if okId and type(valueId) == "number" then netId = valueId end
-        end
-    end
-    rec.netId = netId
-    rec.network = netId ~= 0
-    if rec.network then
-        pcall(SetNetworkIdCanMigrate, netId, false)
-    end
-    rec.nextControl = 0
-    rec.nextNetHide = 0
-
-    armClone(clone)
-    hideSource(rec)
-    return clone
-end
-
--- The clone is created by this client, so it starts with ownership. Another
--- machine can still take it if the net id migrates before the flag is written,
--- and the local task would then stop replicating. The watchdog asks only when
--- the answer is false, and re-pins the net id at the same cadence.
-local function ensureControl(rec, now)
-    local clone = rec.clone
-    if not clone or not DoesEntityExist(clone) then return end
-    if now < (rec.nextControl or 0) then return end
-    rec.nextControl = now + NET_CONTROL_MS
-
-    -- The network id can become readable one pass after CLONE_PED returns.
-    -- Re-read it here so a slow registration still ends in network mode.
-    if rec.netId == 0
-        and type(NetworkGetNetworkIdFromEntity) == "function" then
-        local ok, value = pcall(NetworkGetNetworkIdFromEntity, clone)
-        if ok and type(value) == "number" and value ~= 0 then
-            rec.netId = value
-            rec.network = true
-            pcall(SetNetworkIdCanMigrate, value, false)
-            if rec.hidden and rec.source and DoesEntityExist(rec.source) then
-                pcall(NetworkSetEntityInvisibleToNetwork, rec.source, true)
-                rec.netHidden = true
-                rec.nextNetHide = now + NET_HIDE_MS
-            end
-        end
-    end
-
-    if type(NetworkHasControlOfEntity) == "function" then
-        local ok, has = pcall(NetworkHasControlOfEntity, clone)
-        if ok and has == false then
-            pcall(NetworkRequestControlOfEntity, clone)
-        end
-    end
-    if rec.netId and rec.netId ~= 0 then
-        pcall(SetNetworkIdCanMigrate, rec.netId, false)
-    end
-end
-
--- ---------------------------------------------------------------------------
--- PAIRING. Even indices fight the pair on their left; odd indices fight the
--- pair on their right. A lone last member fights the first member. Pairing is
--- re-evaluated every pass, but a pair already in combat keeps its task.
--- ---------------------------------------------------------------------------
-local function pairAll()
-    local n = #FP.members
-    for i = 1, n do
-        local rec = FP.members[i]
-        local mate = nil
-        if i % 2 == 1 then
-            mate = FP.members[i + 1]
-        else
-            mate = FP.members[i - 1]
-        end
-        if not mate then
-            mate = FP.members[(i == 1) and 2 or 1]
-        end
-        if mate == rec then mate = nil end
-        rec.targetRec = mate
-    end
-end
-
-local function nearestMember(rec)
-    if not rec.clone or not DoesEntityExist(rec.clone) then return nil end
-    local pos = GetEntityCoords(rec.clone)
-    local best, bestDist = nil, nil
-    for i = 1, #FP.members do
-        local other = FP.members[i]
-        if other ~= rec and other.clone and DoesEntityExist(other.clone) then
-            local d = O.distance(pos, GetEntityCoords(other.clone))
-            if not bestDist or d < bestDist then
-                best, bestDist = other, d
-            end
-        end
-    end
-    return best
-end
-
-local function taskRec(rec, now)
-    local clone = rec.clone
-    if not clone or not DoesEntityExist(clone) then return false end
-    if IsPedDeadOrDying(clone, true) then return false end
-    if isRagdolled(clone) then
-        rec.nextTask = now + 400
-        return false
-    end
-
-    local targetRec = rec.targetRec
-    if not targetRec or not targetRec.clone
-        or not DoesEntityExist(targetRec.clone)
-        or targetRec.clone == clone
-        or IsPedDeadOrDying(targetRec.clone, true) then
-        targetRec = nearestMember(rec)
-        rec.targetRec = targetRec
-    end
-    if not targetRec then return false end
-
-    local inCombat = false
-    if type(IsPedInCombat) == "function" then
-        local ok, value = pcall(IsPedInCombat, clone, targetRec.clone)
-        inCombat = ok and value == true
-    end
-    if inCombat then
-        rec.nextTask = now + RETASK_MS
-        return true
-    end
-    if now < (rec.nextTask or 0) then return false end
-
-    pcall(TaskCombatPed, clone, targetRec.clone, TASK_P2, TASK_P3)
-    rec.nextTask = now + RETASK_MS + O.int(0, RETASK_JITTER)
-    return true
-end
-
--- ---------------------------------------------------------------------------
--- MEMBERSHIP. Rebuilds from the live source list. A departing source has its
--- clone deleted and its visibility restored. A respawned source (same player,
--- new ped handle) has its old clone replaced.
+-- MEMBERSHIP. No clone lifecycle: a record is only the live player ped and the
+-- client index used to address it.
 -- ---------------------------------------------------------------------------
 local function reconcile(list)
     local fresh = {}
@@ -35893,19 +35677,13 @@ local function reconcile(list)
         local rec = FP.members[i]
         local key = keyOf(rec)
         local candidate = fresh[key]
-        if candidate then
-            if candidate.source ~= rec.source then
-                destroyClone(rec)
-                restoreSource(rec)
-                rec.source = candidate.source
-                rec.hidden = false
-            end
-            rec.player = candidate.player
-            rec.dist = candidate.dist
-        else
-            destroyRec(rec)
+        if not candidate then
             FP.byKey[key] = nil
             table.remove(FP.members, i)
+        else
+            rec.player = candidate.player
+            rec.source = candidate.source
+            rec.dist = candidate.dist
         end
     end
 
@@ -35914,7 +35692,6 @@ local function reconcile(list)
         local candidate = list[i]
         local key = keyOf(candidate)
         if not FP.byKey[key] then
-            candidate.nextTask = 0
             FP.members[#FP.members + 1] = candidate
             FP.byKey[key] = candidate
         end
@@ -35924,75 +35701,93 @@ local function reconcile(list)
     return FP.count
 end
 
+local function nextMember(now)
+    local n = #FP.members
+    if n == 0 then return nil end
+    local myPos = GetEntityCoords(PlayerPedId())
+    local best, bestScore = nil, nil
+
+    -- Prefer the nearest ready member to the operator. cmg2 and the ragdoll
+    -- fallback both need the two peds close; the dpemotes relay teleports the
+    -- target to its own closest player, so distance is still a good order.
+    for off = 1, n do
+        local idx = ((FP.memberIndex + off - 1) % n) + 1
+        local rec = FP.members[idx]
+        if rec and pedUsable(rec.source) then
+            local ready = now >= (rec.nextAt or 0)
+            local dist = O.distance(GetEntityCoords(rec.source), myPos)
+            local score = dist + (ready and 0.0 or 100000.0)
+            if not bestScore or score < bestScore then
+                best, bestScore = rec, score
+                FP.memberIndex = idx
+            end
+        end
+    end
+
+    return best
+end
+
 -- ---------------------------------------------------------------------------
--- TICK. Create at most two clones per pass, hide each source once its clone
--- exists, then keep every live clone in combat. A dead clone is replaced; a
--- ragdolled clone is left to recover and is re-tasked afterwards.
+-- TICK. One attack per pass window. The previous cmg attachment is stopped
+-- before the next target is attached, so the host resource never has two
+-- carried peds for the same source.
 -- ---------------------------------------------------------------------------
 local function tick(now)
     if not FP.active then return end
     if not FP.center then FP.stop("no centre") return end
+    if not FP.provider then FP.stop("no provider") return end
 
     local list = gather(FP.radius + LEASH_M)
     local count = reconcile(list)
-    if count < 2 then FP.stop("empty") return end
+    if count < 1 then FP.stop("empty") return end
 
-    if not FP.byKey[FP.anchorKey] then
-        local first = FP.members[1]
-        FP.anchorKey = keyOf(first)
-        FP.anchorPed = first.source
-        FP.anchorPlayer = first.player
+    if now < (FP.nextAttack or 0) then return end
+
+    local rec = nextMember(now)
+    if not rec then
+        FP.nextAttack = now + 500
+        return
     end
 
-    local made = 0
-    for i = 1, count do
-        local rec = FP.members[i]
-        if rec.clone and DoesEntityExist(rec.clone)
-            and IsPedDeadOrDying(rec.clone, true) then
-            destroyClone(rec)
-        end
-        if not rec.clone or not DoesEntityExist(rec.clone) then
-            if made < CLONE_PER_TICK then
-                if createClone(rec) then made = made + 1 end
-            end
-        end
+    local attack = FP.attacks[FP.attackIndex]
+    if not attack then
+        FP.attackIndex = 1
+        attack = FP.attacks[1]
+    end
+    FP.attackIndex = (FP.attackIndex % #FP.attacks) + 1
+
+    if FP.provider == "cmg2" and FP.activeTarget then
+        cmgStop(FP.activeTarget)
+        FP.activeTarget = nil
     end
 
-    pairAll()
-
-    -- A hidden source still owns a collision capsule. Keep every clone from
-    -- bumping an invisible body while the visible clone does the fighting.
-    for i = 1, count do
-        local rec = FP.members[i]
-        local src = rec.source
-        if rec.hidden and src and DoesEntityExist(src) then
-            for j = 1, count do
-                local other = FP.members[j]
-                local clone = other.clone
-                if clone and DoesEntityExist(clone) and clone ~= rec.clone then
-                    pcall(SetEntityNoCollisionEntity, src, clone, false)
-                    pcall(SetEntityNoCollisionEntity, clone, src, false)
-                end
-            end
+    local ok = false
+    local duration = attack.ms or ATTACK_MS
+    if FP.provider == "cmg2" then
+        ok = cmgSync(rec, attack)
+    elseif FP.provider == "ragdoll" then
+        ok = ragdollSync(rec, attack)
+    else
+        local pair = DP_PAIRS[FP.dpIndex]
+        if not pair then
+            FP.dpIndex = 1
+            pair = DP_PAIRS[1]
         end
+        FP.dpIndex = (FP.dpIndex % #DP_PAIRS) + 1
+        ok = dpSync(rec, pair)
+        duration = 1800
     end
 
-    for i = 1, count do
-        local rec = FP.members[i]
-        if rec.clone and DoesEntityExist(rec.clone) then
-            if rec.hidden ~= true then hideSource(rec) end
-            ensureControl(rec, now)
-            if rec.hidden and rec.source and DoesEntityExist(rec.source) then
-                pcall(SetEntityLocallyInvisible, rec.source)
-                if rec.network and now >= (rec.nextNetHide or 0)
-                    and type(NetworkSetEntityInvisibleToNetwork) == "function" then
-                    pcall(NetworkSetEntityInvisibleToNetwork, rec.source, true)
-                    rec.netHidden = true
-                    rec.nextNetHide = now + NET_HIDE_MS
-                end
-            end
-            taskRec(rec, now)
+    rec.lastAt = now
+    rec.nextAt = now + (ATTACK_MS * 2)
+    if ok then
+        FP.activeTarget = rec
+        if FP.provider == "cmg2" then
+            duration = duration + 350
         end
+        FP.nextAttack = now + duration + O.int(0, ATTACK_JITTER)
+    else
+        FP.nextAttack = now + 700
     end
 end
 
@@ -36004,32 +35799,36 @@ function FP.isActive()
 end
 
 function FP.status()
-    local network = 0
-    for i = 1, #FP.members do
-        if FP.members[i].network then network = network + 1 end
-    end
-    return ("active=%s peds=%d net=%d radius=%.0f"):format(
-        tostring(FP.active), #FP.members, network, FP.radius)
+    return ("active=%s peds=%d radius=%.0f mode=%s"):format(
+        tostring(FP.active), #FP.members, FP.radius,
+        tostring(FP.provider or "-"))
 end
 
 function FP.stop(reason)
     local was = FP.active
     FP.active = false
 
-    for i = 1, #FP.members do destroyRec(FP.members[i]) end
+    if FP.provider == "cmg2" and FP.activeTarget then
+        cmgStop(FP.activeTarget)
+    end
+    if FP.provider == "ragdoll" and FP.selfPlayed then
+        pcall(ClearPedTasks, PlayerPedId())
+    end
 
     FP.ring = nil
     FP.center = nil
     FP.centerSid = nil
-    FP.includeSelf = false
     FP.anchorPed = nil
     FP.anchorPlayer = nil
     FP.anchorKey = nil
     FP.byKey = {}
-    FP.clones = {}
     FP.members = {}
     FP.count = 0
     FP.note = nil
+    FP.activeTarget = nil
+    FP.selfPlayed = false
+    FP.provider = nil
+    FP.providerRes = nil
 
     if FP.canRender and Menu then Menu.PreventResetFrame = false end
 
@@ -36048,7 +35847,6 @@ function FP.start()
     FP.anchorPlayer = nil
     FP.anchorPed = nil
     FP.anchorKey = nil
-    FP.includeSelf = false
     FP.note = nil
 
     local selectedSid = nil
@@ -36097,19 +35895,28 @@ function FP.start()
     buildRing()
 
     local list = gather(FP.radius)
-    if #list < 2 then
-        -- One other body inside the ring is enough when the operator joins as
-        -- the second fighter. This is the common solo-plus-one-friend case
-        -- that used to stop on "nothing inside the ring" while the two peds
-        -- were standing next to each other.
-        FP.includeSelf = true
-        list = gather(FP.radius)
-    end
-    if #list < 2 then
-        FP.includeSelf = false
+    if #list < 1 then
+        FP.center = nil
+        FP.ring = nil
         FP.stop("no targets")
         note("NO PLAYER IN RANGE")
         log("start refused: nothing inside the ring")
+        return false
+    end
+
+    FP.provider, FP.providerRes = detectProvider()
+    if not FP.provider then
+        FP.center = nil
+        FP.ring = nil
+        FP.stop("no provider")
+        note("NO EMOTE PROVIDER")
+        log("start refused: no host provider")
+        return false
+    end
+
+    if not B.spend("fight") then
+        log("budget refused")
+        FP.stop("budget")
         return false
     end
 
@@ -36122,19 +35929,18 @@ function FP.start()
     end
     if not anchorKey then anchorKey = keyOf(list[1]) end
 
-    if not B.spend("fight") then
-        log("budget refused")
-        FP.stop("budget")
-        return false
-    end
-
     FP.members = {}
     FP.byKey = {}
     FP.startedAt = O.now()
+    FP.attackIndex = 1
+    FP.dpIndex = 1
+    FP.memberIndex = 0
+    FP.activeTarget = nil
+    FP.nextAttack = O.now() + O.int(250, 500)
+    FP.selfPlayed = false
 
     for i = 1, math.min(#list, MAX_TARGETS) do
         local rec = list[i]
-        rec.nextTask = O.now() + O.int(120, 600)
         FP.members[#FP.members + 1] = rec
         FP.byKey[keyOf(rec)] = rec
     end
@@ -36148,13 +35954,14 @@ function FP.start()
     if FP.canRender and Menu then Menu.PreventResetFrame = true end
 
     notify()
-    log("started: peds=%d radius=%.0f anchor=%s mode=network-clone",
-        FP.count, FP.radius, tostring(selectedSid or "auto"))
+    log("started: peds=%d radius=%.0f anchor=%s mode=%s res=%s",
+        FP.count, FP.radius, tostring(selectedSid or "auto"),
+        tostring(FP.provider), tostring(FP.providerRes or "executor"))
     return true
 end
 
 -- ---------------------------------------------------------------------------
--- RENDER. Ring, then the status line. No world draw, no capture.
+-- RENDER. Ring and status only; the target peds are never hidden or touched.
 -- ---------------------------------------------------------------------------
 local screenSize
 
@@ -36229,16 +36036,6 @@ function FP.render()
 
     if not FP.active or not FP.ring then return end
 
-    -- SET_ENTITY_LOCALLY_INVISIBLE is a per-frame flag. The tick pass sets it
-    -- every 200 ms; this pass re-asserts it every rendered frame so a network
-    -- visibility update cannot flash a hidden source for a frame.
-    for i = 1, #FP.members do
-        local rec = FP.members[i]
-        if rec.hidden and rec.source and DoesEntityExist(rec.source) then
-            pcall(SetEntityLocallyInvisible, rec.source)
-        end
-    end
-
     local now = nowMs / 1000.0
     local pulse = 0.52 + 0.08 * math.sin(now * 3.4)
     local points = FP.ring
@@ -36261,7 +36058,8 @@ function FP.render()
         drawCentered("FIGHT PARTY | NO TARGET IN RING",
             height * 0.855, 18, 0.96, 0.52, 0.52, 0.92)
     else
-        drawCentered(("FIGHT PARTY | %d FIGHTING"):format(#FP.members),
+        drawCentered(("FIGHT PARTY | %d FIGHTING | %s"):format(
+            #FP.members, string.upper(tostring(FP.provider or "-"))),
             height * 0.855, 18, 0.94, 0.98, 1.0, 0.92)
     end
 end
@@ -36314,9 +36112,6 @@ local function sweepPartyRows()
     for _, category in ipairs(Menu.Categories or {}) do
         sweepPartyList(category)
     end
-    -- ExtraCategories are merged into Menu.Categories by the library on the
-    -- next rebuild. A stale radius row there kept its old value and could
-    -- re-enter the menu at 40 m, so sweep both stores.
     for _, category in ipairs(Menu.ExtraCategories or {}) do
         sweepPartyList(category)
     end
@@ -36364,8 +36159,6 @@ function FP.install()
 
     FP.onChange = function(active)
         toggle.value = active
-        -- Keep the slider readout on the radius actually used. A stale row or
-        -- a refused start must not leave the UI pinned at the 40 m maximum.
         if radiusRow then radiusRow.value = FP.radius end
     end
 
@@ -36389,15 +36182,16 @@ function FP.install()
     return true
 end
 
--- The scheduler owns the only periodic work. No dictionary warm-up is needed:
--- the clone uses the source ped's already-streamed model, and the combat clips
--- come from the engine, not from a requested anim dictionary.
+-- One scheduler owns the periodic work. No dictionary warm-up is needed:
+-- cmg2/dpemotes load the clip on the target client, and the ragdoll fallback
+-- requests the native melee dictionary on first use.
 O.every("fightparty", CHECK_MS, tick, O.int(0, CHECK_MS))
 
 -- Test seam: lets the local harness drive one pass without starting the whole
 -- scheduler thread. It is a function reference, not a menu row or state.
 if type(Menu) == "table" then
     Menu.__vgd_fightPartyTick = tick
+    Menu.__vgd_fightPartyStatus = FP.status
 end
 
 return FP
@@ -37409,13 +37203,13 @@ end
 -- EXPLOIT > EXPLOIT > FIGHT PARTY
 --
 -- One toggle and one radius slider, installed at the top of the Exploit tab
--- after the flash rows exist. The module copies every OTHER ped in the ring
--- into a local, non-networked clone, hides the source on this client only, and
--- pairs the clones with TASK_COMBAT_PED as an unarmed brawl. There is no
--- synchronised scene, no network event, no remote task and no damage write; a
--- dead clone is replaced, and stop deletes the clones and restores the source
--- peds. The operator is never a subject, attacker or target. The module owns
--- its rows so a re-injection cannot duplicate them.
+-- after the flash rows exist. The module drives the real player peds through a
+-- host resource the server already trusts: cmg2_animations:sync for the raw
+-- melee pair, or ServerValidEmote for the dpemotes punch/punched pair. The
+-- target client animates and moves itself; this executor only injects the
+-- host event chunk. There is no clone, no new networked entity, no
+-- synchronised scene, no remote task and no damage write. The module owns its
+-- rows so a re-injection cannot duplicate them.
 -- ---------------------------------------------------------------------------
 local function installFightParty()
     return FP.install()
@@ -39790,7 +39584,7 @@ end
 -- BOOT
 -- ---------------------------------------------------------------------------
 function UI.boot()
-    O.log("loader build 2026-11-09-r73 (Air movement: No Clip disables the ped collision (SET_ENTITY_COLLISION), restored on stop and on every cover hold, so a map prop cannot torque, block or drop the body; the flat pose is applied once and repaired only by the real-ragdoll handler instead of a 120 ms clear/re-layer loop that restarted the clip and made the body spin; a one-metre approach buffer keeps a two-metre floor; ped gravity and the collision-only ragdoll flags are re-asserted every 250 ms; the global ragdoll flag is left enabled so CAN_PED_RAGDOLL stays 1; a 100 ms vertical and forward shape-test probe lifts the written velocity over a prop that the ground-height native cannot see; the No Clip horizontal target carries a 3 % dither so the guard's NC_oldSpeed == playerSpeed clause cannot match; Space/Ctrl are disabled as game controls on every scheduler frame while armed so a parachute cannot deploy, a mid-session parachute state is cleared and the pose re-layered instead of stopping the session, the native cover layer is revalidated every 2.5 s so a read that was genuine at arm and later went false is hooked instead of trusted stale, and ragdoll-from-player-impact is disabled while armed and restored on stop; native particle call carries all four axis flags; load-time preload removed; Stage B graft disabled by default; self and remote share the same filtered particle path; the flash is anchored to the target entity at chest height with a ten-point particle ring for every view angle, moving targets get only a short capped velocity lead, and high-speed targets get a capped scale boost; selected self is honored only when it is the sole target, and is excluded whenever a remote target is selected; Flash moved to Online > Troll > Attacks with Burnout Ember and Acid Green only; the selected method is read live; the WaveShield V4 particle configuration is read from GlobalState and scr_wheel_burnout and scr_alien_teleport are emitted only when rcore_spray/WaveAdmin put them in the static table, dynamic camera parts are sent only from the executor with assetHash stripped on ptFxEvent, and Stage B graft remains available but is disabled by default, so statically safe parts are emitted from the executor without a host injection; particle scale is capped at MaxParticleScale and each pulse sends up to three base parts plus a ten-point ring on a solo target with no minimum range; a one-player server never fabricates a server event; the retired Exploit Flash tab is removed; Search magnifier handle rebuilt as a fused diagonal instead of three dots; White keeps the wbYgWhZ banner and Cyan restores its original 3HLMxX5 banner; Online Props Player row sorts the player list by distance and always targets the nearest player; Launch Player selector offers Method 1 and Method 2; Method 1 drives the victim ped directly when control is available and otherwise reverse-attaches the victim to the local ped within 3 m; Method 2 uses a range-free injected coordinate lift plus repeated upward force and velocity for servers that ignore Method 1; launch has no vehicle or explosion; hardened Susano ragdoll keeps the victim speed check lenient; self launch uses 58 m/s with GET_ENTITY_SPEED masked by the stealth hook; velocity and settle waits carry jitter; tight bold category chevrons; Troll Appearance section and Copy Appearance row removed; All mode Include me toggle adds the local ped alongside remote targets; Props Player row hidden in Self and All modes; attachment rows Attach to player and Attach point removed; target labels Self/Player/All; automatic player refresh sorts by distance and selects nearest; manual Refresh player list removed; Ban Player beta suffix removed; Servers and Bypass tabs moved from Destroyer to Misc; FOV moved from Visual/Camera to Self under Big Weapon; theme banners bottom-anchored flush on the category plate; White uses wbYgWhZ and Cyan uses 3HLMxX5; White/Cyan theme selector; White 3:1 header and Cyan 4.1:1 header; flush tab strip; light-grey cell tab plate; dark selected category rectangle; uniform unselected categories; reference names Self/Online/Vehicle/Weapon/Destroyer/Misc/Settings/Search; Search category opens the prompt directly and lands on results; compact magnifier; tight bold category chevron pair; full-white section rules fitted to the label width; Target keeps only the Ctrl hint; Player Props folded into Online; 15px right-aligned slider readout; target-bound toggles reset on target change/unload; dark row plates; white toggle/scrollbar; footer centre mark removed; Delete/Backspace close; Ped Crasher reads the CPed pool at model, owner and burst level, culls story-player clones and corrupt models on sight, marks an owner hostile after five new non-player peds in five seconds, requests control then deletes the local copy, scans every 25 ms from softCount, and the new opt-in Ped event filter row blocks inbound crash/spawn event names through BlockServerEvent; Ped Flood now preflights the target inside a 250 m streamed band, marks each spawned ped as a mission entity so the sender copy survives at the target position, spawns at the target Z band on roofs, and the Ped Crasher exempts the operator's own active flood within 30 m of the selected target so the defense no longer deletes the outgoing attack; the player card car glyph is stretched vertically, and the selected tab plate reuses the scrollbar thumb colour so both whites match; the Cyan banner is inset inside the header frame and the Cyan header height matches its 1032x252 aspect so the image fills the frame without side bands; Fight Party is now a networked unarmed clone brawl: CLONE_PED(isNetwork=true) copies each ped, SET_NETWORK_ID_CAN_MIGRATE pins the clone to the operator, TASK_COMBAT_PED drives the clone so punches and ragdoll replicate, the source is hidden locally and through NetworkSetEntityInvisibleToNetwork, ownership is re-requested only when lost, and stop deletes the clones and restores both source flags; the player card and list badge share one vehicle glyph box, and the home badge now uses the embedded house texture and only marks default apartment interiors or a replicated property state key, never a tunnel; a one-player ring now copies the operator as the second fighter instead of refusing, stale Party rows are swept from ExtraCategories, and the radius readout is re-synced to the live value on every start/stop)")
+    O.log("loader build 2026-11-09-r74 (Air movement: No Clip disables the ped collision (SET_ENTITY_COLLISION), restored on stop and on every cover hold, so a map prop cannot torque, block or drop the body; the flat pose is applied once and repaired only by the real-ragdoll handler instead of a 120 ms clear/re-layer loop that restarted the clip and made the body spin; a one-metre approach buffer keeps a two-metre floor; ped gravity and the collision-only ragdoll flags are re-asserted every 250 ms; the global ragdoll flag is left enabled so CAN_PED_RAGDOLL stays 1; a 100 ms vertical and forward shape-test probe lifts the written velocity over a prop that the ground-height native cannot see; the No Clip horizontal target carries a 3 % dither so the guard's NC_oldSpeed == playerSpeed clause cannot match; Space/Ctrl are disabled as game controls on every scheduler frame while armed so a parachute cannot deploy, a mid-session parachute state is cleared and the pose re-layered instead of stopping the session, the native cover layer is revalidated every 2.5 s so a read that was genuine at arm and later went false is hooked instead of trusted stale, and ragdoll-from-player-impact is disabled while armed and restored on stop; native particle call carries all four axis flags; load-time preload removed; Stage B graft disabled by default; self and remote share the same filtered particle path; the flash is anchored to the target entity at chest height with a ten-point particle ring for every view angle, moving targets get only a short capped velocity lead, and high-speed targets get a capped scale boost; selected self is honored only when it is the sole target, and is excluded whenever a remote target is selected; Flash moved to Online > Troll > Attacks with Burnout Ember and Acid Green only; the selected method is read live; the WaveShield V4 particle configuration is read from GlobalState and scr_wheel_burnout and scr_alien_teleport are emitted only when rcore_spray/WaveAdmin put them in the static table, dynamic camera parts are sent only from the executor with assetHash stripped on ptFxEvent, and Stage B graft remains available but is disabled by default, so statically safe parts are emitted from the executor without a host injection; particle scale is capped at MaxParticleScale and each pulse sends up to three base parts plus a ten-point ring on a solo target with no minimum range; a one-player server never fabricates a server event; the retired Exploit Flash tab is removed; Search magnifier handle rebuilt as a fused diagonal instead of three dots; White keeps the wbYgWhZ banner and Cyan restores its original 3HLMxX5 banner; Online Props Player row sorts the player list by distance and always targets the nearest player; Launch Player selector offers Method 1 and Method 2; Method 1 drives the victim ped directly when control is available and otherwise reverse-attaches the victim to the local ped within 3 m; Method 2 uses a range-free injected coordinate lift plus repeated upward force and velocity for servers that ignore Method 1; launch has no vehicle or explosion; hardened Susano ragdoll keeps the victim speed check lenient; self launch uses 58 m/s with GET_ENTITY_SPEED masked by the stealth hook; velocity and settle waits carry jitter; tight bold category chevrons; Troll Appearance section and Copy Appearance row removed; All mode Include me toggle adds the local ped alongside remote targets; Props Player row hidden in Self and All modes; attachment rows Attach to player and Attach point removed; target labels Self/Player/All; automatic player refresh sorts by distance and selects nearest; manual Refresh player list removed; Ban Player beta suffix removed; Servers and Bypass tabs moved from Destroyer to Misc; FOV moved from Visual/Camera to Self under Big Weapon; theme banners bottom-anchored flush on the category plate; White uses wbYgWhZ and Cyan uses 3HLMxX5; White/Cyan theme selector; White 3:1 header and Cyan 4.1:1 header; flush tab strip; light-grey cell tab plate; dark selected category rectangle; uniform unselected categories; reference names Self/Online/Vehicle/Weapon/Destroyer/Misc/Settings/Search; Search category opens the prompt directly and lands on results; compact magnifier; tight bold category chevron pair; full-white section rules fitted to the label width; Target keeps only the Ctrl hint; Player Props folded into Online; 15px right-aligned slider readout; target-bound toggles reset on target change/unload; dark row plates; white toggle/scrollbar; footer centre mark removed; Delete/Backspace close; Ped Crasher reads the CPed pool at model, owner and burst level, culls story-player clones and corrupt models on sight, marks an owner hostile after five new non-player peds in five seconds, requests control then deletes the local copy, scans every 25 ms from softCount, and the new opt-in Ped event filter row blocks inbound crash/spawn event names through BlockServerEvent; Ped Flood now preflights the target inside a 250 m streamed band, marks each spawned ped as a mission entity so the sender copy survives at the target position, spawns at the target Z band on roofs, and the Ped Crasher exempts the operator's own active flood within 30 m of the selected target so the defense no longer deletes the outgoing attack; the player card car glyph is stretched vertically, and the selected tab plate reuses the scrollbar thumb colour so both whites match; the Cyan banner is inset inside the header frame and the Cyan header height matches its 1032x252 aspect so the image fills the frame without side bands; Fight Party now drives the real player peds through a host-resource graft: cmg2_animations:sync attaches and animates the target with the native melee dictionary, dpemotes ServerValidEmote relays the punch/punched shared pair, and the executor only injects the host event chunk, so no clone, no new networked entity, no synchronised scene, no remote task and no damage write; the player card and list badge share one vehicle glyph box, and the home badge now uses the embedded house texture and only marks default apartment interiors or a replicated property state key, never a tunnel; a one-player ring now engages that player directly instead of refusing, stale Party rows are swept from ExtraCategories, the radius readout is re-synced to the live value on every start/stop, and the provider, the injected resource and the attack count are written to the log)")
     O.thread()
 
     -- Delete/Backspace fallback poll. 40 ms is faster than a frame at 30 FPS
