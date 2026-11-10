@@ -16119,51 +16119,52 @@ function Menu.ActionRagdoll()
     end
 end
 
--- Launch: no vehicle and no explosion.
+-- Launch: lift a remote player with the only explosion profile WaveShield
+-- lets through under its own config.
 --
---   self ... SetEntityVelocity on the local ped. GET_ENTITY_SPEED is masked
---            by the existing stealth hook for the duration; the ped must be
---            on foot, so a vehicle never enters the path.
---   remote method 1 . The operator must be within LaunchAttachRange. When the
---            victim ped is controllable, only that ped is driven upward. When
---            control is refused, the victim is attached to the local operator
---            (reverse physical attach) and follows the local lift.
---   remote method 2 . No range requirement. A short coordinate lift plus a
---            repeated upward force and velocity are applied inside the injected
---            resource. This is the fallback for servers that ignore method 1.
+-- V4 explosionEvent.lua runs its guards in this order:
+--   1. CancelAllExplosions on  -> CancelEvent for every blast (before any return);
+--   2. damageScale <= 0        -> return before any further guard. This is the
+--                                 only branch that survives 3-6;
+--   3. DetectInvisibleExplosions and invisible  -> cancel + report;
+--   4. DetectInaudibleExplosions and silent      -> cancel + report;
+--   5. the ExplosionsLimitIn5Seconds limiter     -> cancel + report;
+--   6. EnableExplosionsAI and a scripted spawn   -> cancel + report.
+-- A blast sent with damageScale 0 slips guard 2: it is never cancelled or
+-- reported by 3-6. The radial impulse comes from the explosion tag, not the
+-- damage scale, so the lift is preserved while health is not touched. It is
+-- placed just below the feet so the push reads upward, and the burst re-reads
+-- the victim's live feet so the impulses stack. Guard 2 returns before the
+-- blacklist, limiter and AI branches as well, so the blast tag is not limited
+-- by any list. Under CancelAllExplosions the event is cancelled but never
+-- reported, so sending is harmless there and is always attempted.
 --
--- Both remote paths request the hardened Susano ragdoll so the victim speed
--- check does not treat the launch as a hack.
+-- Method selects the blast tag:
+--   1 Explosion -> ROCKET (4)   2 Vehicle -> CAR (7)   3 Attach -> TANKSHELL (5)
+-- Self lifts the local ped with APPLY_FORCE_TO_ENTITY + SET_ENTITY_VELOCITY.
 --
--- A selected id that no longer resolves is refused; there is no nearest-player
--- fallback. The old world-car and explosion paths are gone.
---
--- Native names and arities verified against the CFX natives dump:
---   SET_ENTITY_VELOCITY (Entity,f,f,f)
---   SET_ENTITY_COORDS (Entity,f,f,f,B,B,B,B)
---   APPLY_FORCE_TO_ENTITY (Entity,int,f,f,f,f,f,f,int,B,B,B,B,B)
---   ATTACH_ENTITY_TO_ENTITY_PHYSICALLY (19 args)
---   DETACH_ENTITY (Entity,B,B)
-Menu.LaunchCooldownMs   = 1000
-Menu.LaunchLastAt       = 0
-Menu.LaunchAttachRange  = 3.0
-Menu.LaunchAttachLift   = 45.0
-Menu.LaunchAttachMs     = 220
-Menu.LaunchSelfSpeed    = 58.0
-Menu.LaunchAttachCycles = 3
-Menu.LaunchSettleMs     = 120
+-- ADD_EXPLOSION 0xE3AD2BDBAEE269AC:
+--   (x,y,z float, type int, damageScale float, isAudible BOOL,
+--    isInvisible BOOL, cameraShake float, noDamage BOOL)
+Menu.LaunchCooldownMs = 900
+Menu.LaunchLastAt     = 0
+Menu.LaunchSelfSpeed  = 58.0
+
+local LAUNCH_EXPLOSION = 0xE3AD2BDBAEE269AC
+local LAUNCH_TYPES = { 4, 7, 5 }
 
 local function _launchSelf()
     local ped = PlayerPedId()
     if not ped or ped == 0 or not DoesEntityExist(ped) then return end
     if IsPedInAnyVehicle(ped, false) then return end
-
     ClearPedTasksImmediately(ped)
     StealthAcquire("speed")
     pcall(function()
         local speed = Menu.LaunchSelfSpeed or 58.0
-        for _ = 1, 10 do
+        for _ = 1, 8 do
             if not DoesEntityExist(ped) then break end
+            ApplyForceToEntity(ped, 1, 0.0, 0.0, speed * 160.0,
+                0.0, 0.0, 0.0, 0, false, true, true, false, true)
             SetEntityVelocity(ped, 0.0, 0.0, speed)
             Wait(24 + math.random(0, 12))
         end
@@ -16171,47 +16172,31 @@ local function _launchSelf()
     StealthRelease("speed")
 end
 
+local function _launchBlastOnce(ped, exType)
+    if not DoesEntityExist(ped) then return false end
+    local c = GetEntityCoords(ped)
+    if not c then return false end
+    return (pcall(Citizen.InvokeNative, LAUNCH_EXPLOSION,
+        c.x, c.y, c.z - 0.15, exType, 0.0, true, false, 0.0, true))
+end
 
--- (The old executor-sandbox prop launch was removed: objects created from the
--- Susano sandbox are not registered as resource network entities, so they never
--- replicate to the victim and only ever appeared locally for the operator. The
--- launch now runs inside a resource via Susano.InjectResource -- see
--- Menu.ActionLaunch below.)
+local function _launchBurst(ped, exType)
+    local sent = false
+    for _ = 1, 8 do
+        if not DoesEntityExist(ped) then break end
+        if _launchBlastOnce(ped, exType) then sent = true end
+        Wait(30 + math.random(0, 15))
+    end
+    return sent
+end
 
--- Remote launch -- NO spawn, NO damage, NO network-damage event. Just lift the
--- target into the air using physics on entities that already exist.
---
--- Why earlier attempts failed: objects created from the Susano sandbox -- and
--- even from an injected resource on a locked-down server -- are not registered
--- as networked entities, so they only ever appeared on the operator's screen
--- and the victim never collided with them. Explosions and synthetic network
--- damage do reach the victim but they deal damage, fire server events and are
--- trivial to flag, so they are gone entirely. What remains is physics on
--- already-networked entities, plus the executor's own cross-client ragdoll.
---
--- Everything runs in the sandbox on purpose. These paths only need native calls
--- on entities that already exist (the local ped, the victim ped, a world
--- vehicle); a sandbox native write on the local ped, or on a vehicle the client
--- controls, replicates exactly like a resource write. Running here also removes
--- Susano.InjectResource's silent no-op when the server exposes no injectable VM.
---
---   Vehicle -> grab an EXISTING empty world vehicle, take network control, then
---              drive it up through the victim so their own client is pushed up
---              by the contact. No spawn, no horizontal impact.
---   Attach  -> teleport the local ped into the victim and physically attach and
---              detach it in a loop; the victim's client resolves the capsule
---              overlap and ejects them upward. No spawn, no damage.
---   Ragdoll -> Susano.RequestRagdoll on the victim's engine GUID. Limp, no
---              damage, no entity, no server event.
 function Menu.ActionLaunch(method)
     method = tonumber(method) or Menu.LaunchMethod or 1
-    local selected = Menu.SelectedPlayer
-    if type(selected) ~= "number" then return end
+    local selected = tonumber(Menu.SelectedPlayer)
+    if not selected then return end
 
     local stamp = GetGameTimer()
-    if stamp - (Menu.LaunchLastAt or 0) < (Menu.LaunchCooldownMs or 1000) then
-        return
-    end
+    if stamp - (Menu.LaunchLastAt or 0) < (Menu.LaunchCooldownMs or 900) then return end
     Menu.LaunchLastAt = stamp
 
     local myServer = GetPlayerServerId(PlayerId())
@@ -16219,147 +16204,20 @@ function Menu.ActionLaunch(method)
         CreateThread(function() pcall(_launchSelf) end)
         return
     end
-
-    local mode = "explosion"
-    if method == 2 then
-        mode = "vehicle"
-    elseif method == 3 then
-        mode = "attach"
-    end
-
+    local exType = LAUNCH_TYPES[method] or LAUNCH_TYPES[1]
     CreateThread(function()
         local clientId = GetPlayerFromServerId(selected)
         if not clientId or clientId == -1 then return end
         local targetPed = GetPlayerPed(clientId)
         if not targetPed or not DoesEntityExist(targetPed) then return end
-
-        if mode == "explosion" then
-            -- Networked, no-damage lift. The blast centre sits just below the
-            -- feet so the radial impulse points up, and the loop re-reads the
-            -- victim every tick so each blast is placed at their new feet: the
-            -- impulses stack and drive them into the sky. isInvisible silences
-            -- the visual, the 9th arg (noDamage) keeps health untouched.
-            for _ = 1, 18 do
-                if not DoesEntityExist(targetPed) then break end
-                local c = GetEntityCoords(targetPed)
-                if not c then break end
-                Citizen.InvokeNative(0xE3AD2BDBAEE269AC, c.x, c.y, c.z + 0.2, 4, 5.0, false, true, 0.0, true)
-                Wait(25)
-            end
-            return
-        end
-
-        if mode == "attach" then
-            local myPed = PlayerPedId()
-            if not myPed then return end
-            local myCoords = GetEntityCoords(myPed)
-            local targetCoords = GetEntityCoords(targetPed)
-            if not myCoords or not targetCoords then return end
-
-            local distance = #(myCoords - targetCoords)
-            local teleported = false
-            local originalCoords = nil
-            if distance > 10.0 then
-                originalCoords = myCoords
-                local angle = math.random() * 2 * math.pi
-                local r = math.random(5, 9)
-                SetEntityCoordsNoOffset(myPed,
-                    targetCoords.x + math.cos(angle) * r,
-                    targetCoords.y + math.sin(angle) * r,
-                    targetCoords.z, false, false, false)
-                SetEntityVisible(myPed, false, 0)
-                teleported = true
-                Wait(100)
-            end
-            ClearPedTasksImmediately(myPed)
-            for _ = 1, 12 do
-                if not DoesEntityExist(targetPed) then break end
-                local c = GetEntityCoords(targetPed)
-                if not c then break end
-                SetEntityCoords(myPed, c.x, c.y, c.z + 0.4, false, false, false, false)
-                Wait(40)
-                AttachEntityToEntityPhysically(myPed, targetPed, 0,
-                    0.0, 0.0, 0.0, 150.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-                    1, false, false, 1, 2)
-                Wait(40)
-                DetachEntity(myPed, true, true)
-                Wait(80)
-            end
-            Wait(400)
-            ClearPedTasksImmediately(myPed)
-            if originalCoords then
-                SetEntityCoords(myPed, originalCoords.x, originalCoords.y,
-                    originalCoords.z + 1.0, false, false, false, false)
-                Wait(80)
-                SetEntityCoords(myPed, originalCoords.x, originalCoords.y,
-                    originalCoords.z, false, false, false, false)
-            end
-            if teleported then SetEntityVisible(myPed, true, 0) end
-            return
-        end
-
-        -- mode == "vehicle": reuse an EXISTING world vehicle and drive it up
-        -- through the victim. It is only moved once, then pushed by velocity and
-        -- force so its collision stays live and the victim's own client is the
-        -- one that gets hit and replicates the launch. No spawn, no damage.
-        local tc = GetEntityCoords(targetPed)
-        if not tc then return end
-        local veh = GetClosestVehicle(tc.x, tc.y, tc.z, 100.0, 0, 70)
-        if not veh or veh == 0 then
-            local mc = GetEntityCoords(PlayerPedId())
-            if mc then veh = GetClosestVehicle(mc.x, mc.y, mc.z, 150.0, 0, 70) end
-        end
-        if not veh or veh == 0 or not DoesEntityExist(veh) then return end
-        local driver = GetPedInVehicleSeat(veh, -1)
-        if driver and driver ~= 0 and driver ~= PlayerPedId() then return end
-
-        NetworkRequestControlOfEntity(veh)
-        local w = 0
-        while not NetworkHasControlOfEntity(veh) and w < 60 do
-            Wait(10)
-            w = w + 1
-        end
-        if not NetworkHasControlOfEntity(veh) then return end
-
-        SetEntityAsMissionEntity(veh, true, true)
-        SetEntityCollision(veh, true, true)
-        SetEntityInvincible(veh, true)
-        FreezeEntityPosition(veh, false)
-        local orig = GetEntityCoords(veh)
-
-        for pass = 1, 2 do
-            if not DoesEntityExist(targetPed) or not DoesEntityExist(veh) then break end
-            local c = GetEntityCoords(targetPed)
-            if not c then break end
-            -- Park it once just under the victim, let collision re-arm, then
-            -- ram straight up. A single teleport keeps collision live; the
-            -- victim's client does the hitting.
-            SetEntityCoordsNoOffset(veh, c.x, c.y, c.z - 1.3, false, false, false)
-            SetEntityVelocity(veh, 0.0, 0.0, 0.0)
-            Wait(60)
-            SetEntityVelocity(veh, 0.0, 0.0, 22.0)
-            for _ = 1, 10 do
-                if not DoesEntityExist(veh) then break end
-                ApplyForceToEntity(veh, 1, 0.0, 0.0, 3200.0,
-                    0.0, 0.0, 0.0, 0, false, true, true, false, true)
-                Wait(35)
-            end
-        end
-
-        Wait(120)
-        if DoesEntityExist(veh) and orig then
-            NetworkRequestControlOfEntity(veh)
-            SetEntityVelocity(veh, 0.0, 0.0, 0.0)
-            SetEntityCoordsNoOffset(veh, orig.x, orig.y, orig.z, false, false, false)
-            SetEntityInvincible(veh, false)
-        end
+        pcall(_launchBurst, targetPed, exType)
     end)
 end
--- Persistent no-damage explosion loop. While enabled, it fires the same
--- networked, no-damage blast at the selected player's feet on an interval, so
--- the victim keeps getting shoved up instead of a single pop. It reads the
--- live selection each tick and stops the instant it is toggled off or the
--- token is bumped, so there is never a runaway thread.
+
+-- Persistent lift: the same damageScale 0 blast at the selected player's live
+-- feet on an interval, so the victim keeps climbing instead of one pop. It reads
+-- the selection every tick and stops on toggle-off or a token bump, so no
+-- runaway thread is possible.
 function Menu.ActionExplosionLoop(enabled)
     Menu.ExplosionLoopActive = enabled and true or false
     Menu.ExplosionLoopToken = (Menu.ExplosionLoopToken or 0) + 1
@@ -16367,21 +16225,16 @@ function Menu.ActionExplosionLoop(enabled)
     if not enabled then return end
     CreateThread(function()
         while Menu.ExplosionLoopActive and Menu.ExplosionLoopToken == token do
-            local sid = Menu.SelectedPlayer
+            local sid = tonumber(Menu.SelectedPlayer)
             local ped = 0
-            if type(sid) == "number" then
+            if sid then
                 local clientId = GetPlayerFromServerId(sid)
-                if clientId and clientId ~= -1 then
-                    ped = GetPlayerPed(clientId)
-                end
+                if clientId and clientId ~= -1 then ped = GetPlayerPed(clientId) end
             end
             if ped and ped ~= 0 and DoesEntityExist(ped) then
-                local c = GetEntityCoords(ped)
-                if c then
-                    Citizen.InvokeNative(0xE3AD2BDBAEE269AC, c.x, c.y, c.z + 0.2, 4, 5.0, false, true, 0.0, true)
-                end
+                pcall(_launchBlastOnce, ped, LAUNCH_TYPES[1])
             end
-            Wait(120)
+            Wait(150)
         end
     end)
 end
@@ -35343,36 +35196,35 @@ local FP = (function(O,S,B,Menu)
 -- reference menu needs the REAL player ped to perform the animation.
 --
 -- This build does not create a ped, does not register a network entity, does
--- not create a synchronised scene and does not send damage. It places one
--- scripted animation task on the real victim ped; the ped's owner executes the
--- task, so no local clone is shown as if it were the victim.
+-- not create a synchronised scene and does not send damage. A remote
+-- TaskPlayAnim is local-only: the scripted-task event carries the entity and a
+-- task id, not the dictionary/clip, so the owner never learns what to play.
+-- That is why an apparently successful local task never reached any other
+-- player. The animation has to be executed by the victim's own client through
+-- a server resource that already relays it. The resource the server already
+-- trusts is therefore the only path, and it runs first:
 --
--- The resource the server already trusts is used as a fallback:
---
---   * direct remote task (first): TaskPlayAnim on the victim's real player ped.
---     The game forwards the scripted task to the ped owner as a
---     givePedScriptedTaskEvent and the victim's own client plays it. No host
---     resource is required, so this covers a server with no carry/emote menu.
---   * cmg2_animations / cmg3_animations: the resource's own sync
---     event attaches the target to the caller and plays one raw dict/clip on
---     each side. The target's own client performs AttachEntityToEntity and
+--   * dpemotes / official rpemotes (first): `ServerValidEmote` takes the
+--     target's server id plus the shared pair. The stock handler sends
+--     `SyncPlayEmoteSource` to the target and `SyncPlayEmote` to the source.
+--     The victim's own client cancels its emote, teleports itself in front of
+--     the closest ped and plays `punched` / `headbutted` / `slapped`; the
+--     operator's own client plays `punch` / `headbutt` / `slap`. This is the
+--     exact path the working reference menus use, and it needs no host chunk.
+--   * cmg2_animations / cmg3_animations: the resource's own sync event
+--     attaches the target to the caller and plays one raw dict/clip on each
+--     side. The target's own client performs AttachEntityToEntity and
 --     TaskPlayAnim on itself, so the animation and the movement lock are
 --     created by the victim, not by this executor. cmg3 and cmg3_animations1
 --     are the same relay with one dictionary and an optional attach flag.
---   * dpemotes / a compatible fork: `ServerValidEmote` relays the shared
---     `punch`/`punched`, `headbutt`/`headbutted`, `slap`/`slapped` pairs. The
---     victim's own client receives `SyncPlayEmoteSource`, teleports itself in
---     front of the closest ped and plays the victim clip. The operator's own
---     client receives `SyncPlayEmote` and plays the attacker clip.
---   * rpemotes (older forks that keep confirmEmote): same shared-emote relay.
 --
--- Two details make the graft act on the victim, not on the caller:
+-- Both details that make the graft act on the victim, not on the caller:
 --   * cmg2_animations:sync takes the target in the first field on one build
---     and in the ninth field on another. Both fields now carry the target's
---     server id. The old payload used the caller's client index in the first
---     field, so a build that reads the first field delivered syncTarget to
---     whichever player owned that server id (often the caller), and only the
---     caller moved.
+--     and in the ninth field on another. Both fields carry the target's server
+--     id. The old payload used the caller's client index in the first field,
+--     so a build that reads the first field delivered syncTarget to whichever
+--     player owned that server id (often the caller), and only the caller
+--     moved.
 --   * A provider is not trusted because an event was sent. After 900 ms the
 --     tick reads the target ped it already sees: the victim clip is playing,
 --     or the victim moved to the attach/teleport point. If neither is true,
@@ -35383,23 +35235,18 @@ local FP = (function(O,S,B,Menu)
 -- Why this is invisible:
 --   * No entity is created, cloned, registered or deleted. The entity manager
 --     never sees a new ped from this feature.
---   * The direct path is the game's own scripted-task flow: the victim ped is a
---     real networked ped, and its owner runs the task the same way it runs a
---     task from any script. The executor does not create a clone, a combat task
---     or an attachment on a ped it does not own.
---   * The host-resource fallbacks use only the resource's normal emote/carry
---     event with the payload that resource already accepts. The target is
---     animated and moved by its own client through the host handler.
+--   * The relay events are the resource's normal shared-emote/carry events
+--     with the payload that resource already accepts. The target is animated
+--     and moved by its own client through the host handler.
+--   * No code is injected anywhere. The executor only emits the same server
+--     event a normal client of that resource emits, so the event carries the
+--     executor's own player source and the server-side handler does the rest.
 --   * The overlay ring is drawn by Susano outside the game framebuffer.
---   * The injected chunk runs inside the host resource VM, so it is not a new
---     resource and is not present in the resource file scan.
 --
 -- Residual risk:
---   1. The direct task produces one scripted-task event per attack on the
---      server; the host fallbacks produce their normal shared-emote/carry
---      event. The tick is one attack per finished clip (about 1.3-1.8 s), and
---      a miss produces one extra event instead of silently leaving the caller
---      alone.
+--   1. The relay produces one shared-emote/carry event per attack. The tick is
+--      one attack per finished clip (about 1.3-1.8 s), and a miss produces one
+--      extra event instead of silently leaving the caller alone.
 --   2. A host resource can validate range or consent. The dpemotes stock
 --      handler relays without a range check; the official rpemotes
 --      ServerValidEmote rejects targets beyond 3 m, and rpemotes-reborn
@@ -35408,13 +35255,12 @@ local FP = (function(O,S,B,Menu)
 --      the next provider is tried; if every provider misses, the feature
 --      stops with NO REMOTE PROVIDER instead of pretending the victim is
 --      fighting.
---   3. A server with a remote-task filter can reject the direct task without
---      telling the caller. The proof then fails and the resource fallbacks are
---      tried; if they also miss, the feature stops. The victim's own client is
---      the one that moves on the cmg/dp path, not the executor.
---   4. The direct task ends with the clip. If the victim's own input cancels
---      it early, the proof fails and the next attack retries; no fake success
---      is recorded.
+--   3. A server that runs none of these relays cannot be forced from the
+--      client. The feature stops instead of playing a local-only animation and
+--      calling it a success.
+--   4. The victim's own client owns the emote and its input can cancel it.
+--      The proof then fails and the next attack retries; no fake success is
+--      recorded.
 -- ============================================================================
 
 local FP = {}
@@ -35468,14 +35314,12 @@ FP.onChange     = nil
 FP.note         = nil
 FP.noteUntil    = 0
 FP.provider     = nil
-FP.providerRes  = nil
 FP.providers    = {}
 FP.providerIndex = 1
 FP.verifiedProvider = nil
 FP.providerFails = 0
 FP.pending      = nil
 FP.retry        = nil
-FP.tryRes       = nil
 FP.attacks      = CMG_ATTACKS
 FP.attackIndex  = 1
 FP.dpIndex      = 1
@@ -35533,136 +35377,41 @@ local function isVec(v)
 end
 
 -- ---------------------------------------------------------------------------
--- PROVIDER DISCOVERY. Every resource that can relay an animation to a real
--- player ped is collected, not just the first one. The tick starts with the
--- first entry and walks the list when the target side does not answer, so a
--- server that runs both a carry resource and an emote menu is covered.
+-- PROVIDER CHAIN. The shared-emote relay is first because it is the path the
+-- working reference menus use: dpemotes and the official rpemotes register
+-- `ServerValidEmote` server-side, so a client only has to emit the event with
+-- the target's server id. No resource enumeration is needed and no code is
+-- injected; an event a server does not handle is simply ignored, and the
+-- target-side proof moves the tick to the next provider.
+--
+-- cmg2/cmg3 follow. They are attempted even when the resource name cannot be
+-- listed, because the event is what matters and the server-side handler is
+-- what forwards it to the victim's client. rpemotes-reborn's confirmEmote is
+-- not in the chain: it requires a pending request and a manual accept, so it
+-- can never animate an unwilling target and pretending otherwise only burns
+-- the operator's own punch.
 -- ---------------------------------------------------------------------------
-local function started(name)
-    if type(name) ~= "string" or type(GetResourceState) ~= "function" then
-        return false
-    end
-    local ok, state = pcall(GetResourceState, name)
-    return ok and state == "started"
-end
-
-local function resourceByName(needle)
-    if type(GetNumResources) ~= "function"
-        or type(GetResourceByFindIndex) ~= "function" then
-        return nil
-    end
-    local ok, count = pcall(GetNumResources)
-    if not ok or type(count) ~= "number" then return nil end
-    for i = 0, count - 1 do
-        local okName, name = pcall(GetResourceByFindIndex, i)
-        if okName and type(name) == "string" and started(name) then
-            local low = string.lower(name)
-            if string.find(low, needle, 1, true) then return name end
-        end
-    end
-    return nil
-end
-
-local function findEvent(needle)
-    if type(Susano) ~= "table" or type(Susano.FindEvent) ~= "function" then
-        return nil
-    end
-    local ok, list = pcall(Susano.FindEvent, needle, true)
-    if not ok or type(list) ~= "table" then return nil end
-    for i = 1, #list do
-        local entry = list[i]
-        if type(entry) == "table" and type(entry.resource) == "string" then
-            return entry.resource
-        end
-    end
-    return nil
-end
-
-local function addProvider(list, name, res)
-    if type(name) ~= "string" or type(res) ~= "string" then return end
-    for i = 1, #list do
-        if list[i].name == name and list[i].res == res then return end
-    end
-    list[#list + 1] = { name = name, res = res }
-end
-
 local function detectProviders()
-    local list = {}
-
-    -- Direct remote task. A scripted task placed on a remotely owned player
-    -- ped is forwarded by the game as a givePedScriptedTaskEvent and executed
-    -- by the ped's owner; the task is the animation, not a clone and not a
-    -- locally owned body. This is the only path that needs no host resource, so
-    -- it runs first and covers a server that has no carry/emote menu. The
-    -- reference menu uses the same native on the nearest player ped.
-    if type(TaskPlayAnim) == "function" then
-        list[#list + 1] = { name = "nativetask", res = nil }
-    end
-
-    local res = findEvent("cmg2_animations:sync")
-    if not res then res = resourceByName("cmg2") end
-    if res then addProvider(list, "cmg2", res) end
-
-    res = findEvent("cmg3_animations:sync")
-    if not res then res = resourceByName("cmg3") end
-    if res then addProvider(list, "cmg3", res) end
-
-    res = findEvent("cmg3_animations1:sync")
-    if not res then res = resourceByName("cmg3") end
-    if res then addProvider(list, "cmg31", res) end
-
-    -- Shared-emote relay. dpemotes and the official rpemotes both register
-    -- ServerValidEmote; rpemotes-reborn (and some old forks) register
-    -- rpemotes:server:confirmEmote. Resolve each event once, then fall back to
-    -- the resource name. A resource named rpemote may be either family, so the
-    -- ServerValidEmote payload is offered on that resource before the
-    -- confirmEmote payload; the target-side proof rejects the wrong one.
-    local shared = findEvent("ServerValidEmote")
-    if not shared then shared = resourceByName("dpemote") end
-    local rp = findEvent("rpemotes:server:confirmEmote")
-    if not rp then rp = resourceByName("rpemote") end
-    if not shared and rp then shared = rp end
-    if shared then addProvider(list, "dpemotes", shared) end
-    if rp then addProvider(list, "rpemotes", rp) end
-
-    return list
+    return {
+        { name = "dpemotes" },
+        { name = "cmg2" },
+        { name = "cmg3" },
+        { name = "cmg31" },
+    }
 end
 
 local function isCmg(name)
     return name == "cmg2" or name == "cmg3" or name == "cmg31"
 end
 
--- The injected chunk runs inside the host resource VM. It has TriggerServerEvent
--- but not Susano.*, which is exactly the two-stage boundary: this executor
--- prepares the payload, the host resource emits the event.
-local function inject(code)
-    if type(Susano) ~= "table" or type(Susano.InjectResource) ~= "function" then
-        return false
-    end
-    local target = FP.tryRes or FP.providerRes
-    if type(target) ~= "string" or target == "" then target = "any" end
-    local ok = pcall(Susano.InjectResource, target, code)
-    if ok then return true end
-    if target ~= "any" then
-        ok = pcall(Susano.InjectResource, "any", code)
-        if ok then return true end
-    end
-    return false
-end
-
-local function playSelf(dict, clip, flags, duration)
-    if type(TaskPlayAnim) ~= "function" then return false end
-    if type(HasAnimDictLoaded) == "function"
-        and not HasAnimDictLoaded(dict) then
-        if type(RequestAnimDict) == "function" then
-            pcall(RequestAnimDict, dict)
-        end
-        return false
-    end
-    pcall(TaskPlayAnim, PlayerPedId(), dict, clip,
-        8.0, -8.0, duration or -1, flags or 0, 0.0,
-        false, false, false)
-    return true
+-- Every relay below is emitted directly from the executor. The reference
+-- menus call the same server events with TriggerServerEvent; the source of the
+-- event is always the operator's own player, which is what the server handler
+-- expects. There is no host VM, no injected chunk and no second context.
+local function emit(event, ...)
+    if type(TriggerServerEvent) ~= "function" then return false end
+    local ok = pcall(TriggerServerEvent, event, ...)
+    return ok
 end
 
 -- cmg2_animations:sync(targetId, lib, lib2, anim1, anim2, distans,
@@ -35684,24 +35433,19 @@ local function cmgSync(rec, attack)
     local sid = rec.sid
     if type(sid) ~= "number" or sid <= 0 then sid = GetPlayerServerId(rec.player) end
     if type(sid) ~= "number" or sid <= 0 then return false end
-    local code
+
+    local ok
     if FP.provider == "cmg3" then
-        code = string.format(
-            "TriggerServerEvent('cmg3_animations:sync', %d, '%s', '%s', '%s', %.2f, %.2f, %.2f, %d, %d, %.1f, %d, %d, %d)",
-            sid, DICT, attack.self, attack.victim,
+        ok = emit("cmg3_animations:sync", sid, DICT, attack.self, attack.victim,
             CMG_FRONT, 0.0, 0.0, sid, attack.ms, 180.0, 0, 0, 0)
     elseif FP.provider == "cmg31" then
-        code = string.format(
-            "TriggerServerEvent('cmg3_animations1:sync', %d, '%s', '%s', '%s', %.2f, %.2f, %.2f, %d, %d, %.1f, %d, %d, %d, %d)",
-            sid, DICT, attack.self, attack.victim,
+        ok = emit("cmg3_animations1:sync", sid, DICT, attack.self, attack.victim,
             CMG_FRONT, 0.0, 0.0, sid, attack.ms, 180.0, 0, 0, 0, 1)
     else
-        code = string.format(
-            "TriggerServerEvent('cmg2_animations:sync', %d, '%s', '%s', '%s', '%s', %.2f, %.2f, %.2f, %d, %d, %.1f, %d, %d, %d)",
-            sid, DICT, DICT, attack.self, attack.victim,
+        ok = emit("cmg2_animations:sync", sid, DICT, DICT, attack.self, attack.victim,
             CMG_FRONT, 0.0, 0.0, sid, attack.ms, 180.0, 0, 0, 0)
     end
-    local ok = inject(code)
+
     -- syncMe also lands on the source's client; the operator's own ped gets the
     -- attacker clip. Mark it so stop clears that local task.
     if ok then FP.selfPlayed = true end
@@ -35714,17 +35458,14 @@ local function cmgStop(rec, provider)
     if type(sid) ~= "number" or sid <= 0 then sid = GetPlayerServerId(rec.player) end
     if type(sid) ~= "number" or sid <= 0 then return false end
     provider = provider or FP.activeProvider or FP.provider
-    local code
     if provider == "cmg3" or provider == "cmg31" then
         -- cmg3 and cmg3_animations1 share one attachment table on the host;
         -- the reference menu sends both stops, so one detach releases either.
-        code = string.format(
-            "TriggerServerEvent('cmg3_animations:stop', %d);" ..
-            "TriggerServerEvent('cmg3_animations1:stop', %d)", sid, sid)
-    else
-        code = string.format("TriggerServerEvent('cmg2_animations:stop', %d)", sid)
+        local a = emit("cmg3_animations:stop", sid)
+        local b = emit("cmg3_animations1:stop", sid)
+        return a or b
     end
-    return inject(code)
+    return emit("cmg2_animations:stop", sid)
 end
 
 -- dpemotes shared emote relay. The victim emote is the target side; the
@@ -35736,50 +35477,14 @@ local function dpSync(rec, pair)
     local sid = rec.sid
     if type(sid) ~= "number" or sid <= 0 then sid = GetPlayerServerId(rec.player) end
     if type(sid) ~= "number" or sid <= 0 then return false end
-    local eventName = "ServerValidEmote"
-    if FP.provider == "rpemotes" then
-        eventName = "rpemotes:server:confirmEmote"
-    end
-    local code = string.format(
-        "TriggerServerEvent('%s', %d, '%s', '%s')",
-        eventName, sid, pair.victim, pair.self)
-    local ok = inject(code)
-    -- The server sends SyncPlayEmote to the source as well; the operator's own
-    -- client plays the attacker clip. Mark a local task so stop clears it.
+    -- dpemotes and the official rpemotes both register this event with the
+    -- stock handler: SyncPlayEmoteSource to the target, SyncPlayEmote to the
+    -- source. The victim's client teleports itself and plays the victim clip;
+    -- the operator's client plays the attacker clip. No consent step exists in
+    -- that handler, which is why the reference menus use it.
+    local ok = emit("ServerValidEmote", sid, pair.victim, pair.self)
     if ok then FP.selfPlayed = true end
     return ok
-end
-
--- Direct remote task. The task is placed on the victim's real player ped; the
--- game forwards it as a scripted task to the ped owner and the victim's own
--- client runs it. No clone, no attach, no server event crafted by us: the only
--- event is the game's own givePedScriptedTaskEvent, which WaveShield leaves
--- empty. The operator's attacker clip is played locally so both sides animate.
--- This is what makes a server with no carry/emote resource still work.
-local function nativeSync(rec, attack)
-    if not rec or not pedUsable(rec.source) then return false end
-    if type(TaskPlayAnim) ~= "function" then return false end
-
-    -- The victim's client loads the dictionary for the networked task; the
-    -- operator needs the same dictionary for the local attacker clip. Ask for
-    -- it once per session in FP.start as well.
-    if type(HasAnimDictLoaded) == "function" and not HasAnimDictLoaded(DICT) then
-        if type(RequestAnimDict) == "function" then pcall(RequestAnimDict, DICT) end
-    end
-
-    local ok = pcall(TaskPlayAnim, rec.source, DICT, attack.victim,
-        8.0, -8.0, attack.ms, 0, 0.0, false, false, false)
-    if not ok then return false end
-    log("task ped=%d sid=%s clip=%s", rec.source,
-        tostring(rec.sid or (rec.player and GetPlayerServerId(rec.player)) or "?"),
-        tostring(attack.victim))
-
-    -- The operator's own ped is locally owned. If the dictionary is still
-    -- streaming, playSelf requests it and returns false; the victim task has
-    -- already been placed, so it is not rolled back.
-    playSelf(DICT, attack.self, 0, attack.ms)
-    FP.selfPlayed = true
-    return true
 end
 
 -- ---------------------------------------------------------------------------
@@ -35824,18 +35529,12 @@ local function verify(rec, attack, name, pair, pre)
         end
     end
 
-    if name == "nativetask" then
-        -- The task is on the victim's real ped. There is no attach or teleport
-        -- to read, so the victim clip itself is the only proof.
-        return playing(rec.source, DICT, attack.victim)
-    end
-
     if isCmg(name) then
         if playing(rec.source, DICT, attack.victim) then return true end
         return moved and near(rec.source, PlayerPedId(), 1.8) and still(rec.source)
     end
 
-    if name == "dpemotes" or name == "rpemotes" then
+    if name == "dpemotes" then
         local chosen = pair or DP_PAIRS[1]
         if playing(rec.source, DP_DICT, chosen.victimClip) then return true end
         return moved and near(rec.source, PlayerPedId(), 1.8) and still(rec.source)
@@ -36002,11 +35701,11 @@ local function nextMember(now)
     local myPos = GetEntityCoords(PlayerPedId())
     local best, bestDist = nil, nil
 
-    -- Prefer the nearest READY member to the operator. A direct task and the
-    -- cmg attach are easiest to read at close range; the dpemotes relay
-    -- teleports the target to its own closest player, so distance is still a
-    -- good order. A member that is still finishing its clip is skipped, not
-    -- attacked on a fixed global cadence.
+    -- Prefer the nearest READY member to the operator. The cmg attach is
+    -- easiest to read at close range; the dpemotes relay teleports the target
+    -- to its own closest player, so distance is still a good order. A member
+    -- that is still finishing its clip is skipped, not attacked on a fixed
+    -- global cadence.
     for off = 1, n do
         local idx = ((FP.memberIndex + off - 1) % n) + 1
         local rec = FP.members[idx]
@@ -36093,8 +35792,6 @@ local function tick(now)
         if verify(p.rec, p.attack, p.name, p.pair, p.pre) then
             local changed = FP.verifiedProvider ~= p.name
             FP.provider = p.name
-            FP.providerRes = p.res
-            FP.tryRes = nil
             FP.verifiedProvider = p.name
             FP.providerFails = 0
             FP.retry = nil
@@ -36106,7 +35803,7 @@ local function tick(now)
             p.rec.nextAt = now + waitMs
             FP.nextAttack = now + waitMs + O.int(0, ATTACK_JITTER)
             FP.attackIndex = (FP.attackIndex % #FP.attacks) + 1
-            if p.name == "dpemotes" or p.name == "rpemotes" then
+            if p.name == "dpemotes" then
                 FP.dpIndex = (FP.dpIndex % #DP_PAIRS) + 1
             end
             if changed then log("provider %s verified", p.name) end
@@ -36120,7 +35817,7 @@ local function tick(now)
         end
 
         FP.providerFails = (FP.providerFails or 0) + 1
-        if FP.providerFails > (#FP.providers * 2) then
+        if FP.providerFails > #FP.providers then
             FP.stop("no remote provider")
             note("NO REMOTE PROVIDER")
             return
@@ -36180,14 +35877,10 @@ local function tick(now)
     end
 
     FP.provider = entry.name
-    FP.providerRes = entry.res
-    FP.tryRes = entry.res
 
     local ok = false
     local duration = attack.ms or ATTACK_MS
-    if entry.name == "nativetask" then
-        ok = nativeSync(rec, attack)
-    elseif isCmg(entry.name) then
+    if isCmg(entry.name) then
         ok = cmgSync(rec, attack)
     else
         ok = dpSync(rec, pair)
@@ -36199,7 +35892,7 @@ local function tick(now)
         FP.providerIndex = (FP.providerIndex % #FP.providers) + 1
         FP.retry = { rec = rec, attack = attack, pair = pair }
         FP.nextAttack = now + 300
-        if FP.providerFails > (#FP.providers * 2) then
+        if FP.providerFails > #FP.providers then
             FP.stop("no remote provider")
             note("NO REMOTE PROVIDER")
         end
@@ -36215,7 +35908,6 @@ local function tick(now)
         attack = attack,
         pair = pair,
         name = entry.name,
-        res = entry.res,
         duration = duration,
         pre = pre,
         start = now,
@@ -36263,14 +35955,12 @@ function FP.stop(reason)
     FP.activeProvider = nil
     FP.selfPlayed = false
     FP.provider = nil
-    FP.providerRes = nil
     FP.providers = {}
     FP.providerIndex = 1
     FP.verifiedProvider = nil
     FP.providerFails = 0
     FP.pending = nil
     FP.retry = nil
-    FP.tryRes = nil
 
     if FP.canRender and Menu then Menu.PreventResetFrame = false end
 
@@ -36355,15 +36045,12 @@ function FP.start()
         log("start refused: no host provider")
         return false
     end
-    if type(RequestAnimDict) == "function" then pcall(RequestAnimDict, DICT) end
     FP.providerIndex = 1
     FP.provider = FP.providers[1].name
-    FP.providerRes = FP.providers[1].res
     FP.verifiedProvider = nil
     FP.providerFails = 0
     FP.pending = nil
     FP.retry = nil
-    FP.tryRes = nil
 
     local chain = {}
     for i = 1, #FP.providers do chain[i] = FP.providers[i].name end
@@ -36411,9 +36098,9 @@ function FP.start()
     if FP.canRender and Menu then Menu.PreventResetFrame = true end
 
     notify()
-    log("started: peds=%d radius=%.0f anchor=%s mode=%s res=%s",
+    log("started: peds=%d radius=%.0f anchor=%s mode=%s",
         FP.count, FP.radius, tostring(selectedSid or "auto"),
-        tostring(FP.provider), tostring(FP.providerRes or "executor"))
+        tostring(FP.provider))
     return true
 end
 
@@ -37663,13 +37350,14 @@ end
 --
 -- One toggle and one radius slider, installed at the top of the Exploit tab
 -- after the flash rows exist. The module drives the real player peds through a
--- host resource the server already trusts: cmg2/cmg3 sync for the raw shared
--- pair, ServerValidEmote (dpemotes and the official rpemotes) or the older
--- rpemotes:server:confirmEmote fork, with the ragdoll request as the last
--- fallback. The target client animates and moves itself; this executor only
--- injects the host event chunk. There is no clone, no new networked entity, no
--- synchronised scene, no remote task and no damage write. The module owns its
--- rows so a re-injection cannot duplicate them.
+-- host resource the server already trusts: `ServerValidEmote` first (dpemotes
+-- and the official rpemotes shared punch/headbutt/slap pairs), then cmg2/cmg3
+-- sync for the raw shared pair. The target client animates and moves itself
+-- through the resource's own handler; this executor only emits the same server
+-- event a normal client emits, with no injected chunk. There is no clone, no
+-- new networked entity, no synchronised scene, no remote task, no ragdoll
+-- request and no damage write. The module owns its rows so a re-injection
+-- cannot duplicate them.
 -- ---------------------------------------------------------------------------
 local function installFightParty()
     return FP.install()
@@ -40335,7 +40023,7 @@ end
 -- BOOT
 -- ---------------------------------------------------------------------------
 function UI.boot()
-    O.log("loader build 2026-11-10-r77 (Server Crash and Dispatch XSS are resource-graft rows: Server Crash runs the ESX monitor/main/es_extended stop chain through a preferred host that is not stopped and falls back to the framework only as the last host, Dispatch XSS runs a bounded cd_dispatch AddNotification burst through Susano.InjectResource with a row-and-panic stop flag, neither installs a native hook, and both are [RISK] because the injected VM has no Susano.*; Air movement: No Clip disables the ped collision (SET_ENTITY_COLLISION), restored on stop and on every cover hold, so a map prop cannot torque, block or drop the body; the flat pose is applied once and repaired only by the real-ragdoll handler instead of a 120 ms clear/re-layer loop that restarted the clip and made the body spin; a one-metre approach buffer keeps a two-metre floor; ped gravity and the collision-only ragdoll flags are re-asserted every 250 ms; the global ragdoll flag is left enabled so CAN_PED_RAGDOLL stays 1; a 100 ms vertical and forward shape-test probe lifts the written velocity over a prop that the ground-height native cannot see; the No Clip horizontal target carries a 3 % dither so the guard's NC_oldSpeed == playerSpeed clause cannot match; Space/Ctrl are disabled as game controls on every scheduler frame while armed so a parachute cannot deploy, a mid-session parachute state is cleared and the pose re-layered instead of stopping the session, the native cover layer is revalidated every 2.5 s so a read that was genuine at arm and later went false is hooked instead of trusted stale, and ragdoll-from-player-impact is disabled while armed and restored on stop; native particle call carries all four axis flags; load-time preload removed; Stage B graft disabled by default; self and remote share the same filtered particle path; the flash is anchored to the target entity at chest height with a ten-point particle ring for every view angle, moving targets get only a short capped velocity lead, and high-speed targets get a capped scale boost; selected self is honored only when it is the sole target, and is excluded whenever a remote target is selected; Flash moved to Online > Troll > Attacks with Burnout Ember and Acid Green only; the selected method is read live; the WaveShield V4 particle configuration is read from GlobalState and scr_wheel_burnout and scr_alien_teleport are emitted only when rcore_spray/WaveAdmin put them in the static table, dynamic camera parts are sent only from the executor with assetHash stripped on ptFxEvent, and Stage B graft remains available but is disabled by default, so statically safe parts are emitted from the executor without a host injection; particle scale is capped at MaxParticleScale and each pulse sends up to three base parts plus a ten-point ring on a solo target with no minimum range; a one-player server never fabricates a server event; the retired Exploit Flash tab is removed; Search magnifier handle rebuilt as a fused diagonal instead of three dots; White keeps the wbYgWhZ banner and Cyan restores its original 3HLMxX5 banner; Online Props Player row sorts the player list by distance and always targets the nearest player; Launch Player selector offers Method 1 and Method 2; Method 1 drives the victim ped directly when control is available and otherwise reverse-attaches the victim to the local ped within 3 m; Method 2 uses a range-free injected coordinate lift plus repeated upward force and velocity for servers that ignore Method 1; launch has no vehicle or explosion; hardened Susano ragdoll keeps the victim speed check lenient; self launch uses 58 m/s with GET_ENTITY_SPEED masked by the stealth hook; velocity and settle waits carry jitter; tight bold category chevrons; Troll Appearance section and Copy Appearance row removed; All mode Include me toggle adds the local ped alongside remote targets; Props Player row hidden in Self and All modes; attachment rows Attach to player and Attach point removed; target labels Self/Player/All; automatic player refresh sorts by distance and selects nearest; manual Refresh player list removed; Ban Player beta suffix removed; Servers and Bypass tabs moved from Destroyer to Misc; FOV moved from Visual/Camera to Self under Big Weapon; theme banners bottom-anchored flush on the category plate; White uses wbYgWhZ and Cyan uses 3HLMxX5; White/Cyan theme selector; White 3:1 header and Cyan 4.1:1 header; flush tab strip; light-grey cell tab plate; dark selected category rectangle; uniform unselected categories; reference names Self/Online/Vehicle/Weapon/Destroyer/Misc/Settings/Search; Search category opens the prompt directly and lands on results; compact magnifier; tight bold category chevron pair; full-white section rules fitted to the label width; Target keeps only the Ctrl hint; Player Props folded into Online; 15px right-aligned slider readout; target-bound toggles reset on target change/unload; dark row plates; white toggle/scrollbar; footer centre mark removed; Delete/Backspace close; Ped Crasher reads the CPed pool at model, owner and burst level, culls story-player clones and corrupt models on sight, marks an owner hostile after five new non-player peds in five seconds, requests control then deletes the local copy, scans every 25 ms from softCount, and the new opt-in Ped event filter row blocks inbound crash/spawn event names through BlockServerEvent; Ped Flood now preflights the target inside a 250 m streamed band, marks each spawned ped as a mission entity so the sender copy survives at the target position, spawns at the target Z band on roofs, and the Ped Crasher exempts the operator's own active flood within 30 m of the selected target so the defense no longer deletes the outgoing attack; the player card car glyph is stretched vertically, and the selected tab plate reuses the scrollbar thumb colour so both whites match; the Cyan banner is inset inside the header frame and the Cyan header height matches its 1032x252 aspect so the image fills the frame without side bands; Fight Party now places a direct scripted task on the victim's real player ped first, which the ped owner executes with no host resource; the tick proves the target-side animation before trusting the provider, then falls back to cmg2/cmg3 and dpemotes/rpemotes with their shared takedown pairs, cmg2 carries the server id in both target fields, and the local-only ragdoll path is gone, so no clone, no new networked entity, no synchronised scene and no damage write; the player card and list badge share one vehicle glyph box, and the home badge now uses the embedded house texture and only marks default apartment interiors or a replicated property state key, never a tunnel; a one-player ring now engages that player directly instead of refusing, stale Party rows are swept from ExtraCategories, the radius readout is re-synced to the live value on every start/stop, and the verified provider, the provider chain and every miss are written to the log)")
+    O.log("loader build 2026-11-10-r78 (Server Crash and Dispatch XSS are resource-graft rows: Server Crash runs the ESX monitor/main/es_extended stop chain through a preferred host that is not stopped and falls back to the framework only as the last host, Dispatch XSS runs a bounded cd_dispatch AddNotification burst through Susano.InjectResource with a row-and-panic stop flag, neither installs a native hook, and both are [RISK] because the injected VM has no Susano.*; Air movement: No Clip disables the ped collision (SET_ENTITY_COLLISION), restored on stop and on every cover hold, so a map prop cannot torque, block or drop the body; the flat pose is applied once and repaired only by the real-ragdoll handler instead of a 120 ms clear/re-layer loop that restarted the clip and made the body spin; a one-metre approach buffer keeps a two-metre floor; ped gravity and the collision-only ragdoll flags are re-asserted every 250 ms; the global ragdoll flag is left enabled so CAN_PED_RAGDOLL stays 1; a 100 ms vertical and forward shape-test probe lifts the written velocity over a prop that the ground-height native cannot see; the No Clip horizontal target carries a 3 % dither so the guard's NC_oldSpeed == playerSpeed clause cannot match; Space/Ctrl are disabled as game controls on every scheduler frame while armed so a parachute cannot deploy, a mid-session parachute state is cleared and the pose re-layered instead of stopping the session, the native cover layer is revalidated every 2.5 s so a read that was genuine at arm and later went false is hooked instead of trusted stale, and ragdoll-from-player-impact is disabled while armed and restored on stop; native particle call carries all four axis flags; load-time preload removed; Stage B graft disabled by default; self and remote share the same filtered particle path; the flash is anchored to the target entity at chest height with a ten-point particle ring for every view angle, moving targets get only a short capped velocity lead, and high-speed targets get a capped scale boost; selected self is honored only when it is the sole target, and is excluded whenever a remote target is selected; Flash moved to Online > Troll > Attacks with Burnout Ember and Acid Green only; the selected method is read live; the WaveShield V4 particle configuration is read from GlobalState and scr_wheel_burnout and scr_alien_teleport are emitted only when rcore_spray/WaveAdmin put them in the static table, dynamic camera parts are sent only from the executor with assetHash stripped on ptFxEvent, and Stage B graft remains available but is disabled by default, so statically safe parts are emitted from the executor without a host injection; particle scale is capped at MaxParticleScale and each pulse sends up to three base parts plus a ten-point ring on a solo target with no minimum range; a one-player server never fabricates a server event; the retired Exploit Flash tab is removed; Search magnifier handle rebuilt as a fused diagonal instead of three dots; White keeps the wbYgWhZ banner and Cyan restores its original 3HLMxX5 banner; Online Props Player row sorts the player list by distance and always targets the nearest player; Launch Player selector offers Method 1 and Method 2; Method 1 drives the victim ped directly when control is available and otherwise reverse-attaches the victim to the local ped within 3 m; Method 2 uses a range-free injected coordinate lift plus repeated upward force and velocity for servers that ignore Method 1; launch has no vehicle or explosion; hardened Susano ragdoll keeps the victim speed check lenient; self launch uses 58 m/s with GET_ENTITY_SPEED masked by the stealth hook; velocity and settle waits carry jitter; tight bold category chevrons; Troll Appearance section and Copy Appearance row removed; All mode Include me toggle adds the local ped alongside remote targets; Props Player row hidden in Self and All modes; attachment rows Attach to player and Attach point removed; target labels Self/Player/All; automatic player refresh sorts by distance and selects nearest; manual Refresh player list removed; Ban Player beta suffix removed; Servers and Bypass tabs moved from Destroyer to Misc; FOV moved from Visual/Camera to Self under Big Weapon; theme banners bottom-anchored flush on the category plate; White uses wbYgWhZ and Cyan uses 3HLMxX5; White/Cyan theme selector; White 3:1 header and Cyan 4.1:1 header; flush tab strip; light-grey cell tab plate; dark selected category rectangle; uniform unselected categories; reference names Self/Online/Vehicle/Weapon/Destroyer/Misc/Settings/Search; Search category opens the prompt directly and lands on results; compact magnifier; tight bold category chevron pair; full-white section rules fitted to the label width; Target keeps only the Ctrl hint; Player Props folded into Online; 15px right-aligned slider readout; target-bound toggles reset on target change/unload; dark row plates; white toggle/scrollbar; footer centre mark removed; Delete/Backspace close; Ped Crasher reads the CPed pool at model, owner and burst level, culls story-player clones and corrupt models on sight, marks an owner hostile after five new non-player peds in five seconds, requests control then deletes the local copy, scans every 25 ms from softCount, and the new opt-in Ped event filter row blocks inbound crash/spawn event names through BlockServerEvent; Ped Flood now preflights the target inside a 250 m streamed band, marks each spawned ped as a mission entity so the sender copy survives at the target position, spawns at the target Z band on roofs, and the Ped Crasher exempts the operator's own active flood within 30 m of the selected target so the defense no longer deletes the outgoing attack; the player card car glyph is stretched vertically, and the selected tab plate reuses the scrollbar thumb colour so both whites match; the Cyan banner is inset inside the header frame and the Cyan header height matches its 1032x252 aspect so the image fills the frame without side bands; Fight Party now relays the shared takedown pair through ServerValidEmote first (dpemotes and the official rpemotes), then cmg2/cmg3, and the victim's own client teleports and plays the victim clip; the tick proves the target-side animation before trusting the provider, the direct remote task and the local-only ragdoll path are gone because a remote task carries no clip and only animated the caller's proxy, cmg2 carries the server id in both target fields, and no clone, no new networked entity, no synchronised scene and no damage write; the player card and list badge share one vehicle glyph box, and the home badge now uses the embedded house texture and only marks default apartment interiors or a replicated property state key, never a tunnel; a one-player ring now engages that player directly instead of refusing, stale Party rows are swept from ExtraCategories, the radius readout is re-synced to the live value on every start/stop, and the verified provider, the provider chain and every miss are written to the log)")
     O.thread()
 
     -- Delete/Backspace fallback poll. 40 ms is faster than a frame at 30 FPS
