@@ -7674,9 +7674,21 @@ local function ToggleForceVehicleEngine(enable)
 end
 
 
+-- Runs a feature body inside the executor sandbox. Susano.InjectResource
+-- queues the chunk into a host resource and silently no-ops when the server
+-- exposes no injectable VM -- the same reason Attach Player and Babayaga moved
+-- off it. The identical body runs here through load/pcall, so its native calls
+-- and globals stay in this VM and the feature works with or without a host.
+local function RunInSandbox(code)
+    local ld = load or rawget(_G, "load")
+    if type(ld) ~= "function" then return false end
+    local fn = ld(code)
+    if not fn then return false end
+    return pcall(fn)
+end
+
 local function ToggleShiftBoost(enable)
-    if type(Susano) == "table" and type(Susano.InjectResource) == "function" then
-        Susano.InjectResource("any", string.format([[
+    RunInSandbox(string.format([[
             if QwErTyUiOpSh == nil then QwErTyUiOpSh = false end
             QwErTyUiOpSh = %s
             
@@ -7698,7 +7710,6 @@ local function ToggleShiftBoost(enable)
                 ZxCvBnMmLl()
             end
         ]], tostring(enable)))
-    end
 end
 
 
@@ -7773,8 +7784,7 @@ end
 
 
 local function ToggleEasyHandling(enable)
-    if type(Susano) == "table" and type(Susano.InjectResource) == "function" then
-        Susano.InjectResource("any", string.format([[
+    RunInSandbox(string.format([[
             _G.EasyHandlingBackup = _G.EasyHandlingBackup or {}
             _G.EasyHandlingEnabled = %s
 
@@ -7851,7 +7861,6 @@ local function ToggleEasyHandling(enable)
                 _G.EasyHandlingBackup = {}
             end
         ]], tostring(enable)))
-    end
 end
 
 Actions.forceEngineItem = FindItem("Vehicle", "Performance", "Force Vehicle Engine")
@@ -8636,10 +8645,6 @@ if Actions.shiftBoostItem then
 end
 
 local function ToggleGravitateVehicle(enable, speed)
-    if type(Susano) ~= "table" or type(Susano.InjectResource) ~= "function" then
-        return
-    end
-    
     if enable then
         speed = speed or 100
         local injectionCode = [[
@@ -8977,7 +8982,7 @@ local function ToggleGravitateVehicle(enable, speed)
             VkEyTrXpZdQl()
         ]]
         
-        Susano.InjectResource("any", injectionCode)
+        RunInSandbox(injectionCode)
     else
         local injectionCode = [[
             PqLmYgZxWvTrHs = false
@@ -9015,7 +9020,7 @@ local function ToggleGravitateVehicle(enable, speed)
             end
         ]]
         
-        Susano.InjectResource("any", injectionCode)
+        RunInSandbox(injectionCode)
     end
 end
 
@@ -9035,15 +9040,13 @@ end
 if Actions.gravitateSpeedItem then
     Actions.gravitateSpeedItem.onClick = function(value)
         if Actions.gravitateVehicleItem and Actions.gravitateVehicleItem.value then
-            if type(Susano) == "table" and type(Susano.InjectResource) == "function" then
-                Susano.InjectResource("any", [[
+            RunInSandbox([[
                     if PqLmYgZxWvTrHs then
                         VehicleMaxSpeed = ]] .. tostring(value) .. [[.0
                         VehicleBaseSpeed = ]] .. tostring(value) .. [[.0
                         VehicleAcceleration = ]] .. tostring(math.max(1.0, value / 100.0)) .. [[
                     end
                 ]])
-            end
         end
     end
 end
@@ -16119,25 +16122,16 @@ function Menu.ActionRagdoll()
     end
 end
 
--- Launch: lift a remote player with the only explosion profile WaveShield
--- lets through under its own config.
+-- Launch: lift a remote player with a networked no-damage explosion burst.
 --
--- V4 explosionEvent.lua runs its guards in this order:
---   1. CancelAllExplosions on  -> CancelEvent for every blast (before any return);
---   2. damageScale <= 0        -> return before any further guard. This is the
---                                 only branch that survives 3-6;
---   3. DetectInvisibleExplosions and invisible  -> cancel + report;
---   4. DetectInaudibleExplosions and silent      -> cancel + report;
---   5. the ExplosionsLimitIn5Seconds limiter     -> cancel + report;
---   6. EnableExplosionsAI and a scripted spawn   -> cancel + report.
--- A blast sent with damageScale 0 slips guard 2: it is never cancelled or
--- reported by 3-6. The radial impulse comes from the explosion tag, not the
--- damage scale, so the lift is preserved while health is not touched. It is
--- placed just below the feet so the push reads upward, and the burst re-reads
--- the victim's live feet so the impulses stack. Guard 2 returns before the
--- blacklist, limiter and AI branches as well, so the blast tag is not limited
--- by any list. Under CancelAllExplosions the event is cancelled but never
--- reported, so sending is harmless there and is always attempted.
+-- An explosion's radial impulse on a ped scales with damageScale, so a
+-- damageScale of 0 is silent AND motionless: it throws nothing. A positive
+-- damageScale is required to actually move the ped. To keep the victim unhurt
+-- the 9th ADD_EXPLOSION argument, noDamage, is set true: the tag blast force
+-- still applies while health is left untouched. The blast is sent inaudible
+-- (no sound), invisible (no blast), placed just below the ped centre of mass
+-- so the push reads upward, and repeated while the live feet are re-read so
+-- the impulses stack into a real launch.
 --
 -- Method selects the blast tag:
 --   1 Explosion -> ROCKET (4)   2 Vehicle -> CAR (7)   3 Attach -> TANKSHELL (5)
@@ -16149,7 +16143,7 @@ end
 Menu.LaunchCooldownMs = 900
 Menu.LaunchLastAt     = 0
 Menu.LaunchSelfSpeed  = 58.0
-Menu.LaunchBlasts     = 10
+Menu.LaunchBlasts     = 14
 Menu.LaunchGapMs      = 25
 
 local LAUNCH_EXPLOSION = 0xE3AD2BDBAEE269AC
@@ -16179,12 +16173,12 @@ local function _launchBlastOnce(ped, exType)
     local c = GetEntityCoords(ped)
     if not c then return false end
     return (pcall(Citizen.InvokeNative, LAUNCH_EXPLOSION,
-        c.x, c.y, c.z - 0.15, exType, 0.0, true, false, 0.0, true))
+        c.x, c.y, c.z + 0.2, exType, 5.0, false, true, 0.0, true))
 end
 
 local function _launchBurst(ped, exType)
     local sent = false
-    local blasts = math.max(1, tonumber(Menu.LaunchBlasts) or 10)
+    local blasts = math.max(1, tonumber(Menu.LaunchBlasts) or 14)
     local gap = math.max(0, tonumber(Menu.LaunchGapMs) or 25)
     for _ = 1, blasts do
         if not DoesEntityExist(ped) then break end
@@ -35412,11 +35406,50 @@ local function isCmg(name)
 end
 
 -- The server event must be emitted from inside a resource VM. WaveShield
--- replaces the client TriggerServerEvent with a wrapper that drops any call
--- whose execution is not a resource, so the executor's own call never leaves
--- the client. Susano.InjectResource runs the same TriggerServerEvent from a
--- host resource, which is exactly what the working reference menus do. The
--- chunk is built here, executed by the injector and never written to disk.
+-- replaces the client TriggerServerEvent with a wrapper that signs the event,
+-- and the server registers the signed name, so the executor's own call never
+-- reaches a handler. Susano.InjectResource runs the same TriggerServerEvent
+-- from a host resource, which is what the working reference menus do. Those
+-- menus inject into `monitor` on this framework; the emote resources and the
+-- framework are the next choices. GetInjectableResources is the only reliable
+-- list, so it is asked first and the preferred names are tried when the list
+-- is empty.
+local HOSTS = {
+    "monitor", "dpemotes", "rpemotes", "framework",
+    "es_extended", "qb-core", "ox_lib", "ox_inventory",
+}
+local emitHost = nil
+
+local function injectableList()
+    local list = {}
+    if type(Susano) == "table" and type(Susano.GetInjectableResources) == "function" then
+        local ok, res = pcall(Susano.GetInjectableResources)
+        if ok and type(res) == "table" then
+            for i = 1, #res do
+                if type(res[i]) == "string" then list[#list + 1] = res[i] end
+            end
+        end
+    end
+    return list
+end
+
+local function pickHost()
+    local list = injectableList()
+    local set = {}
+    for i = 1, #list do set[list[i]] = true end
+    for i = 1, #HOSTS do
+        if set[HOSTS[i]] then return HOSTS[i], list end
+    end
+    if type(GetResourceState) == "function" then
+        for i = 1, #HOSTS do
+            local ok, state = pcall(GetResourceState, HOSTS[i])
+            if ok and state == "started" then return HOSTS[i], list end
+        end
+    end
+    if #list > 0 then return list[1], list end
+    return "any", list
+end
+
 local function emit(event, ...)
     if type(event) ~= "string" then return false end
     local parts = { string.format("%q", event) }
@@ -35432,11 +35465,11 @@ local function emit(event, ...)
     end
     local code = "TriggerServerEvent(" .. table.concat(parts, ", ") .. ")"
     if type(Susano) == "table" and type(Susano.InjectResource) == "function" then
-        local ok = pcall(Susano.InjectResource, "any", code)
-        if ok then return true end
+        local host = emitHost or "any"
+        if pcall(Susano.InjectResource, host, code) then return true end
+        if host ~= "any" and pcall(Susano.InjectResource, "any", code) then return true end
     end
-    -- Last resort for a build without the injector. On the live client
-    -- WaveShield drops this call, so it is not relied on.
+    -- Last resort for a build without the injector.
     if type(TriggerServerEvent) == "function" then
         return pcall(TriggerServerEvent, event, ...)
     end
@@ -35528,15 +35561,6 @@ local function playing(ped, dict, clip)
     return ok and value == true
 end
 
-local function near(ped, other, limit)
-    if type(GetEntityCoords) ~= "function" then return false end
-    local okA, a = pcall(GetEntityCoords, ped)
-    if not okA or not isVec(a) then return false end
-    local okB, b = pcall(GetEntityCoords, other)
-    if not okB or not isVec(b) then return false end
-    return O.distance(a, b) <= (limit or 2.4)
-end
-
 -- A moving target can cross the operator's 1.8 m disk during the proof window
 -- without any provider acting on it. The position fallback therefore also
 -- requires the target to be effectively stopped; the attach/teleport stops the
@@ -35545,6 +35569,21 @@ local function still(ped)
     if type(GetEntitySpeed) ~= "function" then return true end
     local ok, speed = pcall(GetEntitySpeed, ped)
     return ok and type(speed) == "number" and speed < 0.6
+end
+
+-- The operator's own ped is the one entity this client owns, so a local
+-- TaskPlayAnim on it is replicated to every other client. It gives the
+-- operator immediate feedback and makes the attacker side visible even when
+-- the victim relay is silent. It is not a substitute for the target-side
+-- proof and never marks the victim as fighting.
+local function playSelf(clip)
+    if type(clip) ~= "string" or type(TaskPlayAnim) ~= "function" then return end
+    local me = PlayerPedId()
+    if type(me) ~= "number" or me == 0 or not DoesEntityExist(me) then return end
+    if type(IsPedInAnyVehicle) == "function" and IsPedInAnyVehicle(me, false) then return end
+    if type(IsPedDeadOrDying) == "function" and IsPedDeadOrDying(me, true) then return end
+    pcall(RequestAnimDict, DICT)
+    pcall(TaskPlayAnim, me, DICT, clip, 8.0, -8.0, -1, 0, 0.0, false, false, false)
 end
 
 local function verify(rec, attack, name, pair, pre)
@@ -35560,13 +35599,19 @@ local function verify(rec, attack, name, pair, pre)
 
     if isCmg(name) then
         if playing(rec.source, DICT, attack.victim) then return true end
-        return moved and near(rec.source, PlayerPedId(), 1.8) and still(rec.source)
+        -- The cmg handler attaches the target to the caller, so a moved and
+        -- stopped target is the second fact. The operator distance is not
+        -- required: the target's own handler picks the nearest ped.
+        return moved and still(rec.source)
     end
 
     if name == "dpemotes" then
+        -- The dpemotes target handler plays a named emote, not a raw clip, so
+        -- the clip on the target ped is the only trustworthy fact. A moved
+        -- target is not enough: another player can cross the target's spot
+        -- during the window and would credit a relay that never fired.
         local chosen = pair or DP_PAIRS[1]
-        if playing(rec.source, DP_DICT, chosen.victimClip) then return true end
-        return moved and near(rec.source, PlayerPedId(), 1.8) and still(rec.source)
+        return playing(rec.source, DP_DICT, chosen.victimClip)
     end
 
     return false
@@ -35816,6 +35861,14 @@ local function tick(now)
         if now < FP.pending.at then return end
 
         local p = FP.pending
+        if not p.checked then
+            -- One second chance. The target's own handler cancels its emote,
+            -- waits 300 ms and teleports before it plays, so a single 900 ms
+            -- read can land inside that window on a loaded server.
+            p.checked = true
+            p.at = now + 700
+            return
+        end
         FP.pending = nil
 
         if verify(p.rec, p.attack, p.name, p.pair, p.pre) then
@@ -35906,6 +35959,11 @@ local function tick(now)
     end
 
     FP.provider = entry.name
+
+    -- The attacker side is the operator's own networked ped. It always plays,
+    -- so the punch is visible to every client even when the victim relay is
+    -- silent. The victim side still depends on the provider and the proof.
+    playSelf(attack.self)
 
     local ok = false
     local duration = attack.ms or ATTACK_MS
@@ -36080,6 +36138,29 @@ function FP.start()
     FP.providerFails = 0
     FP.pending = nil
     FP.retry = nil
+
+    -- Host selection and a one-shot diagnostic. The log names the injector
+    -- host, the state of every relay resource and the injectable list, so a
+    -- silent relay can be told apart from a missing resource without guessing.
+    local host, injectable = pickHost()
+    emitHost = host
+    log("host: %s", host)
+
+    if type(GetResourceState) == "function" then
+        local names = {
+            "dpemotes", "rpemotes", "cmg2_animations",
+            "cmg3_animations", "cmg3_animations1",
+        }
+        local states = {}
+        for i = 1, #names do
+            local ok, state = pcall(GetResourceState, names[i])
+            states[#states + 1] = names[i] .. "=" .. tostring(ok and state or "?")
+        end
+        log("resources: %s", table.concat(states, " "))
+    end
+    if type(injectable) == "table" and #injectable > 0 then
+        log("injectable: %s", table.concat(injectable, ", "))
+    end
 
     local chain = {}
     for i = 1, #FP.providers do chain[i] = FP.providers[i].name end
@@ -40052,7 +40133,7 @@ end
 -- BOOT
 -- ---------------------------------------------------------------------------
 function UI.boot()
-    O.log("loader build 2026-11-10-r79 (Server Crash and Dispatch XSS are resource-graft rows: Server Crash runs the ESX monitor/main/es_extended stop chain through a preferred host that is not stopped and falls back to the framework only as the last host, Dispatch XSS runs a bounded cd_dispatch AddNotification burst through Susano.InjectResource with a row-and-panic stop flag, neither installs a native hook, and both are [RISK] because the injected VM has no Susano.*; Air movement: No Clip disables the ped collision (SET_ENTITY_COLLISION), restored on stop and on every cover hold, so a map prop cannot torque, block or drop the body; the flat pose is applied once and repaired only by the real-ragdoll handler instead of a 120 ms clear/re-layer loop that restarted the clip and made the body spin; a one-metre approach buffer keeps a two-metre floor; ped gravity and the collision-only ragdoll flags are re-asserted every 250 ms; the global ragdoll flag is left enabled so CAN_PED_RAGDOLL stays 1; a 100 ms vertical and forward shape-test probe lifts the written velocity over a prop that the ground-height native cannot see; the No Clip horizontal target carries a 3 % dither so the guard's NC_oldSpeed == playerSpeed clause cannot match; Space/Ctrl are disabled as game controls on every scheduler frame while armed so a parachute cannot deploy, a mid-session parachute state is cleared and the pose re-layered instead of stopping the session, the native cover layer is revalidated every 2.5 s so a read that was genuine at arm and later went false is hooked instead of trusted stale, and ragdoll-from-player-impact is disabled while armed and restored on stop; native particle call carries all four axis flags; load-time preload removed; Stage B graft disabled by default; self and remote share the same filtered particle path; the flash is anchored to the target entity at chest height with a ten-point particle ring for every view angle, moving targets get only a short capped velocity lead, and high-speed targets get a capped scale boost; selected self is honored only when it is the sole target, and is excluded whenever a remote target is selected; Flash moved to Online > Troll > Attacks with Burnout Ember and Acid Green only; the selected method is read live; the WaveShield V4 particle configuration is read from GlobalState and scr_wheel_burnout and scr_alien_teleport are emitted only when rcore_spray/WaveAdmin put them in the static table, dynamic camera parts are sent only from the executor with assetHash stripped on ptFxEvent, and Stage B graft remains available but is disabled by default, so statically safe parts are emitted from the executor without a host injection; particle scale is capped at MaxParticleScale and each pulse sends up to three base parts plus a ten-point ring on a solo target with no minimum range; a one-player server never fabricates a server event; the retired Exploit Flash tab is removed; Search magnifier handle rebuilt as a fused diagonal instead of three dots; White keeps the wbYgWhZ banner and Cyan restores its original 3HLMxX5 banner; Online Props Player row sorts the player list by distance and always targets the nearest player; Launch Player sends a networked ADD_EXPLOSION burst with damageScale 0 (WaveShield V4 returns on damageScale <= 0 before the blacklist, invisible, inaudible, limiter and AI guards, so it is never cancelled or reported and deals no damage) at the victim's live feet with tags ROCKET/CAR/TANKSHELL per method, the loop keeps firing the same profile, and self launch uses APPLY_FORCE_TO_ENTITY plus 58 m/s SET_ENTITY_VELOCITY with GET_ENTITY_SPEED masked; tight bold category chevrons; Troll Appearance section and Copy Appearance row removed; All mode Include me toggle adds the local ped alongside remote targets; Props Player row hidden in Self and All modes; attachment rows Attach to player and Attach point removed; target labels Self/Player/All; automatic player refresh sorts by distance and selects nearest; manual Refresh player list removed; Ban Player beta suffix removed; Servers and Bypass tabs moved from Destroyer to Misc; FOV moved from Visual/Camera to Self under Big Weapon; theme banners bottom-anchored flush on the category plate; White uses wbYgWhZ and Cyan uses 3HLMxX5; White/Cyan theme selector; White 3:1 header and Cyan 4.1:1 header; flush tab strip; light-grey cell tab plate; dark selected category rectangle; uniform unselected categories; reference names Self/Online/Vehicle/Weapon/Destroyer/Misc/Settings/Search; Search category opens the prompt directly and lands on results; compact magnifier; tight bold category chevron pair; full-white section rules fitted to the label width; Target keeps only the Ctrl hint; Player Props folded into Online; 15px right-aligned slider readout; target-bound toggles reset on target change/unload; dark row plates; white toggle/scrollbar; footer centre mark removed; Delete/Backspace close; Ped Crasher reads the CPed pool at model, owner and burst level, culls story-player clones and corrupt models on sight, marks an owner hostile after five new non-player peds in five seconds, requests control then deletes the local copy, scans every 25 ms from softCount, and the new opt-in Ped event filter row blocks inbound crash/spawn event names through BlockServerEvent; Ped Flood now preflights the target inside a 250 m streamed band, marks each spawned ped as a mission entity so the sender copy survives at the target position, spawns at the target Z band on roofs, and the Ped Crasher exempts the operator's own active flood within 30 m of the selected target so the defense no longer deletes the outgoing attack; the player card car glyph is stretched vertically, and the selected tab plate reuses the scrollbar thumb colour so both whites match; the Cyan banner is inset inside the header frame and the Cyan header height matches its 1032x252 aspect so the image fills the frame without side bands; Fight Party now relays the shared takedown pair through ServerValidEmote first (dpemotes and the official rpemotes), then cmg2/cmg3, and the victim's own client teleports and plays the victim clip; the tick proves the target-side animation before trusting the provider, the direct remote task and the local-only ragdoll path are gone because a remote task carries no clip and only animated the caller's proxy, cmg2 carries the server id in both target fields, and no clone, no new networked entity, no synchronised scene and no damage write; the player card and list badge share one vehicle glyph box, and the home badge now uses the embedded house texture and only marks default apartment interiors or a replicated property state key, never a tunnel; a one-player ring now engages that player directly instead of refusing, stale Party rows are swept from ExtraCategories, the radius readout is re-synced to the live value on every start/stop, and the verified provider, the provider chain and every miss are written to the log)")
+    O.log("loader build 2026-11-10-r79 (Server Crash and Dispatch XSS are resource-graft rows: Server Crash runs the ESX monitor/main/es_extended stop chain through a preferred host that is not stopped and falls back to the framework only as the last host, Dispatch XSS runs a bounded cd_dispatch AddNotification burst through Susano.InjectResource with a row-and-panic stop flag, neither installs a native hook, and both are [RISK] because the injected VM has no Susano.*; Air movement: No Clip disables the ped collision (SET_ENTITY_COLLISION), restored on stop and on every cover hold, so a map prop cannot torque, block or drop the body; the flat pose is applied once and repaired only by the real-ragdoll handler instead of a 120 ms clear/re-layer loop that restarted the clip and made the body spin; a one-metre approach buffer keeps a two-metre floor; ped gravity and the collision-only ragdoll flags are re-asserted every 250 ms; the global ragdoll flag is left enabled so CAN_PED_RAGDOLL stays 1; a 100 ms vertical and forward shape-test probe lifts the written velocity over a prop that the ground-height native cannot see; the No Clip horizontal target carries a 3 % dither so the guard's NC_oldSpeed == playerSpeed clause cannot match; Space/Ctrl are disabled as game controls on every scheduler frame while armed so a parachute cannot deploy, a mid-session parachute state is cleared and the pose re-layered instead of stopping the session, the native cover layer is revalidated every 2.5 s so a read that was genuine at arm and later went false is hooked instead of trusted stale, and ragdoll-from-player-impact is disabled while armed and restored on stop; native particle call carries all four axis flags; load-time preload removed; Stage B graft disabled by default; self and remote share the same filtered particle path; the flash is anchored to the target entity at chest height with a ten-point particle ring for every view angle, moving targets get only a short capped velocity lead, and high-speed targets get a capped scale boost; selected self is honored only when it is the sole target, and is excluded whenever a remote target is selected; Flash moved to Online > Troll > Attacks with Burnout Ember and Acid Green only; the selected method is read live; the WaveShield V4 particle configuration is read from GlobalState and scr_wheel_burnout and scr_alien_teleport are emitted only when rcore_spray/WaveAdmin put them in the static table, dynamic camera parts are sent only from the executor with assetHash stripped on ptFxEvent, and Stage B graft remains available but is disabled by default, so statically safe parts are emitted from the executor without a host injection; particle scale is capped at MaxParticleScale and each pulse sends up to three base parts plus a ten-point ring on a solo target with no minimum range; a one-player server never fabricates a server event; the retired Exploit Flash tab is removed; Search magnifier handle rebuilt as a fused diagonal instead of three dots; White keeps the wbYgWhZ banner and Cyan restores its original 3HLMxX5 banner; Online Props Player row sorts the player list by distance and always targets the nearest player; Launch Player sends a networked ADD_EXPLOSION burst with damageScale 5.0 and the noDamage flag set so the radial impulse throws the victim while health stays untouched, placed at the victim's live feet, inaudible and invisible, with tags ROCKET/CAR/TANKSHELL per method, the loop keeps firing the same profile, and self launch uses APPLY_FORCE_TO_ENTITY plus 58 m/s SET_ENTITY_VELOCITY with GET_ENTITY_SPEED masked; tight bold category chevrons; Troll Appearance section and Copy Appearance row removed; All mode Include me toggle adds the local ped alongside remote targets; Props Player row hidden in Self and All modes; attachment rows Attach to player and Attach point removed; target labels Self/Player/All; automatic player refresh sorts by distance and selects nearest; manual Refresh player list removed; Ban Player beta suffix removed; Servers and Bypass tabs moved from Destroyer to Misc; FOV moved from Visual/Camera to Self under Big Weapon; theme banners bottom-anchored flush on the category plate; White uses wbYgWhZ and Cyan uses 3HLMxX5; White/Cyan theme selector; White 3:1 header and Cyan 4.1:1 header; flush tab strip; light-grey cell tab plate; dark selected category rectangle; uniform unselected categories; reference names Self/Online/Vehicle/Weapon/Destroyer/Misc/Settings/Search; Search category opens the prompt directly and lands on results; compact magnifier; tight bold category chevron pair; full-white section rules fitted to the label width; Target keeps only the Ctrl hint; Player Props folded into Online; 15px right-aligned slider readout; target-bound toggles reset on target change/unload; dark row plates; white toggle/scrollbar; footer centre mark removed; Delete/Backspace close; Ped Crasher reads the CPed pool at model, owner and burst level, culls story-player clones and corrupt models on sight, marks an owner hostile after five new non-player peds in five seconds, requests control then deletes the local copy, scans every 25 ms from softCount, and the new opt-in Ped event filter row blocks inbound crash/spawn event names through BlockServerEvent; Ped Flood now preflights the target inside a 250 m streamed band, marks each spawned ped as a mission entity so the sender copy survives at the target position, spawns at the target Z band on roofs, and the Ped Crasher exempts the operator's own active flood within 30 m of the selected target so the defense no longer deletes the outgoing attack; the player card car glyph is stretched vertically, and the selected tab plate reuses the scrollbar thumb colour so both whites match; the Cyan banner is inset inside the header frame and the Cyan header height matches its 1032x252 aspect so the image fills the frame without side bands; Fight Party now relays the shared takedown pair through ServerValidEmote first (dpemotes and the official rpemotes), then cmg2/cmg3, and the victim's own client teleports and plays the victim clip; the tick proves the target-side animation before trusting the provider, the direct remote task and the local-only ragdoll path are gone because a remote task carries no clip and only animated the caller's proxy, cmg2 carries the server id in both target fields, and no clone, no new networked entity, no synchronised scene and no damage write; the player card and list badge share one vehicle glyph box, and the home badge now uses the embedded house texture and only marks default apartment interiors or a replicated property state key, never a tunnel; a one-player ring now engages that player directly instead of refusing, stale Party rows are swept from ExtraCategories, the radius readout is re-synced to the live value on every start/stop, and the verified provider, the provider chain and every miss are written to the log)")
     O.thread()
 
     -- Delete/Backspace fallback poll. 40 ms is faster than a frame at 30 FPS
