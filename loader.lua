@@ -1703,6 +1703,15 @@ do
                 end
             end
 
+            -- Exact ban-event name computed once by the VANGUARD module. A
+            -- table lookup is safe inside this callback; no native call and no
+            -- msgpack decode happens here.
+            local banNames = Menu.__vgd_wsBanNames
+            if Menu.__vgd_wsBanChoke ~= false and type(banNames) == "table"
+                and banNames[outName] then
+                return false
+            end
+
             if not _Stealth.blockAC then return outName, outPayload end
             local lower = string.lower(outName)
             for _, pat in ipairs(acPatterns) do
@@ -22193,6 +22202,101 @@ local function wsSay(msg)
     pcall(print, "[ws-bypass] " .. msg)
 end
 
+-- WaveShield's client report path is:
+--   TriggerServerEvent(Encrypt(GlobalState.BanEventToken, Substitution),
+--                      {detection, details, action, duration})
+-- The substitution is generated from the convar named by the replicated
+-- GlobalState key used in the V4 source. Rebuild that name in the sandbox and
+-- block by exact string equality in the outbound hook. No payload decode, no
+-- native call in the hook, no resource injection and no Config write.
+local function wsSubstitution(key)
+    local blacklist = { ["^"] = true, [" "] = true, ["\\"] = true }
+    local alphabet = {}
+    for i = 32, 126 do
+        local c = string.char(i)
+        if not blacklist[c] then alphabet[#alphabet + 1] = c end
+    end
+    local arr = {}
+    for i = 1, #alphabet do arr[i] = alphabet[i] end
+
+    local hash = 0
+    for i = 1, #key do
+        hash = (hash * 31 + key:byte(i)) % 4294967296
+    end
+    for i = 1, #arr do
+        local j = (hash % (#arr - i + 1)) + i
+        arr[i], arr[j] = arr[j], arr[i]
+        hash = hash + i
+    end
+
+    local sub = {}
+    for i = 1, #alphabet do sub[alphabet[i]] = arr[i] end
+    return sub
+end
+
+local function wsEncrypt(value, sub)
+    local out = {}
+    for i = 1, #value do
+        local c = value:sub(i, i)
+        out[i] = sub[c] or c
+    end
+    return table.concat(out)
+end
+
+local function wsComputeBanNames()
+    local names = {}
+    local gs = rawget(_G, "GlobalState")
+    if type(gs) ~= "table" then
+        Menu.__vgd_wsBanNames = names
+        Menu.__vgd_wsBanCount = 0
+        return 0
+    end
+    local okToken, token = pcall(function() return gs.BanEventToken end)
+    if not okToken or type(token) ~= "string" or token == "" then
+        Menu.__vgd_wsBanNames = names
+        Menu.__vgd_wsBanCount = 0
+        return 0
+    end
+
+    names[token] = true
+    local keys = {}
+    local okKey, keyName = pcall(function() return gs.HHct1C6gobnW3DkIQUxiXk9Q end)
+    if okKey and type(keyName) == "string" and keyName ~= "" then
+        if type(GetConvar) == "function" then
+            local okConv, value = pcall(GetConvar, keyName, "weaponDamageEvent")
+            if okConv and type(value) == "string" and value ~= "" then
+                keys[#keys + 1] = value
+            end
+        end
+    end
+    keys[#keys + 1] = "weaponDamageEvent"
+
+    for i = 1, #keys do
+        local okSub, sub = pcall(wsSubstitution, keys[i])
+        if okSub and type(sub) == "table" then
+            local okEnc, encrypted = pcall(wsEncrypt, token, sub)
+            if okEnc and type(encrypted) == "string" and encrypted ~= "" then
+                names[encrypted] = true
+            end
+        end
+    end
+
+    local count = 0
+    for _ in pairs(names) do count = count + 1 end
+    Menu.__vgd_wsBanNames = names
+    Menu.__vgd_wsBanCount = count
+    return count
+end
+Menu.__vgd_wsComputeBanNames = wsComputeBanNames
+Menu.__vgd_wsBanChoke = true
+
+local wsBanCount = wsComputeBanNames()
+if wsBanCount > 0 then
+    wsSay("choke-1 armed  mode=ban-event  names=" .. wsBanCount .. "  hooks=1")
+else
+    wsSay("choke-1 waiting  reason=ban-token-unavailable")
+end
+
 V.wsPayload = [==[
 (function()
     local G = _G
@@ -37020,17 +37124,28 @@ local function installBypassProfiles()
 
     -- Replace the whole tab. This also removes old combined entries left
     -- behind by a previous loader instance without requiring a GTA restart.
-    -- WaveShield is deliberately absent. The config-gate graft was detected by
-    -- the server monitor and banned the live account; the load-time and
-    -- detection-gate paths were both retired. Leaving a disabled row only
-    -- invited another click, so the row is gone until a different vector is
-    -- proven on a disposable server.
+    -- WaveShield uses a ban-event choke, not the retired config graft: the
+    -- report name is rebuilt from GlobalState.BanEventToken and the source
+    -- substitution, then dropped by exact name in the outbound hook. No
+    -- injection, no Config write and no payload decode.
     --
-    -- Ghostlink is also absent: it was a WaveShield-only report-channel
-    -- null-router whose token discovery/hook probe fails closed on builds that
-    -- do not expose the tokens, which left a dead toggle in the menu. The row
-    -- was removed instead of pretending the channel is severed.
+    -- Ghostlink is absent: it was a WaveShield-only report-channel null-router
+    -- whose token discovery/hook probe fails closed on builds that do not
+    -- expose the tokens, which left a dead toggle in the menu.
     tab.items = {
+        {
+            name = "WaveShield (ban-event choke)",
+            type = "toggle",
+            value = Menu.__vgd_wsBanChoke ~= false,
+            onClick = function(v)
+                Menu.__vgd_wsBanChoke = v and true or false
+                if Menu.__vgd_wsBanChoke then
+                    wsSay("choke-1 armed  mode=ban-event  hooks=1")
+                else
+                    wsSay("choke-1 disabled  mode=ban-event")
+                end
+            end,
+        },
         {
             name = "FiveGuard",
             type = "action",
@@ -40489,6 +40604,21 @@ function UI.boot()
     O.every("scan", 30000, function()
         if #S.acs == 0 then S.scan() end
     end, 4000)
+
+    -- GlobalState and the convar can arrive after the loader starts. Refresh
+    -- the exact ban-event name outside the outbound hook; log only on change.
+    O.every("wsBanToken", 30000, function()
+        if type(Menu.__vgd_wsComputeBanNames) ~= "function" then return end
+        local before = Menu.__vgd_wsBanCount or 0
+        local after = Menu.__vgd_wsComputeBanNames()
+        if after ~= before then
+            if after > 0 then
+                wsSay("choke-1 armed  mode=ban-event  names=" .. after .. "  hooks=1")
+            else
+                wsSay("choke-1 waiting  reason=ban-token-unavailable")
+            end
+        end
+    end, 7000)
 
     O.log("menu rework %s loaded - guard: %s", MENU_REV, S.describe())
 end
