@@ -22165,12 +22165,31 @@ end
 V.wsArmed = false
 V.wsInjected = nil
 
+local function wsSay(msg)
+    if O.quiet then return end
+    pcall(print, "[ws-bypass] " .. msg)
+end
+
+local function wsFlag(value)
+    return type(value) == "table" and "true" or "false"
+end
+
+wsSay("choke-1 loaded  Susano=" .. wsFlag(rawget(_G, "Susano"))
+    .. "  Citizen=" .. wsFlag(rawget(_G, "Citizen")))
+
 V.wsPayload = [==[
 (function()
     local G = _G
     local varType, varNext, varSet = type, next, rawset
     local rawGet = rawget
     local dbg = rawGet(G, "debug")
+    local varPrint = rawGet(G, "print")
+
+    local function say(msg)
+        if varType(varPrint) == "function" then
+            pcall(varPrint, "[ws-bypass] " .. msg)
+        end
+    end
 
     -- The guard keeps its table in a local on some builds. Reach it through a
     -- global alias, a global graph walk, or a thread/handler upvalue instead of
@@ -22314,16 +22333,21 @@ V.wsPayload = [==[
 
     local function findGuard()
         local g = asGuard(rawGet(G, "WaveShield"))
-        if not g then g = asGuard(rawGet(G, "WS")) end
-        if not g then g = walk(G, 2) end
-        if not g then g = fromRegistry() end
-        return g
+        if g then return g, "global:WaveShield" end
+        g = asGuard(rawGet(G, "WS"))
+        if g then return g, "global:WS" end
+        g = walk(G, 2)
+        if g then return g, "global-graph" end
+        g = fromRegistry()
+        if g then return g, "registry" end
+        return nil
     end
 
-    local guard = findGuard()
+    local guard, source = findGuard()
     if guard
         and (rawGet(guard, "RawConfig") ~= nil or rawGet(guard, "configHash") ~= nil
             or rawGet(guard, "checkConfig") ~= nil) then
+        say("choke-1 blocked  reason=stored-hash  source=" .. tostring(source))
         return
     end
 
@@ -22350,37 +22374,49 @@ V.wsPayload = [==[
     end
 
     local function leaf(owner, k, v)
-        if varType(k) ~= "string" then return end
+        if varType(k) ~= "string" then return 0 end
         if varType(v) == "boolean" then
-            if v and isGate(k) then varSet(owner, k, false) end
+            if v and isGate(k) then
+                varSet(owner, k, false)
+                return 1
+            end
         elseif isCap(k) then
             if varType(v) == "number" then
-                if v < hugeNumber then varSet(owner, k, hugeNumber) end
+                if v < hugeNumber then
+                    varSet(owner, k, hugeNumber)
+                    return 1
+                end
             elseif varType(v) == "string" then
                 local n = toNumber(v)
-                if n and n < hugeNumber then varSet(owner, k, hugeString) end
+                if n and n < hugeNumber then
+                    varSet(owner, k, hugeString)
+                    return 1
+                end
             end
         end
+        return 0
     end
 
     -- v15.1 nests gates under Main/Beta/Premium/Weapons/Entities/Settings/
     -- Explosions. A flattened build puts the same gates on Config itself, so
     -- both shapes are covered without adding a key or replacing a table.
     local function sanitize(cfg)
-        if varType(cfg) ~= "table" then return end
+        if varType(cfg) ~= "table" then return 0 end
+        local changed = 0
         local gk, group = varNext(cfg)
         while gk ~= nil do
             if varType(group) == "table" then
                 local k, v = varNext(group)
                 while k ~= nil do
-                    leaf(group, k, v)
+                    changed = changed + leaf(group, k, v)
                     k, v = varNext(group, k)
                 end
             else
-                leaf(cfg, gk, group)
+                changed = changed + leaf(cfg, gk, group)
             end
             gk, group = varNext(cfg, gk)
         end
+        return changed
     end
 
     -- A check that captured the previous Config table keeps reading that
@@ -22390,7 +22426,7 @@ V.wsPayload = [==[
     local seenN = 0
 
     local function apply(cfg)
-        if varType(cfg) ~= "table" then return end
+        if varType(cfg) ~= "table" then return 0 end
         local found = false
         for i = 1, seenN do
             if seen[i] == cfg then found = true; break end
@@ -22404,25 +22440,42 @@ V.wsPayload = [==[
                 seen[12] = cfg
             end
         end
-        for i = 1, seenN do sanitize(seen[i]) end
+        local changed = 0
+        for i = 1, seenN do changed = changed + sanitize(seen[i]) end
+        return changed
     end
 
     local periods = { 1150, 1470, 980, 1620, 1260, 1780 }
     local step = 1
     local misses = 0
+    local armed = false
+    local waitSaid = false
     while true do
         if not guard or rawGet(guard, "__shim") ~= nil then
-            if misses % 30 == 0 then guard = findGuard() end
+            if misses % 30 == 0 then guard, source = findGuard() end
             misses = misses + 1
+            if not guard and not waitSaid then
+                waitSaid = true
+                say("choke-1 waiting  reason=config-unreachable")
+            end
         end
         if guard then
             local cfg = rawGet(guard, "Config")
             if rawGet(guard, "RawConfig") ~= nil or rawGet(guard, "configHash") ~= nil
                 or rawGet(guard, "checkConfig") ~= nil
                 or (varType(cfg) == "table" and rawGet(cfg, "configHash") ~= nil) then
+                say("choke-1 blocked  reason=stored-hash  source=" .. tostring(source))
                 return
             end
-            apply(cfg)
+            local before = seenN
+            local changed = apply(cfg)
+            if not armed and varType(cfg) == "table" then
+                armed = true
+                say("choke-1 armed  choked=0  rewritten=" .. changed
+                    .. "  leashed=" .. seenN .. "  hooks=0  source=" .. tostring(source))
+            elseif armed and seenN > before then
+                say("choke-1 refreshed  rewritten=" .. changed .. "  leashed=" .. seenN)
+            end
         end
         Wait(periods[step])
         step = step + 1
@@ -22493,6 +22546,7 @@ function V.waveshieldGraft(ac)
         if not V.wsLastFail or now - V.wsLastFail > 10000 then
             V.wsLastFail = now
             O.log("waveshield: %s is not injectable yet; retrying while it is started", ac.resource)
+            wsSay("choke-1 waiting  target=" .. ac.resource .. "  reason=not-injectable")
         end
         return false
     end
@@ -22501,6 +22555,7 @@ function V.waveshieldGraft(ac)
     V.wsInjected = ac.resource
     O.log("waveshield: gate payload queued in %s (config read path, no function replaced)",
         ac.resource)
+    wsSay("choke-1 queued  target=" .. ac.resource .. "  mode=config  hooks=0")
     return true
 end
 
