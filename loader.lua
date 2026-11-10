@@ -22161,6 +22161,13 @@ end
 -- existing Config leaves. State is a small set of upvalues and a fixed period
 -- table. If the server pushes a new config the loop writes the gates again on
 -- the next pass.
+--
+-- Only detection gates are written: E1..E6, Detect*, and Anti* except the
+-- three AntiTrigger* event filters. The AntiTrigger* flags and every Enable*
+-- AI flag are the guard's traffic shape. Clearing them releases events another
+-- local script already had filtered and the server answers with a reliable
+-- network event overflow kick. Numeric Limit/MaxThreatScore values are left
+-- untouched for the same reason.
 -- ---------------------------------------------------------------------------
 V.wsArmed = false
 V.wsInjected = nil
@@ -22351,48 +22358,32 @@ V.wsPayload = [==[
         return
     end
 
-    local strSub, strFind, toNumber = string.sub, string.find, tonumber
-    local hugeNumber, hugeString = 1000000, "1000000"
+    local strSub = string.sub
 
+    -- The three AntiTrigger gates are the guard's outbound/inbound event
+    -- filters, not detectors. Turning them off releases every event another
+    -- local script already had filtered and the server answers with a
+    -- reliable-event overflow kick. Keep them true; only detection gates are
+    -- written. Enable* AI flags and numeric limiter values stay untouched for
+    -- the same reason: they change traffic shape, they do not hide a feature.
     local function isGate(k)
+        if k == "AntiTriggerClientEventAI" or k == "AntiTriggerExportAI"
+            or k == "AntiTriggerServerEventAI" then
+            return false
+        end
         if strSub(k, 1, 4) == "Anti" then return true end
         if k == "E1" or k == "E2" or k == "E3" or k == "E4" or k == "E5" or k == "E6" then
             return true
         end
         if strSub(k, 1, 6) == "Detect" then return true end
-        if strSub(k, 1, 6) == "Enable" then
-            if strFind(k, "AI", 7, true) then return true end
-            if strFind(k, "BlackList", 7, true) then return true end
-            if strFind(k, "WhiteList", 7, true) then return true end
-            if strFind(k, "Limiter", 7, true) then return true end
-        end
         return false
-    end
-
-    local function isCap(k)
-        return k == "MaxThreatScore" or strFind(k, "Limit", 1, true) ~= nil
     end
 
     local function leaf(owner, k, v)
         if varType(k) ~= "string" then return 0 end
-        if varType(v) == "boolean" then
-            if v and isGate(k) then
-                varSet(owner, k, false)
-                return 1
-            end
-        elseif isCap(k) then
-            if varType(v) == "number" then
-                if v < hugeNumber then
-                    varSet(owner, k, hugeNumber)
-                    return 1
-                end
-            elseif varType(v) == "string" then
-                local n = toNumber(v)
-                if n and n < hugeNumber then
-                    varSet(owner, k, hugeString)
-                    return 1
-                end
-            end
+        if varType(v) == "boolean" and v and isGate(k) then
+            varSet(owner, k, false)
+            return 1
         end
         return 0
     end
