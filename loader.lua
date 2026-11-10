@@ -1678,33 +1678,18 @@ do
         "aimbot","aim_bot","teleport_detect","tp_detect","noclip_detect","ammo_check",
         "ammo_hack","position_check",
     }
-    -- WaveShield's DetectPlayer reports through TriggerServerEvent with a
-    -- shape no normal script uses: {detection, details, action, duration},
-    -- where details carries __reason / __detection / eventName / functionName.
-    -- Dropping that frame at the executor's outbound hook is a client-side
-    -- report choke: no resource injection, no Config write, no native hook and
-    -- no thread inside the guard VM. The guard still sets its local ban state
-    -- after the call, so its own 20s self-check sees the state and does not
-    -- trip ForceSocialClubUpdate.
-    local function wsReportPayload(payload)
-        if type(payload) ~= "table" then return false end
-        local details = payload[2]
-        if type(details) ~= "table" then return false end
-        if details.__reason ~= nil or details.__detection ~= nil
-            or details.eventName ~= nil or details.functionName ~= nil then
-            return true
-        end
-        return false
-    end
-    Menu.__vgd_wsReportPayload = wsReportPayload
-
-    local function wsGuardRunning()
-        if type(GetResourceState) ~= "function" then return false end
-        return GetResourceState("monitor") == "started"
-            or GetResourceState("WaveShield") == "started"
-    end
-
+    -- OnTriggerServerEvent receives raw msgpack bytes, not a Lua table. A
+    -- payload-shape filter here would have to decode every outbound frame, and
+    -- calling GetResourceState inside the callback re-enters the native layer
+    -- and froze the menu. The report choke was rolled back to keep this hook
+    -- string-only and native-free.
     if type(Susano) == "table" and type(Susano.OnTriggerServerEvent) == "function" then
+        -- A previous loader may still have a callback registered. Clear it
+        -- before installing this one so a retired/freezing filter cannot
+        -- survive a script reload.
+        if type(Susano.ClearOnTriggerServerEvent) == "function" then
+            pcall(Susano.ClearOnTriggerServerEvent)
+        end
         Susano.OnTriggerServerEvent(function(name, payload)
             local outName, outPayload = name, payload
             local rewrite = Menu.__vgd_onOutbound
@@ -1716,10 +1701,6 @@ do
                         outName, outPayload = nextName, nextPayload or payload
                     end
                 end
-            end
-
-            if Menu.__vgd_wsReportOn ~= false and wsGuardRunning() and wsReportPayload(outPayload) then
-                return false
             end
 
             if not _Stealth.blockAC then return outName, outPayload end
@@ -22204,7 +22185,6 @@ end
 -- path on a production server. The payload stays in the file only as a
 -- reference for a future, separately proven vector.
 V.WS_VECTOR_ENABLED = false
-Menu.__vgd_wsReportOn = true
 V.wsArmed = false
 V.wsInjected = {}
 
@@ -37051,19 +37031,6 @@ local function installBypassProfiles()
     -- do not expose the tokens, which left a dead toggle in the menu. The row
     -- was removed instead of pretending the channel is severed.
     tab.items = {
-        {
-            name = "WaveShield (report choke)",
-            type = "toggle",
-            value = Menu.__vgd_wsReportOn ~= false,
-            onClick = function(v)
-                Menu.__vgd_wsReportOn = v and true or false
-                if Menu.__vgd_wsReportOn then
-                    wsSay("choke-1 armed  mode=report-choke  hooks=1")
-                else
-                    wsSay("choke-1 disabled  mode=report-choke")
-                end
-            end,
-        },
         {
             name = "FiveGuard",
             type = "action",
