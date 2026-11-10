@@ -22170,7 +22170,7 @@ end
 -- untouched for the same reason.
 -- ---------------------------------------------------------------------------
 V.wsArmed = false
-V.wsInjected = nil
+V.wsInjected = {}
 
 local function wsSay(msg)
     if O.quiet then return end
@@ -22509,24 +22509,13 @@ local function callInject(resource, code)
     return ok and result ~= false
 end
 
-local function findVendor(vendor)
-    for i = 1, #S.acs do
-        if S.acs[i].vendor == vendor then return S.acs[i] end
-    end
-    S.scan()
-    for i = 1, #S.acs do
-        if S.acs[i].vendor == vendor then return S.acs[i] end
-    end
-    return nil
-end
-
 function V.waveshieldGraft(ac)
     if type(ac) ~= "table" or ac.vendor ~= "waveshield" then return false end
     if GetResourceState(ac.resource) ~= "started" then
         O.log("waveshield: %s is not started", ac.resource)
         return false
     end
-    if V.wsInjected == ac.resource then return true end
+    if V.wsInjected[ac.resource] then return true end
 
     -- Arm on the explicit ask even when the VM has not been captured yet; the
     -- wsEnsure task retries while the resource is started and stops as soon
@@ -22543,38 +22532,49 @@ function V.waveshieldGraft(ac)
     end
 
     V.wsLastFail = nil
-    V.wsInjected = ac.resource
+    V.wsInjected[ac.resource] = true
     O.log("waveshield: gate payload queued in %s (config read path, no function replaced)",
         ac.resource)
     wsSay("choke-1 queued  target=" .. ac.resource .. "  mode=config  hooks=0")
     return true
 end
 
--- Re-arm after a guard restart. The resource state is sampled faster than a
--- restart takes, so a stop/start transition always clears the injection
--- marker; the next started state gets one new thread, not a second one.
+-- A server can expose the guard under more than one resource (a renamed
+-- build plus a manual test resource). Every started, injectable instance gets
+-- the same detection-gate payload; the marker is per resource so a restart of
+-- one instance does not re-inject the other.
 function V.wsEnsure()
     if not V.wsArmed then return false end
-    local ac = findVendor("waveshield")
-    if not ac then
-        V.wsInjected = nil
-        return false
+    local armedAny = false
+    local seen = false
+    for i = 1, #S.acs do
+        local ac = S.acs[i]
+        if ac.vendor == "waveshield" then
+            seen = true
+            if GetResourceState(ac.resource) == "started" then
+                if V.wsInjected[ac.resource] then
+                    armedAny = true
+                elseif injectable(ac.resource) and V.waveshieldGraft(ac) then
+                    armedAny = true
+                end
+            else
+                V.wsInjected[ac.resource] = nil
+            end
+        end
     end
-    if GetResourceState(ac.resource) ~= "started" then
-        V.wsInjected = nil
-        return false
-    end
-    if V.wsInjected == ac.resource then return true end
-    return V.waveshieldGraft(ac)
+    if not seen then V.wsInjected = {} end
+    return armedAny
 end
 
--- A restart can stop and start the guard between two state samples. The start
--- event names the resource explicitly, so the marker is cleared on the exact
--- generation change and the next wsEnsure pass arms one fresh thread.
+-- A restart can stop and start a guard between two state samples. The start
+-- event names the resource explicitly, so only that resource's marker is
+-- cleared and the next wsEnsure pass arms one fresh thread for it.
 if type(AddEventHandler) == "function" then
     local function onGeneration(name)
-        if type(name) == "string" and name == V.wsInjected then
-            V.wsInjected = nil
+        if type(name) == "string" then
+            V.wsInjected[name] = nil
+        else
+            V.wsInjected = {}
         end
     end
     pcall(AddEventHandler, "onClientResourceStart", onGeneration)
@@ -22599,22 +22599,25 @@ end
 -- ---------------------------------------------------------------------------
 function V.applyVendor(vendor)
     S.scan()
+    local primary, grafted = nil, false
     for i = 1, #S.acs do
         local ac = S.acs[i]
         if ac.vendor == vendor then
-            local graft = nil
-            if vendor == "waveshield" then
-                graft = V.waveshieldGraft(ac)
+            if not primary then primary = ac end
+            if vendor == "waveshield" and V.waveshieldGraft(ac) then
+                grafted = true
             end
-            local plan = V.apply(ac)
-            if plan and vendor == "waveshield" then
-                plan.graft = graft
-            end
-            return plan
         end
     end
-    O.log("profile %s: matching resource not detected", tostring(vendor))
-    return nil
+    if not primary then
+        O.log("profile %s: matching resource not detected", tostring(vendor))
+        return nil
+    end
+    local plan = V.apply(primary)
+    if plan and vendor == "waveshield" then
+        plan.graft = grafted
+    end
+    return plan
 end
 
 -- Dynasty is a server, not Raven. The old Dynasty category used the server's
