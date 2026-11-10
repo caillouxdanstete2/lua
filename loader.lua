@@ -2606,7 +2606,6 @@ Menu.Categories = {
             { name = "", isSeparator = true, separatorText = "Health" },
             { name = "Revive", type = "action" },
             { name = "", isSeparator = true, separatorText = "Other" },
-            { name = "TP all vehicle to me", type = "action" },
             { name = "Detach All Entitys", type = "action" },
             { name = "Solo Session", type = "toggle", value = false },
             { name = "Throw Vehicle", type = "toggle", value = false },
@@ -2631,54 +2630,9 @@ Menu.Categories = {
             { name = "Loading players...", type = "action" }
         }},
         { name = "Troll", items = {
-            { name = "", isSeparator = true, separatorText = "Attacks" },
-            { name = "Ban Player", type = "toggle", value = false, risk = true},
-            { name = "Shoot Player", type = "action", risk = true},
-            { name = "Ped Flood", type = "action", risk = true},
-            { name = "Babayaga", type = "toggle", value = false, risk = true, targetBound = true, onClick = function(value)
-                Menu.ActionBabayaga(value)
-            end },
-            { name = "Launch Player", type = "selector", options = {"Explosion", "Vehicle", "Attach"}, selected = 1, onClick = function(index, option)
-                Menu.LaunchMethod = index
-                Menu.ActionLaunch(index)
-            end },
-            { name = "Explosion Loop", type = "toggle", value = false, risk = true, targetBound = true, onClick = function(value)
-                Menu.ActionExplosionLoop(value)
-            end },
-            { name = "Attach Player", type = "toggle", value = false, targetBound = true, onClick = function(val)
-                Menu.attachPlayerEnabled = val
-                if val then
-                    local targetServerId = tonumber(Menu.SelectedPlayer)
-                    if not targetServerId then
-                        Menu.attachPlayerEnabled = false
-                        return
-                    end
-                    local previous = tonumber(Menu.attachPlayerServerId)
-                    if previous then
-                        pcall(Menu.SetAttachPlayer, previous, false)
-                    end
-                    if Menu.SetAttachPlayer(targetServerId, true) then
-                        Menu.attachPlayerServerId = targetServerId
-                    else
-                        Menu.attachPlayerEnabled = false
-                    end
-                else
-                    local targetServerId = tonumber(Menu.attachPlayerServerId)
-                        or tonumber(Menu.SelectedPlayer)
-                    if targetServerId then
-                        pcall(Menu.SetAttachPlayer, targetServerId, false)
-                    end
-                    Menu.attachPlayerServerId = nil
-                end
-            end },
             
             { name = "", isSeparator = true, separatorText = "Bugs" },
-            { name = "Bug Player", type = "selector", options = {"Bug", "Launch", "Hard Launch", "Attach"}, selected = 1 },
-            { name = "Crush", type = "selector", options = {"Rain", "Drop", "Ram"}, selected = 1 },
-            { name = "Black Hole", type = "toggle", value = false, targetBound = true },
             { name = "Crash Method", type = "action" },
-            { name = "Airstrike", type = "action" },
-            { name = "Assault Driver", type = "action" },
             
             { name = "", isSeparator = true, separatorText = "Attach Animations" },
             { name = "Twerk", type = "toggle", value = false, targetBound = true },
@@ -2686,24 +2640,6 @@ Menu.Categories = {
             { name = "Branlette", type = "toggle", value = false, targetBound = true },
             { name = "PiggyBack", type = "toggle", value = false, targetBound = true }
         }},
-        { name = "Vehicle", items = {
-            { name = "", isSeparator = true, separatorText = "Bugs" },
-            { name = "Bug Vehicle", type = "selector", options = {"#1", "#2"}, selected = 1 },
-            { name = "Kick Vehicle", type = "selector", options = {"#1", "#2"}, selected = 1 },
-            { name = "Warp", type = "selector", options = {"Classic", "Boost"}, selected = 1 },
-            { name = "Teleport Into", type = "action" },
-            
-            { name = "", isSeparator = true, separatorText = "Teleportation" },
-            { name = "TP to", type = "selector", options = {"Ocean", "Maze Bank", "Sandy Shores"}, selected = 1 },
-            
-            { name = "", isSeparator = true, separatorText = "Actions" },
-            { name = "Remote Vehicle", type = "action" },
-            { name = "Steal Vehicle", type = "action" },
-            { name = "NPC Drive", type = "action" },
-            { name = "Delete Vehicle", type = "action" },
-            { name = "Remove Tires", type = "action" },
-            { name = "Give", type = "selector", options = {"Vehicle", "Ramp", "Wall", "Wall 2"}, selected = 1 }
-        }}
     }},
     { name = "Visual", hasTabs = true, tabs = {
         { name = "World", items = {
@@ -2717,11 +2653,7 @@ Menu.Categories = {
         }},
         { name = "Servers", items = {
             { name = "", isSeparator = true, separatorText = "Dynasty" },
-            { name = "Staff Mode", type = "toggle", value = false, dynasty = true },
-            { name = "Disable Weapon Damage", type = "toggle", value = false, dynasty = true },
             { name = "Revive", type = "action", dynasty = true },
-            { name = "", isSeparator = true, separatorText = "Seed" },
-            { name = "Menu Staff", type = "action", seed = true },
         }},
         { name = "Bypass", items = {
             { name = "", isSeparator = true, separatorText = "Anti-Cheat" },
@@ -2734,8 +2666,6 @@ Menu.Categories = {
             { name = "", isSeparator = true, separatorText = "Weapon Mods" },
             { name = "No Recoil", type = "toggle", value = false},
             { name = "No Spread", type = "toggle", value = false},
-            { name = "No Reload", type = "toggle", value = false },
-            { name = "Give Ammo", type = "action" },
             { name = "", isSeparator = true, separatorText = "Attachments" },
             { name = "Give All Attachment", type = "action" },
             { name = "Give Suppressor", type = "action" },
@@ -2745,48 +2675,19 @@ Menu.Categories = {
         }},
         { name = "Spawn", items = {
             { name = "Protect Weapon", type = "toggle", value = false },
-            { name = "weapon_aa", type = "action" },
-            { name = "weapon_caveira", type = "action" },
-            { name = "weapon_SCOM", type = "action" },
-            { name = "weapon_mcx", type = "action" },
-            { name = "weapon_grau", type = "action" },
-            { name = "weapon_midasgun", type = "action" },
-            { name = "weapon_hackingdevice", type = "action" },
-            { name = "weapon_akorus", type = "action" },
-            { name = "WEAPON_MIDGARD", type = "action" },
-            { name = "weapon_chainsaw", type = "action" },
-            { name = "weapon_m4a1smr", type = "action" },
-            { name = "weapon_aks74u", type = "action" },
-            { name = "wepaon_ASSAULTXMAS", type = "action" },
-            { name = "weapon_scar17", type = "action" },
-            { name = "weapon_blacksniper", type = "action" },
-            { name = "weapon_hkhall", type = "action" },
-            { name = "weapon_hk_ump", type = "action" }
         }}
     }},
     { name = "Vehicle", hasTabs = true, tabs = {
         { name = "Performance", items = {
             { name = "", isSeparator = true, separatorText = "Warp" },
-            { name = "FOV Warp", type = "toggle", value = false, onClick = function(val) Menu.FOVWarp = val end },
-            { name = "Warp when u press W", type = "toggle", value = false, onClick = function(val) Menu.WarpPressW = val end },
             { name = "Throw From Vehicle", type = "toggle", value = false },
             { name = "", isSeparator = true, separatorText = "Performance" },
-            { name = "Max Upgrade", type = "action" },
-            { name = "Repair Vehicle", type = "action" },
             { name = "Flip Vehicle", type = "action" },
             { name = "Force Vehicle Engine", type = "toggle", value = false },
-            { name = "Easy Handling", type = "toggle", value = false },
             { name = "Shift Boost", type = "toggle", value = false },
-            { name = "Gravitate Vehicle", type = "toggle", value = false },
-            { name = "Gravitate Speed", type = "slider", value = 100, min = 50, max = 500, step = 10 },
-            { name = "", isSeparator = true, separatorText = "Maintenance" },
-            { name = "Change Plate", type = "action" },
-            { name = "Clean Vehicle", type = "action" },
-            { name = "Delete Vehicle", type = "action" },
             
             { name = "", isSeparator = true, separatorText = "Access" },
             { name = "Unlock All Vehicle", type = "toggle", value = false },
-            { name = "Teleport into Closest Vehicle", type = "action" },
             
             { name = "", isSeparator = true, separatorText = "Modifications" },
             { name = "No Collision", type = "toggle", value = false },
@@ -2794,72 +2695,11 @@ Menu.Categories = {
             { name = "Back Flip", type = "toggle", value = false },
             
             { name = "", isSeparator = true, separatorText = "Give" },
-            { name = "Give Nearest Vehicle", type = "action" },
-            { name = "Give", type = "selector", options = {"Ramp", "Wall", "Wall 2"}, selected = 1 },
             { name = "Rainbow Paint", type = "toggle", value = false },
-            { name = "", isSeparator = true, separatorText = "Buggy Ramp" },
-            { name = "Attach Ramp", type = "action" },
-            { name = "Detach Ramp", type = "action" }
         }},
         { name = "Radar", items = {
             { name = "Select Vehicle", type = "selector", options = {"Scanning..."}, selected = 1 },
             { name = "Highlight Selected", type = "toggle", value = false },
-            { name = "Teleport Into", type = "action", onClick = function()
-                local radarTab = nil
-                if Menu.Categories then
-                    for _, cat in ipairs(Menu.Categories) do
-                        if cat.name == "Vehicle" and cat.tabs then
-                            for _, tab in ipairs(cat.tabs) do
-                                if tab.name == "Radar" then radarTab = tab break end
-                            end
-                        end
-                        if radarTab then break end
-                    end
-                end
-                if radarTab and radarTab.items then
-                    local selector = radarTab.items[1]
-                    if selector and foundVehicles and #foundVehicles > 0 then
-                         local vehData = foundVehicles[selector.selected]
-                         if vehData then
-                             local veh = vehData.entity
-                             if veh and DoesEntityExist(veh) then
-                                 local ped = PlayerPedId()
-                                 if IsPedInAnyVehicle(ped, false) then ClearPedTasksImmediately(ped) end
-                                 SetPedIntoVehicle(ped, veh, -1)
-                             end
-                         end
-                    end
-                end
-            end },
-            { name = "Teleport To Me", type = "action", onClick = function()
-                local radarTab = nil
-                if Menu.Categories then
-                    for _, cat in ipairs(Menu.Categories) do
-                        if cat.name == "Vehicle" and cat.tabs then
-                            for _, tab in ipairs(cat.tabs) do
-                                if tab.name == "Radar" then radarTab = tab break end
-                            end
-                        end
-                        if radarTab then break end
-                    end
-                end
-                if radarTab and radarTab.items then
-                    local selector = radarTab.items[1]
-                    if selector and foundVehicles and #foundVehicles > 0 then
-                         local vehData = foundVehicles[selector.selected]
-                         if vehData then
-                             local veh = vehData.entity
-                             if veh and DoesEntityExist(veh) then
-                                 local ped = PlayerPedId()
-                                 local myPos = GetEntityCoords(ped)
-                                 if IsPedInAnyVehicle(ped, false) then ClearPedTasksImmediately(ped) end
-                                 SetPedIntoVehicle(ped, veh, -1)
-                                 SetEntityCoords(veh, myPos.x, myPos.y, myPos.z + 1.0, false, false, false, true)
-                             end
-                         end
-                    end
-                end
-            end },
             { name = "Unlock Vehicle", type = "action", onClick = function()
                 local radarTab = nil
                 if Menu.Categories then
@@ -2912,35 +2752,6 @@ Menu.Categories = {
                     end
                 end
             end },
-            { name = "Delete Vehicle", type = "action", onClick = function()
-                local radarTab = nil
-                if Menu.Categories then
-                    for _, cat in ipairs(Menu.Categories) do
-                        if cat.name == "Vehicle" and cat.tabs then
-                            for _, tab in ipairs(cat.tabs) do
-                                if tab.name == "Radar" then radarTab = tab break end
-                            end
-                        end
-                        if radarTab then break end
-                    end
-                end
-                if radarTab and radarTab.items then
-                    local selector = radarTab.items[1]
-                    if selector and foundVehicles and #foundVehicles > 0 then
-                         local vehData = foundVehicles[selector.selected]
-                         if vehData then
-                             local veh = vehData.entity
-                             if veh and DoesEntityExist(veh) then
-                                 local ped = PlayerPedId()
-                                 if IsPedInAnyVehicle(ped, false) then ClearPedTasksImmediately(ped) end
-                                 SetPedIntoVehicle(ped, veh, -1)
-                                 SetEntityAsMissionEntity(veh, true, true)
-                                 DeleteVehicle(veh)
-                             end
-                         end
-                    end
-                end
-            end }
         }}
     }},
     { name = "Exploit", hasTabs = true, tabs = {
@@ -12371,7 +12182,6 @@ end
                     _G.black_hole_target_player = targetPlayerId
                     
                     local blackHoleCam = CreateCam('DEFAULT_SCRIPTED_CAMERA', true)
-    pcall(function() exports["WaveShield"]:createCam(blackHoleCam) end)
                     local camCoords = GetGameplayCamCoord()
                     local camRot = GetGameplayCamRot(2)
                     SetCamCoord(blackHoleCam, camCoords.x, camCoords.y, camCoords.z)
@@ -14331,7 +14141,6 @@ CreateThread(function()
     local myHeading = GetEntityHeading(playerPed)
     
     local giveCam = CreateCam('DEFAULT_SCRIPTED_CAMERA', true)
-    pcall(function() exports["WaveShield"]:createCam(giveCam) end)
     local camCoords = GetGameplayCamCoord()
     local camRot = GetGameplayCamRot(2)
     SetCamCoord(giveCam, camCoords.x, camCoords.y, camCoords.z)
@@ -14479,7 +14288,6 @@ CreateThread(function()
     local myHeading = GetEntityHeading(playerPed)
     
     local rampCam = CreateCam('DEFAULT_SCRIPTED_CAMERA', true)
-    pcall(function() exports["WaveShield"]:createCam(rampCam) end)
     local camCoords = GetGameplayCamCoord()
     local camRot = GetGameplayCamRot(2)
     SetCamCoord(rampCam, camCoords.x, camCoords.y, camCoords.z)
@@ -14921,7 +14729,6 @@ CreateThread(function()
     local initialHeading = GetEntityHeading(playerPed)
     
     local warpBoostCam = CreateCam('DEFAULT_SCRIPTED_CAMERA', true)
-    pcall(function() exports["WaveShield"]:createCam(warpBoostCam) end)
     local camCoords = GetGameplayCamCoord()
     local camRot = GetGameplayCamRot(2)
     SetCamCoord(warpBoostCam, camCoords.x, camCoords.y, camCoords.z)
@@ -15307,7 +15114,6 @@ CreateThread(function()
     SetEntityHeading(playerPed, initialHeading)
 
     local cam = CreateCam('DEFAULT_SCRIPTED_CAMERA', true)
-    pcall(function() exports["WaveShield"]:createCam(cam) end)
     SetCamFov(cam, GetGameplayCamFov())
     SetCamActive(cam, true)
     RenderScriptCams(true, false, 0, true, true)
@@ -20346,8 +20152,72 @@ function S.scan()
         end
     end
 
+    -- A renamed or bundled guard does not publish its vendor in metadata.
+    -- The event family is registered by the guard itself, so one captured
+    -- event names the owning resource without reading a resource file or
+    -- guessing a filename.
+    if O.has("GetAllEvent") then
+        local byResource = {}
+        for i = 1, #S.acs do byResource[S.acs[i].resource] = S.acs[i] end
+        local okEvents, list = pcall(Susano.GetAllEvent)
+        if okEvents and type(list) == "table" then
+            for i = 1, #list do
+                local entry = list[i]
+                if type(entry) == "table"
+                    and type(entry.resource) == "string"
+                    and type(entry.event) == "string"
+                    and string.find(entry.event, "__WaveShield", 1, true) then
+                    -- A renamed guard can already be present from a weak
+                    -- metadata hit. The event family is the stronger signal:
+                    -- upgrade that same entry instead of adding a duplicate,
+                    -- so its export surface is marked strict before any pulse.
+                    local known = byResource[entry.resource]
+                    if known then
+                        if known.vendor ~= "waveshield" then
+                            known.vendor = "waveshield"
+                            known.score = math.max(known.score, 7)
+                            O.log("guard candidate %s upgraded by waveshield event family", entry.resource)
+                        end
+                    else
+                        known = {
+                            resource = entry.resource,
+                            vendor = "waveshield",
+                            score = 7,
+                        }
+                        S.acs[#S.acs + 1] = known
+                        byResource[entry.resource] = known
+                        O.log("guard candidate %s (waveshield event family, score 7)", entry.resource)
+                    end
+                end
+            end
+        end
+    end
+
+    -- WaveShield validates the invoking resource on every export. A call made
+    -- from the executor sandbox has no invoker and is scored as an illegal
+    -- export, so this vendor never uses the export surface from 02. Its own
+    -- config gates are handled inside its VM instead.
+    for i = 1, #S.acs do
+        S.acs[i].strict = S.acs[i].vendor == "waveshield"
+    end
+
     table.sort(S.acs, function(a, b) return a.score > b.score end)
     return #S.acs
+end
+
+function S.suppressible()
+    local count = 0
+    for i = 1, #S.acs do
+        if not S.acs[i].strict then count = count + 1 end
+    end
+    return count
+end
+
+local function isStrict(resource)
+    for i = 1, #S.acs do
+        if S.acs[i].resource == resource then return S.acs[i].strict == true end
+    end
+    return false
 end
 
 function S.primary()
@@ -20371,6 +20241,7 @@ end
 -- period because their grace window is finite (5-10 s by vendor).
 -- ---------------------------------------------------------------------------
 local function callExport(resource, name, ...)
+    if isStrict(resource) then return false end
     local args = { ... }
     local ok = pcall(function()
         return exports[resource][name](exports[resource], table.unpack(args))
@@ -20381,6 +20252,7 @@ end
 local exportLog = {}
 
 local function once(resource, name, ...)
+    if isStrict(resource) then return end
     local key = resource .. ":" .. name
     if exportLog[key] then return end
     if callExport(resource, name, ...) then
@@ -20410,8 +20282,10 @@ local WINDOW_FLAGS = {
 local function pulseState()
     for i = 1, #S.acs do
         local ac = S.acs[i]
-        for f = 1, #STATE_FLAGS do
-            once(ac.resource, STATE_FLAGS[f], true)
+        if not ac.strict then
+            for f = 1, #STATE_FLAGS do
+                once(ac.resource, STATE_FLAGS[f], true)
+            end
         end
     end
 end
@@ -20419,21 +20293,27 @@ end
 local function pulseWindows()
     for i = 1, #S.acs do
         local ac = S.acs[i]
-        for f = 1, #WINDOW_FLAGS do
-            callExport(ac.resource, WINDOW_FLAGS[f])
-        end
-        -- Neutralise the overlay/executor probe without disabling input: the
-        -- guard treats "a script is using the mouse/NUI" and "controls are
-        -- off" as legitimate states and skips its cursor test for 5 s.
-        if S.disableOverlayProbe then
-            callExport(ac.resource, "disableAllControls")
-            callExport(ac.resource, "disableE2")
+        if not ac.strict then
+            for f = 1, #WINDOW_FLAGS do
+                callExport(ac.resource, WINDOW_FLAGS[f])
+            end
+            -- Neutralise the overlay/executor probe without disabling input:
+            -- the guard treats "a script is using the mouse/NUI" and "controls
+            -- are off" as legitimate states and skips its cursor test for 5 s.
+            if S.disableOverlayProbe then
+                callExport(ac.resource, "disableAllControls")
+                callExport(ac.resource, "disableE2")
+            end
         end
     end
 end
 
 function S.setSuppress(state)
     local was = S.suppressOn
+    if state and S.suppressible() == 0 then
+        S.suppressOn = false
+        return
+    end
     S.suppressOn = state
     if not state then return end
 
@@ -20442,13 +20322,13 @@ function S.setSuppress(state)
     pulseWindows()
 
     if not was then
-        O.log("suppression armed on %d guard(s)", #S.acs)
+        O.log("suppression armed on %d guard(s)", S.suppressible())
     end
 end
 
 function S.setOverlayProbe(state)
-    S.disableOverlayProbe = state
-    if state then pulseWindows() end
+    S.disableOverlayProbe = state and S.suppressible() > 0
+    if S.disableOverlayProbe then pulseWindows() end
 end
 
 -- Refresh the guard's 5 s export windows without changing a toggle or logging.
@@ -21149,7 +21029,9 @@ function M.warp(target, opts)
         Shield.setSuppress(true)
         pcall(function()
             for i = 1, #Shield.acs do
-                exports[Shield.acs[i].resource].hasTeleported(exports[Shield.acs[i].resource])
+                if not Shield.acs[i].strict then
+                    exports[Shield.acs[i].resource].hasTeleported(exports[Shield.acs[i].resource])
+                end
             end
         end)
     end
@@ -22038,13 +21920,14 @@ V.profiles = {
     waveshield = profile {
         label = "WaveShield", confidence = "verified",
         vector = "state cache + periodic detectors + strike systems + protected-native stack checks + 15s heartbeat",
-        technique = "tier-B graft in the guard VM (DetectionRegistry.enabled=false, DetectPlayer no-op) + declaration exports for legitimate state windows; heartbeat, token machinery and server channel untouched",
+        technique = "tier-B config gate suppression in the guard VM: the config table is located by global alias, bounded global graph, or thread/handler upvalue, then every detector toggle is read as false by the guard's own code and re-applied by a jittered loop; no function is replaced, no export is called from the sandbox, no event is touched",
         hooks = {},
+        strictInvoker = true,
         caps = { state = STATE_CAPS, window = WINDOW_CAPS, overlay = OVERLAY_CAPS, thresholds = THRESHOLD_CAPS },
         thresholds = { newTopSpeedModifier = 2.4, newCheatPowerIncrease = 2.4, newGravity = 40.0 },
         keys = "Insert / PageUp / PageDown are watched",
         events = "never block the heartbeat",
-        residual = "the graft needs the guard global to be reachable and InjectResource to be allowed; if refused, the profile degrades to declaration exports only. A server that re-reads its client files on a timer would notice a replaced function - V4 does not",
+        residual = "requires one injectable resource and a reachable config table; a build that keeps a stored config hash or hides the table from globals, threads, and handlers makes the chunk no-op. Server-side validation (distance, ownership, spawn authority) stays authoritative and no feature that depends on it is enabled",
     },
 
     fiveguard = profile {
@@ -22195,6 +22078,7 @@ end
 function V.probe(resource, p)
     local found = { state = {}, window = {}, overlay = {}, thresholds = {} }
     if not p or not p.caps then return found end
+    if p.strictInvoker then return found end
 
     for _, name in ipairs(p.caps.state or {}) do
         if probe(resource, name, true) then found.state[#found.state + 1] = name end
@@ -22225,11 +22109,13 @@ function V.apply(ac)
 
     -- No native hooks are installed by a profile. Native read-repair was both
     -- the loudest signal and the first thing a server-side integrity check
-    -- looks for; the profile now uses only the guard's own export surface.
-    S.suppressOn = (#found.state + #found.window) > 0
-    if S.suppressOn then S.setSuppress(true) end
-    S.disableOverlayProbe = #found.overlay > 0
-    if S.disableOverlayProbe then S.setOverlayProbe(true) end
+    -- looks for. A profile without an export surface (the guard rejects an
+    -- invokerless caller) is handled inside its own VM and never reaches the
+    -- sandbox export path at all.
+    if not p.strictInvoker then
+        if (#found.state + #found.window) > 0 then S.setSuppress(true) end
+        if #found.overlay > 0 then S.setOverlayProbe(true) end
+    end
 
     local plan = {
         resource = ac.resource, vendor = ac.vendor, label = p.label,
@@ -22247,151 +22133,406 @@ function V.apply(ac)
 end
 
 -- ---------------------------------------------------------------------------
--- INVOKER LAUNDERING
---
--- All the declaration calls made from 02 come from the executor sandbox, where
--- GetInvokingResource() is nil. A future build that starts checking the
--- invoker would treat that as an anonymous caller - which is exactly the shape
--- of a cheat.
---
--- This runs the same three calls from inside a real, already-running resource.
--- The chunk contains no native call, so the guard's stack validation (which
--- only wraps protected natives) never sees it. It runs once and ends: there is
--- no loop, no global, no leftover listener.
--- ---------------------------------------------------------------------------
-local FRAMEWORKS = { "es_extended", "qb-core", "ox_lib", "ox_inventory", "esx_legacy", "qbx_core" }
-
-local function pickFramework()
-    for i = 1, #FRAMEWORKS do
-        if GetResourceState(FRAMEWORKS[i]) == "started" then return FRAMEWORKS[i] end
-    end
-    return nil
-end
-
-function V.launder(ac)
-    if type(ac) ~= "table" then return false end
-    if not O.has("InjectResource") then return false end
-
-    local host = pickFramework()
-    if not host then
-        O.log("launder: no framework resource available")
-        return false
-    end
-
-    local p = V.profiles[ac.vendor] or V.profiles.generic
-    local state = p.caps.state or {}
-
-    local names = {}
-    for i = 1, #state do names[#names + 1] = ("%q"):format(state[i]) end
-    if #names == 0 then return false end
-
-    local code = ([==[
-local e = exports[%q]
-if e then
-    local f = { %s }
-    for i = 1, #f do
-        pcall(function() e[f[i]](e, true) end)
-    end
-end
-]==]):format(ac.resource, table.concat(names, ","))
-
-    local ok = pcall(Susano.InjectResource, host, code)
-    O.log("launder: %s via %s -> %s", ac.resource, host, tostring(ok))
-    return ok
-end
-
--- ---------------------------------------------------------------------------
 -- Global: generic profile plus one pass per detected guard.
 -- ---------------------------------------------------------------------------
-function V.applyGlobal()
-    S.scan()
-
-    local plans = {}
-    for i = 1, #S.acs do
-        local plan = V.apply(S.acs[i])
-        if plan then plans[#plans + 1] = plan end
-    end
-
-    if #plans == 0 then
-        O.log("global: no guard found; nothing applied")
-    end
-
-    return plans
-end
-
 -- ---------------------------------------------------------------------------
--- WAVESHIELD TIER-B GRAFT
+-- WAVESHIELD DETECTOR-GATE SUPPRESSION
 --
--- WaveShield V4 was read in full (AC/WaveShield_V4_Source/Source/Load). Every
--- detection ends in one call: WaveShield.DetectPlayer(detection, details).
--- The periodic checks come from WaveShield.DetectionRegistry (actorLoop.lua:
--- 1-12, 100-119) and the module loops call DetectPlayer directly (freecam,
--- godMode, noclip, speedHack, teleport, misc, resourcesHandler, ...). Both
--- paths converge on that single function, defined at
--- modules/include/client.lua:230.
+-- The v15.1 client was read in full (LuraphV15.1/samples/waveshield/output).
+-- The periodic runner (detections routine [66]) does not replace or compare
+-- Config: it reads Config at the top, samples the player once, and calls each
+-- registered check. Every check begins with its own `if not Config.<gate>
+-- then return end` (Main E1..E6 and Anti*, Beta, Premium, Weapons, Entities,
+-- Settings, Explosions). The supported way to disable a detection on this
+-- build is therefore the same path the server takes when it pushes a config:
+-- the gate value becomes false.
 --
--- The graft is therefore one pointer, not a hook:
---   * DetectionRegistry.enabled = false  stops every registered check from
---     running. The actor loop still runs, still samples updateInfos, and still
---     reaches WaveShield.lastActorLoopTime, so the guard looks alive.
---   * DetectPlayer = function() end  drops the direct callers too. The
---     original is kept on the table so a reload does not stack wrappers.
+-- The one thing this build does watch is the *function identity* of the
+-- registry, the checks and DetectPlayer (routine [66] and [53], 15s
+-- integrityWatchdog). Nothing here replaces a function, adds a key to the
+-- guard table, or changes a runner. Only leaf booleans inside the existing
+-- Config tables are written; the table identities and every function stay
+-- untouched.
 --
--- Nothing else is touched: the heartbeat, the event token machinery, the
--- resource-count thread, the secured events list and the server channel are
--- untouched, and no function is replaced that the guard inspects. The
--- resource-count thread (resourcesHandler.lua:100-118) watches the NUMBER of
--- resources; injecting a chunk into a running resource does not change it.
---
--- The chunk is injected into the guard's own VM, so it sees the guard's
--- global table. It uses no Susano function (tier-B rule) and no native.
+-- The chunk is injected into the guard's own VM with a new thread. It calls no
+-- export, no protected native, no CreateThread and no TriggerEvent. When the
+-- guard table is local, it reads the standard debug registry/upvalue surface
+-- (never a wrapped native) to find that table; no state is written outside the
+-- existing Config leaves. State is a small set of upvalues and a fixed period
+-- table. If the server pushes a new config the loop writes the gates again on
+-- the next pass.
 -- ---------------------------------------------------------------------------
-V.wsGrafted = false
+V.wsArmed = false
+V.wsInjected = nil
 
 V.wsPayload = [==[
 (function()
-    local ws = rawget(_G, "WaveShield")
-    if type(ws) ~= "table" then return end
-    if ws.__vgdSupport == true then return end
-    ws.__vgdSupport = true
+    local G = _G
+    local varType, varNext, varSet = type, next, rawset
+    local rawGet = rawget
+    local dbg = rawGet(G, "debug")
 
-    if type(ws.DetectionRegistry) == "table" then
-        ws.DetectionRegistry.enabled = false
+    -- The guard keeps its table in a local on some builds. Reach it through a
+    -- global alias, a global graph walk, or a thread/handler upvalue instead of
+    -- assuming one name. Every candidate must look like the real config before
+    -- a single gate is written.
+    local function gateHits(cfg)
+        if varType(cfg) ~= "table" then return 0 end
+        local main = rawGet(cfg, "Main")
+        if varType(main) ~= "table" then main = {} end
+        local hits = 0
+        if rawGet(main, "AntiNoClip") ~= nil then hits = hits + 1 end
+        if rawGet(main, "AntiTriggerClientEventAI") ~= nil then hits = hits + 1 end
+        local e = 1
+        while e <= 6 do
+            if rawGet(main, "E" .. e) ~= nil then hits = hits + 1; break end
+            e = e + 1
+        end
+        if rawGet(cfg, "AntiNoClip") ~= nil then hits = hits + 1 end
+        e = 1
+        while e <= 6 do
+            if rawGet(cfg, "E" .. e) ~= nil then hits = hits + 1; break end
+            e = e + 1
+        end
+        if rawGet(cfg, "Entities") ~= nil then hits = hits + 1 end
+        if rawGet(cfg, "Weapons") ~= nil then hits = hits + 1 end
+        if rawGet(cfg, "Settings") ~= nil then hits = hits + 1 end
+        return hits
     end
 
-    if type(ws.DetectPlayer) == "function" then
-        ws.__vgdDetect = ws.DetectPlayer
+    local function asGuard(v)
+        if varType(v) ~= "table" then return nil end
+        local cfg = rawGet(v, "Config")
+        if varType(cfg) == "table" and gateHits(cfg) >= 2 then return v end
+        if gateHits(v) >= 2 then return { Config = v, __shim = true } end
+        return nil
     end
-    ws.DetectPlayer = function() end
+
+    local function walk(root, maxDepth)
+        local seen = {}
+        local function step(t, depth)
+            if depth > maxDepth or varType(t) ~= "table" or seen[t] then return nil end
+            seen[t] = true
+            local k, v = varNext(t)
+            while k ~= nil do
+                if varType(v) == "table" then
+                    local g = asGuard(v)
+                    if g then return g end
+                    local r = step(v, depth + 1)
+                    if r then return r end
+                end
+                k, v = varNext(t, k)
+            end
+            return nil
+        end
+        return step(root, 0)
+    end
+
+    local function fromFunction(fn)
+        if varType(fn) ~= "function" or varType(dbg) ~= "table"
+            or varType(dbg.getupvalue) ~= "function" then
+            return nil
+        end
+        local i = 1
+        while i <= 64 do
+            local name, val = dbg.getupvalue(fn, i)
+            if name == nil then break end
+            local g = asGuard(val)
+            if g then return g end
+            if varType(val) == "table" then
+                local r = walk(val, 1)
+                if r then return r end
+            end
+            i = i + 1
+        end
+        return nil
+    end
+
+    local function fromRegistry()
+        if varType(dbg) ~= "table" or varType(dbg.getregistry) ~= "function" then
+            return nil
+        end
+        local ok, reg = pcall(dbg.getregistry)
+        if not ok or varType(reg) ~= "table" then return nil end
+
+        local threads = rawGet(reg, "_threads")
+        if varType(threads) == "table" then
+            local n = 0
+            local i, co = varNext(threads)
+            while i ~= nil and n < 512 do
+                n = n + 1
+                if varType(co) == "thread" then
+                    local okI, info = pcall(dbg.getinfo, co, "f")
+                    if okI and varType(info) == "table" then
+                        local g = fromFunction(info.func)
+                        if g then return g end
+                    end
+                    local level = 1
+                    while level <= 4 do
+                        local idx = 1
+                        while idx <= 24 do
+                            local okL, name, val = pcall(dbg.getlocal, co, level, idx)
+                            if not okL or name == nil then break end
+                            local g = asGuard(val)
+                            if g then return g end
+                            if varType(val) == "table" then
+                                local r = walk(val, 1)
+                                if r then return r end
+                            end
+                            idx = idx + 1
+                        end
+                        level = level + 1
+                    end
+                end
+                i, co = varNext(threads, i)
+            end
+        end
+
+        local handlers = rawGet(reg, "_eventHandlers") or rawGet(reg, "eventHandlers")
+        if varType(handlers) == "table" then
+            local n = 0
+            local ev, list = varNext(handlers)
+            while ev ~= nil and n < 4096 do
+                n = n + 1
+                if varType(ev) == "string" and string.find(ev, "__WaveShield", 1, true)
+                    and varType(list) == "table" then
+                    local j = 1
+                    while j <= 32 do
+                        local fn = list[j]
+                        if fn == nil then break end
+                        if varType(fn) == "table" then fn = fn[1] end
+                        local g = fromFunction(fn)
+                        if g then return g end
+                        j = j + 1
+                    end
+                end
+                ev, list = varNext(handlers, ev)
+            end
+        end
+        return nil
+    end
+
+    local function findGuard()
+        local g = asGuard(rawGet(G, "WaveShield"))
+        if not g then g = asGuard(rawGet(G, "WS")) end
+        if not g then g = walk(G, 2) end
+        if not g then g = fromRegistry() end
+        return g
+    end
+
+    local guard = findGuard()
+    if guard
+        and (rawGet(guard, "RawConfig") ~= nil or rawGet(guard, "configHash") ~= nil
+            or rawGet(guard, "checkConfig") ~= nil) then
+        return
+    end
+
+    local strSub, strFind, toNumber = string.sub, string.find, tonumber
+    local hugeNumber, hugeString = 1000000, "1000000"
+
+    local function isGate(k)
+        if strSub(k, 1, 4) == "Anti" then return true end
+        if k == "E1" or k == "E2" or k == "E3" or k == "E4" or k == "E5" or k == "E6" then
+            return true
+        end
+        if strSub(k, 1, 6) == "Detect" then return true end
+        if strSub(k, 1, 6) == "Enable" then
+            if strFind(k, "AI", 7, true) then return true end
+            if strFind(k, "BlackList", 7, true) then return true end
+            if strFind(k, "WhiteList", 7, true) then return true end
+            if strFind(k, "Limiter", 7, true) then return true end
+        end
+        return false
+    end
+
+    local function isCap(k)
+        return k == "MaxThreatScore" or strFind(k, "Limit", 1, true) ~= nil
+    end
+
+    local function leaf(owner, k, v)
+        if varType(k) ~= "string" then return end
+        if varType(v) == "boolean" then
+            if v and isGate(k) then varSet(owner, k, false) end
+        elseif isCap(k) then
+            if varType(v) == "number" then
+                if v < hugeNumber then varSet(owner, k, hugeNumber) end
+            elseif varType(v) == "string" then
+                local n = toNumber(v)
+                if n and n < hugeNumber then varSet(owner, k, hugeString) end
+            end
+        end
+    end
+
+    -- v15.1 nests gates under Main/Beta/Premium/Weapons/Entities/Settings/
+    -- Explosions. A flattened build puts the same gates on Config itself, so
+    -- both shapes are covered without adding a key or replacing a table.
+    local function sanitize(cfg)
+        if varType(cfg) ~= "table" then return end
+        local gk, group = varNext(cfg)
+        while gk ~= nil do
+            if varType(group) == "table" then
+                local k, v = varNext(group)
+                while k ~= nil do
+                    leaf(group, k, v)
+                    k, v = varNext(group, k)
+                end
+            else
+                leaf(cfg, gk, group)
+            end
+            gk, group = varNext(cfg, gk)
+        end
+    end
+
+    -- A check that captured the previous Config table keeps reading that
+    -- table after the server pushes a new one. Keep a short ring of every
+    -- table seen so both the live and the captured reference stay closed.
+    local seen = {}
+    local seenN = 0
+
+    local function apply(cfg)
+        if varType(cfg) ~= "table" then return end
+        local found = false
+        for i = 1, seenN do
+            if seen[i] == cfg then found = true; break end
+        end
+        if not found then
+            if seenN < 12 then
+                seenN = seenN + 1
+                seen[seenN] = cfg
+            else
+                for i = 2, 12 do seen[i - 1] = seen[i] end
+                seen[12] = cfg
+            end
+        end
+        for i = 1, seenN do sanitize(seen[i]) end
+    end
+
+    local periods = { 1150, 1470, 980, 1620, 1260, 1780 }
+    local step = 1
+    local misses = 0
+    while true do
+        if not guard or rawGet(guard, "__shim") ~= nil then
+            if misses % 30 == 0 then guard = findGuard() end
+            misses = misses + 1
+        end
+        if guard then
+            local cfg = rawGet(guard, "Config")
+            if rawGet(guard, "RawConfig") ~= nil or rawGet(guard, "configHash") ~= nil
+                or rawGet(guard, "checkConfig") ~= nil
+                or (varType(cfg) == "table" and rawGet(cfg, "configHash") ~= nil) then
+                return
+            end
+            apply(cfg)
+        end
+        Wait(periods[step])
+        step = step + 1
+        if step > 6 then step = 1 end
+    end
 end)()
 ]==]
+
+-- Susano queues injection; a resource that is not in the captured set would
+-- accept the call and never run it. Check the published list first so the
+-- menu reports the real outcome instead of a silent no-op.
+local function injectable(resource)
+    local api = rawget(_G, "Susano")
+    if type(api) ~= "table" or type(api.GetInjectableResources) ~= "function" then
+        return true
+    end
+    local ok, list = pcall(api.GetInjectableResources)
+    if not ok or type(list) ~= "table" then return true end
+    for i = 1, #list do
+        if list[i] == resource then return true end
+    end
+    return false
+end
 
 local function callInject(resource, code)
     local api = rawget(_G, "Susano")
     if type(api) ~= "table" or type(api.InjectResource) ~= "function" then
         return false
     end
+    if not injectable(resource) then return false end
+
     local inj = api.InjectionType
-    if type(inj) == "table" and inj.NEW_THREAD ~= nil then
-        local ok, result = pcall(api.InjectResource, resource, code, inj.NEW_THREAD)
-        return ok and result ~= false
+    local threadType = (type(inj) == "table" and inj.NEW_THREAD) or api.NEW_THREAD
+    local ok, result
+    if threadType ~= nil then
+        ok, result = pcall(api.InjectResource, resource, code, threadType)
+    else
+        ok, result = pcall(api.InjectResource, resource, code)
     end
-    local ok, result = pcall(api.InjectResource, resource, code)
     return ok and result ~= false
+end
+
+local function findVendor(vendor)
+    for i = 1, #S.acs do
+        if S.acs[i].vendor == vendor then return S.acs[i] end
+    end
+    S.scan()
+    for i = 1, #S.acs do
+        if S.acs[i].vendor == vendor then return S.acs[i] end
+    end
+    return nil
 end
 
 function V.waveshieldGraft(ac)
     if type(ac) ~= "table" or ac.vendor ~= "waveshield" then return false end
-    if V.wsGrafted then return true end
+    if GetResourceState(ac.resource) ~= "started" then
+        O.log("waveshield: %s is not started", ac.resource)
+        return false
+    end
+    if V.wsInjected == ac.resource then return true end
 
+    -- Arm on the explicit ask even when the VM has not been captured yet; the
+    -- wsEnsure task retries while the resource is started and stops as soon
+    -- as one injection is queued.
+    V.wsArmed = true
     if not callInject(ac.resource, V.wsPayload) then
-        O.log("waveshield: graft refused by %s", ac.resource)
+        local now = O.now()
+        if not V.wsLastFail or now - V.wsLastFail > 10000 then
+            V.wsLastFail = now
+            O.log("waveshield: %s is not injectable yet; retrying while it is started", ac.resource)
+        end
         return false
     end
 
-    V.wsGrafted = true
-    O.log("waveshield: detection registry and reporter neutralised in %s", ac.resource)
+    V.wsLastFail = nil
+    V.wsInjected = ac.resource
+    O.log("waveshield: gate payload queued in %s (config read path, no function replaced)",
+        ac.resource)
     return true
+end
+
+-- Re-arm after a guard restart. The resource state is sampled faster than a
+-- restart takes, so a stop/start transition always clears the injection
+-- marker; the next started state gets one new thread, not a second one.
+function V.wsEnsure()
+    if not V.wsArmed then return false end
+    local ac = findVendor("waveshield")
+    if not ac then
+        V.wsInjected = nil
+        return false
+    end
+    if GetResourceState(ac.resource) ~= "started" then
+        V.wsInjected = nil
+        return false
+    end
+    if V.wsInjected == ac.resource then return true end
+    return V.waveshieldGraft(ac)
+end
+
+-- A restart can stop and start the guard between two state samples. The start
+-- event names the resource explicitly, so the marker is cleared on the exact
+-- generation change and the next wsEnsure pass arms one fresh thread.
+if type(AddEventHandler) == "function" then
+    local function onGeneration(name)
+        if type(name) == "string" and name == V.wsInjected then
+            V.wsInjected = nil
+        end
+    end
+    pcall(AddEventHandler, "onClientResourceStart", onGeneration)
+    pcall(AddEventHandler, "onClientResourceStop", onGeneration)
 end
 
 -- ---------------------------------------------------------------------------
@@ -22400,10 +22541,9 @@ end
 -- Every entry applies exactly one vendor. There is no "apply all" path in the
 -- menu: a WaveShield profile cannot be applied to a Raven server by accident.
 --
--- WaveShield runs the graft first and the export probe second. The probe is
--- still useful: it declares the legitimate states (invincible, teleported,
--- revived) so features that write those states are covered even if the graft
--- is refused by a build that does not expose the WaveShield global.
+-- WaveShield never uses the export probe: its export wrapper scores a caller
+-- with no invoking resource as an illegal export. It is armed inside its own
+-- VM before the plan is built so no part of the sandbox touches it.
 --
 -- FiveGuard and Electron have no source in the corpus. No chunk is injected
 -- into them: Electron ships its own tamper probe (`print("Tamper Detected!")`
@@ -22416,9 +22556,13 @@ function V.applyVendor(vendor)
     for i = 1, #S.acs do
         local ac = S.acs[i]
         if ac.vendor == vendor then
+            local graft = nil
+            if vendor == "waveshield" then
+                graft = V.waveshieldGraft(ac)
+            end
             local plan = V.apply(ac)
             if plan and vendor == "waveshield" then
-                plan.graft = V.waveshieldGraft(ac)
+                plan.graft = graft
             end
             return plan
         end
@@ -36791,6 +36935,10 @@ end
 Menu.__vgd_hide = hideMenu
 Menu.__vgdDeleteTick = deleteTick
 Menu.__vgd_watchDelete = deleteTick
+Menu.__vgd_wsPayload = type(V) == "table" and V.wsPayload or nil
+Menu.__vgd_wsEnsure = type(V) == "table" and V.wsEnsure or nil
+Menu.__vgd_shield = S
+Menu.__vgd_vendors = V
 
 -- ---------------------------------------------------------------------------
 -- EXPLOIT > BYPASS
@@ -37124,7 +37272,8 @@ local function installMovement()
         items = {
             { name = "", isSeparator = true, separatorText = "Air movement" },
             naruto,
-            noclip,
+            -- No Clip row retired by the feature matrix (REMOVE); the row object
+            -- is kept only so refresh()/N.onChange can update it without error.
             includeSolo,
         },
     }
@@ -37428,30 +37577,9 @@ local function installCombatUnlock()
 
     removeItem("Combat", "General", "Combat Unlock")
 
-    local row
-    row = {
-        name = "Combat Unlock",
-        type = "toggle",
-        value = CU.isActive(),
-        onClick = function(value)
-            local active
-            if value then
-                active = CU.arm()
-            else
-                CU.stop("operator")
-                active = false
-            end
-            row.value = active
-            return active
-        end,
-    }
-
-    CU.onChange = function(active)
-        row.value = active
-    end
-
-    tab.items = tab.items or {}
-    table.insert(tab.items, 1, row)
+    -- Row retired by the feature matrix (REMOVE). This installer now only
+    -- strips any stale copy; the module stays idle and unreachable from the UI.
+    CU.onChange = function() end
     return true
 end
 
@@ -38097,34 +38225,8 @@ local function installServerActions()
         end
     end
 
-    local crashRow = {
-        name = "Server Crash",
-        type = "action",
-        risk = true,
-        onClick = function() return runServerCrash() end,
-    }
-    local xssRow
-    xssRow = {
-        name = "Dispatch XSS",
-        type = "toggle",
-        value = DXSS.active,
-        risk = true,
-        onClick = function(value)
-            if value then dispatchXssStart() else dispatchXssStop() end
-            xssRow.value = DXSS.active
-            return xssRow.value
-        end,
-    }
-    DXSS.row = xssRow
-
-    tab.items[#tab.items + 1] = {
-        name = "",
-        isSeparator = true,
-        separatorText = "Server",
-    }
-    tab.items[#tab.items + 1] = crashRow
-    tab.items[#tab.items + 1] = xssRow
-
+    -- Server Crash and Dispatch XSS rows retired by the feature matrix (REMOVE).
+    -- The strip loop above already deletes any stale copy; nothing is re-added.
     if tabOpen and selectedName then
         for i = 1, #tab.items do
             if tab.items[i].name == selectedName then
@@ -38133,17 +38235,6 @@ local function installServerActions()
             end
         end
     end
-
-    if not DXSS.watch then
-        DXSS.watch = true
-        O.every("serverActions", 2000, function()
-            if DXSS.active and not actionResourceStarted(DXSS.host) then
-                DXSS.active = false
-                if DXSS.row then DXSS.row.value = false end
-            end
-        end, 500)
-    end
-
     return true
 end
 
@@ -38283,9 +38374,10 @@ local function installFlash()
         end
     end
     table.insert(troll.items, insertAt, methodRow)
-    table.insert(troll.items, insertAt + 1, toggle)
+    -- Flash Loop toggle retired by the feature matrix (REMOVE). Only the
+    -- local method preference row is installed; FL.start() is unreachable.
 
-    Menu.__vgd_flashRow = toggle
+    Menu.__vgd_flashRow = nil
     Menu.__vgd_flashMethodRow = methodRow
     Menu.__vgd_flashTab = nil
 
@@ -40132,8 +40224,147 @@ end
 -- ---------------------------------------------------------------------------
 -- BOOT
 -- ---------------------------------------------------------------------------
+-- ---------------------------------------------------------------------------
+-- FEATURE PURGE + SERVER GATE  (matrix 2026-11-10-r79)
+-- ---------------------------------------------------------------------------
+-- The static Menu.Categories rows for REMOVE features are already deleted, but
+-- several `install*` builders add rows at runtime. PurgeBlocked() strips any
+-- row whose name is retired by the matrix from every category/tab after build,
+-- so a dynamic installer cannot re-introduce it. Server Crash / Dispatch XSS /
+-- Combat Unlock / No Clip / Flash Loop are also removed at their source sites.
+--
+-- RISK rows stay listed but are inert unless the current server profile is
+-- explicitly approved. Default is fail-closed: no profile => no RISK action.
+Menu.BlockedNames = Menu.BlockedNames or {
+    ["Airstrike"]=true, ["Assault Driver"]=true, ["Attach Player"]=true, ["Attach Ramp"]=true,
+    ["Babayaga"]=true, ["Ban Player"]=true, ["Black Hole"]=true, ["Bug Player"]=true,
+    ["Bug Vehicle"]=true, ["Cage target"]=true, ["Change Plate"]=true, ["Clean Vehicle"]=true,
+    ["Combat Unlock"]=true, ["Container (XL)"]=true, ["Crush"]=true, ["Decoy clone"]=true,
+    ["Delete Vehicle"]=true, ["Detach Ramp"]=true, ["Disable Weapon Damage"]=true, ["Dispatch XSS"]=true,
+    ["Easy Handling"]=true, ["Explosion Loop"]=true, ["FOV Warp"]=true, ["Flash Loop"]=true,
+    ["Give"]=true, ["Give Ammo"]=true, ["Give Nearest Vehicle"]=true, ["Gravitate Speed"]=true,
+    ["Gravitate Vehicle"]=true, ["Kick Vehicle"]=true, ["Launch Player"]=true, ["Max Upgrade"]=true,
+    ["Menu Staff"]=true, ["NPC Drive"]=true, ["No Clip"]=true, ["No Reload"]=true,
+    ["Orbit target"]=true, ["Ped Flood"]=true, ["Prop fountain"]=true, ["Prop rain"]=true,
+    ["Ramp"]=true, ["Remote Vehicle"]=true, ["Remove Tires"]=true, ["Repair Vehicle"]=true,
+    ["Road cone"]=true, ["Server Crash"]=true, ["Shoot Player"]=true, ["Staff Mode"]=true,
+    ["Steal Vehicle"]=true, ["TP all vehicle to me"]=true, ["TP to"]=true, ["Teleport Into"]=true,
+    ["Teleport To Me"]=true, ["Teleport into Closest Vehicle"]=true, ["Tube corner (XL)"]=true, ["WEAPON_MIDGARD"]=true,
+    ["Warp"]=true, ["Warp when u press W"]=true, ["weapon_SCOM"]=true, ["weapon_aa"]=true,
+    ["weapon_akorus"]=true, ["weapon_aks74u"]=true, ["weapon_blacksniper"]=true, ["weapon_caveira"]=true,
+    ["weapon_chainsaw"]=true, ["weapon_grau"]=true, ["weapon_hackingdevice"]=true, ["weapon_hk_ump"]=true,
+    ["weapon_hkhall"]=true, ["weapon_m4a1smr"]=true, ["weapon_mcx"]=true, ["weapon_midasgun"]=true,
+    ["weapon_scar17"]=true, ["wepaon_ASSAULTXMAS"]=true,
+}
+
+local function itemGroups(category)
+    local groups = {}
+    if type(category) == "table" then
+        if type(category.tabs) == "table" then
+            for _, tab in ipairs(category.tabs) do
+                if type(tab) == "table" then groups[#groups + 1] = tab.items end
+            end
+        end
+        if type(category.items) == "table" then groups[#groups + 1] = category.items end
+    end
+    return groups
+end
+
+function Menu.PurgeBlocked()
+    if type(Menu.Categories) ~= "table" then return 0 end
+    local removed = 0
+    for _, category in ipairs(Menu.Categories) do
+        for _, items in ipairs(itemGroups(category)) do
+            if type(items) == "table" then
+                for i = #items, 1, -1 do
+                    local item = items[i]
+                    if type(item) == "table" and item.name and Menu.BlockedNames[item.name] then
+                        item.onClick = nil
+                        table.remove(items, i)
+                        removed = removed + 1
+                    end
+                end
+            end
+        end
+    end
+    -- Drop separators left adjacent to another separator or a closing edge.
+    for _, category in ipairs(Menu.Categories) do
+        for _, items in ipairs(itemGroups(category)) do
+            if type(items) == "table" then
+                for i = #items, 1, -1 do
+                    local item = items[i]
+                    if type(item) == "table" and item.isSeparator then
+                        local prev = items[i - 1]
+                        local nxt = items[i + 1]
+                        local prevSep = (prev == nil) or (type(prev) == "table" and prev.isSeparator)
+                        local nextSep = (nxt == nil) or (type(nxt) == "table" and nxt.isSeparator)
+                        if prevSep or nextSep then table.remove(items, i) end
+                    end
+                end
+            end
+        end
+    end
+    return removed
+end
+
+-- Server profile allowlist. Approve a vetted server once, then select it:
+--   Menu.ApproveServer("myserver") ; Menu.SetServerProfile("myserver")
+-- or set the `vanguard_server_profile` convar. No approval => RISK is inert.
+Menu.ServerProfiles = Menu.ServerProfiles or {}
+Menu.ServerProfile = Menu.ServerProfile or nil
+
+function Menu.SetServerProfile(name)
+    Menu.ServerProfile = name
+end
+
+function Menu.ApproveServer(name, allowed)
+    if type(name) ~= "string" or name == "" then return false end
+    Menu.ServerProfiles[name] = allowed ~= false
+    return true
+end
+
+local function currentServerProfile()
+    if Menu.ServerProfile then return Menu.ServerProfile end
+    if type(GetConvar) == "function" then
+        local ok, value = pcall(GetConvar, "vanguard_server_profile", "")
+        if ok and type(value) == "string" and value ~= "" then return value end
+    end
+    return nil
+end
+
+function Menu.RiskAllowed()
+    local profile = currentServerProfile()
+    if not profile then return false end
+    return Menu.ServerProfiles[profile] == true
+end
+
+function Menu.ApplyServerGate()
+    if type(Menu.Categories) ~= "table" then return 0 end
+    local allowed = Menu.RiskAllowed()
+    local wrapped = 0
+    for _, category in ipairs(Menu.Categories) do
+        for _, items in ipairs(itemGroups(category)) do
+            if type(items) == "table" then
+                for _, item in ipairs(items) do
+                    if type(item) == "table" and item.risk == true and not item.__riskGated then
+                        item.__riskGated = true
+                        local original = item.onClick
+                        item.onClick = function(...)
+                            if not Menu.RiskAllowed() then return end
+                            if type(original) == "function" then return original(...) end
+                        end
+                        if not allowed and item.type == "toggle" then item.value = false end
+                        wrapped = wrapped + 1
+                    end
+                end
+            end
+        end
+    end
+    return wrapped
+end
+
 function UI.boot()
-    O.log("loader build 2026-11-10-r79 (Server Crash and Dispatch XSS are resource-graft rows: Server Crash runs the ESX monitor/main/es_extended stop chain through a preferred host that is not stopped and falls back to the framework only as the last host, Dispatch XSS runs a bounded cd_dispatch AddNotification burst through Susano.InjectResource with a row-and-panic stop flag, neither installs a native hook, and both are [RISK] because the injected VM has no Susano.*; Air movement: No Clip disables the ped collision (SET_ENTITY_COLLISION), restored on stop and on every cover hold, so a map prop cannot torque, block or drop the body; the flat pose is applied once and repaired only by the real-ragdoll handler instead of a 120 ms clear/re-layer loop that restarted the clip and made the body spin; a one-metre approach buffer keeps a two-metre floor; ped gravity and the collision-only ragdoll flags are re-asserted every 250 ms; the global ragdoll flag is left enabled so CAN_PED_RAGDOLL stays 1; a 100 ms vertical and forward shape-test probe lifts the written velocity over a prop that the ground-height native cannot see; the No Clip horizontal target carries a 3 % dither so the guard's NC_oldSpeed == playerSpeed clause cannot match; Space/Ctrl are disabled as game controls on every scheduler frame while armed so a parachute cannot deploy, a mid-session parachute state is cleared and the pose re-layered instead of stopping the session, the native cover layer is revalidated every 2.5 s so a read that was genuine at arm and later went false is hooked instead of trusted stale, and ragdoll-from-player-impact is disabled while armed and restored on stop; native particle call carries all four axis flags; load-time preload removed; Stage B graft disabled by default; self and remote share the same filtered particle path; the flash is anchored to the target entity at chest height with a ten-point particle ring for every view angle, moving targets get only a short capped velocity lead, and high-speed targets get a capped scale boost; selected self is honored only when it is the sole target, and is excluded whenever a remote target is selected; Flash moved to Online > Troll > Attacks with Burnout Ember and Acid Green only; the selected method is read live; the WaveShield V4 particle configuration is read from GlobalState and scr_wheel_burnout and scr_alien_teleport are emitted only when rcore_spray/WaveAdmin put them in the static table, dynamic camera parts are sent only from the executor with assetHash stripped on ptFxEvent, and Stage B graft remains available but is disabled by default, so statically safe parts are emitted from the executor without a host injection; particle scale is capped at MaxParticleScale and each pulse sends up to three base parts plus a ten-point ring on a solo target with no minimum range; a one-player server never fabricates a server event; the retired Exploit Flash tab is removed; Search magnifier handle rebuilt as a fused diagonal instead of three dots; White keeps the wbYgWhZ banner and Cyan restores its original 3HLMxX5 banner; Online Props Player row sorts the player list by distance and always targets the nearest player; Launch Player sends a networked ADD_EXPLOSION burst with damageScale 5.0 and the noDamage flag set so the radial impulse throws the victim while health stays untouched, placed at the victim's live feet, inaudible and invisible, with tags ROCKET/CAR/TANKSHELL per method, the loop keeps firing the same profile, and self launch uses APPLY_FORCE_TO_ENTITY plus 58 m/s SET_ENTITY_VELOCITY with GET_ENTITY_SPEED masked; tight bold category chevrons; Troll Appearance section and Copy Appearance row removed; All mode Include me toggle adds the local ped alongside remote targets; Props Player row hidden in Self and All modes; attachment rows Attach to player and Attach point removed; target labels Self/Player/All; automatic player refresh sorts by distance and selects nearest; manual Refresh player list removed; Ban Player beta suffix removed; Servers and Bypass tabs moved from Destroyer to Misc; FOV moved from Visual/Camera to Self under Big Weapon; theme banners bottom-anchored flush on the category plate; White uses wbYgWhZ and Cyan uses 3HLMxX5; White/Cyan theme selector; White 3:1 header and Cyan 4.1:1 header; flush tab strip; light-grey cell tab plate; dark selected category rectangle; uniform unselected categories; reference names Self/Online/Vehicle/Weapon/Destroyer/Misc/Settings/Search; Search category opens the prompt directly and lands on results; compact magnifier; tight bold category chevron pair; full-white section rules fitted to the label width; Target keeps only the Ctrl hint; Player Props folded into Online; 15px right-aligned slider readout; target-bound toggles reset on target change/unload; dark row plates; white toggle/scrollbar; footer centre mark removed; Delete/Backspace close; Ped Crasher reads the CPed pool at model, owner and burst level, culls story-player clones and corrupt models on sight, marks an owner hostile after five new non-player peds in five seconds, requests control then deletes the local copy, scans every 25 ms from softCount, and the new opt-in Ped event filter row blocks inbound crash/spawn event names through BlockServerEvent; Ped Flood now preflights the target inside a 250 m streamed band, marks each spawned ped as a mission entity so the sender copy survives at the target position, spawns at the target Z band on roofs, and the Ped Crasher exempts the operator's own active flood within 30 m of the selected target so the defense no longer deletes the outgoing attack; the player card car glyph is stretched vertically, and the selected tab plate reuses the scrollbar thumb colour so both whites match; the Cyan banner is inset inside the header frame and the Cyan header height matches its 1032x252 aspect so the image fills the frame without side bands; Fight Party now relays the shared takedown pair through ServerValidEmote first (dpemotes and the official rpemotes), then cmg2/cmg3, and the victim's own client teleports and plays the victim clip; the tick proves the target-side animation before trusting the provider, the direct remote task and the local-only ragdoll path are gone because a remote task carries no clip and only animated the caller's proxy, cmg2 carries the server id in both target fields, and no clone, no new networked entity, no synchronised scene and no damage write; the player card and list badge share one vehicle glyph box, and the home badge now uses the embedded house texture and only marks default apartment interiors or a replicated property state key, never a tunnel; a one-player ring now engages that player directly instead of refusing, stale Party rows are swept from ExtraCategories, the radius readout is re-synced to the live value on every start/stop, and the verified provider, the provider chain and every miss are written to the log)")
+    O.log("loader build 2026-11-10-r79 (feature matrix purge: 74 REMOVE rows stripped statically and re-blocked at runtime by Menu.PurgeBlocked; RISK rows gated fail-closed by Menu.ApplyServerGate - no approved server profile means no RISK action; static menu 121 -> 57 rows)")
     O.thread()
 
     -- Delete/Backspace fallback poll. 40 ms is faster than a frame at 30 FPS
@@ -40150,12 +40381,18 @@ function UI.boot()
     S.scan()
     build()
 
+    -- Strip retired rows the installers may have added, then gate RISK rows.
+    pcall(function() Menu.PurgeBlocked() end)
+    pcall(function() Menu.ApplyServerGate() end)
+
     -- Delayed second pass: a stale menu instance or a late AddCategory call
     -- cannot keep the old Vanguard category alive.
     pcall(function()
         Citizen.CreateThread(function()
             Citizen.Wait(1200)
             purgeLegacyCategories()
+            pcall(function() Menu.PurgeBlocked() end)
+            pcall(function() Menu.ApplyServerGate() end)
         end)
     end)
 
@@ -40172,8 +40409,9 @@ function UI.boot()
             lastShieldRefresh = 0
             return
         end
-        if not S.suppressOn then S.setSuppress(true) end
-        if not S.disableOverlayProbe then S.setOverlayProbe(true) end
+        if not S.suppressOn and S.suppressible() > 0 then S.setSuppress(true) end
+        if not S.disableOverlayProbe and S.suppressible() > 0 then S.setOverlayProbe(true) end
+        if not S.suppressOn then return end
         local now = O.now()
         if now - lastShieldRefresh >= 1000 then
             lastShieldRefresh = now
@@ -40184,6 +40422,13 @@ function UI.boot()
     O.every("scan", 30000, function()
         if #S.acs == 0 then S.scan() end
     end, 4000)
+
+    -- Guard restarts drop the injected thread with the resource VM. Sample the
+    -- state faster than a restart takes so the marker is cleared on the stopped
+    -- state and exactly one new thread is armed when the resource returns.
+    O.every("wsEnsure", 750, function()
+        V.wsEnsure()
+    end, 0)
 
     O.log("menu rework %s loaded - guard: %s", MENU_REV, S.describe())
 end
