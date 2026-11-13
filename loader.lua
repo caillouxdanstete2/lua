@@ -1054,6 +1054,325 @@ do
 end
 
 -- ============================================
+-- PATCH: loading card + key confirmation
+-- ============================================
+-- The library paints its loading state as a bottom ring with a percentage in
+-- the middle, and its key capture as a bordered keybind box. Both now use the
+-- same dark notification card as the reference:
+--
+--   * near-black rounded plate with a faint rim;
+--   * short vertical accent bar on the left;
+--   * centered title and secondary line;
+--   * thin progress rail with a round knob (loading only);
+--   * small double-chevron mark in the top-right corner.
+--
+-- The mark reuses the ">>" glyph of the category rows, drawn with lines so it
+-- never depends on the icon download or on glyph coverage in the active font.
+-- Both draws read the screen size every frame, so a resolution change while a
+-- card is up cannot leave a stale plate. Sizes are derived from the screen
+-- height (1080p reference) and ignore Menu.Scale: the card must keep its
+-- proportions when the operator changes the menu size.
+do
+    local CARD_WIDTH = 700.0
+    local LOADING_RATIO = 0.240
+    local CONFIRM_RATIO = 0.196
+    local CARD_BOTTOM = 110.0
+
+    local function screenSize()
+        local width, height = 1920, 1080
+        if type(Susano) == "table" then
+            if type(Susano.GetScreenWidth) == "function" then
+                local value = Susano.GetScreenWidth()
+                if type(value) == "number" and value > 0 then width = value end
+            end
+            if type(Susano.GetScreenHeight) == "function" then
+                local value = Susano.GetScreenHeight()
+                if type(value) == "number" and value > 0 then height = value end
+            end
+        end
+        return width, height
+    end
+
+    local function textWidth(text, size)
+        if type(Susano) == "table" and type(Susano.GetTextWidth) == "function" then
+            local value = Susano.GetTextWidth(text, size)
+            if type(value) == "number" and value >= 0 then return value end
+        end
+        return #text * size * 0.52
+    end
+
+    local function drawText(x, y, text, size, r, g, b, a)
+        if type(Susano) == "table" and type(Susano.DrawText) == "function" then
+            Susano.DrawText(x, y, text, size, r, g, b, a)
+        end
+    end
+
+    local function drawTextCentered(cx, y, text, size, r, g, b, a)
+        drawText(cx - textWidth(text, size) * 0.5, y, text, size, r, g, b, a)
+    end
+
+    local function drawPlate(x, y, width, height, radius, alpha)
+        if type(Susano) == "table" and type(Susano.DrawRectFilled) == "function" then
+            -- One-pixel rim: the plate is nearly black, so on a bright scene
+            -- the edge needs a low-contrast border to read as one object.
+            Susano.DrawRectFilled(x - 1, y - 1, width + 2, height + 2,
+                0.36, 0.36, 0.40, 0.18 * alpha, radius + 1)
+            Susano.DrawRectFilled(x, y, width, height,
+                0.015, 0.015, 0.018, 0.95 * alpha, radius)
+            Susano.DrawRectFilled(x + math.floor(radius * 0.5), y, width - radius,
+                1, 1.0, 1.0, 1.0, 0.035 * alpha, 0)
+        elseif type(Menu) == "table" and type(Menu.DrawRoundedRect) == "function" then
+            Menu.DrawRoundedRect(x, y, width, height, 0, 0, 0, math.floor(238 * alpha), radius)
+        end
+    end
+
+    local function drawAccent(x, centerY, height, barWidth, alpha)
+        if type(Susano) ~= "table" or type(Susano.DrawRectFilled) ~= "function" then return end
+        local y = centerY - height * 0.5
+        local glow = math.floor(barWidth * 0.5 + 2.5)
+        Susano.DrawRectFilled(x - glow, y - glow, barWidth + glow * 2, height + glow * 2,
+            1.0, 1.0, 1.0, 0.06 * alpha, (barWidth + glow * 2) * 0.5)
+        Susano.DrawRectFilled(x, y, barWidth, height,
+            1.0, 1.0, 1.0, 0.92 * alpha, barWidth * 0.5)
+    end
+
+    local function drawMark(right, centerY, size, alpha)
+        if type(Susano) ~= "table" then return end
+
+        if type(Susano.DrawLine) == "function" then
+            local thickness = math.max(1.5, size * 0.115)
+            local step = size * 0.56
+            local reach = size * 0.40
+            local left = right - size * 1.08
+            local tipY = centerY
+            local topY = centerY - size * 0.46
+            local bottomY = centerY + size * 0.46
+
+            for index = 1, 2 do
+                local baseX = left + (index - 1) * step
+                local tipX = baseX + reach
+                -- Dark under-stroke then a two-tone top face: reads as a small
+                -- brushed metal mark instead of a flat white glyph.
+                Susano.DrawLine(baseX, topY, tipX, tipY, 0.08, 0.08, 0.10, 0.90 * alpha, thickness + 1.4)
+                Susano.DrawLine(baseX, bottomY, tipX, tipY, 0.08, 0.08, 0.10, 0.90 * alpha, thickness + 1.4)
+                Susano.DrawLine(baseX, topY, tipX, tipY, 0.94, 0.95, 0.98, 0.98 * alpha, thickness)
+                Susano.DrawLine(baseX, bottomY, tipX, tipY, 0.74, 0.75, 0.79, 0.98 * alpha, thickness)
+            end
+            return
+        end
+
+        local glyphSize = math.floor(size + 0.5)
+        drawText(right - textWidth(">>", glyphSize), centerY - glyphSize * 0.6,
+            ">>", glyphSize, 0.90, 0.91, 0.94, 0.96 * alpha)
+    end
+
+    local function drawRail(x, y, width, height, progress, alpha)
+        if type(Susano) ~= "table" or type(Susano.DrawRectFilled) ~= "function" then return end
+
+        Susano.DrawRectFilled(x, y, width, height, 1.0, 1.0, 1.0, 0.13 * alpha, height * 0.5)
+
+        local fillWidth = width * progress
+        if fillWidth > 0 then
+            if fillWidth < height then fillWidth = height end
+            local fillRadius = math.min(height, fillWidth) * 0.5
+            Susano.DrawRectFilled(x, y, fillWidth, height,
+                1.0, 1.0, 1.0, 0.96 * alpha, fillRadius)
+        end
+
+        local knobRadius = height * 1.45
+        local knobX = x + width * progress
+        if knobX < x + knobRadius then knobX = x + knobRadius end
+        if knobX > x + width - knobRadius then knobX = x + width - knobRadius end
+        local centerY = y + height * 0.5
+
+        if type(Susano.DrawCircle) == "function" then
+            Susano.DrawCircle(knobX, centerY, knobRadius * 1.55, true,
+                1.0, 1.0, 1.0, 0.10 * alpha, 0, 24)
+            Susano.DrawCircle(knobX, centerY, knobRadius, true,
+                1.0, 1.0, 1.0, 0.99 * alpha, 0, 24)
+        else
+            local glow = knobRadius * 1.55
+            Susano.DrawRectFilled(knobX - glow, centerY - glow, glow * 2, glow * 2,
+                1.0, 1.0, 1.0, 0.10 * alpha, glow)
+            Susano.DrawRectFilled(knobX - knobRadius, centerY - knobRadius,
+                knobRadius * 2, knobRadius * 2, 1.0, 1.0, 1.0, 0.99 * alpha, knobRadius)
+        end
+    end
+
+    local function metrics(screenHeight, ratio)
+        local scale = screenHeight / 1080.0
+        if scale < 0.65 then scale = 0.65 elseif scale > 2.60 then scale = 2.60 end
+        local width = math.floor(CARD_WIDTH * scale + 0.5)
+        local height = math.floor(width * ratio + 0.5)
+        return width, height, scale
+    end
+
+    local function drawConfirmLine(cx, y, size, keyName, alpha)
+        local lead = "Press Enter to confirm"
+        local tail = "(Esc to cancel)"
+        local greyR, greyG, greyB = 0.66, 0.66, 0.70
+        local firstGap = size * 0.55
+        local secondGap = size * 0.80
+        local keyWidth = textWidth(keyName, size)
+        local total = textWidth(lead, size) + firstGap + keyWidth + secondGap + textWidth(tail, size)
+        local left = cx - total * 0.5
+
+        drawText(left, y, lead, size, greyR, greyG, greyB, alpha)
+        left = left + textWidth(lead, size) + firstGap
+        drawText(left, y, keyName, size, 0.98, 0.98, 1.0, alpha)
+        left = left + keyWidth + secondGap
+        drawText(left, y, tail, size, greyR, greyG, greyB, alpha)
+    end
+
+    function Menu.DrawLoadingBar(alpha)
+        if alpha <= 0 then return end
+
+        local screenWidth, screenHeight = screenSize()
+        local width, height, scale = metrics(screenHeight, LOADING_RATIO)
+        local maxWidth = screenWidth - math.floor(96 * scale)
+        if width > maxWidth then
+            width = maxWidth
+            height = math.floor(width * LOADING_RATIO + 0.5)
+        end
+
+        local x = math.floor((screenWidth - width) * 0.5 + 0.5)
+        local y = math.floor(screenHeight - CARD_BOTTOM * scale - height + 0.5)
+        local radius = math.floor(14 * scale + 0.5)
+        local titleSize = math.floor(23 * scale + 0.5)
+        local detailSize = math.floor(15 * scale + 0.5)
+        local barWidth = math.max(2, math.floor(3 * scale + 0.5))
+        local accentHeight = math.floor(height * 0.46 + 0.5)
+        local padding = math.floor(width * 0.032 + 0.5)
+        local railHeight = math.max(2, math.floor(3.5 * scale + 0.5))
+
+        local progress = (tonumber(Menu.LoadingProgress) or 0.0) / 100.0
+        if progress < 0.0 then progress = 0.0 elseif progress > 1.0 then progress = 1.0 end
+        local percent = string.format("%d%%", math.floor(progress * 100.0 + 0.5))
+
+        drawPlate(x, y, width, height, radius, alpha)
+        drawAccent(x + math.floor(width * 0.018 + 0.5), y + height * 0.5,
+            accentHeight, barWidth, alpha)
+        drawMark(x + width - math.floor(width * 0.026 + 0.5),
+            y + height * 0.19, math.floor(19 * scale + 0.5), alpha)
+        drawTextCentered(x + width * 0.5, y + math.floor(height * 0.215 + 0.5),
+            "Loading assets...", titleSize, 0.97, 0.97, 0.99, alpha)
+        drawTextCentered(x + width * 0.5, y + math.floor(height * 0.405 + 0.5),
+            percent, detailSize, 0.78, 0.78, 0.81, alpha)
+        drawRail(x + padding, y + math.floor(height * 0.83 + 0.5),
+            width - padding * 2, railHeight, progress, alpha)
+    end
+
+    function Menu.DrawKeySelector(alpha)
+        if alpha <= 0 then return end
+
+        local screenWidth, screenHeight = screenSize()
+        local width, height, scale = metrics(screenHeight, CONFIRM_RATIO)
+        local maxWidth = screenWidth - math.floor(96 * scale)
+        if width > maxWidth then
+            width = maxWidth
+            height = math.floor(width * CONFIRM_RATIO + 0.5)
+        end
+
+        local x = math.floor((screenWidth - width) * 0.5 + 0.5)
+        local y = math.floor(screenHeight - CARD_BOTTOM * scale - height + 0.5)
+        local radius = math.floor(14 * scale + 0.5)
+        local titleSize = math.floor(21 * scale + 0.5)
+        local detailSize = math.floor(13 * scale + 0.5)
+        local barWidth = math.max(2, math.floor(3 * scale + 0.5))
+        local accentHeight = math.floor(height * 0.56 + 0.5)
+
+        local keyName
+        local title
+        if Menu.SelectingBind == true then
+            keyName = Menu.BindingKeyName
+            if not keyName and type(Menu.BindingItem) == "table" then
+                keyName = Menu.BindingItem.bindKeyName
+            end
+            title = "Confirm key: " .. (keyName or "...")
+        else
+            keyName = Menu.SelectedKeyName
+            if not keyName and type(Menu.GetKeyName) == "function" then
+                keyName = Menu.GetKeyName(Menu.SelectedKey or 0x31)
+            end
+            title = "Confirm menu key: " .. (keyName or "...")
+        end
+
+        drawPlate(x, y, width, height, radius, alpha)
+        drawAccent(x + math.floor(width * 0.018 + 0.5), y + height * 0.5,
+            accentHeight, barWidth, alpha)
+        drawMark(x + width - math.floor(width * 0.026 + 0.5),
+            y + height * 0.14, math.floor(19 * scale + 0.5), alpha)
+        drawTextCentered(x + width * 0.5, y + math.floor(height * 0.205 + 0.5),
+            title, titleSize, 0.97, 0.97, 0.99, alpha)
+
+        if keyName then
+            drawConfirmLine(x + width * 0.5, y + math.floor(height * 0.575 + 0.5),
+                detailSize, keyName, alpha)
+        else
+            drawTextCentered(x + width * 0.5, y + math.floor(height * 0.575 + 0.5),
+                "Press a key   (Esc to cancel)", detailSize, 0.66, 0.66, 0.70, alpha)
+        end
+    end
+end
+
+-- ============================================
+-- PATCH: Escape cancels a key capture
+-- ============================================
+-- The confirmation card promises "(Esc to cancel)". The library scan treats
+-- Escape as one more binding candidate, and a menu-key candidate is written to
+-- Menu.SelectedKey the instant it is pressed. Cancel therefore runs before the
+-- library's own HandleInput: this wrapper snapshots the menu key when a capture
+-- opens and restores it on Escape. Bind capture never writes the item before
+-- Enter, so clearing the capture fields is enough there.
+--
+-- A menu key has no explicit value at startup: the toggle branch falls back to
+-- 0x31. When a capture opens with no stored key, the wrapper stores that
+-- effective default so Enter confirms what the card shows instead of leaving
+-- the capture open. Behavior of the toggle itself does not change.
+do
+    if type(Menu) == "table" and type(Menu.HandleInput) == "function"
+        and not Menu.__vgdEscCapture then
+        local baseHandleInput = Menu.HandleInput
+        Menu.__vgdEscCapture = true
+
+        Menu.HandleInput = function()
+            local selectingKey = Menu.SelectingKey == true
+            local selectingBind = Menu.SelectingBind == true
+
+            if selectingKey and not Menu.__vgdKeyCaptureWas then
+                Menu.__vgdKeyBefore = Menu.SelectedKey
+                Menu.__vgdKeyNameBefore = Menu.SelectedKeyName
+                if not Menu.SelectedKey then
+                    Menu.SelectedKey = 0x31
+                    if type(Menu.GetKeyName) == "function" then
+                        Menu.SelectedKeyName = Menu.GetKeyName(0x31)
+                    end
+                end
+            end
+            Menu.__vgdKeyCaptureWas = selectingKey
+
+            if (selectingKey or selectingBind)
+                and type(Menu.IsKeyJustPressed) == "function"
+                and Menu.IsKeyJustPressed(0x1B) then
+                if selectingKey then
+                    Menu.SelectedKey = Menu.__vgdKeyBefore
+                    Menu.SelectedKeyName = Menu.__vgdKeyNameBefore
+                    Menu.SelectingKey = false
+                else
+                    Menu.SelectingBind = false
+                    Menu.BindingItem = nil
+                    Menu.BindingKey = nil
+                    Menu.BindingKeyName = nil
+                end
+                return
+            end
+
+            return baseHandleInput()
+        end
+    end
+end
+
+-- ============================================
 -- PATCH: menu motion (runtime)
 -- ============================================
 -- Every moving value is advanced from a wrapper around the library's own
@@ -2626,6 +2945,7 @@ Menu.Categories = {
             { name = "", isSeparator = true, separatorText = "Health" },
             { name = "Revive", type = "action" },
             { name = "", isSeparator = true, separatorText = "Other" },
+            { name = "TP all vehicle to me", type = "action" },
             { name = "Detach All Entitys", type = "action" },
             { name = "Solo Session", type = "toggle", value = false },
             { name = "Throw Vehicle", type = "toggle", value = false },
@@ -2650,15 +2970,78 @@ Menu.Categories = {
             { name = "Loading players...", type = "action" }
         }},
         { name = "Troll", items = {
+            { name = "", isSeparator = true, separatorText = "Attacks" },
+            { name = "Ban Player", type = "toggle", value = false, risk = true},
+            { name = "Shoot Player", type = "action", risk = true},
+            { name = "Ped Flood", type = "action", risk = true},
+            { name = "Babayaga", type = "toggle", value = false, risk = true, targetBound = true, onClick = function(value)
+                Menu.ActionBabayaga(value)
+            end },
+            { name = "Launch Player", type = "selector", options = {"Explosion", "Vehicle", "Attach"}, selected = 1, onClick = function(index, option)
+                Menu.LaunchMethod = index
+                Menu.ActionLaunch(index)
+            end },
+            { name = "Explosion Loop", type = "toggle", value = false, risk = true, targetBound = true, onClick = function(value)
+                Menu.ActionExplosionLoop(value)
+            end },
+            { name = "Attach Player", type = "toggle", value = false, targetBound = true, onClick = function(val)
+                Menu.attachPlayerEnabled = val
+                if val then
+                    local targetServerId = tonumber(Menu.SelectedPlayer)
+                    if not targetServerId then
+                        Menu.attachPlayerEnabled = false
+                        return
+                    end
+                    local previous = tonumber(Menu.attachPlayerServerId)
+                    if previous then
+                        pcall(Menu.SetAttachPlayer, previous, false)
+                    end
+                    if Menu.SetAttachPlayer(targetServerId, true) then
+                        Menu.attachPlayerServerId = targetServerId
+                    else
+                        Menu.attachPlayerEnabled = false
+                    end
+                else
+                    local targetServerId = tonumber(Menu.attachPlayerServerId)
+                        or tonumber(Menu.SelectedPlayer)
+                    if targetServerId then
+                        pcall(Menu.SetAttachPlayer, targetServerId, false)
+                    end
+                    Menu.attachPlayerServerId = nil
+                end
+            end },
             
             { name = "", isSeparator = true, separatorText = "Bugs" },
+            { name = "Bug Player", type = "selector", options = {"Bug", "Launch", "Hard Launch", "Attach"}, selected = 1 },
+            { name = "Crush", type = "selector", options = {"Rain", "Drop", "Ram"}, selected = 1 },
+            { name = "Black Hole", type = "toggle", value = false, targetBound = true },
             { name = "Crash Method", type = "action" },
+            { name = "Airstrike", type = "action" },
+            { name = "Assault Driver", type = "action" },
             
             { name = "", isSeparator = true, separatorText = "Attach Animations" },
             { name = "Twerk", type = "toggle", value = false, targetBound = true },
             { name = "Baise", type = "toggle", value = false, targetBound = true },
             { name = "Branlette", type = "toggle", value = false, targetBound = true },
             { name = "PiggyBack", type = "toggle", value = false, targetBound = true }
+        }},
+        { name = "Vehicle", items = {
+            { name = "", isSeparator = true, separatorText = "Bugs" },
+            { name = "Bug Vehicle", type = "selector", options = {"#1", "#2"}, selected = 1 },
+            { name = "Kick Vehicle", type = "selector", options = {"#1", "#2"}, selected = 1 },
+            { name = "Warp", type = "selector", options = {"Classic", "Boost"}, selected = 1 },
+            { name = "Teleport Into", type = "action" },
+            
+            { name = "", isSeparator = true, separatorText = "Teleportation" },
+            { name = "TP to", type = "selector", options = {"Ocean", "Maze Bank", "Sandy Shores"}, selected = 1 },
+            
+            { name = "", isSeparator = true, separatorText = "Actions" },
+            { name = "Remote Vehicle", type = "action" },
+            { name = "Steal Vehicle", type = "action" },
+            { name = "NPC Drive", type = "action" },
+            { name = "Delete Vehicle", type = "action" },
+            { name = "Remove Tires", type = "action" },
+            { name = "Give", type = "selector", options = {"Vehicle", "Ramp", "Wall", "Wall 2"}, selected = 1 }
         }},
     }},
     { name = "Visual", hasTabs = true, tabs = {
@@ -2673,7 +3056,11 @@ Menu.Categories = {
         }},
         { name = "Servers", items = {
             { name = "", isSeparator = true, separatorText = "Dynasty" },
+            { name = "Staff Mode", type = "toggle", value = false, dynasty = true },
+            { name = "Disable Weapon Damage", type = "toggle", value = false, dynasty = true },
             { name = "Revive", type = "action", dynasty = true },
+            { name = "", isSeparator = true, separatorText = "Seed" },
+            { name = "Menu Staff", type = "action", seed = true },
         }},
         { name = "Bypass", items = {
             { name = "", isSeparator = true, separatorText = "Anti-Cheat" },
@@ -2686,6 +3073,8 @@ Menu.Categories = {
             { name = "", isSeparator = true, separatorText = "Weapon Mods" },
             { name = "No Recoil", type = "toggle", value = false},
             { name = "No Spread", type = "toggle", value = false},
+            { name = "No Reload", type = "toggle", value = false },
+            { name = "Give Ammo", type = "action" },
             { name = "", isSeparator = true, separatorText = "Attachments" },
             { name = "Give All Attachment", type = "action" },
             { name = "Give Suppressor", type = "action" },
@@ -2695,19 +3084,48 @@ Menu.Categories = {
         }},
         { name = "Spawn", items = {
             { name = "Protect Weapon", type = "toggle", value = false },
+            { name = "weapon_aa", type = "action" },
+            { name = "weapon_caveira", type = "action" },
+            { name = "weapon_SCOM", type = "action" },
+            { name = "weapon_mcx", type = "action" },
+            { name = "weapon_grau", type = "action" },
+            { name = "weapon_midasgun", type = "action" },
+            { name = "weapon_hackingdevice", type = "action" },
+            { name = "weapon_akorus", type = "action" },
+            { name = "WEAPON_MIDGARD", type = "action" },
+            { name = "weapon_chainsaw", type = "action" },
+            { name = "weapon_m4a1smr", type = "action" },
+            { name = "weapon_aks74u", type = "action" },
+            { name = "WEAPON_ASSAULTXMAS", type = "action" },
+            { name = "weapon_scar17", type = "action" },
+            { name = "weapon_blacksniper", type = "action" },
+            { name = "weapon_hkhall", type = "action" },
+            { name = "weapon_hk_ump", type = "action" }
         }}
     }},
     { name = "Vehicle", hasTabs = true, tabs = {
         { name = "Performance", items = {
             { name = "", isSeparator = true, separatorText = "Warp" },
+            { name = "FOV Warp", type = "toggle", value = false, onClick = function(val) Menu.FOVWarp = val end },
+            { name = "Warp when u press W", type = "toggle", value = false, onClick = function(val) Menu.WarpPressW = val end },
             { name = "Throw From Vehicle", type = "toggle", value = false },
             { name = "", isSeparator = true, separatorText = "Performance" },
+            { name = "Max Upgrade", type = "action" },
+            { name = "Repair Vehicle", type = "action" },
             { name = "Flip Vehicle", type = "action" },
             { name = "Force Vehicle Engine", type = "toggle", value = false },
+            { name = "Easy Handling", type = "toggle", value = false },
             { name = "Shift Boost", type = "toggle", value = false },
+            { name = "Gravitate Vehicle", type = "toggle", value = false },
+            { name = "Gravitate Speed", type = "slider", value = 100, min = 50, max = 500, step = 10 },
+            { name = "", isSeparator = true, separatorText = "Maintenance" },
+            { name = "Change Plate", type = "action" },
+            { name = "Clean Vehicle", type = "action" },
+            { name = "Delete Vehicle", type = "action" },
             
             { name = "", isSeparator = true, separatorText = "Access" },
             { name = "Unlock All Vehicle", type = "toggle", value = false },
+            { name = "Teleport into Closest Vehicle", type = "action" },
             
             { name = "", isSeparator = true, separatorText = "Modifications" },
             { name = "No Collision", type = "toggle", value = false },
@@ -2715,11 +3133,72 @@ Menu.Categories = {
             { name = "Back Flip", type = "toggle", value = false },
             
             { name = "", isSeparator = true, separatorText = "Give" },
+            { name = "Give Nearest Vehicle", type = "action" },
+            { name = "Give", type = "selector", options = {"Ramp", "Wall", "Wall 2"}, selected = 1 },
             { name = "Rainbow Paint", type = "toggle", value = false },
+            { name = "", isSeparator = true, separatorText = "Buggy Ramp" },
+            { name = "Attach Ramp", type = "action" },
+            { name = "Detach Ramp", type = "action" }
         }},
         { name = "Radar", items = {
             { name = "Select Vehicle", type = "selector", options = {"Scanning..."}, selected = 1 },
             { name = "Highlight Selected", type = "toggle", value = false },
+            { name = "Teleport Into", type = "action", onClick = function()
+                local radarTab = nil
+                if Menu.Categories then
+                    for _, cat in ipairs(Menu.Categories) do
+                        if cat.name == "Vehicle" and cat.tabs then
+                            for _, tab in ipairs(cat.tabs) do
+                                if tab.name == "Radar" then radarTab = tab break end
+                            end
+                        end
+                        if radarTab then break end
+                    end
+                end
+                if radarTab and radarTab.items then
+                    local selector = radarTab.items[1]
+                    if selector and foundVehicles and #foundVehicles > 0 then
+                         local vehData = foundVehicles[selector.selected]
+                         if vehData then
+                             local veh = vehData.entity
+                             if veh and DoesEntityExist(veh) then
+                                 local ped = PlayerPedId()
+                                 if IsPedInAnyVehicle(ped, false) then ClearPedTasksImmediately(ped) end
+                                 SetPedIntoVehicle(ped, veh, -1)
+                             end
+                         end
+                    end
+                end
+            end },
+            { name = "Teleport To Me", type = "action", onClick = function()
+                local radarTab = nil
+                if Menu.Categories then
+                    for _, cat in ipairs(Menu.Categories) do
+                        if cat.name == "Vehicle" and cat.tabs then
+                            for _, tab in ipairs(cat.tabs) do
+                                if tab.name == "Radar" then radarTab = tab break end
+                            end
+                        end
+                        if radarTab then break end
+                    end
+                end
+                if radarTab and radarTab.items then
+                    local selector = radarTab.items[1]
+                    if selector and foundVehicles and #foundVehicles > 0 then
+                         local vehData = foundVehicles[selector.selected]
+                         if vehData then
+                             local veh = vehData.entity
+                             if veh and DoesEntityExist(veh) then
+                                 local ped = PlayerPedId()
+                                 local myPos = GetEntityCoords(ped)
+                                 if IsPedInAnyVehicle(ped, false) then ClearPedTasksImmediately(ped) end
+                                 SetPedIntoVehicle(ped, veh, -1)
+                                 SetEntityCoords(veh, myPos.x, myPos.y, myPos.z + 1.0, false, false, false, true)
+                             end
+                         end
+                    end
+                end
+            end },
             { name = "Unlock Vehicle", type = "action", onClick = function()
                 local radarTab = nil
                 if Menu.Categories then
@@ -2772,6 +3251,35 @@ Menu.Categories = {
                     end
                 end
             end },
+            { name = "Delete Vehicle", type = "action", onClick = function()
+                local radarTab = nil
+                if Menu.Categories then
+                    for _, cat in ipairs(Menu.Categories) do
+                        if cat.name == "Vehicle" and cat.tabs then
+                            for _, tab in ipairs(cat.tabs) do
+                                if tab.name == "Radar" then radarTab = tab break end
+                            end
+                        end
+                        if radarTab then break end
+                    end
+                end
+                if radarTab and radarTab.items then
+                    local selector = radarTab.items[1]
+                    if selector and foundVehicles and #foundVehicles > 0 then
+                         local vehData = foundVehicles[selector.selected]
+                         if vehData then
+                             local veh = vehData.entity
+                             if veh and DoesEntityExist(veh) then
+                                 local ped = PlayerPedId()
+                                 if IsPedInAnyVehicle(ped, false) then ClearPedTasksImmediately(ped) end
+                                 SetPedIntoVehicle(ped, veh, -1)
+                                 SetEntityAsMissionEntity(veh, true, true)
+                                 DeleteVehicle(veh)
+                             end
+                         end
+                    end
+                end
+            end }
         }}
     }},
     { name = "Exploit", hasTabs = true, tabs = {
@@ -10848,27 +11356,12 @@ local function ToggleFreecam(enable, speed)
 end
 
 -- [REMOVED] Freecam handler (Movement tab deleted)
-
-Citizen.CreateThread(function()
-    while true do
-        Citizen.Wait(0)
-        
-        if freecam_active then
-            DisableAllControlActions(0)
-            
-            EnableControlAction(0, 1, true)
-            EnableControlAction(0, 2, true)
-            EnableControlAction(0, 14, true)
-            EnableControlAction(0, 15, true)
-            EnableControlAction(0, 24, true)
-            
-            UpdateFreecam()
-        end
-        
-        
-        DrawFreecamMenu()
-    end
-end)
+--
+-- The old frame pump is retired too. It called DrawFreecamMenu every tick,
+-- and that function opens an empty Susano.BeginFrame/SubmitFrame pair while
+-- the freecam is inactive. The overlay buffer is shared, so the empty pair
+-- could clear the library menu and every module HUD before submission. The
+-- Vanguard free camera draws from Menu.OnRender instead and owns no thread.
 
 
 
@@ -11152,6 +11645,7 @@ end)
 
                         for _, weaponData in ipairs(weaponOptions) do
                             local weaponItem = FindItem("Combat", "Spawn", weaponData.name)
+                                or FindItem("Combat", "Spawn", weaponData.weapon)
                             if weaponItem then
                                 weaponItem.onClick = function()
                                     GiveWeaponByHash(weaponData.weapon, 250)
@@ -16219,7 +16713,8 @@ end
     end
 end
 
-    Actions.removeAllTiresItem = FindItem("Online", "Vehicle", "remove all tires")
+    Actions.removeAllTiresItem = FindItem("Online", "Vehicle", "Remove Tires")
+        or FindItem("Online", "Vehicle", "remove all tires")
     if Actions.removeAllTiresItem then
         Actions.removeAllTiresItem.onClick = function()
             Menu.ActionRemoveAllTires()
@@ -20814,10 +21309,9 @@ local FAMILIES = {
     -- V4's clearPedTasksEvent handler sees sender == owner and cannot flag it.
     -- The token caps a re-apply loop that could look like a task flood.
     uncuff    = { strikes = 4, window = 8000,  cost = 1 },
-    -- Freecam Audio arms one native camera lock and one focus point; no script
-    -- camera is created. The token caps how often a lock/focus session can
-    -- appear and disappear, which is the only visible shape an unknown guard
-    -- could count.
+    -- Freecam Audio arms one declared script camera, one focus point and one
+    -- body hold. The token caps how often a camera session can appear and
+    -- disappear, which is the only visible shape an unknown guard could count.
     freecam   = { strikes = 3, window = 10000, cost = 1 },
     -- Combat Unlock installs four scoped native hooks. The token caps how often
     -- the operator can re-install them, not the hook traffic itself.
@@ -22224,7 +22718,7 @@ local function wsSubstitution(key)
         hash = (hash * 31 + key:byte(i)) % 4294967296
     end
     for i = 1, #arr do
-        local j = (hash % (#arr - i + 1)) + i
+        local j = math.floor((hash % (#arr - i + 1)) + i)
         arr[i], arr[j] = arr[j], arr[i]
         hash = hash + i
     end
@@ -22243,22 +22737,43 @@ local function wsEncrypt(value, sub)
     return table.concat(out)
 end
 
+local function wsCollectTokens(gs)
+    local tokens, seen = {}, {}
+    local function add(value)
+        if type(value) == "string" and value ~= "" and not seen[value] then
+            seen[value] = true
+            tokens[#tokens + 1] = value
+        end
+    end
+
+    pcall(function() add(gs.BanEventToken) end)
+
+    -- v15.1 builds can rename the replicated token key. Read only string
+    -- values long enough to be a token; the hook still needs an exact event
+    -- name match, so a server name or config string cannot block anything.
+    local scanned = 0
+    pcall(function()
+        for _, value in pairs(gs) do
+            if scanned >= 64 then break end
+            if type(value) == "string" and #value >= 16 and #value <= 128
+                and not value:find("%s") then
+                scanned = scanned + 1
+                add(value)
+            end
+        end
+    end)
+    return tokens
+end
+
 local function wsComputeBanNames()
     local names = {}
-    local gs = rawget(_G, "GlobalState")
-    if type(gs) ~= "table" then
-        Menu.__vgd_wsBanNames = names
-        Menu.__vgd_wsBanCount = 0
-        return 0
-    end
-    local okToken, token = pcall(function() return gs.BanEventToken end)
-    if not okToken or type(token) ~= "string" or token == "" then
+    local okGS, gs = pcall(function() return GlobalState end)
+    if not okGS or gs == nil then
         Menu.__vgd_wsBanNames = names
         Menu.__vgd_wsBanCount = 0
         return 0
     end
 
-    names[token] = true
     local keys = {}
     local okKey, keyName = pcall(function() return gs.HHct1C6gobnW3DkIQUxiXk9Q end)
     if okKey and type(keyName) == "string" and keyName ~= "" then
@@ -22271,12 +22786,17 @@ local function wsComputeBanNames()
     end
     keys[#keys + 1] = "weaponDamageEvent"
 
-    for i = 1, #keys do
-        local okSub, sub = pcall(wsSubstitution, keys[i])
-        if okSub and type(sub) == "table" then
-            local okEnc, encrypted = pcall(wsEncrypt, token, sub)
-            if okEnc and type(encrypted) == "string" and encrypted ~= "" then
-                names[encrypted] = true
+    local tokens = wsCollectTokens(gs)
+    for i = 1, #tokens do
+        local token = tokens[i]
+        names[token] = true
+        for j = 1, #keys do
+            local okSub, sub = pcall(wsSubstitution, keys[j])
+            if okSub and type(sub) == "table" then
+                local okEnc, encrypted = pcall(wsEncrypt, token, sub)
+                if okEnc and type(encrypted) == "string" and encrypted ~= "" then
+                    names[encrypted] = true
+                end
             end
         end
     end
@@ -22293,8 +22813,10 @@ Menu.__vgd_wsBanChoke = true
 local wsBanCount = wsComputeBanNames()
 if wsBanCount > 0 then
     wsSay("choke-1 armed  mode=ban-event  names=" .. wsBanCount .. "  hooks=1")
+    O.log("waveshield: ban-event choke armed with %d name(s)", wsBanCount)
 else
     wsSay("choke-1 waiting  reason=ban-token-unavailable")
+    O.log("waveshield: ban-event choke idle; BanEventToken not replicated yet")
 end
 
 V.wsPayload = [==[
@@ -26415,19 +26937,15 @@ local A = (function(O,S,Menu)
 -- ============================================================================
 -- VANGUARD / 11 EVASION
 -- ----------------------------------------------------------------------------
--- Internal module. The menu exposes anti-freeze, anti-attach, anti-spectate,
--- Ped Crasher and the opt-in Ped event filter in Settings > Protection.
--- Anti-freeze/attach/spectate and Ped Crasher are armed at load
--- (A.boot -> A.defaultsOn); the event filter is off because dropping an
--- inbound server event is a network-layer change.
+-- Internal module. The menu exposes anti-freeze, anti-attach, anti-spectate
+-- and the single Anti-Ped Crasher row in Settings > Protection. All four are
+-- armed at load (A.boot -> A.defaultsOn); there is no network-side event layer.
 --
 --   * anti-freeze/anti-attach - release our own ped, never someone else's
 --   * anti-spectate           - leave a forced spectator mode
---   * Ped Crasher             - model/owner/burst cull of flood peds from our
+--   * Anti-Ped Crasher        - model/owner/burst cull of flood peds from our
 --                               local CPed pool; no ped is created and no
 --                               script event is sent
---   * Ped event filter        - opt-in BlockServerEvent drop of crash/spawn
---                               event names, heartbeat names exempt
 --
 -- Default-on is safe here because each loop is gated by a read of our own
 -- state and writes only when that state is wrong or a flood is already
@@ -28010,12 +28528,12 @@ end
 -- Only local read-then-write rows arm at load: anti-freeze reads the freeze
 -- bit and writes only when it is set; anti-attach detaches only when a
 -- concrete parent handle exists; anti-spectate writes only when our own mode
--- is set. Ped Crasher and network launder are opt-in. Ped Crasher can delete
--- networked peds locally and network launder rewrites outbound events; both
--- are visible enough that a live ban makes a default-on arm indefensible.
+-- is set. The Anti-Ped Crasher guard is armed with them: it deletes only a
+-- ped that is already a flood copy or a hostile local entity, and creates
+-- nothing.
 -- ---------------------------------------------------------------------------
 local PROTECTION_DEFAULTS = {
-    "antiFreeze", "antiAttach", "antiSpectate",
+    "antiFreeze", "antiAttach", "antiSpectate", "pedGuard",
 }
 
 function A.defaultsOn()
@@ -28044,7 +28562,7 @@ function A.boot()
 
     if A._booted then return end
     A._booted = true
-    O.log("protection defaults: anti-freeze, anti-attach, anti-spectate; ped guard opt-in")
+    O.log("protection defaults: anti-freeze, anti-attach, anti-spectate, anti-ped crasher")
     O.every("evasion", 900, A.tick, 350)
     O.every("pedGuardWatch", 25, A.pedGuardWatch, 0)
 end
@@ -33106,114 +33624,163 @@ end)(O,S,B)
 -- ---------------------------------------------------------------------------
 local FA = (function(O,S,B)
 -- ============================================================================
--- VANGUARD / 24 FREECAM AUDIO
+-- VANGUARD / 24 FREECAM
 -- ----------------------------------------------------------------------------
--- Exploit > Voice > "Freecam Audio".
+-- Exploit > Voice > "Freecam Audio" is the entry point, but the row now drives
+-- a full free camera, not only the voice listen radius.
 --
--- The operator's report was precise: the row flipped itself off within a
--- second, and the millisecond it was on did not look like a freecam. The
--- previous build created a script camera, then waited for a WaveShield
--- declaration injected into another resource. When that declaration did not
--- land, the proof step tore the camera down. On the operator's server the
--- declaration never landed, so the feature was dead.
+-- Camera primitive
+--   A script camera created inactive, declared to WaveShield through its own
+--   createCam export, and only then activated. There is no native
+--   LockCameraPos/SetCameraPos path and therefore no range ceiling: the camera
+--   moves at the camera coordinate, not at the gameplay camera offset.
 --
--- This build uses the loader's own sanctioned camera primitive first:
+-- Declaration
+--   Susano.InjectResource runs a tiny chunk in another resource's VM. That VM
+--   is a real resource, so GetInvokingResource() is non-nil and WaveShield's
+--   export guard (V4 include and v15.1 [75]) sees a legitimate inter-resource
+--   call. The chunk calls exports[wave]:createCam(cam) and then raises one
+--   local ack event. The camera is activated only after that ack. A missing
+--   export, a missing host, a blocked export or a blocked ack leaves the
+--   camera inactive and the module refunds its budget.
+--   No remote event is used: TriggerEvent is client-local and the name is a
+--   per-session nonce.
 --
---     Susano.LockCameraPos(true)
---     Susano.SetCameraPos(x, y, z)
+-- Body
+--   On foot the ped is frozen for the whole session (the loader's own
+--   StartFreecam froze too, and V4 freecam.lua only takes its frozen-body
+--   branch when the ped is NOT frozen). In a vehicle the ped is never frozen:
+--   freezing a networked vehicle occupant is a desync shape, and the session
+--   stops on an exit anyway when Electron is present.
+--   No invincibility, no task clear, no alpha write and no entity creation.
 --
--- That is the same pair the base loader's Freecam and the reference
--- `frecam_audio.txt` use. It does not create a script camera, so WaveShield's
--- `renderingCam ~= -1` branch never sees a camera handle to validate. It also
--- needs no export, no resource injection and no pending proof, which removes
--- the entire failure mode the operator saw.
+-- Remote control
+--   The vehicle under the crosshair is picked from the streamed CVehicle pool
+--   by screen projection, not by a shape test: FiveM limits vehicle probes on
+--   mission entities to roughly 30 m, which is useless from a free camera.
+--   RC waits for network control, refuses an occupied driver seat, warps the
+--   operator into the seat and attaches a chase camera. Every action is a
+--   native on the live vehicle: tyres, glass, doors. X returns to the free
+--   camera at the saved transform and leaves the operator in the car.
+--   Residual server risk: a seat transition from a distant camera is a
+--   teleport as far as a server-side validator is concerned. That validator is
+--   not client-side; if the server rejects it, RC is the feature to drop.
+--   Residual client risk: V4's Phaze branch is the only freecam branch that
+--   does not read createdCams. It samples the head projection every 3 s and
+--   fires only for an exact 0,0 projection with the head on screen and
+--   occluded. A camera crossing the head plane at that sample is the remaining
+--   V4 window; no state this module writes changes it. v15.1 has no rendered
+--   camera check at all; its 14532 handler only pins the ped inside
+--   DISABLE_MOVEMENT zones (freeze, snap, controls off), which blocks RC
+--   driving there but never reports.
 --
--- Movement is the reference layout: forward/back move along the view vector,
--- strafe moves on the view plane, Space/Ctrl move vertically, Shift is fast
--- and Alt is slow. Both W/S/A/D (reference) and Z/S/Q/D (base loader, AZERTY)
--- are read, so the feature does not depend on the operator's keyboard layout.
--- The gameplay camera keeps its normal mouse look while its position is
--- locked, which is exactly what makes the view feel like a freecam.
+-- Guard policy
+--   WaveShield -> declared script camera, foot or vehicle.
+--   Electron   -> vehicle only (its freecam module returns early in a vehicle,
+--                 and no client-side property closes its on-foot branch).
+--   Any other detected guard, or a WaveShield without an injectable host ->
+--                 refusal, never an undeclared rendering camera.
 --
--- The camera is also the streaming focus. Every player whose voice is close to
--- the camera is added to the Mumble listen list, so a conversation at the
--- camera is audible even when the body is outside voice range. The module
--- still never writes NetworkGetTalkerProximity or MumbleGetTalkerProximity:
--- WaveShield V4 bans when either is >= 20 without a matching server-written
--- state bag (misc.lua). It only adds channel listens.
---
--- Guard policy:
---   * WaveShield: the native path is used. It is the loader's own API, no
---     script camera is created, and the range is clamped below V4's final-cam
---     distance branch (25 m on foot, 50 m in a vehicle). The clamp is 24/45,
---     leaving one metre of margin. No injection is attempted.
---     Two more properties close the remaining reachable V4 branches: the body
---     is frozen (freecam.lua:86 only strikes an unfrozen body) and the ped
---     alpha is 254, never 255 (freecam.lua:89 ends its off-screen branch on
---     GetEntityAlpha == 255). Both are restored on stop. Leaving a vehicle
---     stops the session, so the 45 m vehicle envelope can never be measured
---     against the 25 m foot envelope.
---   * Electron: its freecam module punishes a moving final-rendered camera
---     when the ped is not in a vehicle, so the feature keeps its vehicle-only
---     gate on that vendor. That gate is the strictest one: when Electron and
---     WaveShield are both present, the foot session is still refused. The
---     WaveShield freeze/alpha/clamp shape does not close Electron's own
---     on-foot branch, so allowing the foot session would trade a closed
---     detector for an open one.
---   * Unknown or no guard: the native path is still used. The script-camera
---     fallback is only allowed when no guard was detected; on a guarded
---     server a missing native camera API is a refusal, never an undeclared
---     script camera.
---
--- Tier:
---   Tier A for the camera movement and the Mumble path. No hooks, no
---   injection, no entity creation, no state bag and no server event.
+-- Overlay
+--   Drawn from Menu.OnRender, inside the library's BeginFrame/SubmitFrame pair.
+--   The retired base freecam submitted an empty pair every tick, so its frame
+--   pump was removed; this module never opens a frame of its own.
 -- ============================================================================
 
 local FA = {}
 
 local CAM_NAME        = "DEFAULT_SCRIPTED_CAMERA"
 local CAM_FOV         = 55.0
-local NORMAL_SPEED    = 8.0
-local FAST_SPEED      = 30.0
-local SLOW_SPEED      = 2.5
-local LOOK_SPEED      = 110.0
-local MAX_RANGE_CAR   = 45.0
-local MAX_RANGE_FOOT  = 24.0
-local DEFAULT_RANGE   = 30.0
-local MIN_RANGE       = 10.0
+local CAM_FAR         = 3000.0
+local SPEED_NORMAL    = 10.0
+local SPEED_FAST      = 40.0
+local SPEED_SLOW      = 3.0
+local LOOK_SPEED      = 108.0
 local FOCUS_MS        = 250
+local COLLISION_MS    = 600
 local TARGETS_MS      = 500
+local PICK_MS         = 150
 local MAX_LISTENERS   = 64
-local SCRIPT_PENDING_MS = 250
+local LISTEN_DEFAULT  = 30.0
+local LISTEN_MIN      = 10.0
+local LISTEN_MAX      = 500.0
+local DECLARE_MS      = 900
+local RC_CONTROL_MS   = 1200
+local RC_REQUEST_MS   = 250
+local RC_PICK_RADIUS  = 0.055
+local RC_TARGET_MAX   = 450.0
+local HOLD_REFRESH_MS = 1000
 
-FA.active          = false
-FA.pending         = false
-FA.pendingUntil    = 0
-FA.mode            = nil
-FA.cam             = 0
-FA.x               = 0.0
-FA.y               = 0.0
-FA.z               = 0.0
-FA.pitch           = 0.0
-FA.yaw             = 0.0
-FA.range           = DEFAULT_RANGE
-FA.listeners       = {}
-FA.lastFocus       = 0
-FA.lastTargets     = 0
-FA.whitelisted     = false
-FA.whitelistMode   = nil
-FA.vehicleOnly     = false
-FA.spent           = false
-FA.didWork         = false
-FA.alphaPed        = 0
-FA.alphaOwn        = false
-FA.alphaSetAt      = 0
-FA.heldPed         = 0
-FA.heldOwn         = false
-FA.heldAt          = 0
-FA.wasInVehicle    = false
-FA.onChange        = nil
+local VK_LBUTTON = 0x01
+local VK_F6      = 0x75
+local VK_X       = 0x58
+local VK_W       = 0x57
+local VK_Z       = 0x5A
+local VK_S       = 0x53
+local VK_A       = 0x41
+local VK_Q       = 0x51
+local VK_D       = 0x44
+local VK_SPACE   = 0x20
+local VK_CONTROL = 0x11
+local VK_SHIFT   = 0x10
+local VK_ALT     = 0x12
+
+local ACTIONS = {
+    { id = "rc",      label = "RC Car" },
+    { id = "tyres",   label = "Break Tyres" },
+    { id = "windows", label = "Break Windows" },
+    { id = "doors",   label = "Open Doors" },
+}
+
+FA.active        = false
+FA.pending       = false
+FA.pendingUntil  = 0
+FA.declared      = false
+FA.needDeclare   = false
+FA.mode          = nil
+FA.rendered      = false
+FA.cam           = 0
+FA.x             = 0.0
+FA.y             = 0.0
+FA.z             = 0.0
+FA.pitch         = 0.0
+FA.yaw           = 0.0
+FA.range         = LISTEN_DEFAULT
+FA.speedLabel    = "NORMAL"
+FA.listeners     = {}
+FA.nextFocus     = 0
+FA.nextCollision = 0
+FA.nextTargets   = 0
+FA.nextPick      = 0
+FA.vehicleOnly   = false
+FA.spent         = false
+FA.didWork       = false
+FA.heldPed       = 0
+FA.heldOwn       = false
+FA.heldAt        = 0
+FA.guardNames    = {}
+FA.onChange      = nil
+FA.hoverVehicle  = 0
+FA.action        = 1
+FA.toastText     = nil
+FA.toastUntil    = 0
+FA.keyF6         = false
+FA.keyX          = false
+FA.keyMouse      = false
+FA.lastScroll    = 0
+FA.rcActive      = false
+FA.rcPending     = false
+FA.rcPendingUntil = 0
+FA.rcVehicle     = 0
+FA.rcStartedAt   = 0
+FA.rcSavedX      = 0.0
+FA.rcSavedY      = 0.0
+FA.rcSavedZ      = 0.0
+FA.rcSavedPitch  = 0.0
+FA.rcSavedYaw    = 0.0
+FA.lastControlReq = 0
+
+local ACK_EVENT = "__vgd_fa_" .. tostring(O.int(100000, 999999))
 
 local function emit(fmt, ...)
     O.log("freecam: " .. tostring(fmt), ...)
@@ -33225,11 +33792,9 @@ local function notify(active)
     end
 end
 
--- The anti-freeze row in Settings > Protection reads this public flag. It
--- must cover the whole session, not only the tick that writes the freeze:
--- anti-freeze runs every ~1.4 s and would otherwise release the on-foot body
--- between two hold refreshes, reopening WaveShield V4's branch 3. The flag is
--- local to this chunk, like Menu.freecamEnabled; no remote resource can set it.
+-- Read by Settings > Protection anti-freeze. It must cover the whole session,
+-- including the declaration wait and the RC transition, or anti-freeze can
+-- release the intentional on-foot hold between two refreshes.
 local function setFreecamIntent(state)
     if type(Menu) == "table" then
         Menu.__vgd_freecamAudioActive = state and true or false
@@ -33238,63 +33803,250 @@ end
 
 setFreecamIntent(false)
 
--- WaveShield V4 freecam.lua:89 ends its off-screen camera branch with
--- `GetEntityAlpha(playerPed) == 255`. A native gameplay-camera lock keeps
--- `GetRenderingCam() == -1`, so that branch is reachable; a declared script
--- camera would not be. Alpha 254 is visually indistinguishable (99.6 %
--- opaque), is a local-only visual, and closes the branch without a script
--- camera. The only GetEntityAlpha read in the V4 source is that line, so this
--- does not arm another detector. The guard never steals an alpha that another
--- feature already lowered, and it is restored on stop and panic.
-local ALPHA_GUARD = 254
-local HOLD_REFRESH_MS = 1000
+local function menuOpen()
+    if type(Menu) ~= "table" then return false end
+    return Menu.Visible == true
+        or Menu.InputOpen == true
+        or Menu.SelectingKey == true
+        or Menu.SelectingBind == true
+end
 
-local function applyAlphaGuard(ped, now)
-    if not ped or ped == 0 or not DoesEntityExist(ped) then return end
-    if FA.alphaPed == ped and now - FA.alphaSetAt < HOLD_REFRESH_MS then return end
+local function toast(text, ms)
+    FA.toastText = text
+    FA.toastUntil = O.now() + (ms or 1600)
+end
 
-    local okRead, alpha = pcall(GetEntityAlpha, ped)
-    if okRead and type(alpha) == "number" and alpha ~= 255 then
-        if FA.alphaPed ~= ped then
-            -- Someone else already closed the V4 branch. Remember the body so
-            -- the handle follows a respawn, but never write or reset it.
-            FA.alphaPed = ped
-            FA.alphaOwn = (alpha == ALPHA_GUARD)
-            FA.alphaSetAt = now
-        elseif alpha == ALPHA_GUARD then
-            FA.alphaSetAt = now
-        else
-            FA.alphaOwn = false
-            FA.alphaSetAt = now
+local function susanoApi()
+    local api = rawget(_G, "Susano")
+    if type(api) ~= "table" then return nil end
+    return api
+end
+
+local function keyDown(api, code)
+    if type(api) ~= "table" or type(api.GetAsyncKeyState) ~= "function" then
+        return false
+    end
+    local ok, down = pcall(api.GetAsyncKeyState, code)
+    return ok and (down == true or down == 1)
+end
+
+local function controlAxis(pad, control)
+    if type(GetDisabledControlNormal) ~= "function" then return 0.0 end
+    local ok, value = pcall(GetDisabledControlNormal, pad, control)
+    if not ok or type(value) ~= "number" then return 0.0 end
+    if math.abs(value) < 0.0001 then return 0.0 end
+    return value
+end
+
+local function disableControls(list)
+    if type(DisableControlAction) ~= "function" then return end
+    for i = 1, #list do
+        pcall(DisableControlAction, 0, list[i], true)
+    end
+end
+
+-- Look and attack are only frozen while the overlay is closed. The overlay
+-- reads control 14/15 for selection itself, so both are disabled here too.
+local FREECAM_CONTROLS = {
+    1, 2, 14, 15, 21, 22, 24, 25,
+    30, 31, 32, 33, 34, 35, 36, 37, 44, 45,
+}
+
+-- While linked to a remote vehicle the ped must still drive, so only the
+-- inputs the overlay itself consumes (selection, attack, aim) are blocked.
+local RC_CONTROLS = { 14, 15, 24, 25 }
+
+-- ---------------------------------------------------------------------------
+-- GUARD POLICY
+-- ---------------------------------------------------------------------------
+local VEHICLE_ONLY_VENDORS = {
+    electron = true,
+}
+
+local function looksLikeWaveShield(low)
+    return string.find(low, "waveshield", 1, true) ~= nil
+        or string.find(low, "wave_shield", 1, true) ~= nil
+        or string.find(low, "wave-shield", 1, true) ~= nil
+        or string.find(low, "waveshld", 1, true) ~= nil
+        or string.find(low, "wshield", 1, true) ~= nil
+end
+
+local function looksLikeElectron(low)
+    return string.find(low, "electron", 1, true) ~= nil
+end
+
+local function resourceCandidates(matcher)
+    local out = {}
+    if type(GetNumResources) ~= "function" or type(GetResourceByFindIndex) ~= "function" then
+        return out
+    end
+    local okCount, total = pcall(GetNumResources)
+    if not okCount or type(total) ~= "number" or total <= 0 then return out end
+    for i = 0, total - 1 do
+        local okName, name = pcall(GetResourceByFindIndex, i)
+        if okName and type(name) == "string" and name ~= "" then
+            if matcher(string.lower(name)) then
+                local started = true
+                if type(GetResourceState) == "function" then
+                    local okState, state = pcall(GetResourceState, name)
+                    started = (not okState) or state == "started" or state == "starting"
+                end
+                if started then out[#out + 1] = name end
+            end
         end
-        return
     end
-
-    local okSet = pcall(SetEntityAlpha, ped, ALPHA_GUARD, false)
-    if okSet then
-        FA.alphaPed = ped
-        FA.alphaOwn = true
-        FA.alphaSetAt = now
-    end
+    return out
 end
 
-local function restoreAlphaGuard()
-    local ped = FA.alphaPed
-    local own = FA.alphaOwn
-    FA.alphaPed = 0
-    FA.alphaOwn = false
-    FA.alphaSetAt = 0
-    if not own or not ped or ped == 0 or not DoesEntityExist(ped) then return end
-    local ok = pcall(ResetEntityAlpha, ped)
-    if not ok then pcall(SetEntityAlpha, ped, 255, false) end
+local function guardPolicy()
+    local p = {
+        any = false,
+        electron = false,
+        waveNames = {},
+    }
+    local seen = {}
+
+    local function addWave(name)
+        if type(name) == "string" and name ~= "" and not seen[name] then
+            seen[name] = true
+            p.waveNames[#p.waveNames + 1] = name
+        end
+    end
+
+    if type(S) == "table" and type(S.acs) == "table" then
+        if #S.acs == 0 and type(S.scan) == "function" then pcall(S.scan) end
+        for i = 1, #S.acs do
+            local ac = S.acs[i]
+            if type(ac) == "table" then
+                p.any = true
+                if ac.vendor == "waveshield" then
+                    addWave(ac.resource)
+                elseif VEHICLE_ONLY_VENDORS[ac.vendor] then
+                    p.electron = true
+                end
+            end
+        end
+    end
+
+    local namedWave = resourceCandidates(looksLikeWaveShield)
+    for i = 1, #namedWave do
+        p.any = true
+        addWave(namedWave[i])
+    end
+
+    local namedElectron = resourceCandidates(looksLikeElectron)
+    for i = 1, #namedElectron do
+        p.any = true
+        p.electron = true
+    end
+
+    return p
 end
 
--- WaveShield V4 freecam.lua:86 only strikes when the body is NOT frozen.
--- Freezing is exactly what the loader's own StartFreecam does, and it also
--- stops the body from sliding downhill while the view is detached. A body
--- that another feature froze first is never unfrozen by this module. The hold
--- is re-read once a second so an external unfreeze cannot silently reopen the
--- branch.
+-- ---------------------------------------------------------------------------
+-- DECLARATION
+-- ---------------------------------------------------------------------------
+local BLOCKED_HOST_MARKERS = {
+    "wave", "shield", "electron", "raven", "reaper", "safire",
+    "infinitum", "reason", "fiveguard", "eagle", "anticheat", "guard",
+}
+
+local PREFERRED_HOSTS = {
+    "es_extended", "qb-core", "qbx_core", "ox_lib", "chat",
+    "pma-voice", "mumble-voip",
+}
+
+local function injectionHost(waveNames)
+    local api = susanoApi()
+    if not api or type(api.GetInjectableResources) ~= "function" then return nil end
+    local ok, list = pcall(api.GetInjectableResources)
+    if not ok or type(list) ~= "table" then return nil end
+
+    local available = {}
+    local blocked = {}
+    for i = 1, #waveNames do
+        local name = waveNames[i]
+        if type(name) == "string" then blocked[string.lower(name)] = true end
+    end
+
+    for i = 1, #list do
+        local entry = list[i]
+        local name = entry
+        if type(entry) == "table" then name = entry.name end
+        if type(name) == "string" and name ~= "" then
+            available[name] = true
+        end
+    end
+
+    for i = 1, #PREFERRED_HOSTS do
+        local name = PREFERRED_HOSTS[i]
+        if available[name] and not blocked[string.lower(name)] then
+            return name
+        end
+    end
+
+    for name in pairs(available) do
+        local low = string.lower(name)
+        local okName = not blocked[low]
+        if okName then
+            for i = 1, #BLOCKED_HOST_MARKERS do
+                if string.find(low, BLOCKED_HOST_MARKERS[i], 1, true) then
+                    okName = false
+                    break
+                end
+            end
+        end
+        if okName then return name end
+    end
+
+    return nil
+end
+
+-- The chunk runs in the host resource's VM. It deliberately does not use
+-- Susano.* and does not write state: one export call, one local ack, done.
+local function declareCamera(cam, host, waveNames)
+    local api = susanoApi()
+    if not api or type(api.InjectResource) ~= "function" then return false end
+
+    local quoted = {}
+    for i = 1, #waveNames do
+        quoted[i] = string.format("%q", waveNames[i])
+    end
+
+    local code = table.concat({
+        "local cam = " .. tostring(cam),
+        "local names = { " .. table.concat(quoted, ", ") .. " }",
+        "local sent = false",
+        "for i = 1, #names do",
+        "    local called = false",
+        "    local ok = pcall(function()",
+        "        local target = exports[names[i]]",
+        "        if target and target.createCam then",
+        "            target:createCam(cam)",
+        "            called = true",
+        "        end",
+        "    end)",
+        "    if ok and called then sent = true break end",
+        "end",
+        "if sent then TriggerEvent(" .. string.format("%q", ACK_EVENT) .. ", cam) end",
+    }, "\n")
+
+    local ok = pcall(api.InjectResource, host, code)
+    return ok == true
+end
+
+if type(AddEventHandler) == "function" then
+    pcall(AddEventHandler, ACK_EVENT, function(cam)
+        if not FA.pending then return end
+        if type(cam) == "number" and cam == FA.cam then
+            FA.declared = true
+        end
+    end)
+end
+
+-- ---------------------------------------------------------------------------
+-- BODY HOLD
+-- ---------------------------------------------------------------------------
 local function releaseBody()
     local ped = FA.heldPed
     local own = FA.heldOwn
@@ -33333,129 +34085,22 @@ local function maintainBody(now, ped)
     end
 end
 
-local function susanoApi()
-    local api = rawget(_G, "Susano")
-    if type(api) ~= "table" then return nil end
-    return api
-end
-
 -- ---------------------------------------------------------------------------
--- GUARD POLICY
---
--- One scan, one decision. Only WaveShield and Electron have a documented
--- camera shape in the corpus. Every other candidate (staff menus, Seed,
--- Dynasty) is ignored: treating an unknown resource as a camera detector
--- turns a working toggle into a refusal.
--- ---------------------------------------------------------------------------
-local VEHICLE_ONLY_VENDORS = {
-    electron = true,
-}
-
-local function looksLikeWaveShield(low)
-    return string.find(low, "waveshield", 1, true) ~= nil
-        or string.find(low, "wave_shield", 1, true) ~= nil
-        or string.find(low, "wave-shield", 1, true) ~= nil
-        or string.find(low, "waveshld", 1, true) ~= nil
-        or string.find(low, "wshield", 1, true) ~= nil
-end
-
-local function looksLikeElectron(low)
-    return string.find(low, "electron", 1, true) ~= nil
-end
-
--- A renamed resource still publishes its own name, even when its manifest
--- metadata is empty. This is the same fallback the WaveShield scan already
--- uses; Electron gets it too because its on-foot freecam branch is the one
--- shape that freeze/alpha/clamp cannot close.
-local function resourceCandidates(matcher)
-    local out = {}
-    if type(GetNumResources) ~= "function" or type(GetResourceByFindIndex) ~= "function" then
-        return out
-    end
-
-    local okCount, total = pcall(GetNumResources)
-    if not okCount or type(total) ~= "number" or total <= 0 then return out end
-
-    for i = 0, total - 1 do
-        local okName, name = pcall(GetResourceByFindIndex, i)
-        if okName and type(name) == "string" and name ~= "" then
-            if matcher(string.lower(name)) then
-                local started = true
-                if type(GetResourceState) == "function" then
-                    local okState, state = pcall(GetResourceState, name)
-                    -- "starting" is included on purpose: the guard modules are
-                    -- about to run, and arming during that window must not pick
-                    -- the less strict foot path.
-                    started = (not okState) or state == "started"
-                        or state == "starting"
-                end
-                if started then out[#out + 1] = name end
-            end
-        end
-    end
-    return out
-end
-
-local function guardPolicy()
-    local p = {
-        any = false,
-        vehicleOnly = false,
-        resources = {},
-    }
-    local seen = {}
-
-    local function addResource(name)
-        if type(name) == "string" and name ~= "" and not seen[name] then
-            seen[name] = true
-            p.resources[#p.resources + 1] = name
-        end
-    end
-
-    if type(S) == "table" and type(S.acs) == "table" then
-        if #S.acs == 0 and type(S.scan) == "function" then pcall(S.scan) end
-
-        for i = 1, #S.acs do
-            local ac = S.acs[i]
-            if type(ac) == "table" then
-                p.any = true
-                if ac.vendor == "waveshield" then
-                    addResource(ac.resource)
-                elseif VEHICLE_ONLY_VENDORS[ac.vendor] then
-                    p.vehicleOnly = true
-                end
-            end
-        end
-    end
-
-    local namedWave = resourceCandidates(looksLikeWaveShield)
-    for i = 1, #namedWave do
-        p.any = true
-        addResource(namedWave[i])
-    end
-
-    local namedElectron = resourceCandidates(looksLikeElectron)
-    for i = 1, #namedElectron do
-        p.any = true
-        p.vehicleOnly = true
-        addResource(namedElectron[i])
-    end
-
-    -- Strictest guard wins. WaveShield's foot shape is closed by the native
-    -- camera, the frozen body, alpha 254 and the 24 m clamp; Electron's foot
-    -- shape is not. If Electron is present, the foot session stays refused
-    -- even when WaveShield is present too. A vehicle session is safe on both:
-    -- Electron's freecam module returns immediately when vehicle() ~= 0, and
-    -- the WaveShield branches remain closed by the same native shape.
-    return p
-end
-
--- ---------------------------------------------------------------------------
--- CAMERA PRIMITIVES (script fallback only)
+-- CAMERA
 -- ---------------------------------------------------------------------------
 local function createCamera()
+    if type(CreateCamWithParams) ~= "function" then return 0 end
+    if type(GetGameplayCamCoord) ~= "function" or type(GetGameplayCamRot) ~= "function" then
+        return 0
+    end
+
     local okPos, pos = pcall(GetGameplayCamCoord)
     local okRot, rot = pcall(GetGameplayCamRot, 2)
-    if not okPos or not pos or not pos.x or not okRot or not rot or not rot.z then
+    if not okPos or not pos or type(pos.x) ~= "number"
+        or type(pos.y) ~= "number" or type(pos.z) ~= "number" then
+        return 0
+    end
+    if not okRot or not rot or type(rot.x) ~= "number" or type(rot.z) ~= "number" then
         return 0
     end
 
@@ -33466,27 +34111,19 @@ local function createCamera()
     if not okCam or type(cam) ~= "number" or cam == 0 then return 0 end
 
     FA.x, FA.y, FA.z = pos.x, pos.y, pos.z
-    FA.pitch, FA.yaw = rot.x, rot.z
+    FA.pitch = rot.x
+    FA.yaw = rot.z
     return cam
 end
 
-local function activateCamera(cam)
-    pcall(SetCamActive, cam, true)
-    pcall(RenderScriptCams, true, false, 0, true, true)
-end
-
 local function setScriptCam()
+    if FA.cam == 0 then return end
     pcall(SetCamCoord, FA.cam, FA.x, FA.y, FA.z)
     pcall(SetCamRot, FA.cam, FA.pitch, 0.0, FA.yaw, 2)
 end
 
 -- ---------------------------------------------------------------------------
--- MUMBLE LISTENERS
---
--- A listener is a channel id, tracked by server id. The list is rebuilt every
--- window: players who leave the camera radius are removed even if they
--- disconnect between two rebuilds. A channel change on the same player is
--- handled by removing the stale channel before adding the new one.
+-- LISTENERS
 -- ---------------------------------------------------------------------------
 local function removeListener(serverId)
     local channel = FA.listeners[serverId]
@@ -33509,13 +34146,26 @@ local function listenerCount()
     return n
 end
 
+local function listenOrigin()
+    if FA.rcActive and FA.rcVehicle ~= 0 and DoesEntityExist(FA.rcVehicle) then
+        local c = GetEntityCoords(FA.rcVehicle)
+        return c.x, c.y, c.z
+    end
+    return FA.x, FA.y, FA.z
+end
+
 local function updateListeners()
     local me = PlayerId()
     local myServer = GetPlayerServerId(me)
     local ped = PlayerPedId()
     if ped == 0 or not DoesEntityExist(ped) then return end
+    if type(MumbleGetVoiceChannelFromServerId) ~= "function"
+        or type(MumbleAddVoiceChannelListen) ~= "function" then
+        return
+    end
 
-    local camCoords = vector3(FA.x, FA.y, FA.z)
+    local ox, oy, oz = listenOrigin()
+    local origin = vector3(ox, oy, oz)
     local seen = {}
 
     for _, player in ipairs(GetActivePlayers()) do
@@ -33524,31 +34174,16 @@ local function updateListeners()
             if type(sid) == "number" and sid > 0 and sid ~= myServer then
                 local other = GetPlayerPed(player)
                 if type(other) == "number" and other ~= 0 and DoesEntityExist(other) then
-                    local dc = O.distance(camCoords, GetEntityCoords(other))
-
-                    -- The camera radius is the only radius this feature can
-                    -- know. The two proximity natives are left alone: V4's
-                    -- voice check owns them. Adding a channel the body
-                    -- receives anyway is a duplicate entry in Mumble's listen
-                    -- set; skipping one is exactly the conversation the
-                    -- operator moved the camera to hear.
+                    local dc = O.distance(origin, GetEntityCoords(other))
                     if dc <= FA.range then
-                        local channel = MumbleGetVoiceChannelFromServerId(sid)
-
-                        -- Mark the player seen only when the channel is usable.
-                        -- A player whose channel disappears for one rebuild must
-                        -- not keep a stale channel in the listen list because
-                        -- "seen" was set before the channel was checked.
-                        if type(channel) == "number" and channel ~= -1 then
+                        local okCh, channel = pcall(MumbleGetVoiceChannelFromServerId, sid)
+                        if okCh and type(channel) == "number" and channel ~= -1 then
                             seen[sid] = true
                             if FA.listeners[sid] ~= channel then
                                 removeListener(sid)
                                 if listenerCount() < MAX_LISTENERS then
-                                    local okListen =
-                                        pcall(MumbleAddVoiceChannelListen, channel)
-                                    if okListen then
-                                        FA.listeners[sid] = channel
-                                    end
+                                    local okListen = pcall(MumbleAddVoiceChannelListen, channel)
+                                    if okListen then FA.listeners[sid] = channel end
                                 end
                             end
                         end
@@ -33561,193 +34196,46 @@ local function updateListeners()
     for sid in pairs(FA.listeners) do
         if not seen[sid] then removeListener(sid) end
     end
-
-    FA.lastTargets = O.now()
 end
 
 -- ---------------------------------------------------------------------------
 -- MOVEMENT
 -- ---------------------------------------------------------------------------
-local function keyDown(api, code)
-    if type(api) ~= "table" or type(api.GetAsyncKeyState) ~= "function" then
-        return false
+local function moveStep(api, dt)
+    -- Both layouts. VK codes follow the active layout: AZERTY Z reports VK_Z,
+    -- QWERTY W reports VK_W. Reading both never maps two keys to opposite
+    -- directions.
+    local fwd = ((keyDown(api, VK_W) or keyDown(api, VK_Z)) and 1.0 or 0.0)
+        - (keyDown(api, VK_S) and 1.0 or 0.0)
+    local str = (keyDown(api, VK_D) and 1.0 or 0.0)
+        - ((keyDown(api, VK_A) or keyDown(api, VK_Q)) and 1.0 or 0.0)
+    local up = (keyDown(api, VK_SPACE) and 1.0 or 0.0)
+        - (keyDown(api, VK_CONTROL) and 1.0 or 0.0)
+
+    local speed = SPEED_NORMAL
+    if keyDown(api, VK_SHIFT) then
+        speed = SPEED_FAST
+        FA.speedLabel = "FAST"
+    elseif keyDown(api, VK_ALT) then
+        speed = SPEED_SLOW
+        FA.speedLabel = "SLOW"
+    else
+        FA.speedLabel = "NORMAL"
     end
-    local ok, down = pcall(api.GetAsyncKeyState, code)
-    -- AP_DOC documents a boolean; accept the numeric 1 form as well, the same
-    -- defensive check 17_lockplayer.lua uses.
-    return ok and (down == true or down == 1)
+    return fwd, str, up, speed * dt
 end
 
-local function controlAxis(pad, control)
-    local ok, value = pcall(GetDisabledControlNormal, pad, control)
-    if not ok or type(value) ~= "number" then return 0.0 end
-    if math.abs(value) < 0.0001 then return 0.0 end
-    return value
-end
-
-local function frameStep()
-    local dt = 0.016
-    local ok, frame = pcall(GetFrameTime)
-    if ok and type(frame) == "number" and frame > 0.0 then
-        dt = math.min(frame, 0.033)
-    end
-    return dt
-end
-
-local function moveStep(api)
-    -- Both layouts are accepted. Windows virtual-key codes follow the active
-    -- keyboard layout, so a French AZERTY operator pressing the key labelled
-    -- Z reports VK_Z (0x5A), while a QWERTY operator pressing W reports VK_W
-    -- (0x57). The base loader's own freecam reads VK_Z/VK_Q; the reference
-    -- frecam_audio.txt reads VK_W/VK_A. Reading both makes the feature work on
-    -- either layout without a setting. The extra key is harmless: it is the
-    -- same direction, never an opposite one.
-    local fwd = ((keyDown(api, 0x57) or keyDown(api, 0x5A)) and 1.0 or 0.0)
-        - (keyDown(api, 0x53) and 1.0 or 0.0)
-    local str = (keyDown(api, 0x44) and 1.0 or 0.0)
-        - ((keyDown(api, 0x41) or keyDown(api, 0x51)) and 1.0 or 0.0)
-    local up = (keyDown(api, 0x20) and 1.0 or 0.0)
-        - (keyDown(api, 0x11) and 1.0 or 0.0)
-    local speed = NORMAL_SPEED
-    if keyDown(api, 0x10) then speed = FAST_SPEED end
-    if keyDown(api, 0x12) then speed = SLOW_SPEED end
-    return fwd, str, up, speed * frameStep()
-end
-
--- Effective range. The slider is the operator's request; the guard envelope
--- is a hard ceiling. WaveShield V4's final-cam distance branch uses 25 m on
--- foot and 50 m in a vehicle, so this module uses 24/45 and leaves a margin.
-local function effectiveRange()
-    local ceiling = O.Ctx.inVehicle and MAX_RANGE_CAR or MAX_RANGE_FOOT
-    return math.min(FA.range or ceiling, ceiling)
-end
-
-local function clampToPed(ped)
-    if not ped or ped == 0 or not DoesEntityExist(ped) then return end
-    local p = GetEntityCoords(ped)
-    local dx, dy, dz = FA.x - p.x, FA.y - p.y, FA.z - p.z
-    local d = math.sqrt(dx * dx + dy * dy + dz * dz)
-    local maxRange = effectiveRange()
-    if d <= maxRange or d < 0.01 then return end
-
-    local s = maxRange / d
-    FA.x = p.x + dx * s
-    FA.y = p.y + dy * s
-    FA.z = p.z + dz * s
-end
-
--- Keep the ped from walking, shooting or entering cover while the view is
--- detached. Look controls (1/2) are deliberately NOT disabled in native mode:
--- the gameplay camera must keep its mouse look. The script fallback disables
--- them because it reads the same axes for its own rotation.
-local NATIVE_CONTROLS = { 21, 22, 24, 25, 30, 31, 32, 33, 34, 35, 36, 37, 44 }
-local SCRIPT_CONTROLS = { 1, 2, 21, 22, 24, 25, 30, 31, 32, 33, 34, 35, 36, 37, 44 }
-
-local function disableControls(list)
-    for i = 1, #list do
-        pcall(DisableControlAction, 0, list[i], true)
-    end
-end
-
-local function tickNative(now, ped)
-    local api = susanoApi()
-    if not api or type(api.SetCameraPos) ~= "function" then
-        FA.stop("native camera API lost")
-        return
-    end
-
-    applyAlphaGuard(ped, now)
-
-    -- FiveM returns a vector3 userdata here, not a plain table. Checking the
-    -- userdata tag with type() is how the previous build killed itself on the
-    -- first real frame: type(vector3) is neither "table" nor "userdata". The
-    -- only contract that matters is that x and z are numbers; accept every
-    -- shape that satisfies it.
-    local okRot, rot = pcall(GetGameplayCamRot, 2)
-    if not okRot or rot == nil
-        or type(rot.x) ~= "number" or type(rot.z) ~= "number" then
-        FA.stop("gameplay camera rotation unavailable")
-        return
-    end
-
-    local fwd, str, up, step = moveStep(api)
-    local dir = O.rotToDir({ x = rot.x, y = 0.0, z = rot.z })
-    local yaw = math.rad(rot.z)
-    local rx, ry = math.cos(yaw), math.sin(yaw)
-
-    FA.x = FA.x + dir.x * step * fwd + rx * step * str
-    FA.y = FA.y + dir.y * step * fwd + ry * step * str
-    FA.z = FA.z + dir.z * step * fwd + step * up
-
-    clampToPed(ped)
-    pcall(api.SetCameraPos, FA.x, FA.y, FA.z)
-
-    if now - FA.lastFocus >= O.jitter(FOCUS_MS, 0.2) then
-        FA.lastFocus = now
-        pcall(SetFocusPosAndVel, FA.x, FA.y, FA.z, 0.0, 0.0, 0.0)
-    end
-
-    if now - FA.lastTargets >= O.jitter(TARGETS_MS, 0.2) then
-        updateListeners()
-    end
-
-    disableControls(NATIVE_CONTROLS)
-end
-
-local function tickScript(now, ped)
-    if FA.pending then
-        if now > FA.pendingUntil then
-            FA.stop("camera never became the rendering camera")
-            return
-        end
-
-        if O.Ctx.dead then
-            FA.stop("operator died while pending")
-            return
-        end
-        if FA.vehicleOnly and not O.Ctx.inVehicle then
-            FA.stop("left the vehicle while pending")
-            return
-        end
-        local okCam, camExists = pcall(DoesCamExist, FA.cam)
-        if not okCam or camExists ~= true then
-            FA.stop("camera destroyed while pending")
-            return
-        end
-
-        local okRender, rendering = pcall(GetRenderingCam)
-        if okRender and rendering == FA.cam then
-            FA.pending = false
-            FA.didWork = true
-            FA.lastFocus = 0
-            FA.lastTargets = 0
-            setScriptCam()
-            pcall(SetFocusPosAndVel, FA.x, FA.y, FA.z, 0.0, 0.0, 0.0)
-            FA.lastFocus = now
-            updateListeners()
-            -- The pending frames returned before the control gate. Lock the
-            -- ped on the first live frame too, not one frame later.
-            disableControls(SCRIPT_CONTROLS)
-            emit("script camera live")
-        end
-        return
-    end
-
-    local okCam, camExists = pcall(DoesCamExist, FA.cam)
-    if not okCam or camExists ~= true then
-        FA.stop("camera destroyed")
-        return
-    end
-
-    local api = susanoApi()
-    local fwd, str, up, step = moveStep(api)
-
+local function applyMovement(api, dt)
+    local fwd, str, up, step = moveStep(api, dt)
     local mx = controlAxis(0, 1)
     local my = controlAxis(0, 2)
-    FA.yaw = FA.yaw - mx * LOOK_SPEED * frameStep()
-    FA.pitch = FA.pitch - my * LOOK_SPEED * frameStep()
+
+    FA.yaw = FA.yaw - mx * LOOK_SPEED * dt
+    FA.pitch = FA.pitch - my * LOOK_SPEED * dt
     if FA.pitch > 89.0 then FA.pitch = 89.0 end
     if FA.pitch < -89.0 then FA.pitch = -89.0 end
+    if FA.yaw > 180.0 then FA.yaw = FA.yaw - 360.0 end
+    if FA.yaw < -180.0 then FA.yaw = FA.yaw + 360.0 end
 
     local dir = O.rotToDir({ x = FA.pitch, y = 0.0, z = FA.yaw })
     local yaw = math.rad(FA.yaw)
@@ -33756,78 +34244,561 @@ local function tickScript(now, ped)
     FA.x = FA.x + dir.x * step * fwd + rx * step * str
     FA.y = FA.y + dir.y * step * fwd + ry * step * str
     FA.z = FA.z + dir.z * step * fwd + step * up
+end
 
-    clampToPed(ped)
-    setScriptCam()
+-- ---------------------------------------------------------------------------
+-- TARGET PICK
+-- ---------------------------------------------------------------------------
+local function pickVehicle()
+    if type(GetGamePool) ~= "function" then return 0 end
+    if type(GetScreenCoordFromWorldCoord) ~= "function" then return 0 end
 
-    if now - FA.lastFocus >= O.jitter(FOCUS_MS, 0.2) then
-        FA.lastFocus = now
+    local okPool, list = pcall(GetGamePool, "CVehicle")
+    if not okPool or type(list) ~= "table" then return 0 end
+
+    local best = 0
+    local bestD = RC_PICK_RADIUS * RC_PICK_RADIUS
+    local maxD2 = RC_TARGET_MAX * RC_TARGET_MAX
+
+    for i = 1, #list do
+        local veh = list[i]
+        if type(veh) == "number" and veh ~= 0 and DoesEntityExist(veh) then
+            local okC, c = pcall(GetEntityCoords, veh)
+            if okC and c and type(c.x) == "number" then
+                local dx, dy, dz = c.x - FA.x, c.y - FA.y, c.z - FA.z
+                local d2 = dx * dx + dy * dy + dz * dz
+                if d2 <= maxD2 then
+                    local okS, on, sx, sy =
+                        pcall(GetScreenCoordFromWorldCoord, c.x, c.y, c.z + 0.5)
+                    if okS and (on == true or on == 1)
+                        and type(sx) == "number" and type(sy) == "number" then
+                        local ax, ay = sx - 0.5, sy - 0.5
+                        local dd = ax * ax + ay * ay
+                        if dd < bestD then
+                            bestD = dd
+                            best = veh
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    return best
+end
+
+local function vehicleInfo(veh)
+    if not veh or veh == 0 or not DoesEntityExist(veh) then return nil end
+
+    local net = 0
+    if type(NetworkGetNetworkIdFromEntity) == "function" then
+        local ok, value = pcall(NetworkGetNetworkIdFromEntity, veh)
+        if ok and type(value) == "number" then net = value end
+    end
+
+    local label = "VEHICLE"
+    if type(GetEntityModel) == "function"
+        and type(GetDisplayNameFromVehicleModel) == "function" then
+        local okModel, model = pcall(GetEntityModel, veh)
+        if okModel and model then
+            local okName, name = pcall(GetDisplayNameFromVehicleModel, model)
+            if okName and type(name) == "string" and name ~= "" then label = name end
+        end
+    end
+
+    local plate = ""
+    if type(GetVehicleNumberPlateText) == "function" then
+        local ok, value = pcall(GetVehicleNumberPlateText, veh)
+        if ok and type(value) == "string" then
+            plate = value:gsub("%s+$", "")
+        end
+    end
+
+    return { net = net, label = label, plate = plate }
+end
+
+-- ---------------------------------------------------------------------------
+-- ACTION EXECUTION
+-- ---------------------------------------------------------------------------
+local function burstTyres(veh)
+    if type(SetVehicleTyreBurst) ~= "function" then return false end
+    for i = 0, 7 do
+        pcall(SetVehicleTyreBurst, veh, i, true, 1000.0)
+    end
+    return true
+end
+
+local function smashWindows(veh)
+    if type(SmashVehicleWindow) ~= "function" then return false end
+    for i = 0, 7 do
+        pcall(SmashVehicleWindow, veh, i)
+    end
+    return true
+end
+
+local function openDoors(veh)
+    if type(SetVehicleDoorOpen) ~= "function" then return false end
+    for i = 0, 5 do
+        pcall(SetVehicleDoorOpen, veh, i, false, false)
+    end
+    return true
+end
+
+local function requestControlOnce(veh)
+    if type(NetworkRequestControlOfEntity) ~= "function" then return end
+    pcall(NetworkRequestControlOfEntity, veh)
+end
+
+local function useAction(now)
+    local action = ACTIONS[FA.action]
+    if not action then return end
+
+    if action.id == "rc" then
+        if FA.rcActive then
+            toast("RC already linked")
+        else
+            local target = FA.hoverVehicle
+            if target == 0 then
+                toast("Aim at a vehicle")
+                return
+            end
+            FA.enterRC(target, now)
+        end
+        return
+    end
+
+    local veh = FA.rcActive and FA.rcVehicle or FA.hoverVehicle
+    if veh == 0 or not DoesEntityExist(veh) then
+        toast("Aim at a vehicle")
+        return
+    end
+
+    if not FA.rcActive then requestControlOnce(veh) end
+
+    local done = false
+    if action.id == "tyres" then
+        done = burstTyres(veh)
+        if done then toast("Tyres burst") end
+    elseif action.id == "windows" then
+        done = smashWindows(veh)
+        if done then toast("Windows smashed") end
+    elseif action.id == "doors" then
+        done = openDoors(veh)
+        if done then toast("Doors opened") end
+    end
+
+    if not done then toast("Action unavailable") end
+end
+
+-- ---------------------------------------------------------------------------
+-- REMOTE CONTROL
+-- ---------------------------------------------------------------------------
+local function getCurrentVehicle(ped)
+    if type(GetVehiclePedIsIn) ~= "function" then return 0 end
+    local ok, veh = pcall(GetVehiclePedIsIn, ped, false)
+    if ok and type(veh) == "number" then return veh end
+    return 0
+end
+
+local function getDriverSeat(veh)
+    if type(GetPedInVehicleSeat) ~= "function" then return 0 end
+    local ok, ped = pcall(GetPedInVehicleSeat, veh, -1)
+    if ok and type(ped) == "number" then return ped end
+    return 0
+end
+
+local function canControl(veh, now)
+    if type(NetworkGetEntityIsNetworked) ~= "function" then return true end
+    local okNet, net = pcall(NetworkGetEntityIsNetworked, veh)
+    if not okNet then return true end
+    if net ~= true and net ~= 1 then return true end
+
+    if type(NetworkHasControlOfEntity) == "function" then
+        local okHas, has = pcall(NetworkHasControlOfEntity, veh)
+        if okHas and (has == true or has == 1) then return true end
+    end
+
+    if now - FA.lastControlReq >= RC_REQUEST_MS then
+        FA.lastControlReq = now
+        if type(NetworkRequestControlOfEntity) == "function" then
+            pcall(NetworkRequestControlOfEntity, veh)
+        end
+    end
+    return false
+end
+
+local function attachChaseCam(veh)
+    if FA.cam == 0 or not veh or veh == 0 then return end
+    pcall(DetachCam, FA.cam)
+    pcall(AttachCamToEntity, FA.cam, veh, 0.0, -7.5, 2.7, true)
+    pcall(PointCamAtEntity, FA.cam, veh, 0.0, 1.0, 1.0, true)
+    pcall(SetCamFarClip, FA.cam, CAM_FAR)
+end
+
+local function warpInto(veh)
+    local ped = PlayerPedId()
+    if getCurrentVehicle(ped) == veh then return true end
+
+    local driver = getDriverSeat(veh)
+    if driver ~= 0 and driver ~= ped then return false end
+
+    releaseBody()
+    if type(SetPedIntoVehicle) ~= "function" then return false end
+    local ok = pcall(SetPedIntoVehicle, ped, veh, -1)
+    return ok == true
+end
+
+local function focusVehicle(now)
+    if now < FA.nextFocus then return end
+    FA.nextFocus = now + O.jitter(FOCUS_MS, 0.2)
+    if FA.rcVehicle == 0 or not DoesEntityExist(FA.rcVehicle) then return end
+    local c = GetEntityCoords(FA.rcVehicle)
+    pcall(SetFocusPosAndVel, c.x, c.y, c.z, 0.0, 0.0, 0.0)
+    if now >= FA.nextCollision then
+        FA.nextCollision = now + O.jitter(COLLISION_MS, 0.2)
+        pcall(RequestCollisionAtCoord, c.x, c.y, c.z)
+    end
+end
+
+local function exitRC(reason)
+    if not FA.rcActive then return end
+    FA.rcActive = false
+    FA.rcPending = false
+    FA.rcVehicle = 0
+    FA.lastControlReq = 0
+
+    if FA.cam ~= 0 then
+        pcall(DetachCam, FA.cam)
+        FA.x, FA.y, FA.z = FA.rcSavedX, FA.rcSavedY, FA.rcSavedZ
+        FA.pitch, FA.yaw = FA.rcSavedPitch, FA.rcSavedYaw
+        setScriptCam()
+        pcall(SetCamActive, FA.cam, true)
+        pcall(RenderScriptCams, true, false, 0, true, true)
+        FA.nextFocus = 0
+        FA.nextCollision = 0
         pcall(SetFocusPosAndVel, FA.x, FA.y, FA.z, 0.0, 0.0, 0.0)
     end
 
-    if now - FA.lastTargets >= O.jitter(TARGETS_MS, 0.2) then
-        updateListeners()
-    end
-
-    disableControls(SCRIPT_CONTROLS)
+    FA.hoverVehicle = 0
+    toast(reason or "RC released")
 end
 
-local function tick(now)
-    if not FA.active then return end
+function FA.enterRC(veh, now)
+    if FA.rcActive then return false end
+    if not veh or veh == 0 or not DoesEntityExist(veh) then
+        toast("Aim at a vehicle")
+        return false
+    end
+    if type(GetEntityType) == "function" then
+        local okType, kind = pcall(GetEntityType, veh)
+        if not okType or kind ~= 2 then
+            toast("That is not a vehicle")
+            return false
+        end
+    end
 
     local ped = PlayerPedId()
-    if ped == 0 or not DoesEntityExist(ped) then
-        FA.stop("ped gone")
+    local driver = getDriverSeat(veh)
+    if driver ~= 0 and driver ~= ped then
+        toast("Driver seat occupied")
+        return false
+    end
+
+    FA.rcSavedX, FA.rcSavedY, FA.rcSavedZ = FA.x, FA.y, FA.z
+    FA.rcSavedPitch, FA.rcSavedYaw = FA.pitch, FA.yaw
+    FA.rcVehicle = veh
+    FA.rcActive = true
+    FA.rcPending = false
+    FA.rcStartedAt = now
+    FA.lastControlReq = 0
+
+    attachChaseCam(veh)
+
+    if getCurrentVehicle(ped) == veh then
+        toast("RC camera linked")
+        return true
+    end
+
+    if canControl(veh, now) then
+        if warpInto(veh) then
+            toast("RC linked")
+            return true
+        end
+        exitRC("warp failed")
+        return false
+    end
+
+    FA.rcPending = true
+    FA.rcPendingUntil = now + RC_CONTROL_MS
+    toast("Linking RC...")
+    return true
+end
+
+local function tickRC(now, ped)
+    if FA.rcVehicle == 0 or not DoesEntityExist(FA.rcVehicle) then
+        exitRC("Vehicle gone")
         return
     end
 
-    if O.Ctx.dead then
-        FA.stop("operator died")
+    if FA.rcPending then
+        disableControls(FREECAM_CONTROLS)
+        if now >= FA.rcPendingUntil then
+            exitRC("No control")
+            return
+        end
+        if getCurrentVehicle(ped) == FA.rcVehicle then
+            FA.rcPending = false
+            attachChaseCam(FA.rcVehicle)
+            toast("RC linked")
+            return
+        end
+        if canControl(FA.rcVehicle, now) then
+            if warpInto(FA.rcVehicle) then
+                FA.rcPending = false
+            else
+                exitRC("Warp failed")
+                return
+            end
+        end
+        focusVehicle(now)
         return
     end
 
-    -- Guard policies that only allow a camera inside a vehicle must be
-    -- re-checked every tick: the operator can step out while the feature is
-    -- live, and the detector runs on the next frame.
-    if FA.vehicleOnly and not O.Ctx.inVehicle then
-        FA.stop("left the vehicle")
+    if getCurrentVehicle(ped) ~= FA.rcVehicle then
+        exitRC("Left the vehicle")
         return
     end
 
-    -- The vehicle envelope is wider than the foot envelope. Stop on the
-    -- transition instead of letting a 45 m vehicle camera be measured against
-    -- the 25 m foot branch for a frame. Entering a vehicle is safe and does
-    -- not stop the session; the next exit does.
-    if FA.wasInVehicle and not O.Ctx.inVehicle then
-        FA.stop("left the vehicle")
+    disableControls(RC_CONTROLS)
+    focusVehicle(now)
+end
+
+-- ---------------------------------------------------------------------------
+-- HUD
+-- ---------------------------------------------------------------------------
+local function screenSize()
+    local w, h = 1920, 1080
+    if type(GetActiveScreenResolution) == "function" then
+        local ok, a, b = pcall(GetActiveScreenResolution)
+        if ok and type(a) == "number" and type(b) == "number"
+            and a > 32 and b > 32 then
+            w, h = a, b
+        end
+    end
+    return w, h
+end
+
+local function themeAccent()
+    if type(Menu) == "table" and type(Menu.Colors) == "table"
+        and type(Menu.Colors.HeaderPink) == "table" then
+        local c = Menu.Colors.HeaderPink
+        local r = tonumber(c.r) or 76
+        local g = tonumber(c.g) or 143
+        local b = tonumber(c.b) or 88
+        if r > 1.0 or g > 1.0 or b > 1.0 then
+            return r / 255.0, g / 255.0, b / 255.0
+        end
+        return r, g, b
+    end
+    return 76.0 / 255.0, 143.0 / 255.0, 88.0 / 255.0
+end
+
+local function fill(x, y, w, h, r, g, b, a, radius)
+    if type(Susano) == "table" and type(Susano.DrawRectFilled) == "function" then
+        pcall(Susano.DrawRectFilled, x, y, w, h, r, g, b, a, radius or 0.0)
+    elseif type(Menu) == "table" and type(Menu.DrawRect) == "function" then
+        pcall(Menu.DrawRect, x, y, w, h, r * 255.0, g * 255.0, b * 255.0, a * 255.0)
+    end
+end
+
+local function text(x, y, str, size, r, g, b, a)
+    if type(Susano) == "table" and type(Susano.DrawText) == "function" then
+        pcall(Susano.DrawText, x, y, tostring(str), size, r, g, b, a)
+    elseif type(Menu) == "table" and type(Menu.DrawText) == "function" then
+        pcall(Menu.DrawText, x, y, tostring(str), size, r, g, b, a)
+    end
+end
+
+local function targetLine(veh)
+    local info = vehicleInfo(veh)
+    if not info then return nil end
+    local scope = info.net ~= 0 and ("NETWORKED  |  NET ID: " .. info.net) or "LOCAL"
+    local tail = info.label
+    if info.plate ~= "" then tail = tail .. "  |  " .. info.plate end
+    return scope .. "  |  " .. tail
+end
+
+local function renderHud()
+    if not FA.active then return end
+    if type(Menu) == "table" and Menu.Visible == true then return end
+
+    local w, h = screenSize()
+    local s = h / 1080.0
+    local ar, ag, ab = themeAccent()
+
+    local pad = 12.0 * s
+    local line = 19.0 * s
+    local titleSize = 18.0 * s
+    local bodySize = 12.0 * s
+    local hintSize = 11.0 * s
+
+    if FA.pending then
+        local panelW = 330.0 * s
+        local panelH = pad * 2.0 + titleSize + line * 2.0
+        local px = 28.0 * s
+        local py = h * 0.5 - panelH * 0.5
+        fill(px, py, panelW, panelH, 0.0, 0.0, 0.0, 0.62, 6.0 * s)
+        fill(px, py, 3.0 * s, panelH, ar, ag, ab, 0.9, 0.0)
+        text(px + pad, py + pad, "FREECAM", titleSize, 1.0, 1.0, 1.0, 1.0)
+        text(px + pad, py + pad + titleSize + 3.0 * s,
+            "LINKING CAMERA", bodySize, ar, ag, ab, 1.0)
+        text(px + pad, py + pad + titleSize + 3.0 * s + line,
+            "waiting for the declaration", hintSize, 0.62, 0.62, 0.62, 1.0)
         return
     end
-    FA.wasInVehicle = O.Ctx.inVehicle and true or false
 
-    maintainBody(now, ped)
+    local rc = FA.rcActive
+    local target = rc and FA.rcVehicle or FA.hoverVehicle
+    local targetStr = targetLine(target)
+    local toastOn = FA.toastText ~= nil and O.now() < FA.toastUntil
 
-    if FA.mode == "native" then
-        tickNative(now, ped)
+    local panelW = 372.0 * s
+    local rows = #ACTIONS
+    local headBlock = titleSize + 4.0 * s + line
+    local bodyBlock = line + 6.0 * s
+    local actionBlock = rows * line
+    local hintBlock = 2.0 * line
+    local toastBlock = toastOn and line or 0.0
+    local panelH = pad * 2.0 + headBlock + bodyBlock + actionBlock
+        + 8.0 * s + hintBlock + toastBlock
+
+    local px = 28.0 * s
+    local py = h * 0.52 - panelH * 0.5
+    if py < 20.0 * s then py = 20.0 * s end
+
+    fill(px, py, panelW, panelH, 0.0, 0.0, 0.0, 0.62, 6.0 * s)
+    fill(px, py, 3.0 * s, panelH, ar, ag, ab, 0.9, 0.0)
+
+    local x = px + pad
+    local y = py + pad
+
+    text(x, y, rc and "RC CAMERA" or "FREECAM", titleSize, 1.0, 1.0, 1.0, 1.0)
+    y = y + titleSize + 4.0 * s
+    local sub = rc and "REMOTE CONTROL  |  LINKED"
+        or ("FREE CAMERA  |  UNLIMITED  |  " .. FA.speedLabel)
+    text(x, y, sub, bodySize, ar, ag, ab, 1.0)
+    y = y + line
+
+    if targetStr then
+        text(x, y, targetStr, bodySize, 0.92, 0.92, 0.92, 1.0)
     else
-        tickScript(now, ped)
+        local hint = rc and "TARGET  |  NONE" or "TARGET  |  AIM AT A VEHICLE"
+        text(x, y, hint, bodySize, 0.60, 0.60, 0.60, 1.0)
+    end
+    y = y + line + 3.0 * s
+
+    fill(x, y, panelW - pad * 2.0, 1.0 * s, 1.0, 1.0, 1.0, 0.12, 0.0)
+    y = y + 5.0 * s
+
+    for i = 1, rows do
+        local selected = (i == FA.action)
+        local marker = selected and ">" or " "
+        local r, g, b = 0.62, 0.62, 0.62
+        if selected then r, g, b = 1.0, 1.0, 1.0 end
+        if selected then
+            fill(x - 4.0 * s, y - 2.0 * s,
+                panelW - pad * 2.0 + 8.0 * s, line,
+                ar, ag, ab, 0.16, 3.0 * s)
+        end
+        text(x, y, marker .. "  " .. ACTIONS[i].label, bodySize, r, g, b, 1.0)
+        y = y + line
+    end
+
+    y = y + 8.0 * s
+
+    if toastOn then
+        text(x, y, FA.toastText, hintSize, ar, ag, ab, 1.0)
+        y = y + line
+    end
+
+    if rc then
+        text(x, y, "Press X to exit RC", hintSize, 0.92, 0.92, 0.92, 1.0)
+        y = y + line
+        text(x, y, "SCROLL action   LMB use", hintSize, 0.60, 0.60, 0.60, 1.0)
+    else
+        text(x, y, "SCROLL action   LMB use", hintSize, 0.60, 0.60, 0.60, 1.0)
+        y = y + line
+        text(x, y, "F6 close   X exit", hintSize, 0.60, 0.60, 0.60, 1.0)
+    end
+
+    if not rc then
+        local cx, cy = w * 0.5, h * 0.5
+        fill(cx - 2.0 * s, cy - 2.0 * s, 4.0 * s, 4.0 * s, ar, ag, ab, 0.95, 2.0 * s)
     end
 end
 
 -- ---------------------------------------------------------------------------
 -- PUBLIC
 -- ---------------------------------------------------------------------------
+local function goLive(now)
+    if FA.cam == 0 then return false end
+    local okCam, exists = pcall(DoesCamExist, FA.cam)
+    if not okCam or exists ~= true then
+        FA.stop("camera lost before activation")
+        return false
+    end
+
+    FA.pending = false
+    FA.didWork = true
+    FA.rendered = true
+    pcall(SetCamFarClip, FA.cam, CAM_FAR)
+    setScriptCam()
+    pcall(SetCamActive, FA.cam, true)
+    pcall(RenderScriptCams, true, false, 0, true, true)
+
+    if not O.Ctx.inVehicle then holdBody(PlayerPedId(), now) end
+    FA.nextFocus = 0
+    FA.nextCollision = 0
+    FA.nextTargets = 0
+    FA.nextPick = 0
+    pcall(SetFocusPosAndVel, FA.x, FA.y, FA.z, 0.0, 0.0, 0.0)
+    updateListeners()
+    disableControls(FREECAM_CONTROLS)
+
+    emit("live declared=%s range=%d", tostring(FA.declared), math.floor(FA.range))
+    return true
+end
+
 function FA.arm()
     if FA.active then return true end
+    if FA.cam ~= 0 or FA.pending then FA.stop("rearm") end
     if type(O.Ctx) ~= "table" then return false end
 
     local policy = guardPolicy()
 
-    -- Electron: a moving camera on foot is the shape its freecam module
-    -- punishes, and no WaveShield-shaped property closes that branch. The
-    -- vehicle gate therefore applies whenever Electron is present, even if
-    -- WaveShield is present too. WaveShield-only servers keep the foot path.
-    if policy.vehicleOnly and not O.Ctx.inVehicle then
+    if policy.electron and not O.Ctx.inVehicle then
         emit("refused: this guard only allows a camera in a vehicle")
+        return false
+    end
+
+    -- A guard that is not WaveShield or Electron has no modelled camera
+    -- surface. Refuse instead of presenting an undeclared rendering camera.
+    if policy.any and #policy.waveNames == 0 and not policy.electron then
+        emit("refused: guard has no modelled camera surface")
+        return false
+    end
+
+    local host = nil
+    if #policy.waveNames > 0 then
+        host = injectionHost(policy.waveNames)
+        if not host then
+            emit("refused: no injectable host for the camera declaration")
+            return false
+        end
+    end
+
+    if type(CreateCamWithParams) ~= "function" then
+        emit("refused: camera API missing")
         return false
     end
 
@@ -33837,57 +34808,6 @@ function FA.arm()
     end
     FA.spent = true
     FA.didWork = false
-
-    local api = susanoApi()
-    if api
-        and type(api.LockCameraPos) == "function"
-        and type(api.SetCameraPos) == "function" then
-        local okPos, pos = pcall(GetGameplayCamCoord)
-        if okPos and pos
-            and type(pos.x) == "number"
-            and type(pos.y) == "number"
-            and type(pos.z) == "number" then
-            local okLock = pcall(api.LockCameraPos, true)
-            if okLock then
-                local ped = PlayerPedId()
-                local now = O.now()
-                FA.x, FA.y, FA.z = pos.x, pos.y, pos.z
-                FA.pitch, FA.yaw = 0.0, 0.0
-                FA.cam = 0
-                FA.mode = "native"
-                FA.active = true
-                setFreecamIntent(true)
-                FA.pending = false
-                FA.pendingUntil = 0
-                FA.vehicleOnly = policy.vehicleOnly
-                FA.whitelisted = false
-                FA.whitelistMode = "native"
-                FA.didWork = true
-                FA.lastFocus = now
-                FA.lastTargets = 0
-                FA.wasInVehicle = O.Ctx.inVehicle and true or false
-                applyAlphaGuard(ped, now)
-                if not O.Ctx.inVehicle then holdBody(ped, now) end
-                pcall(api.SetCameraPos, FA.x, FA.y, FA.z)
-                pcall(SetFocusPosAndVel, FA.x, FA.y, FA.z, 0.0, 0.0, 0.0)
-                notify(true)
-                emit("armed native range=%d vehicleOnly=%s",
-                    math.floor(FA.range), tostring(FA.vehicleOnly))
-                return true
-            end
-            pcall(api.LockCameraPos, false)
-        end
-    end
-
-    -- A script camera is only acceptable when no guard is present. On a
-    -- guarded server a missing native API is a refusal, not an unlisted
-    -- rendering camera.
-    if policy.any then
-        FA.spent = false
-        B.refund("freecam")
-        emit("refused: native camera unavailable and a guard was detected")
-        return false
-    end
 
     local cam = createCamera()
     if cam == 0 then
@@ -33900,83 +34820,103 @@ function FA.arm()
     FA.cam = cam
     FA.mode = "script"
     FA.active = true
+    FA.pending = false
+    FA.declared = false
+    FA.needDeclare = host ~= nil
+    FA.vehicleOnly = policy.electron
+    FA.guardNames = policy.waveNames
+    FA.hoverVehicle = 0
+    FA.action = 1
+    FA.keyMouse = false
+    FA.toastText = nil
+    FA.toastUntil = 0
+    FA.nextFocus = 0
+    FA.nextCollision = 0
+    FA.nextTargets = 0
+    FA.nextPick = 0
+    FA.lastControlReq = 0
     setFreecamIntent(true)
-    FA.pending = true
-    FA.pendingUntil = O.now() + SCRIPT_PENDING_MS
-    FA.vehicleOnly = policy.vehicleOnly
-    FA.whitelisted = false
-    FA.whitelistMode = "script"
-    FA.lastFocus = 0
-    FA.lastTargets = 0
-    FA.wasInVehicle = O.Ctx.inVehicle and true or false
+
     if not O.Ctx.inVehicle then holdBody(PlayerPedId(), O.now()) end
 
-    activateCamera(cam)
+    if host then
+        if not declareCamera(cam, host, policy.waveNames) then
+            FA.stop("declaration injection failed")
+            return false
+        end
+        FA.pending = true
+        FA.pendingUntil = O.now() + DECLARE_MS
+        notify(true)
+        emit("pending declaration host=%s", host)
+        return true
+    end
+
+    if not goLive(O.now()) then return false end
     notify(true)
-    emit("armed script fallback range=%d vehicleOnly=%s",
+    emit("armed range=%d vehicleOnly=%s",
         math.floor(FA.range), tostring(FA.vehicleOnly))
     return true
 end
 
 function FA.setRange(value)
     if type(value) ~= "number" then return FA.range end
-    FA.range = math.max(MIN_RANGE, math.min(MAX_RANGE_CAR, value))
+    FA.range = math.max(LISTEN_MIN, math.min(LISTEN_MAX, value))
     return FA.range
 end
 
 function FA.stop(reason)
-    -- Clear the anti-freeze exemption before any early return. A stale true
-    -- would make Settings > Protection stop repairing a real external freeze.
     setFreecamIntent(false)
 
-    if not FA.active and FA.cam == 0 and not FA.pending
-        and FA.alphaPed == 0 and FA.heldPed == 0 then
-        return
-    end
+    local wasActive = FA.active or FA.pending or FA.cam ~= 0 or FA.rcActive
 
-    -- Restore the camera first: the body hold and the alpha guard exist only
-    -- for a detached view. Releasing them before the camera returns would
-    -- leave one frame in which the freecam shape and the guard shape disagree.
-    if FA.mode == "native" then
-        local api = susanoApi()
-        if api and type(api.LockCameraPos) == "function" then
-            pcall(api.LockCameraPos, false)
+    FA.rcActive = false
+    FA.rcPending = false
+    FA.rcVehicle = 0
+
+    if FA.cam ~= 0 then
+        local cam = FA.cam
+        if FA.rendered then
+            if type(GetRenderingCam) == "function" then
+                local okRender, rendering = pcall(GetRenderingCam)
+                if not okRender or rendering == cam then
+                    pcall(RenderScriptCams, false, false, 0, true, true)
+                end
+            else
+                pcall(RenderScriptCams, false, false, 0, true, true)
+            end
         end
-    elseif FA.cam ~= 0 then
-        local okRender, rendering = pcall(GetRenderingCam)
-        -- Drop the render before the handle. If the cam is destroyed while it
-        -- is still the rendering camera, the guard can see an unlisted cam for
-        -- one detector window.
-        if not okRender or rendering == FA.cam then
-            pcall(RenderScriptCams, false, false, 0, true, true)
-        end
-        pcall(SetCamActive, FA.cam, false)
-        pcall(DestroyCam, FA.cam, false)
+        pcall(SetCamActive, cam, false)
+        pcall(DestroyCam, cam, false)
     end
 
     releaseBody()
-    restoreAlphaGuard()
     clearListeners()
     pcall(ClearFocus)
 
-    -- A camera that never became live must not consume its budget token.
     if FA.spent and not FA.didWork then B.refund("freecam") end
 
     FA.cam = 0
     FA.mode = nil
+    FA.rendered = false
     FA.active = false
     FA.pending = false
     FA.pendingUntil = 0
-    FA.whitelisted = false
-    FA.whitelistMode = nil
+    FA.declared = false
+    FA.needDeclare = false
     FA.vehicleOnly = false
     FA.spent = false
     FA.didWork = false
-    FA.wasInVehicle = false
+    FA.guardNames = {}
+    FA.hoverVehicle = 0
+    FA.action = 1
     FA.pitch = 0.0
     FA.yaw = 0.0
+    FA.speedLabel = "NORMAL"
+    FA.toastText = nil
+    FA.toastUntil = 0
+    FA.lastControlReq = 0
 
-    notify(false)
+    if wasActive then notify(false) end
     if reason then emit("stopped: %s", tostring(reason)) end
 end
 
@@ -33989,18 +34929,167 @@ function FA.isActive()
 end
 
 function FA.status()
-    return ("active=%s pending=%s mode=%s range=%d targets=%d cam=%s whitelisted=%s vehicleOnly=%s"):format(
-        tostring(FA.active), tostring(FA.pending), tostring(FA.mode),
-        math.floor(FA.range), listenerCount(), tostring(FA.cam ~= 0),
-        tostring(FA.whitelisted), tostring(FA.vehicleOnly))
+    return ("active=%s pending=%s declared=%s mode=%s range=%d targets=%d cam=%s rc=%s vehicleOnly=%s"):format(
+        tostring(FA.active), tostring(FA.pending), tostring(FA.declared),
+        tostring(FA.mode), math.floor(FA.range), listenerCount(),
+        tostring(FA.cam ~= 0), tostring(FA.rcActive), tostring(FA.vehicleOnly))
+end
+
+-- ---------------------------------------------------------------------------
+-- TICK
+-- ---------------------------------------------------------------------------
+local function handleScroll(now)
+    local delta = controlAxis(0, 14) - controlAxis(0, 15)
+    if math.abs(delta) < 0.35 then return end
+    if now - FA.lastScroll < 90 then return end
+    FA.lastScroll = now
+    if delta > 0 then
+        FA.action = FA.action % #ACTIONS + 1
+    else
+        FA.action = (FA.action - 2) % #ACTIONS + 1
+    end
+end
+
+local function tick(now, dt)
+    local api = susanoApi()
+    dt = tonumber(dt) or 0.016
+    if dt < 0.001 then dt = 0.016 end
+    if dt > 0.05 then dt = 0.05 end
+
+    local f6 = keyDown(api, VK_F6)
+    local f6Pressed = f6 and not FA.keyF6
+    FA.keyF6 = f6
+
+    local xKey = keyDown(api, VK_X)
+    local xPressed = xKey and not FA.keyX
+    FA.keyX = xKey
+
+    local mouse = keyDown(api, VK_LBUTTON)
+    local mousePressed = mouse and not FA.keyMouse
+    FA.keyMouse = mouse
+
+    if not FA.active then
+        if f6Pressed and not menuOpen() then
+            pcall(FA.arm)
+        end
+        return
+    end
+
+    local ped = PlayerPedId()
+    if not ped or ped == 0 or not DoesEntityExist(ped) then
+        FA.stop("ped gone")
+        return
+    end
+    if O.Ctx.dead then
+        FA.stop("operator died")
+        return
+    end
+    if type(IsPedDeadOrDying) == "function" then
+        local okDead, dead = pcall(IsPedDeadOrDying, ped, true)
+        if okDead and dead == true then
+            FA.stop("operator died")
+            return
+        end
+    end
+
+    if FA.vehicleOnly and not O.Ctx.inVehicle then
+        FA.stop("left the vehicle")
+        return
+    end
+
+    maintainBody(now, ped)
+
+    if FA.pending then
+        disableControls(FREECAM_CONTROLS)
+        if now >= FA.pendingUntil then
+            FA.stop("camera declaration timeout")
+            return
+        end
+        if FA.declared then
+            if not goLive(now) then return end
+        else
+            return
+        end
+    end
+
+    local open = menuOpen()
+
+    if f6Pressed and not open then
+        FA.stop("operator")
+        return
+    end
+
+    if xPressed and not open then
+        if FA.rcActive then
+            exitRC("operator")
+        else
+            FA.stop("operator")
+        end
+        return
+    end
+
+    if FA.rcActive then
+        tickRC(now, ped)
+        if FA.rcActive and not FA.rcPending and not open then
+            handleScroll(now)
+            if mousePressed then useAction(now) end
+        end
+        return
+    end
+
+    disableControls(FREECAM_CONTROLS)
+
+    if not open then
+        applyMovement(api, dt)
+        setScriptCam()
+        handleScroll(now)
+        if mousePressed then useAction(now) end
+    else
+        setScriptCam()
+    end
+
+    if now >= FA.nextFocus then
+        FA.nextFocus = now + O.jitter(FOCUS_MS, 0.2)
+        pcall(SetFocusPosAndVel, FA.x, FA.y, FA.z, 0.0, 0.0, 0.0)
+        if now >= FA.nextCollision then
+            FA.nextCollision = now + O.jitter(COLLISION_MS, 0.2)
+            pcall(RequestCollisionAtCoord, FA.x, FA.y, FA.z)
+        end
+    end
+
+    if now >= FA.nextTargets then
+        FA.nextTargets = now + O.jitter(TARGETS_MS, 0.2)
+        updateListeners()
+    end
+
+    if not open and now >= FA.nextPick then
+        FA.nextPick = now + O.jitter(PICK_MS, 0.2)
+        FA.hoverVehicle = pickVehicle()
+    end
 end
 
 O.every("freecam", 16, tick, 0)
 
+-- Local harness seam, same shape as Menu.__vgd_fightPartyTick: drives one pass
+-- without starting the scheduler, and reports status. Menu is chunk-local to
+-- the loader; no remote resource can read or write it.
+if type(Menu) == "table" then
+    Menu.__vgd_freecamTick = tick
+    Menu.__vgd_freecamStatus = FA.status
+end
+
+if type(Menu) == "table" and not Menu.__vgd_freecamRender then
+    Menu.__vgd_freecamRender = true
+    local previous = Menu.OnRender
+    Menu.OnRender = function()
+        if type(previous) == "function" then pcall(previous) end
+        if FA.active then pcall(renderHud) end
+    end
+end
+
 return FA
 
 end)(O,S,B)
-
 -- ---------------------------------------------------------------------------
 -- PART: 26_target_panel.lua
 -- ---------------------------------------------------------------------------
@@ -34039,9 +35128,9 @@ local TP = (function(O,Menu)
 -- reader never writes the bag and never asks the server for anything.
 --
 -- Health and armour use the same vertical micro-gauge as the reference: a
--- filled tick on the right edge. Every other value is right-aligned to the
--- card's own margin. The card flips to the left of the menu when it would
--- leave the screen and clamps at the bottom edge.
+-- filled tick directly after the icon, before the label. Every value is
+-- right-aligned to the card's own margin. The card flips to the left of the
+-- menu when it would leave the screen and clamps at the bottom edge.
 -- ============================================================================
 
 local TP = {}
@@ -34897,7 +35986,14 @@ local function asText(value)
         if value ~= "" then return value end
         return nil
     end
-    if type(value) == "number" then return tostring(value) end
+    if type(value) == "number" then
+        -- Phone numbers arrive as integers on some servers. Format them
+        -- without a float suffix while keeping the raw value for real decimals.
+        if value == math.floor(value) and math.abs(value) < 1e15 then
+            return string.format("%.0f", value)
+        end
+        return tostring(value)
+    end
     if type(value) == "boolean" then return value and "Yes" or "No" end
     return nil
 end
@@ -34956,7 +36052,7 @@ local function jobText(value)
     return nil
 end
 
-local function resolveIdentity(localId, playerPed)
+local function resolveIdentity(localId, playerPed, serverId)
     -- Group is a permission field, not a character field. Servers commonly
     -- replicate no group for ordinary players, so the dossier shows the same
     -- baseline role the framework uses instead of a misleading dash.
@@ -35003,6 +36099,34 @@ local function resolveIdentity(localId, playerPed)
     if not phone then
         local charinfo = first({ "charinfo", "charInfo", "identity" })
         if type(charinfo) == "table" then phone = asText(charinfo.phone) end
+    end
+
+    -- Direct player-state fallback. Some builds expose the phone only through
+    -- the executor accessor, even when Player(localId).state exists but does
+    -- not deserialize phoneNumber. The bag is keyed by server id, not local id.
+    if not phone and serverId ~= nil then
+        local sid = tonumber(serverId)
+        if sid and sid > 0 then
+            local reader = globalFunction("GetStateBagValue")
+            if not reader and type(Susano) == "table"
+                and type(Susano.GetStateBagValue) == "function" then
+                reader = Susano.GetStateBagValue
+            end
+            if reader then
+                local bag = "player:" .. tostring(sid)
+                local keys = { "phoneNumber", "phone", "phone_number", "telephone" }
+                for index = 1, #keys do
+                    local ok, value = pcall(reader, bag, keys[index])
+                    if ok then
+                        if type(value) == "table" then
+                            value = value.number or value.phone or value.value
+                        end
+                        phone = asText(value)
+                        if phone then break end
+                    end
+                end
+            end
+        end
     end
 
     -- Radio: number, channel string, boolean, or a voice table.
@@ -35198,13 +36322,16 @@ function Menu.DrawPlayerInfoPanel()
         local rowIconSize = iconOverride or iconSize
         drawIcon(icon, cx, centerY - rowIconSize * 0.5, rowIconSize, iconR, iconG, iconB)
 
+        local gaugeGap = 4 * scale
         local labelX = cx + iconSize + iconGap
+        if gauge then
+            labelX = cx + iconSize + gaugeGap + barWidth + barGap
+        end
         local textY = centeredTextY(centerY, FONT_ROW, scale)
 
         text(labelX, textY, label, FONT_ROW, LABEL_R, LABEL_G, LABEL_B, 1.0)
 
         local effectiveRight = valueRight
-        if gauge then effectiveRight = effectiveRight - barWidth - barGap end
 
         local labelWidth = textWidth(label, FONT_ROW, scale)
         local maxValueWidth = effectiveRight - (labelX + labelWidth + 10 * scale)
@@ -35216,10 +36343,10 @@ function Menu.DrawPlayerInfoPanel()
             VALUE_R, VALUE_G, VALUE_B, 1.0)
 
         if gauge then
-            -- Vertical micro-gauge: a five-pixel track on the right edge,
+            -- Vertical micro-gauge: a five-pixel track next to the icon,
             -- filled from the bottom. Health 55 % reads as a half green tick;
             -- armour 0 leaves only the dark track.
-            local barX = innerRight - barWidth
+            local barX = cx + iconSize + gaugeGap
             local barY = centerY - barHeight * 0.5
             fillRect(barX, barY, barWidth, barHeight,
                 TRACK_R, TRACK_G, TRACK_B, 1.0, barWidth * 0.5)
@@ -35253,7 +36380,7 @@ function Menu.DrawPlayerInfoPanel()
 
     -- Section 1: identity. All five values come from the passive state-bag
     -- reader; missing fields fall back to "-" and never trigger a request.
-    local identity = resolveIdentity(info.localId, info.ped)
+    local identity = resolveIdentity(info.localId, info.ped, info.serverId)
     local identityData = {
         { icon = "character", label = "Character", value = identity.character },
         { icon = "phone",     label = "Phone",     value = identity.phone },
@@ -36783,7 +37910,7 @@ local U = (function(O,S,E,D,F,V,M,SN,C,G,FL,A,ST,SB,VS,K,N,L,VC,CU,UC,FA,TP,FP,M
 --                       Reason AC, Seed, Dynasty, Raven; each target is isolated
 --   Exploit > Exploit   Fight Party plus the Server Crash / Dispatch XSS
 --                       resource grafts; historical entity crash rows are swept
---   Settings > Protection anti-freeze, anti-attach, anti-spectate and Ped Crasher,
+--   Settings > Protection anti-freeze, anti-attach, anti-spectate and Anti-Ped Crasher,
 --                       armed at load
 --   Vehicle > Spoofed   real local vehicles over the one you already stole
 --
@@ -37134,15 +38261,15 @@ local function installBypassProfiles()
     -- expose the tokens, which left a dead toggle in the menu.
     tab.items = {
         {
-            name = "WaveShield (ban-event choke)",
+            name = "WaveShield Ban Choke",
             type = "toggle",
             value = Menu.__vgd_wsBanChoke ~= false,
             onClick = function(v)
                 Menu.__vgd_wsBanChoke = v and true or false
                 if Menu.__vgd_wsBanChoke then
-                    wsSay("choke-1 armed  mode=ban-event  hooks=1")
+                    O.log("waveshield: ban-event choke armed")
                 else
-                    wsSay("choke-1 disabled  mode=ban-event")
+                    O.log("waveshield: ban-event choke disabled")
                 end
             end,
         },
@@ -37454,8 +38581,7 @@ local function installMovement()
         items = {
             { name = "", isSeparator = true, separatorText = "Air movement" },
             naruto,
-            -- No Clip row retired by the feature matrix (REMOVE); the row object
-            -- is kept only so refresh()/N.onChange can update it without error.
+            noclip,
             includeSolo,
         },
     }
@@ -37561,12 +38687,14 @@ local function installVoice()
 
     local freecamRange
     freecamRange = {
-        name = "Freecam Range (m)",
+        -- The camera itself is unlimited. This slider is the Mumble listen
+        -- radius around the camera, so it may exceed the old 45 m camera cap.
+        name = "Freecam Listen (m)",
         type = "slider",
         value = FA.range,
         min = 10,
-        max = 45,
-        step = 5,
+        max = 500,
+        step = 10,
         onClick = function(value)
             freecamRange.value = FA.setRange(value)
             return freecamRange.value
@@ -37759,9 +38887,30 @@ local function installCombatUnlock()
 
     removeItem("Combat", "General", "Combat Unlock")
 
-    -- Row retired by the feature matrix (REMOVE). This installer now only
-    -- strips any stale copy; the module stays idle and unreachable from the UI.
-    CU.onChange = function() end
+    local row
+    row = {
+        name = "Combat Unlock",
+        type = "toggle",
+        value = CU.isActive(),
+        onClick = function(value)
+            local active
+            if value then
+                active = CU.arm()
+            else
+                CU.stop("operator")
+                active = false
+            end
+            row.value = active
+            return active
+        end,
+    }
+
+    CU.onChange = function(active)
+        row.value = active
+    end
+
+    tab.items = tab.items or {}
+    table.insert(tab.items, 1, row)
     return true
 end
 
@@ -37890,12 +39039,11 @@ end
 
 -- ---------------------------------------------------------------------------
 -- PROTECTION
--- Local-ped recovery plus the client-side Ped Crasher guard. The guard reads
--- the CPed pool, the model hashes and the entity owner, then hides and, for a
--- crash model, a hostile owner or a new burst copy, deletes the local ped. It
--- creates no ped and sends no script event. The separate Ped event filter row
--- blocks inbound crash/spawn event names through Susano.BlockServerEvent; it is
--- off at boot because that is a network-layer change.
+-- Local-ped recovery plus the client-side Anti-Ped Crasher guard. The guard
+-- reads the CPed pool, the model hashes and the entity owner, then hides and,
+-- for a crash model, a hostile owner or a new burst copy, deletes the local
+-- ped. It creates no ped and sends no script event. It is the single ped
+-- protection row: no network-side event filter is installed.
 --
 -- A.boot() has already called A.defaultsOn() when this function runs, so the
 -- rows read the live flags. Hard-coding true here would show "on" even if the
@@ -37906,8 +39054,6 @@ local function installProtection()
     local antiAttach
     local antiSpectate
     local pedCrasher
-    local pedEventFilter
-    local networkLaunder
     local quietLogs
 
     antiFreeze = {
@@ -37937,36 +39083,15 @@ local function installProtection()
         end,
     }
 
-    -- Operator-facing name is "Ped Crasher"; the implementation is a local
-    -- guard, not a crasher. It hides a detected local ped flood for the current
-    -- frame and never creates, tasks, deletes or replicates an entity.
+    -- The single ped protection row. The implementation is a local guard, not
+    -- a crasher: it hides a detected local ped flood for the current frame and
+    -- never creates, tasks, deletes or replicates an entity.
     pedCrasher = {
-        name = "Ped Crasher",
+        name = "Anti-Ped Crasher",
         type = "toggle",
         value = A.flags.pedGuard,
         onClick = function(v)
             pedCrasher.value = A.setPedGuard(v)
-        end,
-    }
-
-    -- Inbound event layer, opt-in: drops the server event names that carry a
-    -- ped/clone spawn before the Lua dispatcher. The entity guard is the
-    -- default-on layer; this row adds the network-side filter.
-    pedEventFilter = {
-        name = "Ped event filter",
-        type = "toggle",
-        value = A.flags.pedEvents,
-        onClick = function(v)
-            pedEventFilter.value = A.setPedEvents(v)
-        end,
-    }
-
-    networkLaunder = {
-        name = "Network launder",
-        type = "toggle",
-        value = A.flags.networkLaunder,
-        onClick = function(v)
-            networkLaunder.value = A.setNetworkLaunder(v)
         end,
     }
 
@@ -37987,8 +39112,6 @@ local function installProtection()
         antiAttach.value = A.flags.antiAttach
         antiSpectate.value = A.flags.antiSpectate
         pedCrasher.value = A.flags.pedGuard
-        pedEventFilter.value = A.flags.pedEvents
-        networkLaunder.value = A.flags.networkLaunder
         quietLogs.value = A.flags.quietLogs
     end
 
@@ -38030,9 +39153,6 @@ local function installProtection()
         antiAttach,
         antiSpectate,
         pedCrasher,
-        pedEventFilter,
-        { name = "", isSeparator = true, separatorText = "Network" },
-        networkLaunder,
         quietLogs,
     }
     return true
@@ -38407,8 +39527,44 @@ local function installServerActions()
         end
     end
 
-    -- Server Crash and Dispatch XSS rows retired by the feature matrix (REMOVE).
-    -- The strip loop above already deletes any stale copy; nothing is re-added.
+    local crashRow = {
+        name = "Server Crash",
+        type = "action",
+        risk = true,
+        onClick = function() return runServerCrash() end,
+    }
+    local xssRow
+    xssRow = {
+        name = "Dispatch XSS",
+        type = "toggle",
+        value = DXSS.active,
+        risk = true,
+        onClick = function(value)
+            if value then dispatchXssStart() else dispatchXssStop() end
+            xssRow.value = DXSS.active
+            return xssRow.value
+        end,
+    }
+    DXSS.row = xssRow
+
+    tab.items[#tab.items + 1] = {
+        name = "",
+        isSeparator = true,
+        separatorText = "Server",
+    }
+    tab.items[#tab.items + 1] = crashRow
+    tab.items[#tab.items + 1] = xssRow
+
+    if not DXSS.watch then
+        DXSS.watch = true
+        O.every("serverActions", 2000, function()
+            if DXSS.active and not actionResourceStarted(DXSS.host) then
+                DXSS.active = false
+                if DXSS.row then DXSS.row.value = false end
+            end
+        end, 500)
+    end
+
     if tabOpen and selectedName then
         for i = 1, #tab.items do
             if tab.items[i].name == selectedName then
@@ -38556,10 +39712,9 @@ local function installFlash()
         end
     end
     table.insert(troll.items, insertAt, methodRow)
-    -- Flash Loop toggle retired by the feature matrix (REMOVE). Only the
-    -- local method preference row is installed; FL.start() is unreachable.
+    table.insert(troll.items, insertAt + 1, toggle)
 
-    Menu.__vgd_flashRow = nil
+    Menu.__vgd_flashRow = toggle
     Menu.__vgd_flashMethodRow = methodRow
     Menu.__vgd_flashTab = nil
 
@@ -40240,7 +41395,7 @@ end
 -- ---------------------------------------------------------------------------
 -- REMOVE OLD ENTRY POINTS
 -- ---------------------------------------------------------------------------
-local MENU_REV = "2026-10-26-cleanup"
+local MENU_REV = "2026-11-13-r83"
 
 -- A previous execution of the old loader can leave its category in the shared
 -- Menu table. Match both the literal name and the old nine-tab fingerprint so
@@ -40406,147 +41561,8 @@ end
 -- ---------------------------------------------------------------------------
 -- BOOT
 -- ---------------------------------------------------------------------------
--- ---------------------------------------------------------------------------
--- FEATURE PURGE + SERVER GATE  (matrix 2026-11-10-r79)
--- ---------------------------------------------------------------------------
--- The static Menu.Categories rows for REMOVE features are already deleted, but
--- several `install*` builders add rows at runtime. PurgeBlocked() strips any
--- row whose name is retired by the matrix from every category/tab after build,
--- so a dynamic installer cannot re-introduce it. Server Crash / Dispatch XSS /
--- Combat Unlock / No Clip / Flash Loop are also removed at their source sites.
---
--- RISK rows stay listed but are inert unless the current server profile is
--- explicitly approved. Default is fail-closed: no profile => no RISK action.
-Menu.BlockedNames = Menu.BlockedNames or {
-    ["Airstrike"]=true, ["Assault Driver"]=true, ["Attach Player"]=true, ["Attach Ramp"]=true,
-    ["Babayaga"]=true, ["Ban Player"]=true, ["Black Hole"]=true, ["Bug Player"]=true,
-    ["Bug Vehicle"]=true, ["Cage target"]=true, ["Change Plate"]=true, ["Clean Vehicle"]=true,
-    ["Combat Unlock"]=true, ["Container (XL)"]=true, ["Crush"]=true, ["Decoy clone"]=true,
-    ["Delete Vehicle"]=true, ["Detach Ramp"]=true, ["Disable Weapon Damage"]=true, ["Dispatch XSS"]=true,
-    ["Easy Handling"]=true, ["Explosion Loop"]=true, ["FOV Warp"]=true, ["Flash Loop"]=true,
-    ["Give"]=true, ["Give Ammo"]=true, ["Give Nearest Vehicle"]=true, ["Gravitate Speed"]=true,
-    ["Gravitate Vehicle"]=true, ["Kick Vehicle"]=true, ["Launch Player"]=true, ["Max Upgrade"]=true,
-    ["Menu Staff"]=true, ["NPC Drive"]=true, ["No Clip"]=true, ["No Reload"]=true,
-    ["Orbit target"]=true, ["Ped Flood"]=true, ["Prop fountain"]=true, ["Prop rain"]=true,
-    ["Ramp"]=true, ["Remote Vehicle"]=true, ["Remove Tires"]=true, ["Repair Vehicle"]=true,
-    ["Road cone"]=true, ["Server Crash"]=true, ["Shoot Player"]=true, ["Staff Mode"]=true,
-    ["Steal Vehicle"]=true, ["TP all vehicle to me"]=true, ["TP to"]=true, ["Teleport Into"]=true,
-    ["Teleport To Me"]=true, ["Teleport into Closest Vehicle"]=true, ["Tube corner (XL)"]=true, ["WEAPON_MIDGARD"]=true,
-    ["Warp"]=true, ["Warp when u press W"]=true, ["weapon_SCOM"]=true, ["weapon_aa"]=true,
-    ["weapon_akorus"]=true, ["weapon_aks74u"]=true, ["weapon_blacksniper"]=true, ["weapon_caveira"]=true,
-    ["weapon_chainsaw"]=true, ["weapon_grau"]=true, ["weapon_hackingdevice"]=true, ["weapon_hk_ump"]=true,
-    ["weapon_hkhall"]=true, ["weapon_m4a1smr"]=true, ["weapon_mcx"]=true, ["weapon_midasgun"]=true,
-    ["weapon_scar17"]=true, ["wepaon_ASSAULTXMAS"]=true,
-}
-
-local function itemGroups(category)
-    local groups = {}
-    if type(category) == "table" then
-        if type(category.tabs) == "table" then
-            for _, tab in ipairs(category.tabs) do
-                if type(tab) == "table" then groups[#groups + 1] = tab.items end
-            end
-        end
-        if type(category.items) == "table" then groups[#groups + 1] = category.items end
-    end
-    return groups
-end
-
-function Menu.PurgeBlocked()
-    if type(Menu.Categories) ~= "table" then return 0 end
-    local removed = 0
-    for _, category in ipairs(Menu.Categories) do
-        for _, items in ipairs(itemGroups(category)) do
-            if type(items) == "table" then
-                for i = #items, 1, -1 do
-                    local item = items[i]
-                    if type(item) == "table" and item.name and Menu.BlockedNames[item.name] then
-                        item.onClick = nil
-                        table.remove(items, i)
-                        removed = removed + 1
-                    end
-                end
-            end
-        end
-    end
-    -- Drop separators left adjacent to another separator or a closing edge.
-    for _, category in ipairs(Menu.Categories) do
-        for _, items in ipairs(itemGroups(category)) do
-            if type(items) == "table" then
-                for i = #items, 1, -1 do
-                    local item = items[i]
-                    if type(item) == "table" and item.isSeparator then
-                        local prev = items[i - 1]
-                        local nxt = items[i + 1]
-                        local prevSep = (prev == nil) or (type(prev) == "table" and prev.isSeparator)
-                        local nextSep = (nxt == nil) or (type(nxt) == "table" and nxt.isSeparator)
-                        if prevSep or nextSep then table.remove(items, i) end
-                    end
-                end
-            end
-        end
-    end
-    return removed
-end
-
--- Server profile allowlist. Approve a vetted server once, then select it:
---   Menu.ApproveServer("myserver") ; Menu.SetServerProfile("myserver")
--- or set the `vanguard_server_profile` convar. No approval => RISK is inert.
-Menu.ServerProfiles = Menu.ServerProfiles or {}
-Menu.ServerProfile = Menu.ServerProfile or nil
-
-function Menu.SetServerProfile(name)
-    Menu.ServerProfile = name
-end
-
-function Menu.ApproveServer(name, allowed)
-    if type(name) ~= "string" or name == "" then return false end
-    Menu.ServerProfiles[name] = allowed ~= false
-    return true
-end
-
-local function currentServerProfile()
-    if Menu.ServerProfile then return Menu.ServerProfile end
-    if type(GetConvar) == "function" then
-        local ok, value = pcall(GetConvar, "vanguard_server_profile", "")
-        if ok and type(value) == "string" and value ~= "" then return value end
-    end
-    return nil
-end
-
-function Menu.RiskAllowed()
-    local profile = currentServerProfile()
-    if not profile then return false end
-    return Menu.ServerProfiles[profile] == true
-end
-
-function Menu.ApplyServerGate()
-    if type(Menu.Categories) ~= "table" then return 0 end
-    local allowed = Menu.RiskAllowed()
-    local wrapped = 0
-    for _, category in ipairs(Menu.Categories) do
-        for _, items in ipairs(itemGroups(category)) do
-            if type(items) == "table" then
-                for _, item in ipairs(items) do
-                    if type(item) == "table" and item.risk == true and not item.__riskGated then
-                        item.__riskGated = true
-                        local original = item.onClick
-                        item.onClick = function(...)
-                            if not Menu.RiskAllowed() then return end
-                            if type(original) == "function" then return original(...) end
-                        end
-                        if not allowed and item.type == "toggle" then item.value = false end
-                        wrapped = wrapped + 1
-                    end
-                end
-            end
-        end
-    end
-    return wrapped
-end
-
 function UI.boot()
-    O.log("loader build 2026-11-10-r79 (feature matrix purge: 74 REMOVE rows stripped statically and re-blocked at runtime by Menu.PurgeBlocked; RISK rows gated fail-closed by Menu.ApplyServerGate - no approved server profile means no RISK action; static menu 121 -> 57 rows)")
+    O.log("loader build %s (freecam engine: declared script camera, rc, vehicle actions)", MENU_REV)
     O.thread()
 
     -- Delete/Backspace fallback poll. 40 ms is faster than a frame at 30 FPS
@@ -40563,18 +41579,12 @@ function UI.boot()
     S.scan()
     build()
 
-    -- Strip retired rows the installers may have added, then gate RISK rows.
-    pcall(function() Menu.PurgeBlocked() end)
-    pcall(function() Menu.ApplyServerGate() end)
-
     -- Delayed second pass: a stale menu instance or a late AddCategory call
     -- cannot keep the old Vanguard category alive.
     pcall(function()
         Citizen.CreateThread(function()
             Citizen.Wait(1200)
             purgeLegacyCategories()
-            pcall(function() Menu.PurgeBlocked() end)
-            pcall(function() Menu.ApplyServerGate() end)
         end)
     end)
 
@@ -40633,3 +41643,4 @@ end)(O,S,E,D,F,V,M,SN,C,G,FL,A,ST,SB,VS,K,N,L,VC,CU,UC,FA,TP,FP,Menu)
 
 end)()
 -- <<< VANGUARD MODULE END
+
