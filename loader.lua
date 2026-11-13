@@ -1051,7 +1051,7 @@ end
 do
     local CARD_WIDTH = 344.0
     local LOADING_RATIO = 0.209
-    local CONFIRM_RATIO = 0.215
+    local CONFIRM_RATIO = 0.232
     local CARD_BOTTOM = 92.0
 
     local function screenSize()
@@ -1157,20 +1157,8 @@ do
         return math.floor(width + 0.5), height, scale
     end
 
-    local function drawConfirmLine(x, y, size, keyName, alpha)
-        local lead = "Enter to confirm"
-        local tail = "(Esc to cancel)"
-        local greyR, greyG, greyB = 0.62, 0.63, 0.67
-        local firstGap = size * 0.55
-        local secondGap = size * 0.80
-        local ar, ag, ab = accentColor()
-        local keyWidth = textWidth(keyName, size)
-
-        drawText(x, y, lead, size, greyR, greyG, greyB, alpha)
-        x = x + textWidth(lead, size) + firstGap
-        drawText(x, y, keyName, size, ar, ag, ab, alpha)
-        x = x + keyWidth + secondGap
-        drawText(x, y, tail, size, greyR, greyG, greyB, alpha)
+    local function drawHint(x, y, size, text, alpha)
+        drawText(x, y, text, size, 0.62, 0.63, 0.67, alpha)
     end
 
     function Menu.DrawLoadingBar(alpha)
@@ -1217,38 +1205,37 @@ do
         local x = math.floor((screenWidth - width) * 0.5 + 0.5)
         local y = math.floor(screenHeight - CARD_BOTTOM * scale - height + 0.5)
         local radius = math.floor(9 * scale + 0.5)
-        local titleSize = math.max(10, math.floor(18 * scale + 0.5))
-        local detailSize = math.max(9, math.floor(13 * scale + 0.5))
+        local keySize = math.max(12, math.floor(26 * scale + 0.5))
+        local promptSize = math.max(11, math.floor(24 * scale + 0.5))
+        local detailSize = math.max(9, math.floor(14 * scale + 0.5))
         local padding = math.floor(18 * scale + 0.5)
 
         local keyName
-        local title
+        local captured
         if Menu.SelectingBind == true then
             keyName = Menu.BindingKeyName
-            if not keyName and type(Menu.BindingItem) == "table" then
-                keyName = Menu.BindingItem.bindKeyName
-            end
-            title = "Confirm key: " .. (keyName or "...")
+            captured = Menu.__vgdBindCaptured == true
         else
             keyName = Menu.SelectedKeyName
             if not keyName and type(Menu.GetKeyName) == "function" then
                 keyName = Menu.GetKeyName(Menu.SelectedKey or 0x31)
             end
-            title = "Confirm menu key: " .. (keyName or "...")
+            captured = Menu.__vgdKeyCaptured == true
         end
 
         local contentX = x + padding
-        local titleY = y + padding
+        local mainY = y + padding
         local detailY = y + height - padding - detailSize
 
         drawPlate(x, y, width, height, radius, alpha)
-        drawText(contentX, titleY, title, titleSize, 1.0, 1.0, 1.0, alpha)
 
-        if keyName then
-            drawConfirmLine(contentX, detailY, detailSize, keyName, alpha)
+        if captured and keyName then
+            drawText(contentX, mainY, keyName, keySize, 1.0, 1.0, 1.0, alpha)
+            drawHint(contentX, detailY, detailSize,
+                "Enter to confirm   Esc to cancel", alpha)
         else
-            drawText(contentX, detailY, "Press a key   (Esc to cancel)",
-                detailSize, 0.62, 0.63, 0.67, alpha)
+            drawText(contentX, mainY, "Press a key", promptSize, 1.0, 1.0, 1.0, alpha)
+            drawHint(contentX, detailY, detailSize, "Esc to cancel", alpha)
         end
     end
 end
@@ -1273,6 +1260,17 @@ do
         local baseHandleInput = Menu.HandleInput
         Menu.__vgdEscCapture = true
 
+        local function countKeyStates()
+            local total = 0
+            local states = Menu.KeyStates
+            if type(states) == "table" then
+                for _, down in pairs(states) do
+                    if down == true then total = total + 1 end
+                end
+            end
+            return total
+        end
+
         Menu.HandleInput = function()
             local selectingKey = Menu.SelectingKey == true
             local selectingBind = Menu.SelectingBind == true
@@ -1286,8 +1284,18 @@ do
                         Menu.SelectedKeyName = Menu.GetKeyName(0x31)
                     end
                 end
+                Menu.__vgdKeyStart = Menu.SelectedKey
+                Menu.__vgdKeyCaptured = false
+                Menu.__vgdKeyStateCount = countKeyStates()
             end
             Menu.__vgdKeyCaptureWas = selectingKey
+
+            if selectingBind and not Menu.__vgdBindCaptureWas then
+                Menu.__vgdBindStartName = Menu.BindingKeyName
+                Menu.__vgdBindCaptured = false
+                Menu.__vgdBindStateCount = countKeyStates()
+            end
+            Menu.__vgdBindCaptureWas = selectingBind
 
             if (selectingKey or selectingBind)
                 and type(Menu.IsKeyJustPressed) == "function"
@@ -1305,7 +1313,24 @@ do
                 return
             end
 
-            return baseHandleInput()
+            local result = baseHandleInput()
+
+            if selectingKey and Menu.SelectingKey and not Menu.__vgdKeyCaptured then
+                local changed = Menu.__vgdKeyStart ~= nil
+                    and Menu.SelectedKey ~= Menu.__vgdKeyStart
+                if changed or countKeyStates() > (Menu.__vgdKeyStateCount or 0) then
+                    Menu.__vgdKeyCaptured = true
+                end
+            end
+
+            if selectingBind and Menu.SelectingBind and not Menu.__vgdBindCaptured then
+                local changed = Menu.BindingKeyName ~= Menu.__vgdBindStartName
+                if changed or countKeyStates() > (Menu.__vgdBindStateCount or 0) then
+                    Menu.__vgdBindCaptured = true
+                end
+            end
+
+            return result
         end
     end
 end
@@ -1723,13 +1748,12 @@ do
     }
 
     -- Selected-row glass shared by the library's DrawItem and the local
-    -- category painter. The line was always the right idea: a crisp white rim
-    -- that separates the row from the plate. The fill was the problem, a flat
-    -- near-black slot that vanished under the monochrome banner. It now starts
-    -- as cool graphite, lifts with a white wash from the top-left and stays
-    -- dark enough for white text. The accent is read at draw time, so the
-    -- White plate keeps its white line and the Cyan plate gets its sky line
-    -- without a restart.
+    -- category painter. The white rim is the line that was always right; the
+    -- fill now takes the banner's silver instead of a black slot. The short
+    -- white marker bar is back: it travels with the plate as the categories
+    -- change, so the old moving selection reads exactly as before. The accent
+    -- is read at draw time, so the White plate stays white and the Cyan plate
+    -- gets its sky line without a restart.
     local function themeAccent()
         local accent = type(Menu) == "table" and Menu.Colors and Menu.Colors.SelectedBg
         local r = type(accent) == "table" and tonumber(accent.r) or nil
@@ -1739,13 +1763,13 @@ do
     end
 
     function Menu.__vgdSelectionFill()
-        -- Graphite base with 8 % of the theme accent. White stays a neutral
-        -- cool grey; Cyan gets a faint sky cast. This is the fill that is no
-        -- longer black.
+        -- Silver taken from the banner's mist: a mid grey base with 10 % of
+        -- the theme accent. White stays neutral silver; Cyan gets a faint sky
+        -- cast. This is the fill that is no longer black.
         local ar, ag, ab = themeAccent()
-        return 0.075 + (ar - 0.075) * 0.08,
-            0.078 + (ag - 0.078) * 0.08,
-            0.085 + (ab - 0.085) * 0.08
+        return 0.16 + (ar - 0.16) * 0.10,
+            0.17 + (ag - 0.17) * 0.10,
+            0.19 + (ab - 0.19) * 0.10
     end
 
     function Menu.__vgdDrawSelectionPlate(px, py, pw, ph, pr)
@@ -1771,13 +1795,14 @@ do
             -- The line stays white.
             Susano.DrawRectFilled(px, py, pw, ph, ar, ag, ab, 0.86 * fade, pr)
 
-            -- The fill: graphite glass, then a white wash from the top-left
-            -- so the plate reads as lit material instead of a black slot.
+            -- The fill: silver glass taken from the banner's mist, then a
+            -- white wash from the top-left so the plate reads as lit material
+            -- instead of a black slot.
             Susano.DrawRectFilled(px + 1, py + 1, pw - 2, ph - 2,
                 fr, fg, fb, 1.0 * fade, math.max(1, pr - 1))
             Susano.DrawRectFilled(px + 1, py + 1, pw - 2,
                 math.max(1, math.floor((ph - 2) * 0.62)),
-                1.0, 1.0, 1.0, 0.090 * fade, math.max(1, pr - 1))
+                1.0, 1.0, 1.0, 0.110 * fade, math.max(1, pr - 1))
             Susano.DrawRectFilled(px + 1, py + 1,
                 math.max(1, math.floor((pw - 2) * 0.58)), ph - 2,
                 1.0, 1.0, 1.0, 0.030 * fade, math.max(1, pr - 1))
@@ -1788,6 +1813,18 @@ do
                 pw - pr, 1, 1.0, 1.0, 1.0, 0.075 * fade, 0)
             Susano.DrawRectFilled(px + pr, py + ph - 2,
                 pw - pr * 2, 1, 0.0, 0.0, 0.0, 0.22 * fade, 0)
+
+            -- The old moving marker: a short white bar pinned to the left of
+            -- the plate. It travels with the plate between categories.
+            local scale = tonumber(Menu.Scale) or 1.0
+            local markerW = math.max(2, math.floor(2.5 * scale + 0.5))
+            local markerH = math.max(6, math.floor((ph - 6) * 0.52 + 0.5))
+            local markerX = px + math.max(3, math.floor(2.5 * scale + 0.5))
+            local markerY = py + math.floor((ph - markerH) * 0.5)
+            Susano.DrawRectFilled(markerX - markerW, markerY, markerW * 3, markerH,
+                ar, ag, ab, 0.10 * glow, markerW)
+            Susano.DrawRectFilled(markerX, markerY, markerW, markerH,
+                ar, ag, ab, 0.95 * fade, math.max(1, markerW * 0.5))
         elseif type(Menu) == "table" and type(Menu.DrawRoundedRect) == "function" then
             Menu.DrawRoundedRect(px, py, pw, ph,
                 math.floor(ar * 255), math.floor(ag * 255), math.floor(ab * 255),
@@ -1797,7 +1834,16 @@ do
                 math.floor(255 * fade), math.max(1, pr - 1))
             Menu.DrawRoundedRect(px + 1, py + 1, pw - 2,
                 math.max(1, math.floor((ph - 2) * 0.62)), 255, 255, 255,
-                math.floor(23 * fade), math.max(1, pr - 1))
+                math.floor(28 * fade), math.max(1, pr - 1))
+
+            local scale = tonumber(Menu.Scale) or 1.0
+            local markerW = math.max(2, math.floor(2.5 * scale + 0.5))
+            local markerH = math.max(6, math.floor((ph - 6) * 0.52 + 0.5))
+            local markerX = px + math.max(3, math.floor(2.5 * scale + 0.5))
+            local markerY = py + math.floor((ph - markerH) * 0.5)
+            Menu.DrawRoundedRect(markerX, markerY, markerW, markerH,
+                math.floor(ar * 255), math.floor(ag * 255), math.floor(ab * 255),
+                math.floor(242 * fade), math.max(1, markerW * 0.5))
         end
     end
 
@@ -33881,12 +33927,31 @@ local function susanoApi()
     return api
 end
 
+-- VK -> GTA control, used when the executor's raw key state is absent or
+-- returns false. The same controls are disabled by the freecam, so
+-- IsDisabledControlPressed is the value that still reports physical input.
+local KEY_CONTROL = {
+    [VK_W] = 32, [VK_Z] = 32, [VK_S] = 33,
+    [VK_A] = 34, [VK_Q] = 34, [VK_D] = 35,
+    [VK_SPACE] = 44, [VK_CONTROL] = 38,
+    [VK_SHIFT] = 21, [VK_LBUTTON] = 24,
+}
+
+local function controlPressed(control)
+    local ok, down = pcall(IsControlPressed, 0, control)
+    if ok and (down == true or down == 1) then return true end
+    if type(IsDisabledControlPressed) ~= "function" then return false end
+    local okDisabled, disabled = pcall(IsDisabledControlPressed, 0, control)
+    return okDisabled and (disabled == true or disabled == 1)
+end
+
 local function keyDown(api, code)
-    if type(api) ~= "table" or type(api.GetAsyncKeyState) ~= "function" then
-        return false
+    if type(api) == "table" and type(api.GetAsyncKeyState) == "function" then
+        local ok, down = pcall(api.GetAsyncKeyState, code)
+        if ok and (down == true or down == 1) then return true end
     end
-    local ok, down = pcall(api.GetAsyncKeyState, code)
-    return ok and (down == true or down == 1)
+    local control = KEY_CONTROL[code]
+    return control ~= nil and controlPressed(control)
 end
 
 local function controlAxis(pad, control)
@@ -34906,7 +34971,10 @@ local function goLive(now)
     pcall(SetCamFarClip, FA.cam, CAM_FAR)
     setScriptCam()
     pcall(SetCamActive, FA.cam, true)
-    pcall(RenderScriptCams, true, false, 0, true, true)
+    -- The known-working executor uses the eased call; keep the exact shape.
+    -- The V4 check reads the handle whitelist, not _WS:LastCamEaseTime, for
+    -- renderingCam ~= -1, so the ease is safe.
+    pcall(RenderScriptCams, true, true, 1000, true, true)
 
     if not O.Ctx.inVehicle then holdBody(PlayerPedId(), now) end
     FA.nextFocus = 0
