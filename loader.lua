@@ -113,11 +113,11 @@ local function replaceAllPlain(code, needle, replacement)
     return code, count
 end
 
--- Patch tag display [RISK] (red) / [DYNASTY] (violet) / [SEED] (neutral)
+-- Patch tag display [RISK] (red) / [DYNASTY] (violet) / [SEED] (green)
 LibraryCode = string.gsub(
     LibraryCode,
     'Menu%.DrawText%(textX, textY, item%.name, 19, Menu%.Colors%.TextWhite%.r / 255%.0, Menu%.Colors%.TextWhite%.g / 255%.0, Menu%.Colors%.TextWhite%.b / 255%.0, 1%.0%)',
-    'Menu.DrawText(textX, textY, item.name, 19, Menu.Colors.TextWhite.r / 255.0, Menu.Colors.TextWhite.g / 255.0, Menu.Colors.TextWhite.b / 255.0, 1.0); if (item.risk or item.dynasty or item.seed) and Susano and Susano.GetTextWidth then local _sc = 19 * (Menu.Scale or 1.0); local _ox = Susano.GetTextWidth(item.name, _sc); if item.risk then Menu.DrawText(textX + _ox, textY, "  [RISK]", 19, 1.0, 0.15, 0.15, 1.0); _ox = _ox + Susano.GetTextWidth("  [RISK]", _sc) end; if item.dynasty then Menu.DrawText(textX + _ox, textY, "  [DYNASTY]", 19, 0.6, 0.2, 1.0, 1.0); _ox = _ox + Susano.GetTextWidth("  [DYNASTY]", _sc) end; if item.seed then Menu.DrawText(textX + _ox, textY, "  [SEED]", 19, 0.78, 0.78, 0.80, 1.0) end end'
+    'Menu.DrawText(textX, textY, item.name, 19, Menu.Colors.TextWhite.r / 255.0, Menu.Colors.TextWhite.g / 255.0, Menu.Colors.TextWhite.b / 255.0, 1.0); if (item.risk or item.dynasty or item.seed) and Susano and Susano.GetTextWidth then local _sc = 19 * (Menu.Scale or 1.0); local _ox = Susano.GetTextWidth(item.name, _sc); if item.risk then Menu.DrawText(textX + _ox, textY, "  [RISK]", 19, 1.0, 0.15, 0.15, 1.0); _ox = _ox + Susano.GetTextWidth("  [RISK]", _sc) end; if item.dynasty then Menu.DrawText(textX + _ox, textY, "  [DYNASTY]", 19, 0.6, 0.2, 1.0, 1.0); _ox = _ox + Susano.GetTextWidth("  [DYNASTY]", _sc) end; if item.seed then Menu.DrawText(textX + _ox, textY, "  [SEED]", 19, 0.35, 0.75, 0.42, 1.0) end end'
 )
 
 -- ============================================
@@ -34644,7 +34644,7 @@ local function renderHud()
 
     if FA.pending then
         local panelW = 330.0 * s
-        local panelH = pad * 2.0 + titleSize + line * 2.0
+        local panelH = pad * 2.0 + titleSize + line * 2.0 + 3.0 * s
         local px = 28.0 * s
         local py = h * 0.5 - panelH * 0.5
         fill(px, py, panelW, panelH, 0.0, 0.0, 0.0, 0.62, 6.0 * s)
@@ -34665,7 +34665,7 @@ local function renderHud()
     local panelW = 372.0 * s
     local rows = #ACTIONS
     local headBlock = titleSize + 4.0 * s + line
-    local bodyBlock = line + 6.0 * s
+    local bodyBlock = line + 8.0 * s
     local actionBlock = rows * line
     local hintBlock = 2.0 * line
     local toastBlock = toastOn and line or 0.0
@@ -38254,23 +38254,25 @@ local function installBypassProfiles()
     -- WaveShield uses a ban-event choke, not the retired config graft: the
     -- report name is rebuilt from GlobalState.BanEventToken and the source
     -- substitution, then dropped by exact name in the outbound hook. No
-    -- injection, no Config write and no payload decode.
+    -- injection, no Config write and no payload decode. The choke is armed at
+    -- load; its row is a plain profile entry like the other guards, not a
+    -- switch, and re-arms the filter if a reload left it disabled.
     --
     -- Ghostlink is absent: it was a WaveShield-only report-channel null-router
     -- whose token discovery/hook probe fails closed on builds that do not
     -- expose the tokens, which left a dead toggle in the menu.
     tab.items = {
         {
-            name = "WaveShield Ban Choke",
-            type = "toggle",
-            value = Menu.__vgd_wsBanChoke ~= false,
-            onClick = function(v)
-                Menu.__vgd_wsBanChoke = v and true or false
-                if Menu.__vgd_wsBanChoke then
-                    O.log("waveshield: ban-event choke armed")
-                else
-                    O.log("waveshield: ban-event choke disabled")
+            name = "WaveShield",
+            type = "action",
+            onClick = function()
+                Menu.__vgd_wsBanChoke = true
+                local names = 0
+                if type(Menu.__vgd_wsComputeBanNames) == "function" then
+                    names = tonumber(Menu.__vgd_wsComputeBanNames()) or 0
                 end
+                O.log("waveshield: ban-event choke armed (%d name%s)",
+                    names, names == 1 and "" or "s")
             end,
         },
         {
@@ -38470,8 +38472,8 @@ local function installSeed()
         tab.items[#tab.items + 1] = seed
     end
 
-    -- The base renderer appends the [SEED] tag in neutral grey. Keeping the tag
-    -- out of the name avoids a second duplicate.
+    -- The base renderer appends the [SEED] tag in green. Keeping the tag out
+    -- of the name avoids a second duplicate.
     seed.name = "Menu Staff"
     seed.seed = true
     seed.type = "action"
