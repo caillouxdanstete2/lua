@@ -223,10 +223,11 @@ end
 -- PATCH: reference paint
 -- ============================================
 -- The chrome stays anthracite and smoke-grey so the frame disappears into the
--- banner. Colour is carried by the selection material only: the row glass,
--- tab pill, toggle and loading card read their accent from the active theme
--- (see Menu.__vgdDrawSelectionPlate and the VANGUARD THEME PATCH). The banner
--- stays a slot; its image is chosen by the theme table, not by this patch.
+-- banner. The highlight is carried by the selection material only: a white
+-- line over frosted graphite on the list, with the same line on the tab pill,
+-- toggle and loading card (see Menu.__vgdDrawSelectionPlate and the VANGUARD
+-- THEME PATCH). The banner stays a slot; its image is chosen by the theme
+-- table, not by this patch.
 do
     -- Header frame: keep the same 1px frame geometry, lower the contrast.
     LibraryCode = replacePlain(
@@ -362,7 +363,7 @@ do
         if Menu.SelectorY == 0 then]]
     )
 
-    -- Selected item: accent-tinted glass with an accent rim. Geometry unchanged.
+    -- Selected item: frosted graphite glass with a white rim. Geometry unchanged.
     LibraryCode = replacePlain(
         LibraryCode,
         [[        local baseR = (Menu.Colors.SelectedBg and Menu.Colors.SelectedBg.r) and (Menu.Colors.SelectedBg.r / 255.0) or 1.0
@@ -425,7 +426,7 @@ do
             if isSelected then]]
     )
 
-    -- Selected main-menu category: the same accent glass and rim.
+    -- Selected main-menu category: the same graphite glass and white rim.
     LibraryCode = replacePlain(
         LibraryCode,
         [[                local baseR = Menu.Colors.SelectedBg.r / 255.0
@@ -1037,10 +1038,11 @@ end
 -- the middle, and its key capture as a bordered keybind box. Both now use a
 -- compact notification card in the menu's own art direction:
 --
---   * anthracite plate with the same 1 px rim as the menu body;
---   * a soft wash and a short bar of the active theme accent on the left;
---   * left-aligned title, right-aligned percentage, thin accent rail;
---   * no oversized ring, no black slab, no monochrome-only draw.
+--   * black glass plate, a fine white rim and a crisp white side line;
+--   * the side line meets the progress rail, forming a small bracket;
+--   * left-aligned title at a readable 18 px, right-aligned percentage;
+--   * a clean four-pixel white rail, no slider knob;
+--   * no oversized ring, no black slab, no coloured accent.
 --
 -- The card is roughly the width of the menu itself instead of the old 700 px
 -- plate, so it reads as a bottom toast, not a second window. Its width tracks
@@ -1048,8 +1050,8 @@ end
 -- screen-height ratio, keeping the same proportions on every resolution.
 do
     local CARD_WIDTH = 344.0
-    local LOADING_RATIO = 0.198
-    local CONFIRM_RATIO = 0.214
+    local LOADING_RATIO = 0.209
+    local CONFIRM_RATIO = 0.215
     local CARD_BOTTOM = 92.0
 
     local function screenSize()
@@ -1089,73 +1091,52 @@ do
         local r = type(accent) == "table" and tonumber(accent.r) or nil
         local g = type(accent) == "table" and tonumber(accent.g) or nil
         local b = type(accent) == "table" and tonumber(accent.b) or nil
-        return (r or 150) / 255.0, (g or 206) / 255.0, (b or 170) / 255.0
+        return (r or 245) / 255.0, (g or 246) / 255.0, (b or 250) / 255.0
     end
 
     local function drawPlate(x, y, width, height, radius, alpha)
         local ar, ag, ab = accentColor()
         if type(Susano) == "table" and type(Susano.DrawRectFilled) == "function" then
-            -- Accent hairline, menu body, top sheen, then a low accent wash
-            -- under the left bar so the card is not a black rectangle.
+            -- Fine white rim, black glass body, one-pixel sheen and a barely
+            -- visible wash behind the side line.
             Susano.DrawRectFilled(x - 1, y - 1, width + 2, height + 2,
-                ar, ag, ab, 0.34 * alpha, radius + 1)
+                ar, ag, ab, 0.28 * alpha, radius + 1)
             Susano.DrawRectFilled(x, y, width, height,
-                0.052, 0.052, 0.056, 0.985 * alpha, radius)
+                0.043, 0.044, 0.048, 0.985 * alpha, radius)
             Susano.DrawRectFilled(x + math.floor(radius * 0.4), y, width - radius,
-                1, 1.0, 1.0, 1.0, 0.045 * alpha, 0)
-            Susano.DrawRectFilled(x + 6, y + 6, math.floor(width * 0.32),
-                height - 12, ar, ag, ab, 0.05 * alpha, radius)
+                1, 1.0, 1.0, 1.0, 0.065 * alpha, 0)
+            Susano.DrawRectFilled(x + 6, y + 6, math.floor(width * 0.30),
+                height - 12, ar, ag, ab, 0.025 * alpha, radius)
         elseif type(Menu) == "table" and type(Menu.DrawRoundedRect) == "function" then
             Menu.DrawRoundedRect(x, y, width, height,
                 math.floor(ar * 255), math.floor(ag * 255), math.floor(ab * 255),
-                math.floor(90 * alpha), radius)
-            Menu.DrawRoundedRect(x + 1, y + 1, width - 2, height - 2, 13, 13, 14,
+                math.floor(71 * alpha), radius)
+            Menu.DrawRoundedRect(x + 1, y + 1, width - 2, height - 2, 11, 11, 12,
                 math.floor(251 * alpha), radius)
         end
     end
 
-    local function drawAccent(x, centerY, height, barWidth, alpha)
+    local function drawSideLine(x, top, height, width, alpha)
         if type(Susano) ~= "table" or type(Susano.DrawRectFilled) ~= "function" then return end
         local ar, ag, ab = accentColor()
-        local y = centerY - height * 0.5
-        local glow = math.floor(barWidth * 0.5 + 2.5)
-        Susano.DrawRectFilled(x - glow, y - glow, barWidth + glow * 2, height + glow * 2,
-            ar, ag, ab, 0.10 * alpha, (barWidth + glow * 2) * 0.5)
-        Susano.DrawRectFilled(x, y, barWidth, height,
-            ar, ag, ab, 0.95 * alpha, barWidth * 0.5)
+        local glow = math.max(2, math.floor(width))
+        Susano.DrawRectFilled(x - glow, top - glow, width + glow * 2, height + glow * 2,
+            ar, ag, ab, 0.07 * alpha, (width + glow * 2) * 0.5)
+        Susano.DrawRectFilled(x, top, width, height,
+            ar, ag, ab, 0.95 * alpha, width * 0.5)
     end
 
     local function drawRail(x, y, width, height, progress, alpha)
         if type(Susano) ~= "table" or type(Susano.DrawRectFilled) ~= "function" then return end
         local ar, ag, ab = accentColor()
 
-        Susano.DrawRectFilled(x, y, width, height, 1.0, 1.0, 1.0, 0.10 * alpha, height * 0.5)
+        Susano.DrawRectFilled(x, y, width, height, 1.0, 1.0, 1.0, 0.12 * alpha, height * 0.5)
 
         local fillWidth = width * progress
         if fillWidth > 0 then
             if fillWidth < height then fillWidth = height end
-            local fillRadius = math.min(height, fillWidth) * 0.5
             Susano.DrawRectFilled(x, y, fillWidth, height,
-                ar, ag, ab, 0.95 * alpha, fillRadius)
-        end
-
-        local knobRadius = height * 1.30
-        local knobX = x + width * progress
-        if knobX < x + knobRadius then knobX = x + knobRadius end
-        if knobX > x + width - knobRadius then knobX = x + width - knobRadius end
-        local centerY = y + height * 0.5
-
-        if type(Susano.DrawCircle) == "function" then
-            Susano.DrawCircle(knobX, centerY, knobRadius * 1.70, true,
-                ar, ag, ab, 0.14 * alpha, 0, 24)
-            Susano.DrawCircle(knobX, centerY, knobRadius, true,
-                1.0, 1.0, 1.0, 0.98 * alpha, 0, 24)
-        else
-            local glow = knobRadius * 1.70
-            Susano.DrawRectFilled(knobX - glow, centerY - glow, glow * 2, glow * 2,
-                ar, ag, ab, 0.14 * alpha, glow)
-            Susano.DrawRectFilled(knobX - knobRadius, centerY - knobRadius,
-                knobRadius * 2, knobRadius * 2, 1.0, 1.0, 1.0, 0.98 * alpha, knobRadius)
+                ar, ag, ab, 0.94 * alpha, height * 0.5)
         end
     end
 
@@ -1213,25 +1194,28 @@ do
 
         local x = math.floor((screenWidth - width) * 0.5 + 0.5)
         local y = math.floor(screenHeight - CARD_BOTTOM * scale - height + 0.5)
-        local radius = math.floor(7 * scale + 0.5)
-        local titleSize = math.floor(14 * scale + 0.5)
-        local detailSize = math.floor(12 * scale + 0.5)
-        local barWidth = math.max(2, math.floor(2.5 * scale + 0.5))
+        local radius = math.floor(8 * scale + 0.5)
+        local titleSize = math.max(10, math.floor(18 * scale + 0.5))
+        local detailSize = math.max(9, math.floor(15 * scale + 0.5))
+        local lineWidth = math.max(2, math.floor(2.5 * scale + 0.5))
         local padding = math.floor(16 * scale + 0.5)
-        local accentHeight = math.max(8, height - padding * 2 - math.floor(6 * scale))
-        local railHeight = math.max(2, math.floor(3 * scale + 0.5))
+        local railHeight = math.max(3, math.floor(4 * scale + 0.5))
         local ar, ag, ab = accentColor()
 
         local progress = (tonumber(Menu.LoadingProgress) or 0.0) / 100.0
         if progress < 0.0 then progress = 0.0 elseif progress > 1.0 then progress = 1.0 end
         local percent = string.format("%d%%", math.floor(progress * 100.0 + 0.5))
 
-        drawPlate(x, y, width, height, radius, alpha)
-        drawAccent(x + padding, y + height * 0.5, accentHeight, barWidth, alpha)
-
-        local contentX = x + padding + barWidth + math.floor(9 * scale + 0.5)
+        local railY = y + height - padding - railHeight
+        local lineTop = y + padding
+        local lineHeight = railY + railHeight - lineTop
+        local contentX = x + padding + lineWidth + math.floor(13 * scale + 0.5)
         local contentRight = x + width - padding
-        local titleY = y + math.floor(height * 0.19 + 0.5)
+        local titleY = lineTop
+
+        drawPlate(x, y, width, height, radius, alpha)
+        drawRail(x + padding, railY, width - padding * 2, railHeight, progress, alpha)
+        drawSideLine(x + padding, lineTop, lineHeight, lineWidth, alpha)
 
         drawText(contentX, titleY, "Loading assets", titleSize,
             0.96, 0.96, 0.98, alpha)
@@ -1239,9 +1223,6 @@ do
         drawText(contentRight - percentWidth,
             titleY + math.floor((titleSize - detailSize) * 0.5 + 0.5),
             percent, detailSize, ar, ag, ab, 0.98 * alpha)
-
-        drawRail(x + padding, y + height - padding - railHeight,
-            width - padding * 2, railHeight, progress, alpha)
     end
 
     function Menu.DrawKeySelector(alpha)
@@ -1252,12 +1233,11 @@ do
 
         local x = math.floor((screenWidth - width) * 0.5 + 0.5)
         local y = math.floor(screenHeight - CARD_BOTTOM * scale - height + 0.5)
-        local radius = math.floor(7 * scale + 0.5)
-        local titleSize = math.floor(14 * scale + 0.5)
-        local detailSize = math.floor(12 * scale + 0.5)
-        local barWidth = math.max(2, math.floor(2.5 * scale + 0.5))
+        local radius = math.floor(8 * scale + 0.5)
+        local titleSize = math.max(10, math.floor(18 * scale + 0.5))
+        local detailSize = math.max(9, math.floor(14 * scale + 0.5))
+        local lineWidth = math.max(2, math.floor(2.5 * scale + 0.5))
         local padding = math.floor(16 * scale + 0.5)
-        local accentHeight = math.max(8, height - padding * 2 - math.floor(6 * scale))
         local ar, ag, ab = accentColor()
 
         local keyName
@@ -1276,26 +1256,28 @@ do
             title = "Confirm menu key: " .. (keyName or "...")
         end
 
-        drawPlate(x, y, width, height, radius, alpha)
-        drawAccent(x + padding, y + height * 0.5, accentHeight, barWidth, alpha)
-
-        local contentX = x + padding + barWidth + math.floor(9 * scale + 0.5)
+        local underlineY = y + height - padding
+        local lineTop = y + padding
+        local lineHeight = underlineY - lineTop
+        local contentX = x + padding + lineWidth + math.floor(13 * scale + 0.5)
         local contentRight = x + width - padding
-        local titleY = y + math.floor(height * 0.17 + 0.5)
+        local titleY = lineTop
+
+        drawPlate(x, y, width, height, radius, alpha)
+        if type(Susano) == "table" and type(Susano.DrawRectFilled) == "function" then
+            Susano.DrawRectFilled(x + padding, underlineY,
+                contentRight - (x + padding), 1, ar, ag, ab, 0.20 * alpha, 0)
+        end
+        drawSideLine(x + padding, lineTop, lineHeight, lineWidth, alpha)
 
         drawText(contentX, titleY, title, titleSize, 0.96, 0.96, 0.98, alpha)
 
-        local detailY = y + math.floor(height * 0.55 + 0.5)
+        local detailY = underlineY - detailSize - math.max(1, math.floor(3 * scale + 0.5))
         if keyName then
             drawConfirmLine(contentX, detailY, detailSize, keyName, alpha)
         else
             drawText(contentX, detailY, "Press a key   (Esc to cancel)",
                 detailSize, 0.62, 0.63, 0.67, alpha)
-        end
-
-        if type(Susano) == "table" and type(Susano.DrawRectFilled) == "function" then
-            Susano.DrawRectFilled(contentX, y + height - math.floor(13 * scale),
-                contentRight - contentX, 1, ar, ag, ab, 0.20 * alpha, 0)
         end
     end
 end
@@ -1638,15 +1620,15 @@ end
 -- match this build. White is the default and Cyan restores the reference
 -- accent and its original banner. An unknown name falls back to White.
 --
--- Each theme carries the accent used by every selection surface: list glass,
--- tab pill, scrollbar thumb, toggle track, slider fill and the loading card.
--- White used to be pure 255/255/255, which is why the selected row read as a
--- black slot under a bright banner. It now carries the muted vine green of
--- the forest plate. Cyan carries the sky tone of its own banner.
+-- Each theme carries the accent used by every selection surface: the list
+-- rim, tab pill, scrollbar thumb, toggle track, slider fill and the loading
+-- card. White is the monochrome plate: a soft-white line over frosted
+-- graphite, so the selected row no longer reads as a black slot. Cyan carries
+-- the sky tone of its own banner.
 do
     local themes = {
         White = {
-            r = 150, g = 206, b = 170,
+            r = 245, g = 246, b = 250,
             image = "https://i.imgur.com/wbYgWhZ.png",
             headerHeight = 130,
         },
@@ -1770,26 +1752,29 @@ do
     }
 
     -- Selected-row glass shared by the library's DrawItem and the local
-    -- category painter. The old plate was flat anthracite with a grey hairline:
-    -- on a bright banner it read as a black hole, and on the monochrome banner
-    -- it had no colour tie at all. The new plate keeps the exact geometry and
-    -- blends 36 % of the theme accent into the dark body, wraps it in a real
-    -- accent rim, adds a soft bloom and a short marker bar on the left. The
-    -- accent is read at draw time, so switching the theme repaints the row on
-    -- the next frame without a restart.
+    -- category painter. The line was always the right idea: a crisp white rim
+    -- that separates the row from the plate. The fill was the problem, a flat
+    -- near-black slot that vanished under the monochrome banner. It now starts
+    -- as cool graphite, lifts with a white wash from the top-left and stays
+    -- dark enough for white text. The accent is read at draw time, so the
+    -- White plate keeps its white line and the Cyan plate gets its sky line
+    -- without a restart.
     local function themeAccent()
         local accent = type(Menu) == "table" and Menu.Colors and Menu.Colors.SelectedBg
         local r = type(accent) == "table" and tonumber(accent.r) or nil
         local g = type(accent) == "table" and tonumber(accent.g) or nil
         local b = type(accent) == "table" and tonumber(accent.b) or nil
-        return (r or 150) / 255.0, (g or 206) / 255.0, (b or 170) / 255.0
+        return (r or 245) / 255.0, (g or 246) / 255.0, (b or 250) / 255.0
     end
 
     function Menu.__vgdSelectionFill()
+        -- Graphite base with 8 % of the theme accent. White stays a neutral
+        -- cool grey; Cyan gets a faint sky cast. This is the fill that is no
+        -- longer black.
         local ar, ag, ab = themeAccent()
-        return 0.095 + (ar - 0.095) * 0.36,
-            0.095 + (ag - 0.095) * 0.36,
-            0.105 + (ab - 0.105) * 0.36
+        return 0.075 + (ar - 0.075) * 0.08,
+            0.078 + (ag - 0.078) * 0.08,
+            0.085 + (ab - 0.085) * 0.08
     end
 
     function Menu.__vgdDrawSelectionPlate(px, py, pw, ph, pr)
@@ -1806,33 +1791,42 @@ do
         local glow = (tonumber(Menu.Glow) or 1.0) * fade
 
         if type(Susano) == "table" and type(Susano.DrawRectFilled) == "function" then
+            -- Halo: the line breathes a little outside the row.
             Susano.DrawRectFilled(px - 8, py - 5, pw + 16, ph + 10,
-                ar, ag, ab, 0.045 * glow, pr + 7)
+                ar, ag, ab, 0.030 * glow, pr + 7)
             Susano.DrawRectFilled(px - 4, py - 2, pw + 8, ph + 4,
-                ar, ag, ab, 0.055 * glow, pr + 3)
-            Susano.DrawRectFilled(px, py, pw, ph, ar, ag, ab, 0.62 * fade, pr)
+                ar, ag, ab, 0.040 * glow, pr + 3)
+
+            -- The line stays white.
+            Susano.DrawRectFilled(px, py, pw, ph, ar, ag, ab, 0.86 * fade, pr)
+
+            -- The fill: graphite glass, then a white wash from the top-left
+            -- so the plate reads as lit material instead of a black slot.
             Susano.DrawRectFilled(px + 1, py + 1, pw - 2, ph - 2,
                 fr, fg, fb, 1.0 * fade, math.max(1, pr - 1))
             Susano.DrawRectFilled(px + 1, py + 1, pw - 2,
-                math.max(1, math.floor(ph * 0.5)), 1.0, 1.0, 1.0, 0.04 * fade,
-                math.max(1, pr - 1))
+                math.max(1, math.floor((ph - 2) * 0.62)),
+                1.0, 1.0, 1.0, 0.090 * fade, math.max(1, pr - 1))
+            Susano.DrawRectFilled(px + 1, py + 1,
+                math.max(1, math.floor((pw - 2) * 0.58)), ph - 2,
+                1.0, 1.0, 1.0, 0.030 * fade, math.max(1, pr - 1))
 
-            local scale = tonumber(Menu.Scale) or 1.0
-            local markerW = math.max(2, math.floor(2 * scale + 0.5))
-            local markerH = math.max(6, math.floor(ph * 0.52 + 0.5))
-            local markerX = px + math.max(3, math.floor(2.5 * scale + 0.5))
-            local markerY = py + math.floor((ph - markerH) * 0.5)
-            Susano.DrawRectFilled(markerX - markerW, markerY,
-                markerW * 3, markerH, ar, ag, ab, 0.10 * glow, markerW)
-            Susano.DrawRectFilled(markerX, markerY, markerW, markerH,
-                ar, ag, ab, 0.95 * fade, markerW * 0.5)
+            -- Crisp top sheen and a one-pixel inner shadow at the bottom for
+            -- depth. Both stay inside the rim.
+            Susano.DrawRectFilled(px + math.floor(pr * 0.5), py,
+                pw - pr, 1, 1.0, 1.0, 1.0, 0.075 * fade, 0)
+            Susano.DrawRectFilled(px + pr, py + ph - 2,
+                pw - pr * 2, 1, 0.0, 0.0, 0.0, 0.22 * fade, 0)
         elseif type(Menu) == "table" and type(Menu.DrawRoundedRect) == "function" then
             Menu.DrawRoundedRect(px, py, pw, ph,
                 math.floor(ar * 255), math.floor(ag * 255), math.floor(ab * 255),
-                math.floor(200 * fade), pr)
+                math.floor(219 * fade), pr)
             Menu.DrawRoundedRect(px + 1, py + 1, pw - 2, ph - 2,
                 math.floor(fr * 255), math.floor(fg * 255), math.floor(fb * 255),
                 math.floor(255 * fade), math.max(1, pr - 1))
+            Menu.DrawRoundedRect(px + 1, py + 1, pw - 2,
+                math.max(1, math.floor((ph - 2) * 0.62)), 255, 255, 255,
+                math.floor(23 * fade), math.max(1, pr - 1))
         end
     end
 
@@ -3428,16 +3422,19 @@ function Menu.DrawTabs(category, x, startY, width, tabHeight)
     local tabText = ui.tabText or { 0.035, 0.035, 0.040, 1.0 }
 
     -- The scrollbar thumb is painted with SelectedBg (library DrawScrollbar).
-    -- Reuse that exact colour for the selected tab plate and its rim so the
-    -- moving thumb and the active tab read as the same accent, including when
-    -- the theme replaces SelectedBg.
+    -- Reuse that exact colour for the selected tab plate; its rim is a deeper
+    -- shade of the same accent, so the White pill keeps a defined edge and
+    -- the Cyan pill gets a deeper sky edge instead of a flat block.
     local selectedBg = type(Menu.Colors) == "table" and Menu.Colors.SelectedBg or nil
     if type(selectedBg) == "table"
         and type(selectedBg.r) == "number"
         and type(selectedBg.g) == "number"
         and type(selectedBg.b) == "number" then
+        local edgeR = selectedBg.r * 0.62 / 255
+        local edgeG = selectedBg.g * 0.62 / 255
+        local edgeB = selectedBg.b * 0.62 / 255
         tabPill = { selectedBg.r / 255, selectedBg.g / 255, selectedBg.b / 255, 1.0 }
-        pillEdge = { selectedBg.r / 255, selectedBg.g / 255, selectedBg.b / 255, 1.0 }
+        pillEdge = { edgeR, edgeG, edgeB, 1.0 }
     end
 
     fill(x, startY, stripW, tabHeight, barBorder[1], barBorder[2], barBorder[3], barBorder[4], radius)
@@ -3523,8 +3520,8 @@ end
 -- UI: uniform category list
 -- ============================================
 -- The main list is one continuous plate. Unselected rows have no individual
--- fill; the selected category keeps the accent-tinted glass rectangle with an
--- accent rim, so selection reads as a row rather than a floating pill.
+-- fill; the selected category keeps the frosted graphite glass rectangle with
+-- a white rim, so selection reads as a row rather than a floating pill.
 local originalDrawCategories = Menu.DrawCategories
 if type(originalDrawCategories) == "function" then
     local categoryWarned = false
@@ -33848,6 +33845,9 @@ FA.hoverVehicle  = 0
 FA.action        = 1
 FA.toastText     = nil
 FA.toastUntil    = 0
+FA.noticeText    = nil
+FA.noticeAt      = 0
+FA.noticeUntil   = 0
 FA.keyF6         = false
 FA.keyX          = false
 FA.keyMouse      = false
@@ -33898,6 +33898,14 @@ end
 local function toast(text, ms)
     FA.toastText = text
     FA.toastUntil = O.now() + (ms or 1600)
+end
+
+-- State card, separate from the in-HUD action toast. It carries only the
+-- result, not the technical reason (which stays in the console log).
+local function notice(text, ms)
+    FA.noticeText = text
+    FA.noticeAt = O.now()
+    FA.noticeUntil = FA.noticeAt + (ms or 3000)
 end
 
 local function susanoApi()
@@ -34186,6 +34194,17 @@ end
 -- ---------------------------------------------------------------------------
 -- CAMERA
 -- ---------------------------------------------------------------------------
+-- The existence getter is not on every executor's native table, and some
+-- wrappers return 0/1 instead of a boolean. Only an explicit false/0 from a
+-- callable getter is a real failure; a missing or failing getter must not
+-- discard a camera the create call just returned.
+local function camExists(cam)
+    if type(DoesCamExist) ~= "function" then return true end
+    local ok, exists = pcall(DoesCamExist, cam)
+    if not ok then return true end
+    return not (exists == false or exists == 0)
+end
+
 local function createCamera()
     if type(GetGameplayCamCoord) ~= "function" or type(GetGameplayCamRot) ~= "function" then
         return 0
@@ -34203,26 +34222,31 @@ local function createCamera()
 
     local cam = 0
 
-    -- CreateCamWithParams is the single call in the corpus, but not every
-    -- executor exposes it. CreateCam + the three setters is the same camera
-    -- and is already used by the shipped cover cam, so it is the fallback.
-    if type(CreateCamWithParams) == "function" then
-        local okCam, created = pcall(CreateCamWithParams, CAM_NAME,
-            pos.x, pos.y, pos.z,
-            rot.x, 0.0, rot.z,
-            CAM_FOV, false, 2)
-        if okCam and type(created) == "number" and created ~= 0 then
-            cam = created
-        end
-    end
-
-    if cam == 0 and type(CreateCam) == "function" then
+    -- CreateCam + the three setters is the exact camera sequence the shipped
+    -- cover cam already uses in this module, so it is the primary path. The
+    -- corpus call stays as the fallback when CreateCam is not exposed. A
+    -- fallback handle the camera manager rejects is dropped, not trusted.
+    if type(CreateCam) == "function" then
         local okCam, created = pcall(CreateCam, CAM_NAME, false)
         if okCam and type(created) == "number" and created ~= 0 then
             cam = created
             pcall(SetCamCoord, cam, pos.x, pos.y, pos.z)
             pcall(SetCamRot, cam, rot.x, 0.0, rot.z, 2)
             if type(SetCamFov) == "function" then pcall(SetCamFov, cam, CAM_FOV) end
+        end
+    end
+
+    if cam == 0 and type(CreateCamWithParams) == "function" then
+        local okCam, created = pcall(CreateCamWithParams, CAM_NAME,
+            pos.x, pos.y, pos.z,
+            rot.x, 0.0, rot.z,
+            CAM_FOV, false, 2)
+        if okCam and type(created) == "number" and created ~= 0 then
+            cam = created
+            if not camExists(cam) then
+                pcall(DestroyCam, cam, false)
+                cam = 0
+            end
         end
     end
 
@@ -34855,26 +34879,70 @@ local function renderHud()
     end
 end
 
--- A refusal or a failed declaration must be visible: the row flips back to
--- off, and without this notice the operator sees a dead toggle. It draws
--- outside the camera session, so no world state is touched.
+local function measure(str, size)
+    if type(Susano) == "table" and type(Susano.GetTextWidth) == "function" then
+        local ok, value = pcall(Susano.GetTextWidth, tostring(str), size)
+        if ok and type(value) == "number" and value > 0 then return value end
+    end
+    return #tostring(str) * size * 0.52
+end
+
+-- State card: a single rounded plate, a white V mark and a title-case line,
+-- matching the menu's notification art. The technical reason is not drawn;
+-- it stays in the console log. The card fades in and out instead of blinking.
 local function renderNotice()
-    if not FA.toastText then return end
-    if O.now() >= FA.toastUntil then return end
+    if not FA.noticeText then return end
+    local now = O.now()
+    if now >= FA.noticeUntil then return end
+
+    local age = now - FA.noticeAt
+    local remaining = FA.noticeUntil - now
+    local alpha = 1.0
+    if age < 120 then alpha = age / 120 end
+    if remaining < 250 then alpha = math.min(alpha, remaining / 250) end
+    if alpha <= 0.01 then return end
 
     local w, h = screenSize()
     local s = h / 1080.0
-    local size = 13.0 * s
-    local pad = 10.0 * s
-    local width = 420.0 * s
-    local height = size + pad * 2.0
-    local x = w * 0.5 - width * 0.5
-    local y = h * 0.11
-    local ar, ag, ab = themeAccent()
+    local size = 16.0 * s
+    local logoW = 20.0 * s
+    local logoH = 24.0 * s
+    local gap = 12.0 * s
+    local padX = 20.0 * s
+    local cardH = 56.0 * s
+    local cardW = padX * 2.0 + logoW + gap + measure(FA.noticeText, size)
+    if cardW < 250.0 * s then cardW = 250.0 * s end
 
-    fill(x, y, width, height, 0.0, 0.0, 0.0, 0.74, 6.0 * s)
-    fill(x, y, 3.0 * s, height, ar, ag, ab, 0.9, 0.0)
-    text(x + pad, y + pad, FA.toastText, size, 1.0, 1.0, 1.0, 1.0)
+    local x = w * 0.5 - cardW * 0.5
+    local y = h * 0.085
+    local radius = 9.0 * s
+
+    fill(x - 3.0 * s, y + 2.0 * s, cardW + 6.0 * s, cardH + 4.0 * s,
+        0.0, 0.0, 0.0, 0.34 * alpha, radius + 3.0 * s)
+    fill(x, y, cardW, cardH, 0.015, 0.015, 0.018, 0.94 * alpha, radius)
+    fill(x + radius * 0.4, y, cardW - radius * 0.8, 1.0 * s,
+        1.0, 1.0, 1.0, 0.05 * alpha, 0.0)
+
+    if type(Susano) == "table" and type(Susano.DrawRect) == "function" then
+        pcall(Susano.DrawRect, x, y, cardW, cardH,
+            1.0, 1.0, 1.0, 0.10 * alpha, 1.0 * s, radius)
+    end
+
+    local lx = x + padX
+    local ly = y + (cardH - logoH) * 0.5
+    if type(Susano) == "table" and type(Susano.DrawLine) == "function" then
+        local bx = lx + logoW * 0.42
+        local by = ly + logoH
+        pcall(Susano.DrawLine, lx, ly + logoH * 0.10, bx, by,
+            1.0, 1.0, 1.0, 0.95 * alpha, 3.6 * s)
+        pcall(Susano.DrawLine, bx, by, lx + logoW, ly,
+            1.0, 1.0, 1.0, 0.95 * alpha, 3.6 * s)
+    else
+        text(lx, ly + 2.0 * s, "V", size * 1.25, 1.0, 1.0, 1.0, 0.95 * alpha)
+    end
+
+    text(lx + logoW + gap, y + (cardH - size) * 0.5 - 1.0 * s,
+        FA.noticeText, size, 1.0, 1.0, 1.0, 0.97 * alpha)
 end
 
 -- ---------------------------------------------------------------------------
@@ -34882,8 +34950,7 @@ end
 -- ---------------------------------------------------------------------------
 local function goLive(now)
     if FA.cam == 0 then return false end
-    local okCam, exists = pcall(DoesCamExist, FA.cam)
-    if not okCam or exists ~= true then
+    if not camExists(FA.cam) then
         FA.stop("camera lost before activation")
         return false
     end
@@ -34906,6 +34973,7 @@ local function goLive(now)
     disableControls(FREECAM_CONTROLS)
 
     emit("live declared=%s range=%d", tostring(FA.declared), math.floor(FA.range))
+    notice("Freecam Enabled", 2500)
     return true
 end
 
@@ -34919,7 +34987,7 @@ function FA.arm()
 
     if policy.electron and not O.Ctx.inVehicle then
         emit("refused: this guard only allows a camera in a vehicle")
-        toast("Freecam: enter a vehicle first", 4000)
+        notice("Vehicle Required", 3000)
         return false
     end
 
@@ -34937,20 +35005,20 @@ function FA.arm()
         host = injectionHost(policy.waveNames)
         if not host then
             emit("refused: no injectable host for the camera declaration")
-            toast("Freecam: no injectable resource", 4000)
+            notice("Freecam Unavailable", 3000)
             return false
         end
     end
 
     if type(CreateCamWithParams) ~= "function" and type(CreateCam) ~= "function" then
         emit("refused: camera API missing")
-        toast("Freecam: camera API unavailable", 4000)
+        notice("Freecam Unavailable", 3000)
         return false
     end
 
     if not B.spend("freecam") then
         emit("budget refused")
-        toast("Freecam: retry in a moment", 4000)
+        notice("Try Again Shortly", 3000)
         return false
     end
     FA.spent = true
@@ -34961,7 +35029,7 @@ function FA.arm()
         FA.spent = false
         B.refund("freecam")
         emit("camera creation failed")
-        toast("Freecam: camera creation failed", 4000)
+        notice("Freecam Unavailable", 3000)
         return false
     end
 
@@ -34990,7 +35058,7 @@ function FA.arm()
     if host then
         if not declareCamera(cam, host, policy.waveNames) then
             FA.stop("declaration injection failed")
-            toast("Freecam: declaration failed", 4000)
+            notice("Freecam Unavailable", 3000)
             return false
         end
         FA.pending = true
@@ -35001,7 +35069,7 @@ function FA.arm()
     end
 
     if not goLive(O.now()) then
-        toast("Freecam: camera could not start", 4000)
+        notice("Freecam Unavailable", 3000)
         return false
     end
     notify(true)
@@ -35020,6 +35088,10 @@ function FA.stop(reason)
     setFreecamIntent(false)
 
     local wasActive = FA.active or FA.pending or FA.cam ~= 0 or FA.rcActive
+
+    FA.noticeText = nil
+    FA.noticeAt = 0
+    FA.noticeUntil = 0
 
     FA.rcActive = false
     FA.rcPending = false
@@ -35068,7 +35140,12 @@ function FA.stop(reason)
     FA.toastUntil = 0
     FA.lastControlReq = 0
 
-    if wasActive then notify(false) end
+    if wasActive then
+        notify(false)
+        if reason ~= "rearm" and reason ~= "panic" then
+            notice("Freecam Disabled", 2000)
+        end
+    end
     if reason then emit("stopped: %s", tostring(reason)) end
 end
 
@@ -35155,12 +35232,12 @@ local function tick(now, dt)
         disableControls(FREECAM_CONTROLS)
         if now >= FA.pendingUntil then
             FA.stop("camera declaration timeout")
-            toast("Freecam: declaration timed out", 4000)
+            notice("Freecam Unavailable", 3000)
             return
         end
         if FA.declared then
             if not goLive(now) then
-                toast("Freecam: camera could not start", 4000)
+                notice("Freecam Unavailable", 3000)
                 return
             end
         else
@@ -35239,11 +35316,8 @@ if type(Menu) == "table" and not Menu.__vgd_freecamRender then
     local previous = Menu.OnRender
     Menu.OnRender = function()
         if type(previous) == "function" then pcall(previous) end
-        if FA.active then
-            pcall(renderHud)
-        else
-            pcall(renderNotice)
-        end
+        if FA.active then pcall(renderHud) end
+        pcall(renderNotice)
     end
 end
 
