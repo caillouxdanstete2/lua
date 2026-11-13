@@ -1038,10 +1038,10 @@ end
 -- the middle, and its key capture as a bordered keybind box. Both now use a
 -- compact notification card in the menu's own art direction:
 --
---   * black glass plate, a fine white rim and a crisp white side line;
---   * the side line meets the progress rail, forming a small bracket;
+--   * black glass plate with a fine white rim, no side line;
 --   * left-aligned title at a readable 18 px, right-aligned percentage;
 --   * a clean four-pixel white rail, no slider knob;
+--   * key capture uses the same plate as a two-line notification, no logo;
 --   * no oversized ring, no black slab, no coloured accent.
 --
 -- The card is roughly the width of the menu itself instead of the old 700 px
@@ -1097,16 +1097,13 @@ do
     local function drawPlate(x, y, width, height, radius, alpha)
         local ar, ag, ab = accentColor()
         if type(Susano) == "table" and type(Susano.DrawRectFilled) == "function" then
-            -- Fine white rim, black glass body, one-pixel sheen and a barely
-            -- visible wash behind the side line.
+            -- Fine white rim, black glass body and a one-pixel sheen.
             Susano.DrawRectFilled(x - 1, y - 1, width + 2, height + 2,
                 ar, ag, ab, 0.28 * alpha, radius + 1)
             Susano.DrawRectFilled(x, y, width, height,
                 0.043, 0.044, 0.048, 0.985 * alpha, radius)
             Susano.DrawRectFilled(x + math.floor(radius * 0.4), y, width - radius,
                 1, 1.0, 1.0, 1.0, 0.065 * alpha, 0)
-            Susano.DrawRectFilled(x + 6, y + 6, math.floor(width * 0.30),
-                height - 12, ar, ag, ab, 0.025 * alpha, radius)
         elseif type(Menu) == "table" and type(Menu.DrawRoundedRect) == "function" then
             Menu.DrawRoundedRect(x, y, width, height,
                 math.floor(ar * 255), math.floor(ag * 255), math.floor(ab * 255),
@@ -1114,16 +1111,6 @@ do
             Menu.DrawRoundedRect(x + 1, y + 1, width - 2, height - 2, 11, 11, 12,
                 math.floor(251 * alpha), radius)
         end
-    end
-
-    local function drawSideLine(x, top, height, width, alpha)
-        if type(Susano) ~= "table" or type(Susano.DrawRectFilled) ~= "function" then return end
-        local ar, ag, ab = accentColor()
-        local glow = math.max(2, math.floor(width))
-        Susano.DrawRectFilled(x - glow, top - glow, width + glow * 2, height + glow * 2,
-            ar, ag, ab, 0.07 * alpha, (width + glow * 2) * 0.5)
-        Susano.DrawRectFilled(x, top, width, height,
-            ar, ag, ab, 0.95 * alpha, width * 0.5)
     end
 
     local function drawRail(x, y, width, height, progress, alpha)
@@ -1197,8 +1184,7 @@ do
         local radius = math.floor(8 * scale + 0.5)
         local titleSize = math.max(10, math.floor(18 * scale + 0.5))
         local detailSize = math.max(9, math.floor(15 * scale + 0.5))
-        local lineWidth = math.max(2, math.floor(2.5 * scale + 0.5))
-        local padding = math.floor(16 * scale + 0.5)
+        local padding = math.floor(18 * scale + 0.5)
         local railHeight = math.max(3, math.floor(4 * scale + 0.5))
         local ar, ag, ab = accentColor()
 
@@ -1207,18 +1193,15 @@ do
         local percent = string.format("%d%%", math.floor(progress * 100.0 + 0.5))
 
         local railY = y + height - padding - railHeight
-        local lineTop = y + padding
-        local lineHeight = railY + railHeight - lineTop
-        local contentX = x + padding + lineWidth + math.floor(13 * scale + 0.5)
+        local contentX = x + padding
         local contentRight = x + width - padding
-        local titleY = lineTop
+        local titleY = y + padding
 
         drawPlate(x, y, width, height, radius, alpha)
         drawRail(x + padding, railY, width - padding * 2, railHeight, progress, alpha)
-        drawSideLine(x + padding, lineTop, lineHeight, lineWidth, alpha)
 
         drawText(contentX, titleY, "Loading assets", titleSize,
-            0.96, 0.96, 0.98, alpha)
+            1.0, 1.0, 1.0, alpha)
         local percentWidth = textWidth(percent, detailSize)
         drawText(contentRight - percentWidth,
             titleY + math.floor((titleSize - detailSize) * 0.5 + 0.5),
@@ -1233,12 +1216,10 @@ do
 
         local x = math.floor((screenWidth - width) * 0.5 + 0.5)
         local y = math.floor(screenHeight - CARD_BOTTOM * scale - height + 0.5)
-        local radius = math.floor(8 * scale + 0.5)
+        local radius = math.floor(9 * scale + 0.5)
         local titleSize = math.max(10, math.floor(18 * scale + 0.5))
-        local detailSize = math.max(9, math.floor(14 * scale + 0.5))
-        local lineWidth = math.max(2, math.floor(2.5 * scale + 0.5))
-        local padding = math.floor(16 * scale + 0.5)
-        local ar, ag, ab = accentColor()
+        local detailSize = math.max(9, math.floor(13 * scale + 0.5))
+        local padding = math.floor(18 * scale + 0.5)
 
         local keyName
         local title
@@ -1256,23 +1237,13 @@ do
             title = "Confirm menu key: " .. (keyName or "...")
         end
 
-        local underlineY = y + height - padding
-        local lineTop = y + padding
-        local lineHeight = underlineY - lineTop
-        local contentX = x + padding + lineWidth + math.floor(13 * scale + 0.5)
-        local contentRight = x + width - padding
-        local titleY = lineTop
+        local contentX = x + padding
+        local titleY = y + padding
+        local detailY = y + height - padding - detailSize
 
         drawPlate(x, y, width, height, radius, alpha)
-        if type(Susano) == "table" and type(Susano.DrawRectFilled) == "function" then
-            Susano.DrawRectFilled(x + padding, underlineY,
-                contentRight - (x + padding), 1, ar, ag, ab, 0.20 * alpha, 0)
-        end
-        drawSideLine(x + padding, lineTop, lineHeight, lineWidth, alpha)
+        drawText(contentX, titleY, title, titleSize, 1.0, 1.0, 1.0, alpha)
 
-        drawText(contentX, titleY, title, titleSize, 0.96, 0.96, 0.98, alpha)
-
-        local detailY = underlineY - detailSize - math.max(1, math.floor(3 * scale + 0.5))
         if keyName then
             drawConfirmLine(contentX, detailY, detailSize, keyName, alpha)
         else
@@ -3422,19 +3393,15 @@ function Menu.DrawTabs(category, x, startY, width, tabHeight)
     local tabText = ui.tabText or { 0.035, 0.035, 0.040, 1.0 }
 
     -- The scrollbar thumb is painted with SelectedBg (library DrawScrollbar).
-    -- Reuse that exact colour for the selected tab plate; its rim is a deeper
-    -- shade of the same accent, so the White pill keeps a defined edge and
-    -- the Cyan pill gets a deeper sky edge instead of a flat block.
+    -- Reuse that exact colour for the selected tab plate and its rim, so the
+    -- moving thumb and the active tab read as the same flat accent.
     local selectedBg = type(Menu.Colors) == "table" and Menu.Colors.SelectedBg or nil
     if type(selectedBg) == "table"
         and type(selectedBg.r) == "number"
         and type(selectedBg.g) == "number"
         and type(selectedBg.b) == "number" then
-        local edgeR = selectedBg.r * 0.62 / 255
-        local edgeG = selectedBg.g * 0.62 / 255
-        local edgeB = selectedBg.b * 0.62 / 255
         tabPill = { selectedBg.r / 255, selectedBg.g / 255, selectedBg.b / 255, 1.0 }
-        pillEdge = { edgeR, edgeG, edgeB, 1.0 }
+        pillEdge = { selectedBg.r / 255, selectedBg.g / 255, selectedBg.b / 255, 1.0 }
     end
 
     fill(x, startY, stripW, tabHeight, barBorder[1], barBorder[2], barBorder[3], barBorder[4], radius)
@@ -33785,7 +33752,7 @@ local PICK_MS         = 150
 local MAX_LISTENERS   = 64
 local LISTEN_MIN      = 10.0
 local LISTEN_MAX      = 500.0
-local DECLARE_MS      = 900
+local DECLARE_MS      = 250
 local RC_CONTROL_MS   = 1200
 local RC_REQUEST_MS   = 250
 local RC_PICK_RADIUS  = 0.055
@@ -34194,28 +34161,28 @@ end
 -- ---------------------------------------------------------------------------
 -- CAMERA
 -- ---------------------------------------------------------------------------
--- The existence getter is not on every executor's native table, and some
--- wrappers return 0/1 instead of a boolean. Only an explicit false/0 from a
--- callable getter is a real failure; a missing or failing getter must not
--- discard a camera the create call just returned.
-local function camExists(cam)
-    if type(DoesCamExist) ~= "function" then return true end
-    local ok, exists = pcall(DoesCamExist, cam)
-    if not ok then return true end
-    return not (exists == false or exists == 0)
-end
-
 local function createCamera()
-    if type(GetGameplayCamCoord) ~= "function" or type(GetGameplayCamRot) ~= "function" then
+    if type(GetGameplayCamRot) ~= "function" then return 0 end
+
+    -- The working executor path starts at the player entity, not at the
+    -- gameplay camera handle: GetGameplayCamCoord is not needed there. Use
+    -- the entity first, keep the camera getter only as a fallback.
+    local pos
+    if type(GetEntityCoords) == "function" then
+        local ok, value = pcall(GetEntityCoords, PlayerPedId(), false)
+        if ok then pos = value end
+    end
+    if (not pos or type(pos.x) ~= "number" or type(pos.y) ~= "number"
+        or type(pos.z) ~= "number") and type(GetGameplayCamCoord) == "function" then
+        local ok, value = pcall(GetGameplayCamCoord)
+        if ok then pos = value end
+    end
+    if not pos or type(pos.x) ~= "number" or type(pos.y) ~= "number"
+        or type(pos.z) ~= "number" then
         return 0
     end
 
-    local okPos, pos = pcall(GetGameplayCamCoord)
     local okRot, rot = pcall(GetGameplayCamRot, 2)
-    if not okPos or not pos or type(pos.x) ~= "number"
-        or type(pos.y) ~= "number" or type(pos.z) ~= "number" then
-        return 0
-    end
     if not okRot or not rot or type(rot.x) ~= "number" or type(rot.z) ~= "number" then
         return 0
     end
@@ -34224,10 +34191,11 @@ local function createCamera()
 
     -- CreateCam + the three setters is the exact camera sequence the shipped
     -- cover cam already uses in this module, so it is the primary path. The
-    -- corpus call stays as the fallback when CreateCam is not exposed. A
-    -- fallback handle the camera manager rejects is dropped, not trusted.
+    -- corpus call stays as the fallback when CreateCam is not exposed. The
+    -- handle returned by either native is authoritative: DoesCamExist is not
+    -- consulted, because a wrapper returning 0/1 would discard a live camera.
     if type(CreateCam) == "function" then
-        local okCam, created = pcall(CreateCam, CAM_NAME, false)
+        local okCam, created = pcall(CreateCam, CAM_NAME, true)
         if okCam and type(created) == "number" and created ~= 0 then
             cam = created
             pcall(SetCamCoord, cam, pos.x, pos.y, pos.z)
@@ -34240,13 +34208,9 @@ local function createCamera()
         local okCam, created = pcall(CreateCamWithParams, CAM_NAME,
             pos.x, pos.y, pos.z,
             rot.x, 0.0, rot.z,
-            CAM_FOV, false, 2)
+            CAM_FOV, true, 2)
         if okCam and type(created) == "number" and created ~= 0 then
             cam = created
-            if not camExists(cam) then
-                pcall(DestroyCam, cam, false)
-                cam = 0
-            end
         end
     end
 
@@ -34887,9 +34851,10 @@ local function measure(str, size)
     return #tostring(str) * size * 0.52
 end
 
--- State card: a single rounded plate, a white V mark and a title-case line,
--- matching the menu's notification art. The technical reason is not drawn;
--- it stays in the console log. The card fades in and out instead of blinking.
+-- State card: a single rounded plate and a title-case line, matching the
+-- menu's notification art. No logo mark: the text is the whole message. The
+-- technical reason is not drawn; it stays in the console log. The card fades
+-- in and out instead of blinking.
 local function renderNotice()
     if not FA.noticeText then return end
     local now = O.now()
@@ -34905,13 +34870,10 @@ local function renderNotice()
     local w, h = screenSize()
     local s = h / 1080.0
     local size = 16.0 * s
-    local logoW = 20.0 * s
-    local logoH = 24.0 * s
-    local gap = 12.0 * s
     local padX = 20.0 * s
     local cardH = 56.0 * s
-    local cardW = padX * 2.0 + logoW + gap + measure(FA.noticeText, size)
-    if cardW < 250.0 * s then cardW = 250.0 * s end
+    local cardW = padX * 2.0 + measure(FA.noticeText, size)
+    if cardW < 200.0 * s then cardW = 200.0 * s end
 
     local x = w * 0.5 - cardW * 0.5
     local y = h * 0.085
@@ -34928,20 +34890,7 @@ local function renderNotice()
             1.0, 1.0, 1.0, 0.10 * alpha, 1.0 * s, radius)
     end
 
-    local lx = x + padX
-    local ly = y + (cardH - logoH) * 0.5
-    if type(Susano) == "table" and type(Susano.DrawLine) == "function" then
-        local bx = lx + logoW * 0.42
-        local by = ly + logoH
-        pcall(Susano.DrawLine, lx, ly + logoH * 0.10, bx, by,
-            1.0, 1.0, 1.0, 0.95 * alpha, 3.6 * s)
-        pcall(Susano.DrawLine, bx, by, lx + logoW, ly,
-            1.0, 1.0, 1.0, 0.95 * alpha, 3.6 * s)
-    else
-        text(lx, ly + 2.0 * s, "V", size * 1.25, 1.0, 1.0, 1.0, 0.95 * alpha)
-    end
-
-    text(lx + logoW + gap, y + (cardH - size) * 0.5 - 1.0 * s,
+    text(x + padX, y + (cardH - size) * 0.5 - 1.0 * s,
         FA.noticeText, size, 1.0, 1.0, 1.0, 0.97 * alpha)
 end
 
@@ -34950,10 +34899,6 @@ end
 -- ---------------------------------------------------------------------------
 local function goLive(now)
     if FA.cam == 0 then return false end
-    if not camExists(FA.cam) then
-        FA.stop("camera lost before activation")
-        return false
-    end
 
     FA.pending = false
     FA.didWork = true
@@ -35004,9 +34949,10 @@ function FA.arm()
     if #policy.waveNames > 0 then
         host = injectionHost(policy.waveNames)
         if not host then
-            emit("refused: no injectable host for the camera declaration")
-            notice("Freecam Unavailable", 3000)
-            return false
+            -- v15.1 has no rendered-camera check; v4 does. A missing host is
+            -- not a reason to kill the feature: try the local camera and log
+            -- the unwhitelisted path instead of leaving a dead row.
+            emit("no injectable host for the camera declaration; local camera only")
         end
     end
 
@@ -35038,7 +34984,7 @@ function FA.arm()
     FA.active = true
     FA.pending = false
     FA.declared = false
-    FA.needDeclare = host ~= nil
+    FA.needDeclare = false
     FA.vehicleOnly = policy.electron
     FA.guardNames = policy.waveNames
     FA.hoverVehicle = 0
@@ -35056,16 +35002,18 @@ function FA.arm()
     if not O.Ctx.inVehicle then holdBody(PlayerPedId(), O.now()) end
 
     if host then
-        if not declareCamera(cam, host, policy.waveNames) then
-            FA.stop("declaration injection failed")
-            notice("Freecam Unavailable", 3000)
-            return false
+        if declareCamera(cam, host, policy.waveNames) then
+            FA.needDeclare = true
+            FA.pending = true
+            FA.pendingUntil = O.now() + DECLARE_MS
+            notify(true)
+            emit("pending declaration host=%s", host)
+            return true
         end
-        FA.pending = true
-        FA.pendingUntil = O.now() + DECLARE_MS
-        notify(true)
-        emit("pending declaration host=%s", host)
-        return true
+        -- The declaration is an optimization for v4's createdCams check.
+        -- v15.1 reads no rendered camera; never trade the feature for a
+        -- missing host or a rejected chunk.
+        emit("declaration injection failed; local camera only")
     end
 
     if not goLive(O.now()) then
@@ -35230,12 +35178,10 @@ local function tick(now, dt)
 
     if FA.pending then
         disableControls(FREECAM_CONTROLS)
-        if now >= FA.pendingUntil then
-            FA.stop("camera declaration timeout")
-            notice("Freecam Unavailable", 3000)
-            return
-        end
-        if FA.declared then
+        -- The export runs in the host resource; the local ack is a fast path,
+        -- not the gate. If the host event never crosses, the camera goes live
+        -- after the grace window instead of stalling the whole feature.
+        if FA.declared or now >= FA.pendingUntil then
             if not goLive(now) then
                 notice("Freecam Unavailable", 3000)
                 return
