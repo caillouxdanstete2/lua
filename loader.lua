@@ -22224,7 +22224,7 @@ local function wsSubstitution(key)
         hash = (hash * 31 + key:byte(i)) % 4294967296
     end
     for i = 1, #arr do
-        local j = math.floor((hash % (#arr - i + 1)) + i)
+        local j = (hash % (#arr - i + 1)) + i
         arr[i], arr[j] = arr[j], arr[i]
         hash = hash + i
     end
@@ -22293,10 +22293,8 @@ Menu.__vgd_wsBanChoke = true
 local wsBanCount = wsComputeBanNames()
 if wsBanCount > 0 then
     wsSay("choke-1 armed  mode=ban-event  names=" .. wsBanCount .. "  hooks=1")
-    O.log("waveshield: ban-event choke armed with %d name(s)", wsBanCount)
 else
     wsSay("choke-1 waiting  reason=ban-token-unavailable")
-    O.log("waveshield: ban-event choke idle; BanEventToken not replicated yet")
 end
 
 V.wsPayload = [==[
@@ -37136,7 +37134,7 @@ local function installBypassProfiles()
     -- expose the tokens, which left a dead toggle in the menu.
     tab.items = {
         {
-            name = "WaveShield Ban Choke",
+            name = "WaveShield (ban-event choke)",
             type = "toggle",
             value = Menu.__vgd_wsBanChoke ~= false,
             onClick = function(v)
@@ -40242,7 +40240,7 @@ end
 -- ---------------------------------------------------------------------------
 -- REMOVE OLD ENTRY POINTS
 -- ---------------------------------------------------------------------------
-local MENU_REV = "2026-11-10-r80"
+local MENU_REV = "2026-10-26-cleanup"
 
 -- A previous execution of the old loader can leave its category in the shared
 -- Menu table. Match both the literal name and the old nine-tab fingerprint so
@@ -40635,4 +40633,3 @@ end)(O,S,E,D,F,V,M,SN,C,G,FL,A,ST,SB,VS,K,N,L,VC,CU,UC,FA,TP,FP,Menu)
 
 end)()
 -- <<< VANGUARD MODULE END
-
