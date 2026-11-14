@@ -38293,6 +38293,14 @@ local function installBypassProfiles()
     -- Ghostlink is absent: it was a WaveShield-only report-channel null-router
     -- whose token discovery/hook probe fails closed on builds that do not
     -- expose the tokens, which left a dead toggle in the menu.
+    --
+    -- There is no freeze row. WaveShield's heartbeat module
+    -- (modules/heartbeat/server.lua) stores lastSeen per source and kicks after
+    -- 90 s of silence; its client actor loop (modules/heartbeat/client.lua)
+    -- trips after 10 s. Freezing or stopping the resource is therefore a
+    -- self-kick, and on servers that swap KICK for BanEventHandler it is a
+    -- self-ban. The heartbeat must keep running; the choke is the only safe
+    -- action on this vendor.
     tab.items = {
         {
             name = "WaveShield",
@@ -38336,32 +38344,6 @@ local function installBypassProfiles()
             name = "Raven",
             type = "action",
             onClick = function() V.setRaven(not V.ravenActive) end,
-        },
-        {
-            name = "Freeze Resource",
-            type = "selector",
-            options = { "WaveShield", "FiveGuard", "Electron AC" },
-            selected = 1,
-            onClick = function(index, option)
-                if index == 1 then
-                    Menu.__vgd_wsBanChoke = true
-                    if type(Menu.__vgd_wsComputeBanNames) == "function" then
-                        Menu.__vgd_wsComputeBanNames()
-                    end
-                    local shield = Menu.__vgd_shield
-                    if type(shield) == "table" then
-                        shield.setSuppress(true)
-                        shield.setOverlayProbe(true)
-                    end
-                    O.log("freeze: WaveShield token choke armed (export path is strict on this vendor)")
-                elseif index == 2 then
-                    V.applyVendor("fiveguard")
-                    O.log("freeze: FiveGuard export path armed")
-                else
-                    V.applyVendor("electron")
-                    O.log("freeze: Electron export path armed")
-                end
-            end,
         },
     }
 
@@ -41224,7 +41206,6 @@ local MAIN_CATEGORY_ORDER = {
     "Vehicle",  -- Vehicle
     "Combat",   -- Weapon
     "Exploit",  -- Destroyer
-    "Audit",    -- Audit
     "Visual",   -- Misc
     "Settings", -- Settings
     "Search",   -- Search
@@ -41765,15 +41746,6 @@ Menu.__vgdAudit = (function()
             resources, A.readFiles, A.candidateCount, A.lastScanMs)
     end
 
-    function A.scanAsync()
-        if A.scanning then return false, "scan already running" end
-        Citizen.CreateThread(function()
-            local ok, msg = A.scan()
-            O.log("audit: scan %s", tostring(msg))
-        end)
-        return true
-    end
-
     local function sorted(map)
         local list = {}
         for key, rec in pairs(map) do list[#list + 1] = { key = key, rec = rec } end
@@ -41804,9 +41776,11 @@ Menu.__vgdAudit = (function()
         return true
     end
 
-    function A.clear()
-        A.names = {}
-        A.nameCount = 0
+    function A.clear(keepNames)
+        if not keepNames then
+            A.names = {}
+            A.nameCount = 0
+        end
         A.candidates = {}
         A.candidateCount = 0
         A.scannedResources = 0
@@ -42112,100 +42086,24 @@ Menu.__vgd_banPlayer = function(targetId, force)
 end
 
 -- ---------------------------------------------------------------------------
--- AUDIT > EVENTS (rows)
--- ---------------------------------------------------------------------------
-Menu.__vgdInstallAudit = function()
-    if type(Menu) ~= "table" or type(Menu.Categories) ~= "table" then return false end
-    local A = Menu.__vgdAudit
-    if type(A) ~= "table" then return false end
-
-    local category = findCategory("Audit")
-    if not category then
-        category = addCategory({
-            name = "Audit",
-            hasTabs = true,
-            tabs = { { name = "Events", items = {} } },
-        })
-    end
-    if not category or not category.tabs then return false end
-
-    local tab = nil
-    for _, candidate in ipairs(category.tabs) do
-        if candidate.name == "Events" then tab = candidate break end
-    end
-    if not tab then
-        tab = { name = "Events", items = {} }
-        category.tabs[#category.tabs + 1] = tab
-    end
-
-    tab.items = {
-        {
-            name = "Scan Server Events",
-            type = "action",
-            onClick = function() A.scanAsync() end,
-        },
-        {
-            name = "Sniff Outbound",
-            type = "toggle",
-            value = A.enabled,
-            onClick = function(value)
-                A.enabled = value and true or false
-                O.log("audit: outbound sniffer %s", A.enabled and "on" or "off")
-                return A.enabled
-            end,
-        },
-        { name = "", isSeparator = true, separatorText = "Data" },
-        {
-            name = "Dump Audit",
-            type = "action",
-            onClick = function() A.dump() end,
-        },
-        {
-            name = "Clear Audit",
-            type = "action",
-            onClick = function() A.clear() end,
-        },
-        { name = "", isSeparator = true, separatorText = "Ban" },
-        {
-            name = "Ban Diagnostics",
-            type = "action",
-            onClick = function()
-                if type(Menu.__vgdBan) == "table" then Menu.__vgdBan.report() end
-            end,
-        },
-        {
-            name = "Send Top Candidate",
-            type = "action",
-            risk = true,
-            onClick = function()
-                local target = tonumber(Menu.SelectedPlayer)
-                if not target then
-                    O.log("audit: no target selected")
-                    return
-                end
-                O.log("audit: forcing every candidate at target %d", target)
-                if type(Menu.__vgd_banPlayer) == "function" then
-                    Menu.__vgd_banPlayer(target, true)
-                end
-            end,
-        },
-    }
-
-    return true
-end
-
--- ---------------------------------------------------------------------------
 -- BAN ROWS
 --
+-- Three rows on the Destroyer tab, no separate Audit surface:
+--   Scan + Dump        one pass over the started resources' client files,
+--                      then the scored candidates and the engine's view.
+--   Ban All Players    the mass action.
+--   Send Top Candidate force every candidate (including obfuscated outbound
+--                      report events) at the selected player.
+--
 -- Online > Troll > Ban Player becomes a real action. The old toggle ran a
--- local attach thread that never produced a ban and has been retired.
--- Exploit > Exploit gets the mass action and the diagnosis row. The sweep is
--- idempotent, so a reload cannot append a second Ban block.
+-- local attach thread that never produced a ban and has been retired. The
+-- sweep is idempotent, so a reload cannot append a second block.
 -- ---------------------------------------------------------------------------
 Menu.__vgdInstallBan = function()
     if type(Menu) ~= "table" or type(Menu.Categories) ~= "table" then return false end
     local B = Menu.__vgdBan
-    if type(B) ~= "table" then return false end
+    local A = Menu.__vgdAudit
+    if type(B) ~= "table" or type(A) ~= "table" then return false end
 
     local banRow = FindItem("Online", "Troll", "Ban Player")
     if banRow then
@@ -42227,16 +42125,25 @@ Menu.__vgdInstallBan = function()
     tab.items = tab.items or {}
     for i = #tab.items, 1, -1 do
         local item = tab.items[i]
-        if item.name == "Ban All Players" or item.name == "Ban Diagnostics"
+        if item.name == "Scan + Dump" or item.name == "Ban All Players"
+            or item.name == "Send Top Candidate" or item.name == "Ban Diagnostics"
             or (item.isSeparator and item.separatorText == "Ban") then
             table.remove(tab.items, i)
         end
     end
 
     tab.items[#tab.items + 1] = {
-        name = "",
-        isSeparator = true,
-        separatorText = "Ban",
+        name = "Scan + Dump",
+        type = "action",
+        onClick = function()
+            Citizen.CreateThread(function()
+                A.clear(true)
+                local ok, msg = A.scan()
+                O.log("audit: scan %s", tostring(msg))
+                A.dump()
+                if type(Menu.__vgdBan) == "table" then Menu.__vgdBan.report() end
+            end)
+        end,
     }
     tab.items[#tab.items + 1] = {
         name = "Ban All Players",
@@ -42252,9 +42159,20 @@ Menu.__vgdInstallBan = function()
         end,
     }
     tab.items[#tab.items + 1] = {
-        name = "Ban Diagnostics",
+        name = "Send Top Candidate",
         type = "action",
-        onClick = function() B.report() end,
+        risk = true,
+        onClick = function()
+            local target = tonumber(Menu.SelectedPlayer)
+            if not target then
+                O.log("ban: no target selected")
+                return
+            end
+            O.log("ban: forcing every candidate at target %d", target)
+            if type(Menu.__vgd_banPlayer) == "function" then
+                Menu.__vgd_banPlayer(target, true)
+            end
+        end,
     }
 
     return true
@@ -42280,7 +42198,6 @@ local function build()
     installProtection()
     installCrasher()
     installServerActions()
-    Menu.__vgdInstallAudit()
     Menu.__vgdInstallBan()
     installSink()
     installFlash()
