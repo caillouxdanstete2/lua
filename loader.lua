@@ -30727,9 +30727,10 @@ local N = (function(O,B)
 -- ----------------------------------------------------------------------------
 -- Doctrine (L4): this is not a fall and it is not a position write. No Clip is
 -- free-flight: gravity and collision off, a real velocity written every tick,
--- and no pose. Naruto adds the upper-body freefall pose at ground level. The
--- engine owns the body, so every position sample is continuous and every
--- physics sample is a velocity the engine itself integrated.
+-- and the full-body skyfall pose. Naruto adds the same pose as an upper-body
+-- layer at ground level. The engine owns the body, so every position sample is
+-- continuous and every physics sample is a velocity the engine itself
+-- integrated.
 --
 -- Design reference: doctrine/10_AIR_NOCLIP.md.
 --
@@ -30743,17 +30744,17 @@ local N = (function(O,B)
 --   * the on-foot speed ceiling is 14.0 m/s, the falling ceiling 60 m/s.
 --
 -- Pose: both rows use TASK_PLAY_ANIM with the base-game skydive@freefall
--- dictionary and free_forward_anim clip, flags 1|16|32 = 49
--- (AF_LOOPING|AF_UPPERBODY|AF_SECONDARY), so the torso is posed and the legs
--- stay on locomotion. No Clip Undetect keeps the skyfall pose and repairs it on
--- a 500 ms cadence when a task reset drops it. No Clip Detect keeps the raw
--- 240 m/s free-flight line and stays pose-free: the skydive clip carries the
--- wind-trail PTFX under the arms and a task reset can restart it mid-flight,
--- which is the surface that line does not need. Neither row has a landing
--- transition, an automatic parachute or a forced velocity.
--- TASK_SKY_DIVE is deliberately rejected at ground level because live feedback
--- showed it landing, sliding, standing up and deploying a parachute
--- immediately.
+-- dictionary and free_forward_anim clip. No Clip (Undetect and Detect alike)
+-- uses flags 1 = AF_LOOPING: the full-body layer is what carries the horizontal
+-- root orientation and therefore the spread-eagle skyfall silhouette the
+-- operator's reference shows. The old upper-body layer only spread the arms and
+-- left the capsule vertical (flags 49). Naruto keeps flags 1|16|32 = 49
+-- (AF_LOOPING|AF_UPPERBODY|AF_SECONDARY) because it must run with its legs on
+-- locomotion. Both rows repair the clip on a 500 ms cadence when a task reset
+-- drops it. Neither row has a landing transition, an automatic parachute or a
+-- forced velocity. TASK_SKY_DIVE is deliberately rejected at ground level
+-- because live feedback showed it landing, sliding, standing up and deploying a
+-- parachute immediately.
 --
 -- Two layers, strongest genuine state first:
 --
@@ -30836,15 +30837,16 @@ local N = (function(O,B)
 -- Masters preview for free_forward_anim shows the arms-out arch. This is
 -- evidence, not a guessed clip.
 --
--- No Clip never calls TASK_PLAY_ANIM. The freefall clip is what spawns the
--- wind-trail PTFX under the hands and what a task reset can restart on a prop
--- contact; both were visible in the operator's test and made the body fight
--- the input. Free-flight is a movement, not an animation.
+-- The No Clip pose is a primary full-body task. Movement does not depend on the
+-- on-foot task: the module reads the controls natively and writes
+-- SET_ENTITY_VELOCITY every tick, so the free-flight line keeps translating
+-- while the clip owns the skeleton. The freefall clip is also what spawns the
+-- wind-trail PTFX; that is part of the skyfall silhouette the operator asked
+-- for. A task reset can restart the clip on a prop contact, and the 500 ms
+-- repair pass re-lays it without a CLEAR_PED_TASKS loop.
 --
--- IMPORTANT (Naruto only): the animation must be a SECONDARY task, not a
--- primary one. A full-body TASK_PLAY_ANIM as primary replaces the player's
--- on-foot task and freezes both input and velocity. AF_SECONDARY (32) layers
--- the pose over the primary movement task; AF_UPPERBODY (16) masks it to the
+-- Naruto keeps the animation as a SECONDARY task: AF_SECONDARY (32) layers the
+-- pose over the primary movement task and AF_UPPERBODY (16) masks it to the
 -- arms/torso so the legs stay under locomotion. Flags 48-49 are the
 -- GTAForums-documented "torso anim, legs can walk" values. AF_IGNORE_GRAVITY
 -- (2048) is deliberately NOT set: it was the extra bit in the previous 2097
@@ -30886,21 +30888,25 @@ local PROBE_DROP = 4.0
 
 -- Base-game freefall pose. The dictionary has free_back, free_forward,
 -- free_forward_add, free_forward_anim, free_left and free_right. The operator's
--- working reference shows the arms-out arch; the Pleb Masters preview for
--- free_forward_anim matches it, while free_forward has the arms swept down.
+-- working reference shows the horizontal spread-eagle; the Pleb Masters preview
+-- for free_forward_anim matches it, while free_forward has the arms swept down.
 local ANIM_DICT = "skydive@freefall"
 local ANIM_CLIP = "free_forward_anim"
--- Flags 49 = AF_LOOPING | AF_UPPERBODY | AF_SECONDARY. The GTAForums flag
--- table documents 48-49 as "torso animation, legs can walk"; 49 adds looping.
--- Do not add AF_IGNORE_GRAVITY (2048) or AF_HOLD_LAST_FRAME (2).
--- The clip is used by Naruto and by No Clip Undetect; No Clip Detect stays
--- pose-free (see above).
+-- No Clip: flags 1 = AF_LOOPING, full body. The clip's root carries the
+-- horizontal freefall orientation; masking it to the upper body leaves the
+-- capsule vertical and only spreads the arms, which is the wrong silhouette.
+-- Both No Clip profiles (Undetect and Detect) use this layer.
+local ANIM_FLAGS_NOCLIP = 1 -- AF_LOOPING
+-- Naruto: flags 49 = AF_LOOPING | AF_UPPERBODY | AF_SECONDARY. The GTAForums
+-- flag table documents 48-49 as "torso animation, legs can walk"; 49 adds
+-- looping. Do not add AF_IGNORE_GRAVITY (2048) or AF_HOLD_LAST_FRAME (2).
 local ANIM_FLAGS_NARUTO = 1 | 16 | 32 -- 49: AF_LOOPING|AF_UPPERBODY|AF_SECONDARY
 -- Dual mode. "noclip" is free-flight: collision off, full 3D steering with a
--- hard airborne floor, and the skyfall pose in Undetect only. "naruto" is a
--- horizontal run with the upper-body pose, collision on, following the ground
--- at a low clearance so the body never lands and never starts a landing roll.
--- Both keep the same read cover; only the pose and vertical policy differ.
+-- hard airborne floor, and the full-body skyfall pose in both profiles.
+-- "naruto" is a horizontal run with the upper-body pose, collision on,
+-- following the ground at a low clearance so the body never lands and never
+-- starts a landing roll. Both keep the same read cover; only the pose layer
+-- and vertical policy differ.
 local MODE_NOCLIP = "noclip"
 local MODE_NARUTO = "naruto"
 
@@ -31236,16 +31242,15 @@ end
 -- ---------------------------------------------------------------------------
 -- ARM / STOP
 -- ---------------------------------------------------------------------------
--- The skyfall pose is wanted in Naruto Run and in No Clip Undetect. No Clip
--- Detect keeps the raw 240 m/s free-flight line and stays pose-free: that
--- profile exists for the speed, and the skydive clip adds wind trails and a
--- task reset surface the line does not need. The row is read live, so switching
--- the selector while armed starts or drops the pose without re-arming.
+-- The skyfall pose is wanted in every armed session: Naruto layers it over the
+-- run, No Clip uses the full-body clip in Undetect and Detect alike. The layer
+-- flags are the only difference; the clip and the repair cadence are shared.
 local function poseWanted()
-    if N.mode == MODE_NARUTO then return true end
-    local row = type(Menu) == "table" and type(Menu.FindItem) == "function"
-        and Menu.FindItem("Player", "Movement", "No Clip") or nil
-    return row == nil or tonumber(row.selected) ~= 2
+    return true
+end
+
+local function poseFlags()
+    return (N.mode == MODE_NARUTO) and ANIM_FLAGS_NARUTO or ANIM_FLAGS_NOCLIP
 end
 
 function N.arm(mode)
@@ -31365,12 +31370,11 @@ function N.arm(mode)
     -- Clear a stale locomotion multiplier from an interrupted previous session.
     pcall(SetPedMoveRateOverride, ped, 1.0)
 
-    -- Verified base-game freefall pose. It is the upper-body secondary clip, so
-    -- the legs stay under the on-foot task and the free-flight stays playable.
-    -- The dictionary is requested for both modes: No Clip Undetect keeps the
-    -- skyfall pose, Detect drops it (poseWanted is false there). TaskPlayAnim
-    -- has no landing transition, no auto parachute and no forced velocity,
-    -- unlike TaskSkyDive at ground level.
+    -- Verified base-game freefall pose. No Clip uses the full-body loop, which
+    -- carries the horizontal skyfall silhouette; Naruto uses the upper-body
+    -- secondary layer so its legs stay on locomotion. The dictionary is
+    -- requested for both modes. TaskPlayAnim has no landing transition, no auto
+    -- parachute and no forced velocity, unlike TaskSkyDive at ground level.
     local okRequest = pcall(RequestAnimDict, ANIM_DICT)
     if not okRequest then
         cleanupMotion()
@@ -31554,9 +31558,9 @@ function N.tick(now)
     -- A parachute that opens mid-session owns the physics and cancels the pose.
     -- Controls 22/36 are disabled below, so this is a repair path, not the
     -- normal flow: clear the parachute task and re-disable gravity without
-    -- dropping the session. Naruto also re-layers its upper-body pose; No Clip
-    -- stays pose-free. The retry is rate-limited so a canopy that takes a few
-    -- frames to detach cannot cause a clear loop.
+    -- dropping the session. No Clip re-pends the full-body pose; Naruto
+    -- re-layers its upper-body pose. The retry is rate-limited so a canopy that
+    -- takes a few frames to detach cannot cause a clear loop.
     local okChute, chute = pcall(GetPedParachuteState, ped)
     if okChute and type(chute) == "number" and chute > 0 and now >= N.chuteNext then
         N.chuteNext = now + GRAVITY_REFRESH_MS
@@ -31574,7 +31578,7 @@ function N.tick(now)
             end
         else
             pcall(TaskPlayAnim, ped, ANIM_DICT, ANIM_CLIP,
-                8.0, 8.0, -1, ANIM_FLAGS_NARUTO, 1.0, false, false, false)
+                8.0, 8.0, -1, poseFlags(), 1.0, false, false, false)
         end
         N.animCheckAt = 0
     end
@@ -31593,22 +31597,22 @@ function N.tick(now)
         end
     end
 
-    -- Apply the skyfall pose once its dictionary is streamed. Both modes can
-    -- reach this block: Naruto always, No Clip Undetect, and No Clip Detect
-    -- never (posePending stays false there). The ped is briefly standing while
-    -- the base-game dictionary loads; gravity is already off, so it does not
-    -- fall.
+    -- Apply the skyfall pose once its dictionary is streamed. Every armed
+    -- session reaches this block: No Clip in both profiles, Naruto always. The
+    -- ped is briefly standing while the base-game dictionary loads; gravity is
+    -- already off, so it does not fall.
     if N.posePending then
         local okLoaded, loaded = pcall(HasAnimDictLoaded, ANIM_DICT)
         if okLoaded and loaded then
-            -- The upper-body secondary is the movement-safe pose: flags 49
-            -- are the documented torso-anim/legs-free combination. It is a
-            -- pose, not a movement task; the on-foot task keeps ZQSD.
+            -- No Clip uses the full-body loop: its root carries the horizontal
+            -- freefall orientation. Naruto uses the upper-body secondary so
+            -- the run keeps its legs. The clip itself is identical.
+            local flags = poseFlags()
             local okAnim = pcall(TaskPlayAnim, ped, ANIM_DICT, ANIM_CLIP,
-                8.0, 8.0, -1, ANIM_FLAGS_NARUTO, 1.0, false, false, false)
+                8.0, 8.0, -1, flags, 1.0, false, false, false)
             if not okAnim then
                 if N.mode == MODE_NOCLIP then
-                    -- The pose is cosmetic in No Clip; a refused secondary must
+                    -- The pose is cosmetic in No Clip; a refused clip must
                     -- not kill the free-flight line.
                     N.posePending = false
                     N.poseApplied = false
@@ -31621,7 +31625,7 @@ function N.tick(now)
                 N.posePending = false
                 N.poseApplied = true
                 N.taskStarted = true
-                O.log("air movement pose (%s, flags %d)", N.mode, ANIM_FLAGS_NARUTO)
+                O.log("air movement pose (%s, flags %d)", N.mode, flags)
             end
         elseif now - N.poseAt > POSE_LOAD_MS then
             if N.mode == MODE_NOCLIP then
@@ -31852,10 +31856,9 @@ function N.tick(now)
         if N.mode ~= MODE_NOCLIP then
             return
         end
-        -- End the ragdoll. ClearPedTasks wipes the secondary skyfall pose too,
-        -- so Undetect re-lays it on the next repair pass. The pose is the
-        -- upper-body secondary clip; it never restarts a full-body task and
-        -- never fights the input.
+        -- End the ragdoll. ClearPedTasks wipes the skyfall pose too, so the
+        -- next repair pass re-lays the mode's clip. No Clip restarts the
+        -- full-body loop; Naruto restarts the upper-body layer.
         pcall(ClearPedTasks, ped)
         N.poseApplied = false
         if poseWanted() then
@@ -31880,43 +31883,32 @@ function N.tick(now)
         N.moveLogged = true
         O.log("air noclip move: %s", N.mode)
     end
-    -- Pose repair and reinforcement, both modes. The light 500 ms recheck
-    -- re-layers the upper-body clip when a task reset drops it. It is the same
-    -- non-destructive repair the Naruto line used; the old failure was the
-    -- CLEAR_PED_TASKS/re-apply loop, which is not used here. Switching the No
-    -- Clip selector to Detect while armed drops the pose and stops repairing;
-    -- switching back to Undetect lays it down again on the next check.
+    -- Pose repair and reinforcement, both modes and both No Clip profiles.
+    -- The light 500 ms recheck re-lays the clip when a task reset drops it. It
+    -- is non-destructive: no CLEAR_PED_TASKS loop, only a fresh TaskPlayAnim
+    -- when IsEntityPlayingAnim no longer reports the clip.
     if now >= N.animCheckAt then
         N.animCheckAt = now + ANIM_CHECK_MS
-        local want = poseWanted()
-        if not want then
-            if N.poseApplied then
-                pcall(ClearPedSecondaryTask, ped)
-                N.poseApplied = false
-            end
-            N.posePending = false
-        else
-            local okPlaying, playing = false, false
-            if N.poseApplied then
-                okPlaying, playing = pcall(IsEntityPlayingAnim, ped,
-                    ANIM_DICT, ANIM_CLIP, 3)
-            end
-            if not N.poseApplied or not okPlaying or playing == false then
-                local okLoaded, loaded = pcall(HasAnimDictLoaded, ANIM_DICT)
-                if okLoaded and loaded then
-                    local okAnim = pcall(TaskPlayAnim, ped, ANIM_DICT, ANIM_CLIP,
-                        8.0, 8.0, -1, ANIM_FLAGS_NARUTO, 1.0,
-                        false, false, false)
-                    if okAnim then
-                        N.poseApplied = true
-                        N.posePending = false
-                        N.taskStarted = true
-                    end
-                else
-                    pcall(RequestAnimDict, ANIM_DICT)
-                    N.posePending = true
-                    N.poseAt = now
+        local okPlaying, playing = false, false
+        if N.poseApplied then
+            okPlaying, playing = pcall(IsEntityPlayingAnim, ped,
+                ANIM_DICT, ANIM_CLIP, 3)
+        end
+        if not N.poseApplied or not okPlaying or playing == false then
+            local okLoaded, loaded = pcall(HasAnimDictLoaded, ANIM_DICT)
+            if okLoaded and loaded then
+                local okAnim = pcall(TaskPlayAnim, ped, ANIM_DICT, ANIM_CLIP,
+                    8.0, 8.0, -1, poseFlags(), 1.0,
+                    false, false, false)
+                if okAnim then
+                    N.poseApplied = true
+                    N.posePending = false
+                    N.taskStarted = true
                 end
+            else
+                pcall(RequestAnimDict, ANIM_DICT)
+                N.posePending = true
+                N.poseAt = now
             end
         end
     end
@@ -38824,16 +38816,15 @@ end
 --
 -- Two rows over one module (src/16_air_noclip.lua). Both keep the
 -- 423/falling/in-air read cover. Naruto keeps the upper-body freefall pose and
--- the 1.2 s warmup; No Clip Undetect keeps the same skyfall pose and repairs
--- it, while Detect stays pose-free:
+-- the 1.2 s warmup; No Clip plays the same clip as a full-body layer in both
+-- profiles and repairs it:
 --   Naruto Run  horizontal only, no pitch and no Space/Ctrl lift, rides a low
 --               clearance band so it never lands and never rolls.
 --   No Clip     full 3D steering with a hard airborne floor and a live
 --               Undetect/Detect selector: Undetect keeps the 28 m/s profile
 --               with a tiny hover dither; Detect is the true free-flight line
---               at 240 m/s (about 2.7x the old 90 m/s), collision reasserted
---               every frame and no skydive clip, so there is no wind PTFX and
---               no animation to fight the input.
+--               at 240 m/s (about 2.7x the old 90 m/s). Both profiles run the
+--               full-body skydive clip and reassert collision every frame.
 -- The rows are rebuilt on every load, so a stale copy cannot survive a reload.
 -- ---------------------------------------------------------------------------
 local function installMovement()
