@@ -2068,11 +2068,13 @@ do
     local acPatterns = {
         "anticheat","anti_cheat","anti-cheat","ac_report","ac_flag","ac_detect",
         "ac_log","ac_check","cheat_report","cheat_detect","ban_request","ban_player",
+        "banplayer","kickplayer","reportplayer","detectplayer","punishplayer",
         "detection","violation","integrity","screencap","screenshot","security_check",
         "_ac_","_ban_","flagged","suspected","hacker","speed_hack","speedhack",
         "health_hack","godmode_detect","damage_log","damage_check","weapon_check",
         "aimbot","aim_bot","teleport_detect","tp_detect","noclip_detect","ammo_check",
         "ammo_hack","position_check",
+        "069:","waveshield:","ws:","fg:","electron:","reason:","ac:",
     }
     -- OnTriggerServerEvent receives raw msgpack bytes, not a Lua table. A
     -- payload-shape filter here would have to decode every outbound frame, and
@@ -30740,14 +30742,15 @@ local N = (function(O,B)
 --     at startup, and actorLoop reads those aliases, not _G;
 --   * the on-foot speed ceiling is 14.0 m/s, the falling ceiling 60 m/s.
 --
--- Pose: Naruto uses TASK_PLAY_ANIM with the base-game skydive@freefall
+-- Pose: both rows use TASK_PLAY_ANIM with the base-game skydive@freefall
 -- dictionary and free_forward_anim clip, flags 1|16|32 = 49
 -- (AF_LOOPING|AF_UPPERBODY|AF_SECONDARY), so the torso is posed and the legs
--- stay on locomotion. No Clip plays no pose at all: the skydive clip carries
--- the wind-trail PTFX under the arms and a task reset can restart it mid-flight,
--- which made the body fight the operator's input after a prop contact. No Clip
--- is pure free-flight (gravity off, collision off, velocity each tick). Neither
--- row has a landing transition, an automatic parachute or a forced velocity.
+-- stay on locomotion. No Clip Undetect keeps the skyfall pose and repairs it on
+-- a 500 ms cadence when a task reset drops it. No Clip Detect keeps the raw
+-- 240 m/s free-flight line and stays pose-free: the skydive clip carries the
+-- wind-trail PTFX under the arms and a task reset can restart it mid-flight,
+-- which is the surface that line does not need. Neither row has a landing
+-- transition, an automatic parachute or a forced velocity.
 -- TASK_SKY_DIVE is deliberately rejected at ground level because live feedback
 -- showed it landing, sliding, standing up and deploying a parachute
 -- immediately.
@@ -30890,13 +30893,14 @@ local ANIM_CLIP = "free_forward_anim"
 -- Flags 49 = AF_LOOPING | AF_UPPERBODY | AF_SECONDARY. The GTAForums flag
 -- table documents 48-49 as "torso animation, legs can walk"; 49 adds looping.
 -- Do not add AF_IGNORE_GRAVITY (2048) or AF_HOLD_LAST_FRAME (2).
--- The clip is used by Naruto only. No Clip plays no pose (see above).
+-- The clip is used by Naruto and by No Clip Undetect; No Clip Detect stays
+-- pose-free (see above).
 local ANIM_FLAGS_NARUTO = 1 | 16 | 32 -- 49: AF_LOOPING|AF_UPPERBODY|AF_SECONDARY
--- Dual mode. "noclip" is pure free-flight: no pose, collision off, full 3D
--- steering with a hard airborne floor. "naruto" is a horizontal run with the
--- upper-body pose, collision on, following the ground at a low clearance so the
--- body never lands and never starts a landing roll. Both keep the same read
--- cover; only the pose and vertical policy differ.
+-- Dual mode. "noclip" is free-flight: collision off, full 3D steering with a
+-- hard airborne floor, and the skyfall pose in Undetect only. "naruto" is a
+-- horizontal run with the upper-body pose, collision on, following the ground
+-- at a low clearance so the body never lands and never starts a landing roll.
+-- Both keep the same read cover; only the pose and vertical policy differ.
 local MODE_NOCLIP = "noclip"
 local MODE_NARUTO = "naruto"
 
@@ -31232,6 +31236,18 @@ end
 -- ---------------------------------------------------------------------------
 -- ARM / STOP
 -- ---------------------------------------------------------------------------
+-- The skyfall pose is wanted in Naruto Run and in No Clip Undetect. No Clip
+-- Detect keeps the raw 240 m/s free-flight line and stays pose-free: that
+-- profile exists for the speed, and the skydive clip adds wind trails and a
+-- task reset surface the line does not need. The row is read live, so switching
+-- the selector while armed starts or drops the pose without re-arming.
+local function poseWanted()
+    if N.mode == MODE_NARUTO then return true end
+    local row = type(Menu) == "table" and type(Menu.FindItem) == "function"
+        and Menu.FindItem("Player", "Movement", "No Clip") or nil
+    return row == nil or tonumber(row.selected) ~= 2
+end
+
 function N.arm(mode)
     -- Resolve the requested mode before touching anything. Switching modes is
     -- an explicit stop followed by a fresh arm, never two sessions at once.
@@ -31349,26 +31365,26 @@ function N.arm(mode)
     -- Clear a stale locomotion multiplier from an interrupted previous session.
     pcall(SetPedMoveRateOverride, ped, 1.0)
 
-    -- Naruto only: verified base-game freefall pose. No Clip deliberately
-    -- never requests the dictionary, because the skydive clip owns the wind
-    -- trails and a task reset can restart it on a prop contact. TaskPlayAnim
+    -- Verified base-game freefall pose. It is the upper-body secondary clip, so
+    -- the legs stay under the on-foot task and the free-flight stays playable.
+    -- The dictionary is requested for both modes: No Clip Undetect keeps the
+    -- skyfall pose, Detect drops it (poseWanted is false there). TaskPlayAnim
     -- has no landing transition, no auto parachute and no forced velocity,
     -- unlike TaskSkyDive at ground level.
-    if N.mode == MODE_NARUTO then
-        local okRequest = pcall(RequestAnimDict, ANIM_DICT)
-        if not okRequest then
-            cleanupMotion()
-            N.taskStarted = false
-            N.reason = "pose failed"
-            refundBudget()
-            return false
-        end
+    local okRequest = pcall(RequestAnimDict, ANIM_DICT)
+    if not okRequest then
+        cleanupMotion()
+        N.taskStarted = false
+        N.reason = "pose failed"
+        refundBudget()
+        return false
+    end
+    N.poseApplied = false
+    if poseWanted() then
         N.posePending = true
         N.poseAt = O.now()
-        N.poseApplied = false
     else
         N.posePending = false
-        N.poseApplied = false
     end
     N.taskStarted = false
 
@@ -31551,6 +31567,11 @@ function N.tick(now)
         pcall(SetPedRagdollOnCollision, ped, false)
         if N.mode == MODE_NOCLIP then
             pcall(SetEntityCollision, ped, false, false)
+            if poseWanted() then
+                N.posePending = true
+                N.poseApplied = false
+                N.poseAt = now
+            end
         else
             pcall(TaskPlayAnim, ped, ANIM_DICT, ANIM_CLIP,
                 8.0, 8.0, -1, ANIM_FLAGS_NARUTO, 1.0, false, false, false)
@@ -31572,10 +31593,11 @@ function N.tick(now)
         end
     end
 
-    -- Apply the Naruto pose once its dictionary is streamed. No Clip never
-    -- reaches this block (posePending is false for the whole free-flight
-    -- session). The ped is briefly standing for Naruto while the base-game
-    -- dictionary loads; gravity is already off, so it does not fall.
+    -- Apply the skyfall pose once its dictionary is streamed. Both modes can
+    -- reach this block: Naruto always, No Clip Undetect, and No Clip Detect
+    -- never (posePending stays false there). The ped is briefly standing while
+    -- the base-game dictionary loads; gravity is already off, so it does not
+    -- fall.
     if N.posePending then
         local okLoaded, loaded = pcall(HasAnimDictLoaded, ANIM_DICT)
         if okLoaded and loaded then
@@ -31585,16 +31607,31 @@ function N.tick(now)
             local okAnim = pcall(TaskPlayAnim, ped, ANIM_DICT, ANIM_CLIP,
                 8.0, 8.0, -1, ANIM_FLAGS_NARUTO, 1.0, false, false, false)
             if not okAnim then
+                if N.mode == MODE_NOCLIP then
+                    -- The pose is cosmetic in No Clip; a refused secondary must
+                    -- not kill the free-flight line.
+                    N.posePending = false
+                    N.poseApplied = false
+                    N.poseAt = now
+                else
+                    N.stop("pose failed")
+                    return
+                end
+            else
+                N.posePending = false
+                N.poseApplied = true
+                N.taskStarted = true
+                O.log("air movement pose (%s, flags %d)", N.mode, ANIM_FLAGS_NARUTO)
+            end
+        elseif now - N.poseAt > POSE_LOAD_MS then
+            if N.mode == MODE_NOCLIP then
+                N.posePending = false
+                N.poseApplied = false
+                N.poseAt = now
+            else
                 N.stop("pose failed")
                 return
             end
-            N.posePending = false
-            N.poseApplied = true
-            N.taskStarted = true
-            O.log("air movement pose (%s, flags %d)", N.mode, ANIM_FLAGS_NARUTO)
-        elseif now - N.poseAt > POSE_LOAD_MS then
-            N.stop("pose failed")
-            return
         end
     end
 
@@ -31815,10 +31852,16 @@ function N.tick(now)
         if N.mode ~= MODE_NOCLIP then
             return
         end
-        -- End the ragdoll without re-layering the skydive clip. The clip is the
-        -- source of the wind trails and of the visible fight with movement, so
-        -- re-applying it here is exactly what the operator saw after a contact.
+        -- End the ragdoll. ClearPedTasks wipes the secondary skyfall pose too,
+        -- so Undetect re-lays it on the next repair pass. The pose is the
+        -- upper-body secondary clip; it never restarts a full-body task and
+        -- never fights the input.
         pcall(ClearPedTasks, ped)
+        N.poseApplied = false
+        if poseWanted() then
+            N.posePending = true
+            N.poseAt = now
+        end
         -- A ragdoll reset can restore gravity/ragdoll/collision flags; re-assert
         -- them immediately instead of waiting for the 250 ms refresh.
         pcall(SetPedGravity, ped, false)
@@ -31837,16 +31880,44 @@ function N.tick(now)
         N.moveLogged = true
         O.log("air noclip move: %s", N.mode)
     end
-    -- Pose repair. Naruto keeps the light 500 ms recheck because its legs stay
-    -- on the on-foot task. No Clip has no pose to repair: the old
-    -- CLEAR_PED_TASKS/re-apply loop restarted the freefall clip and made the
-    -- body spin. With collision disabled per frame there is no pose loss.
-    if N.mode ~= MODE_NOCLIP and N.poseApplied and now >= N.animCheckAt then
+    -- Pose repair and reinforcement, both modes. The light 500 ms recheck
+    -- re-layers the upper-body clip when a task reset drops it. It is the same
+    -- non-destructive repair the Naruto line used; the old failure was the
+    -- CLEAR_PED_TASKS/re-apply loop, which is not used here. Switching the No
+    -- Clip selector to Detect while armed drops the pose and stops repairing;
+    -- switching back to Undetect lays it down again on the next check.
+    if now >= N.animCheckAt then
         N.animCheckAt = now + ANIM_CHECK_MS
-        local okPlaying, playing = pcall(IsEntityPlayingAnim, ped, ANIM_DICT, ANIM_CLIP, 3)
-        if not okPlaying or playing == false then
-            pcall(TaskPlayAnim, ped, ANIM_DICT, ANIM_CLIP,
-                8.0, 8.0, -1, ANIM_FLAGS_NARUTO, 1.0, false, false, false)
+        local want = poseWanted()
+        if not want then
+            if N.poseApplied then
+                pcall(ClearPedSecondaryTask, ped)
+                N.poseApplied = false
+            end
+            N.posePending = false
+        else
+            local okPlaying, playing = false, false
+            if N.poseApplied then
+                okPlaying, playing = pcall(IsEntityPlayingAnim, ped,
+                    ANIM_DICT, ANIM_CLIP, 3)
+            end
+            if not N.poseApplied or not okPlaying or playing == false then
+                local okLoaded, loaded = pcall(HasAnimDictLoaded, ANIM_DICT)
+                if okLoaded and loaded then
+                    local okAnim = pcall(TaskPlayAnim, ped, ANIM_DICT, ANIM_CLIP,
+                        8.0, 8.0, -1, ANIM_FLAGS_NARUTO, 1.0,
+                        false, false, false)
+                    if okAnim then
+                        N.poseApplied = true
+                        N.posePending = false
+                        N.taskStarted = true
+                    end
+                else
+                    pcall(RequestAnimDict, ANIM_DICT)
+                    N.posePending = true
+                    N.poseAt = now
+                end
+            end
         end
     end
 
@@ -36704,78 +36775,75 @@ end)(Menu)
 -- ---------------------------------------------------------------------------
 local FP = (function(O,S,B,Menu)
 -- ============================================================================
--- VANGUARD / 28 FIGHT PARTY (NETWORK BRAWL ON REAL PLAYER PEDS)
+-- VANGUARD / 28 FIGHT PARTY (NETWORK SYNCHRONISED SCENE BRAWL)
 -- ----------------------------------------------------------------------------
--- The effect the reference menu produces is not a pose. The ring's real
--- players square up and trade melee blows, move under AI control and take
--- native damage. Two earlier routes were tried and both were wrong for this:
+-- What the reference menu does on screen: every real player inside the ring
+-- turns into the centre and throws boxing punches, on every client, until the
+-- toggle is off. It is not a clone, not a control request, not a teleport.
 --
---   * CLONE_PED + TASK_COMBAT_PED: the brawl lives on a duplicate body only
---     the operator trusts, while the real player keeps walking. No.
---   * A resource emote relay (dpemotes `ServerValidEmote`, cmg2/cmg3 sync):
---     the victim's own client plays a single reaction clip and attaches
---     itself to the operator. That is one punch, not a party, and it needs a
---     relay resource the server may not run.
+-- Why the previous TASK route never reached the victims:
+--   A remote TaskCombatPed / TaskGoToCoordAnyMeans is a scripted task id only.
+--   The owner's client never receives the dictionary or clip, and a player ped
+--   is not AI-driven, so the task packet dies on arrival. The operator may see
+--   a local pose, the victims receive nothing. That is exactly the reported
+--   symptom and it cannot be repaired by task flags.
 --
--- A remote TaskPlayAnim is one-way: the clip names are not in the scripted
--- task packet when the ped belongs to another client, which is why the old
--- animation route only ever animated on the caller. COMBAT is different.
--- TASK_COMBAT_PED and TASK_COMBAT_PED_TIMED serialise a real task with a
--- target entity. When called on another player's ped, GTA V raises its own
--- givePedScriptedTaskEvent for that ped; the server forwards it to the ped
--- owner and the owner's client applies the combat task to its own character.
--- That is the network path the reference menu uses: no control request, no
--- entity write, no teleport and no synthetic event from this script — the
--- game's own task packet carries it, and the victim's AI does the rest.
+-- The route that does reach the owner is a networked synchronised scene:
+--   * NetworkCreateSynchronisedScene is created at the member's own position,
+--     with the rotation that faces the ring centre. The scene is NOT looped and
+--     phaseToStop ends it after one measured clip on every client, including
+--     the owner.
+--   * NetworkAddPedToSynchronisedScene adds the live player ped with the
+--     base-game celebration boxing clip, then NetworkStartSynchronisedScene
+--     starts it. The event the game raises for the scene is forwarded to the
+--     ped owner, whose own client applies the pose and the heading. Other
+--     clients see the same scene on their local copy.
+--   * Members rotate through the next scene one at a time. The start gate is
+--     2800 ms, which keeps this sender at four single-ped starts in any 10 s
+--     window; WaveShield V4's startNetworkSyncedSceneEvent cancels and flags
+--     only on the fifth. A multi-ped scene is ignored by that handler, but this
+--     module never needs one because the local lock covers the operator's view
+--     between scene turns.
 --
---   assembly   TASK_GO_TO_COORD_ANY_MEANS walks each member to a slot on a
---              tight circle around the anchor. The same task packet, so the
---              victim's client paths the walk; if the build ignores movement
---              tasks the victims simply brawl where they already stand.
---   brawl      Each member is paired with the nearest unpaired member and
---              both receive TASK_COMBAT_PED_TIMED with the other as target,
---              flags 16 (fight immediately, no flee). Every pair is mutual,
---              so both clients task their own ped and the fight is visible to
---              everyone. An odd member targets the nearest pair and makes the
---              circle a three-way brawl, exactly the shape in the reference
---              clip. Tasks are re-armed at a slow jittered cadence while the
---              toggle is on; a timed task expires by itself if the client is
---              gone.
---   release    No CLEAR_PED_TASKS on a remote player: V4's anti-clear handler
---              cancels a clear whose sender is not the ped owner. A short
---              TASK_STAND_STILL replaces the combat task instead, and the
---              15 s timed combat is the backstop if even that task is lost.
+-- Local half, exactly as the archived build had it:
+--   The operator's own client keeps every member facing the centre, position
+--   frozen and the same boxing clip playing as an upper-body secondary task.
+--   It is a local visual only; it is what makes the circle continuous on the
+--   operator's screen while the network half rotates. It never clears a remote
+--   primary task: release uses NetworkStopSynchronisedScene and
+--   ClearPedSecondaryTask, never ClearPedTasks, because V4's
+--   clearPedTasksEvent cancels and detects a clear on another player's ped.
 --
--- Why this is not a new observable:
---   * The only network artefact is the scripted-task event the game generates
---     for the native call itself. Its payload is the entity net id and a task
---     id; V4's handler is a stub (it does not cancel), and there is no custom
---     event name, entity or global.
---   * No ped, clone, object or vehicle is created or deleted. The members are
---     the live player peds already in scope.
---   * No health, armour, weapon or coordinate is written. Damage is the
---     game's own melee damage event, produced by the victim's own client.
---   * The ring and the status line are Susano overlay draws, outside the game
---     framebuffer.
+-- If the scene half never starts or is parked after repeated early deaths, the
+-- resource relay from the proven build is tried (dpemotes ServerValidEmote,
+-- then cmg2/cmg3), with a real target-side verification. If no provider reacts,
+-- the feature keeps the local circle and says NO REMOTE PATH instead of
+-- pretending the victims are brawling.
 --
--- The fallback is only for a build that refuses remote player tasks: after
--- the brawl window shows no movement, no combat state and no closing distance
--- on any member, the module switches to the resource relay the server already
--- trusts (dpemotes first, then cmg2/cmg3) and verifies each reaction on the
--- target ped. A relay that never produces a target-side result stops the
--- feature instead of pretending the victim is fighting.
+-- Natives used, verified in the repo dump (build 323):
+--   NETWORK_CREATE_SYNCHRONISED_SCENE 0xB06FE3FE
+--     (x,y,z,xRot,yRot,zRot,rotationOrder,occlusion,looped,p9,animTime,p11)->int
+--   NETWORK_ADD_PED_TO_SYNCHRONISED_SCENE 0xB386713E
+--     (ped,netScene,dict,clip,speed,speedMultiplier,duration,flag,rate,p9)
+--   NETWORK_START_SYNCHRONISED_SCENE 0xA9DFDC40 (int)
+--   NETWORK_STOP_SYNCHRONISED_SCENE 0x97B1CDF6 (int)
+--   NETWORK_GET_LOCAL_SCENE_FROM_NETWORK_ID 0x16AED87B (int)->int
+--   IS_SYNCHRONIZED_SCENE_RUNNING 0x57A282F1 (int)->BOOL
+--   GET_ANIM_DURATION 0x8B5E3E3D (dict,clip)->float
+--   GET_HEADING_FROM_VECTOR_2D 0xD209D52B (dx,dy)->float
+--   TASK_PLAY_ANIM 0x5AB552C6, CLEAR_PED_SECONDARY_TASK 0xA635F451
+--   FREEZE_ENTITY_POSITION 0x65C16D57
 --
 -- Residual risk:
---   1. Remote player tasks are a client-to-server game event. A server build
---      that blacklists task ids (Icarus task-blacklist style) can drop them;
---      V4 does not. The fallback then animates through the resource relay.
---   2. A victim who is handcuffed, dead, in a vehicle, or streaming out is
---      dropped on the next pass; the rest re-pair.
---   3. An armed victim fights with the weapon they already hold. The module
---      does not remove weapons remotely: removeAllWeaponsEvent on another
---      player is exactly what V4's AntiRemoveWeapons cancels and detects.
---   4. The timed combat is a 15 s task. Release sends a stand-still task; if
---      the server drops it too, the brawl ends on its own within that window.
+--   1. A scene start is a network event. The gate keeps this sender below the
+--      V4 counter; a server build with a stricter handler can cancel a scene,
+--      which is measured (early death) and parks the network half.
+--   2. The scene rotation turns the victim on their own client. It is applied
+--      by the owner, not written by this script.
+--   3. A victim who dies, enters a vehicle or streams out is dropped on the
+--      next pass and the rotation continues with the rest.
+--   4. No health, armour, weapon, damage or coordinate is written. Every
+--      member keeps their own position.
 -- ============================================================================
 
 local FP = {}
@@ -36785,22 +36853,36 @@ local RING_POINTS      = 72
 local CHECK_MS         = 150
 local RADIUS_MIN       = 8.0
 local RADIUS_MAX       = 40.0
-local ASSEMBLY_MS      = 2200
-local COMBAT_MS        = 15000
-local TASK_REFRESH_MS  = 4200
+local LEASH_M          = 3.0
+local SCENE_GATE_MS    = 2800
+local SCENE_FALLBACK_MS = 3200
+local SCENE_GRACE_MS   = 350
+local SCENE_DEAD_MS    = 800
+local SCENE_PARK_MS    = 20000
+local REAP_MS          = 2000
+local LOCK_MS          = 300
 local PROOF_MS         = 5000
-local RELEASE_MS       = 900
-local WALK_SPEED       = 2.0
-local COMBAT_FLAGS     = 0
-local THREAT_FLAGS     = 16
-local SLOT_BASE_R      = 2.0
-local SLOT_STEP_R      = 0.42
-local SLOT_MAX_R       = 7.0
 local RELAY_GAP_MS     = 2000
 local RELAY_CHECK_MS   = 900
 local RELAY_FRONT      = 0.92
 local CMG_DICT         = "melee@unarmed@streamed_variations"
 local DP_DICT          = "melee@unarmed@streamed_variations"
+local FIGHT_CLIP       = "shadow_boxing"
+local FIGHT_DICT_M     = "anim@mp_player_intcelebrationmale@shadow_boxing"
+local FIGHT_DICT_F     = "anim@mp_player_intcelebrationfemale@shadow_boxing"
+local LOCK_FLAGS       = 1 + 16 + 32
+local SYNC_FLAGS       = 4 + 8 + 1024 + 2048
+local BLEND_IN         = 8.0
+local BLEND_OUT        = -8.0
+local SCENE_ROT_ORDER  = 2
+local SCENE_P9         = 1.0
+local SCENE_ANIM_TIME  = 0.0
+local SCENE_P11        = 1.0
+local SCENE_ADD_P9     = 0
+local SCENE_ADD_RATE   = 1000.0
+local SLOT_BASE_R      = 2.0
+local SLOT_STEP_R      = 0.42
+local SLOT_MAX_R       = 7.0
 
 local CMG_ATTACKS = {
     { self = "plyr_takedown_rear_lefthook",  victim = "victim_takedown_front_cross_r",   ms = 1100 },
@@ -36830,11 +36912,10 @@ FP.members      = {}
 FP.byKey        = {}
 FP.count        = 0
 FP.startedAt    = 0
-FP.combatAt     = 0
 FP.onChange     = nil
 FP.note         = nil
 FP.noteUntil    = 0
-FP.mode         = "native"
+FP.mode         = "scene"
 FP.proof        = false
 FP.warned       = false
 FP.providers    = {}
@@ -36847,6 +36928,11 @@ FP.nextRelay    = 0
 FP.memberIndex  = 0
 FP.attackIndex  = 1
 FP.dpIndex      = 1
+FP.nextSceneAt  = 0
+FP.sceneStarted = 0
+FP.sceneFails   = 0
+FP.sceneParked  = 0
+FP.reap         = {}
 
 FP.canRender = type(Susano) == "table"
     and type(Susano.DrawLine) == "function"
@@ -36882,12 +36968,20 @@ local function pedUsable(ped)
         and not IsPedInAnyVehicle(ped, false)
 end
 
+local function isRagdolled(ped)
+    local ok, value = pcall(IsPedRagdoll, ped)
+    return ok and value == true
+end
+
+local function canLock(ped)
+    if not pedUsable(ped) then return false end
+    if ped == PlayerPedId() then return false end
+    return not isRagdolled(ped)
+end
+
 local function keyOf(rec)
-    if type(rec.sid) == "number" and rec.sid > 0 then
-        return "s" .. tostring(rec.sid)
-    end
-    if rec.player then return "p" .. tostring(rec.player) end
-    return "e" .. tostring(rec.source)
+    if rec.sid then return "s" .. tostring(rec.sid) end
+    return "p" .. tostring(rec.player or rec.source)
 end
 
 local function isVec(v)
@@ -37155,10 +37249,6 @@ local function gather(radius)
     return out
 end
 
--- ---------------------------------------------------------------------------
--- AIM ANCHOR. Same selection order as the rest of the menu: selected player,
--- then the ped under the camera ray, then the nearest other player.
--- ---------------------------------------------------------------------------
 local function aimedPed()
     if type(GetGameplayCamCoord) ~= "function"
         or type(GetGameplayCamRot) ~= "function" then return nil end
@@ -37188,105 +37278,287 @@ local function aimedPed()
 end
 
 -- ---------------------------------------------------------------------------
--- PAIRING. Mutual nearest pairs; an odd member targets the nearest pair and
--- turns the circle into a three-way fight. Only live member peds are targets.
+-- PAIRING (relay fallback only). Mutual nearest neighbours, one odd member
+-- joins the nearest pair as a third. The scene path is per member and does not
+-- need partners.
 -- ---------------------------------------------------------------------------
 local function partnerOf(rec)
-    if not rec or type(rec.partner) ~= "string" then return nil end
-    return FP.byKey[rec.partner]
+    return rec.partner
 end
 
 local function refreshPartners()
     local n = #FP.members
     for i = 1, n do FP.members[i].partner = nil end
+    for i = 1, n do FP.members[i].startPair = nil end
 
     for i = 1, n do
         local rec = FP.members[i]
         if not rec.partner then
+            local best, bestDist = nil, nil
             local pos = GetEntityCoords(rec.source)
-            local best, bestD = nil, nil
-            for j = i + 1, n do
-                local other = FP.members[j]
-                if other ~= rec and not other.partner then
+            for k = 1, n do
+                local other = FP.members[k]
+                if other ~= rec and not other.partner and pedUsable(other.source) then
                     local d = O.distance(pos, GetEntityCoords(other.source))
-                    if not bestD or d < bestD then best, bestD = other, d end
+                    if not bestDist or d < bestDist then
+                        best, bestDist = other, d
+                    end
                 end
             end
             if best then
-                rec.partner = best.key
-                best.partner = rec.key
+                rec.partner = best
+                best.partner = rec
             end
         end
     end
 
+    local odd = nil
     for i = 1, n do
-        local rec = FP.members[i]
-        if not rec.partner then
-            local pos = GetEntityCoords(rec.source)
-            local best, bestD = nil, nil
-            for j = 1, n do
-                local other = FP.members[j]
-                if other ~= rec then
-                    local d = O.distance(pos, GetEntityCoords(other.source))
-                    if not bestD or d < bestD then best, bestD = other, d end
+        if not FP.members[i].partner then odd = FP.members[i] break end
+    end
+    if odd and n >= 3 then
+        local best, bestDist = nil, nil
+        local pos = GetEntityCoords(odd.source)
+        for i = 1, n do
+            local rec = FP.members[i]
+            if rec ~= odd and rec.partner then
+                local d = O.distance(pos, GetEntityCoords(rec.source))
+                if not bestDist or d < bestDist then
+                    best, bestDist = rec, d
                 end
             end
-            if best then rec.partner = best.key end
         end
+        if best then odd.partner = best end
     end
 
-    -- Combat proof is a pair that closes on its target, not a pair that was
-    -- already standing together. Snapshot the opening distance per member.
     for i = 1, n do
         local rec = FP.members[i]
-        local partner = partnerOf(rec)
-        if partner then
+        local partner = rec.partner
+        if partner and pedUsable(partner.source) then
             rec.startPair = O.distance(GetEntityCoords(rec.source),
                 GetEntityCoords(partner.source))
-        else
-            rec.startPair = nil
         end
+    end
+end
+
+-- ---------------------------------------------------------------------------
+-- LOCAL LOCK. Operator-side view only. Faces the member at the ring centre,
+-- freezes the local copy and layers the boxing clip as an upper-body secondary
+-- task. It does not write a network coordinate and never clears the member's
+-- primary task.
+-- ---------------------------------------------------------------------------
+local function animDictFor(ped)
+    local okM, male = pcall(IsPedMale, ped)
+    if okM and male == false then
+        local okD, exists = pcall(DoesAnimDictExist, FIGHT_DICT_F)
+        if okD and exists == true then return FIGHT_DICT_F end
+    end
+    return FIGHT_DICT_M
+end
+
+local function faceHeading(ped, center)
+    if type(GetHeadingFromVector2d) == "function" then
+        local pos = GetEntityCoords(ped)
+        local ok, heading = pcall(GetHeadingFromVector2d,
+            center.x - pos.x, center.y - pos.y)
+        if ok and type(heading) == "number" then return heading end
+    end
+    local ok, heading = pcall(GetEntityHeading, ped)
+    return (ok and heading) or 0.0
+end
+
+local function lock(rec)
+    local ped = rec.source
+    if not canLock(ped) then
+        rec.nextLock = O.now() + LOCK_MS
+        return false
+    end
+
+    if not rec.heading and FP.center then
+        rec.heading = faceHeading(ped, FP.center)
+    end
+
+    if rec.heading then
+        pcall(SetEntityHeading, ped, rec.heading)
+    end
+    pcall(FreezeEntityPosition, ped, true)
+
+    local dict = animDictFor(ped)
+    if type(HasAnimDictLoaded) == "function" and HasAnimDictLoaded(dict) then
+        if not playing(ped, dict, FIGHT_CLIP) then
+            pcall(TaskPlayAnim, ped, dict, FIGHT_CLIP,
+                BLEND_IN, BLEND_OUT, -1, LOCK_FLAGS, 1.0,
+                false, false, false)
+        end
+    else
+        pcall(RequestAnimDict, dict)
+    end
+
+    rec.locked = true
+    rec.nextLock = O.now() + LOCK_MS
+    return true
+end
+
+local function unlock(rec)
+    if rec.scene then
+        local scene = rec.scene
+        pcall(NetworkStopSynchronisedScene, scene)
+        -- The stop is a network event and a remote-owned scene can survive the
+        -- first one. Retry over REAP_MS while the non-looped scene expires on
+        -- its own in parallel.
+        if #FP.reap < 24 then
+            FP.reap[#FP.reap + 1] = {
+                scene = scene,
+                untilMs = O.now() + REAP_MS,
+            }
+        end
+        rec.scene = nil
+        rec.sceneEndsAt = nil
+        rec.sceneStartedAt = nil
+        rec.sceneClipMs = nil
+    end
+    local ped = rec.source
+    if not ped or not DoesEntityExist(ped) then return end
+    if ped == PlayerPedId() then return end
+    pcall(FreezeEntityPosition, ped, false)
+    if rec.locked then
+        pcall(ClearPedSecondaryTask, ped)
+        rec.locked = false
     end
 end
 
 local function dropMember(i, now)
     local rec = FP.members[i]
+    unlock(rec)
     FP.byKey[rec.key] = nil
     table.remove(FP.members, i)
     if FP.pending and FP.pending.rec == rec then FP.pending = nil end
     if FP.relayTarget == rec then FP.relayTarget = nil end
     refreshPartners()
-    local n = #FP.members
-    for k = 1, n do FP.members[k].nextTask = now end
-    FP.count = n
-end
-
-local function issueWalk(rec)
-    local pos = GetEntityCoords(rec.source)
-    if O.distance(pos, rec.slot) > 3.5 then
-        TaskGoToCoordAnyMeans(rec.source, rec.slot.x, rec.slot.y,
-            rec.slot.z, WALK_SPEED, 0, false, 786603, -1.0)
-    end
-end
-
-local function issueCombat(rec, now)
-    local partner = partnerOf(rec)
-    if not partner or not pedUsable(partner.source) then return false end
-    TaskCombatPedTimed(rec.source, partner.source, COMBAT_MS, THREAT_FLAGS)
-    rec.taskAt = now
-    rec.nextTask = now + TASK_REFRESH_MS
-    return true
-end
-
-local function releaseMember(rec)
-    if not rec or not pedUsable(rec.source) then return end
-    TaskStandStill(rec.source, RELEASE_MS)
+    FP.count = #FP.members
 end
 
 -- ---------------------------------------------------------------------------
--- RELAY FALLBACK. One verified reaction at a time, paced well below any
--- emote-relay burst threshold. This only runs when the native task path
--- produced no observable effect on any member.
+-- NETWORK HALF. Non-looped scene per member at the member's own position,
+-- rotated to face the ring centre. The gate keeps one start per 2.8 s.
+-- ---------------------------------------------------------------------------
+local function sceneStart(rec)
+    local ped = rec.source
+    if not ped or ped == 0 then return false end
+    if ped == PlayerPedId() then return false end
+    if rec.scene then return true end
+    if type(NetworkCreateSynchronisedScene) ~= "function"
+        or type(NetworkAddPedToSynchronisedScene) ~= "function"
+        or type(NetworkStartSynchronisedScene) ~= "function" then
+        return false
+    end
+    if not pedUsable(ped) then return false end
+
+    local dict = animDictFor(ped)
+    if type(HasAnimDictLoaded) ~= "function" or not HasAnimDictLoaded(dict) then
+        pcall(RequestAnimDict, dict)
+        return false
+    end
+
+    local clipMs = 0
+    if type(GetAnimDuration) == "function" then
+        local okD, seconds = pcall(GetAnimDuration, dict, FIGHT_CLIP)
+        if okD and type(seconds) == "number"
+            and seconds == seconds and seconds > 0 then
+            clipMs = math.floor(seconds * 1000.0 + 0.5)
+        end
+    end
+    if clipMs < 1200 then clipMs = SCENE_FALLBACK_MS end
+    if clipMs > 12000 then clipMs = 12000 end
+
+    local pos = GetEntityCoords(ped)
+    if not rec.heading and FP.center then
+        rec.heading = faceHeading(ped, FP.center)
+    end
+    local heading = rec.heading or GetEntityHeading(ped)
+
+    local okScene, scene = pcall(NetworkCreateSynchronisedScene,
+        pos.x, pos.y, pos.z, 0.0, 0.0, heading, SCENE_ROT_ORDER,
+        false, false, SCENE_P9, SCENE_ANIM_TIME, SCENE_P11)
+    if not okScene or type(scene) ~= "number" or scene == 0 then
+        return false
+    end
+
+    local okAdd = pcall(NetworkAddPedToSynchronisedScene,
+        ped, scene, dict, FIGHT_CLIP,
+        BLEND_IN, BLEND_OUT, SYNC_FLAGS, 0, SCENE_ADD_RATE, SCENE_ADD_P9)
+    if not okAdd then
+        pcall(NetworkStopSynchronisedScene, scene)
+        return false
+    end
+
+    local okStart = pcall(NetworkStartSynchronisedScene, scene)
+    if not okStart then
+        pcall(NetworkStopSynchronisedScene, scene)
+        return false
+    end
+
+    rec.scene = scene
+    rec.sceneStartedAt = O.now()
+    rec.sceneClipMs = clipMs
+    rec.sceneEndsAt = rec.sceneStartedAt + clipMs + SCENE_GRACE_MS
+    FP.sceneStarted = FP.sceneStarted + 1
+    FP.proof = true
+    return true
+end
+
+local function sceneAlive(rec)
+    if not rec.scene then return false end
+
+    if rec.sceneEndsAt and O.now() >= rec.sceneEndsAt then
+        rec.scene = nil
+        rec.sceneEndsAt = nil
+        rec.sceneStartedAt = nil
+        rec.sceneClipMs = nil
+        return false
+    end
+
+    local clipMs = rec.sceneClipMs or SCENE_FALLBACK_MS
+    local age = rec.sceneStartedAt and (O.now() - rec.sceneStartedAt) or 0
+    local earlyMs = math.max(SCENE_DEAD_MS, clipMs - 600)
+
+    if age > earlyMs and FP.sceneFails ~= 0 then
+        FP.sceneFails = 0
+    end
+
+    if type(NetworkGetLocalSceneFromNetworkId) == "function"
+        and type(IsSynchronizedSceneRunning) == "function" then
+        local okLocal, localId = pcall(NetworkGetLocalSceneFromNetworkId, rec.scene)
+        if okLocal and type(localId) == "number" and localId ~= 0 then
+            local okRun, running = pcall(IsSynchronizedSceneRunning, localId)
+            if okRun and running == false
+                and clipMs >= 1600
+                and age > SCENE_DEAD_MS then
+                if age < earlyMs then
+                    FP.sceneFails = FP.sceneFails + 1
+                else
+                    FP.sceneFails = 0
+                end
+                if FP.sceneFails >= 4 then
+                    FP.sceneParked = O.now() + SCENE_PARK_MS
+                    FP.sceneFails = 0
+                    log("network half parked for %d ms", SCENE_PARK_MS)
+                end
+                rec.scene = nil
+                rec.sceneEndsAt = nil
+                rec.sceneStartedAt = nil
+                rec.sceneClipMs = nil
+                return false
+            end
+        end
+    end
+
+    return true
+end
+
+-- ---------------------------------------------------------------------------
+-- RELAY TICK (fallback only). One verified reaction at a time, paced well
+-- below any emote-relay burst threshold.
 -- ---------------------------------------------------------------------------
 local function relayTick(now)
     if FP.pending then
@@ -37376,10 +37648,41 @@ local function relayTick(now)
     FP.dpIndex = (FP.dpIndex % #DP_PAIRS) + 1
 end
 
+local function startRelay(now)
+    if FP.mode == "relay" then return end
+    FP.mode = "relay"
+    FP.warned = true
+    for i = 1, #FP.members do unlock(FP.members[i]) end
+    local host, injectable = pickHost()
+    emitHost = host
+    FP.providers = detectProviders()
+    FP.providerIndex = 1
+    FP.provider = FP.providers[1] and FP.providers[1].name or nil
+    FP.relayFails = 0
+    FP.nextRelay = now
+    log("scene half dead; relay fallback (host %s)", host)
+    if type(injectable) == "table" and #injectable > 0 then
+        log("injectable: %s", table.concat(injectable, ", "))
+    end
+    if #FP.providers == 0 then
+        FP.mode = "local"
+        note("NO REMOTE PATH")
+    end
+end
+
 -- ---------------------------------------------------------------------------
 -- TICK
 -- ---------------------------------------------------------------------------
 local function tick(now)
+    for i = #FP.reap, 1, -1 do
+        local entry = FP.reap[i]
+        if now >= entry.untilMs then
+            table.remove(FP.reap, i)
+        else
+            pcall(NetworkStopSynchronisedScene, entry.scene)
+        end
+    end
+
     if not FP.active then return end
     if not FP.center then FP.stop("no centre") return end
     if #FP.members == 0 then FP.stop("empty") return end
@@ -37387,31 +37690,9 @@ local function tick(now)
     local dirty = false
     for i = #FP.members, 1, -1 do
         local rec = FP.members[i]
-        local ped = rec.source
-        if not pedUsable(ped) then
+        if not pedUsable(rec.source) then
             dropMember(i, now)
             dirty = true
-        else
-            local pos = GetEntityCoords(ped)
-            local delta = O.distance(pos, rec.lastPos)
-            if delta < 3.0 then rec.moved = rec.moved + delta end
-            rec.lastPos = O.v3(pos)
-
-            if now >= FP.combatAt then
-                local partner = partnerOf(rec)
-                if partner and pedUsable(partner.source) then
-                    local pd = O.distance(pos, GetEntityCoords(partner.source))
-                    if IsPedInCombat(ped, partner.source) == true then
-                        rec.inCombat = true
-                        FP.proof = true
-                    end
-                    if rec.moved >= 0.25 then FP.proof = true end
-                    if type(rec.startPair) == "number"
-                        and pd <= rec.startPair - 0.6 then
-                        FP.proof = true
-                    end
-                end
-            end
         end
     end
 
@@ -37420,50 +37701,51 @@ local function tick(now)
         FP.count = #FP.members
     end
 
-    if not FP.proof and not FP.warned and #FP.members > 0 then
-        if now >= FP.combatAt + PROOF_MS and FP.mode == "native" then
-            FP.warned = true
-            local host, injectable = pickHost()
-            emitHost = host
-            FP.providers = detectProviders()
-            if #FP.providers > 0 then
-                FP.mode = "relay"
-                FP.providerIndex = 1
-                FP.provider = FP.providers[1].name
-                FP.relayFails = 0
-                FP.nextRelay = now
-                log("native brawl unproven; relay fallback (host %s)", host)
-                if type(injectable) == "table" and #injectable > 0 then
-                    log("injectable: %s", table.concat(injectable, ", "))
-                end
-            else
-                log("native brawl unproven; no relay provider")
-                note("NO REMOTE PATH")
-            end
-        end
-    end
-
-    if FP.mode == "relay" then
-        relayTick(now)
+    if FP.mode == "relay" or FP.mode == "local" then
+        if FP.mode == "relay" then relayTick(now) end
         return
     end
 
-    if now < FP.combatAt then return end
-
-    for i = 1, #FP.members do
+    local count = #FP.members
+    for i = 1, count do
         local rec = FP.members[i]
-        if rec.nextTask <= now then
-            local nearEnd = (now - rec.taskAt) >= (COMBAT_MS - 2500)
-            if not rec.inCombat or nearEnd then
-                if not issueCombat(rec, now) then
-                    rec.nextTask = now + 500
-                else
-                    rec.inCombat = false
+        local alive = sceneAlive(rec)
+        if not alive and now >= (rec.nextLock or 0) then
+            lock(rec)
+        end
+    end
+
+    if FP.sceneParked > 0 and now >= FP.sceneParked then
+        FP.sceneParked = 0
+        FP.sceneFails = 0
+        log("network half unparked")
+    end
+
+    if now >= FP.nextSceneAt and (FP.sceneParked == 0 or now >= FP.sceneParked) then
+        local started = false
+        for step = 1, count do
+            FP.memberIndex = (FP.memberIndex % count) + 1
+            local rec = FP.members[FP.memberIndex]
+            if not rec.scene and canLock(rec.source) then
+                if sceneStart(rec) then
+                    log("scene started: ped=%s scene=%s",
+                        tostring(rec.sid or rec.player or rec.source),
+                        tostring(rec.scene))
+                    started = true
+                    FP.lastSceneAt = now
                 end
-            else
-                rec.nextTask = now + 500
+                break
             end
         end
+        FP.nextSceneAt = now + (started and SCENE_GATE_MS or 600)
+    end
+
+    if FP.sceneStarted == 0 and now >= FP.startedAt + PROOF_MS and not FP.warned then
+        FP.warned = true
+        startRelay(now)
+    elseif FP.sceneParked > 0 and not FP.warned then
+        FP.warned = true
+        startRelay(now)
     end
 end
 
@@ -37475,9 +37757,9 @@ function FP.isActive()
 end
 
 function FP.status()
-    return ("active=%s peds=%d radius=%.0f mode=%s"):format(
+    return ("active=%s peds=%d radius=%.0f mode=%s scenes=%d"):format(
         tostring(FP.active), #FP.members, FP.radius,
-        tostring(FP.mode or "-"))
+        tostring(FP.mode or "-"), FP.sceneStarted or 0)
 end
 
 function FP.stop(reason)
@@ -37485,7 +37767,7 @@ function FP.stop(reason)
     FP.active = false
 
     for i = 1, #FP.members do
-        releaseMember(FP.members[i])
+        unlock(FP.members[i])
     end
     if FP.relayTarget then cmgStop(FP.relayTarget) end
     if FP.pending and isCmg(FP.pending.name) then
@@ -37504,7 +37786,7 @@ function FP.stop(reason)
     FP.byKey = {}
     FP.count = 0
     FP.note = nil
-    FP.mode = "native"
+    FP.mode = "scene"
     FP.proof = false
     FP.warned = false
     FP.providers = {}
@@ -37518,7 +37800,12 @@ function FP.stop(reason)
     FP.attackIndex = 1
     FP.dpIndex = 1
     FP.startedAt = 0
-    FP.combatAt = 0
+    FP.nextSceneAt = 0
+    FP.sceneStarted = 0
+    FP.sceneFails = 0
+    FP.sceneParked = 0
+    FP.lastSceneAt = nil
+    FP.reap = {}
 
     if FP.canRender and Menu then Menu.PreventResetFrame = false end
 
@@ -37540,8 +37827,13 @@ function FP.start()
     FP.note = nil
     FP.warned = false
     FP.proof = false
-    FP.mode = "native"
+    FP.mode = "scene"
     FP.providers = {}
+    FP.reap = {}
+    FP.sceneStarted = 0
+    FP.sceneFails = 0
+    FP.sceneParked = 0
+    FP.nextSceneAt = 0
 
     local selectedSid = nil
     local anchorPed = nil
@@ -37610,31 +37902,37 @@ function FP.start()
     FP.slotRadius = slotR
     buildRing()
 
+    pcall(RequestAnimDict, FIGHT_DICT_M)
+    pcall(RequestAnimDict, FIGHT_DICT_F)
+
     FP.members = {}
     FP.byKey = {}
     FP.count = 0
     FP.startedAt = now
-    FP.combatAt = now + ASSEMBLY_MS
+    FP.nextSceneAt = now
     FP.proof = false
 
     for i = 1, n do
         local rec = list[i]
         local key = keyOf(rec)
         if not FP.byKey[key] then
-            local angle = (i - 1) / n * math.pi * 2.0
+            local pos = GetEntityCoords(rec.source)
             rec.key = key
-            rec.home = O.v3(GetEntityCoords(rec.source))
-            rec.lastPos = O.v3(rec.home)
+            rec.lastPos = O.v3(pos)
             rec.slot = {
-                x = FP.center.x + math.cos(angle) * slotR,
-                y = FP.center.y + math.sin(angle) * slotR,
+                x = FP.center.x + math.cos((i - 1) / n * math.pi * 2.0) * slotR,
+                y = FP.center.y + math.sin((i - 1) / n * math.pi * 2.0) * slotR,
                 z = FP.center.z,
             }
-            rec.moved = 0.0
-            rec.inCombat = false
+            rec.heading = faceHeading(rec.source, FP.center)
             rec.partner = nil
-            rec.taskAt = 0
-            rec.nextTask = now + ASSEMBLY_MS
+            rec.nextLock = now + O.int(120, 900)
+            rec.scene = nil
+            rec.sceneAt = 0
+            rec.sceneEndsAt = nil
+            rec.sceneStartedAt = nil
+            rec.sceneClipMs = nil
+            rec.locked = false
             FP.members[#FP.members + 1] = rec
             FP.byKey[key] = rec
         end
@@ -37649,7 +37947,6 @@ function FP.start()
     end
 
     refreshPartners()
-    for i = 1, #FP.members do issueWalk(FP.members[i]) end
 
     FP.count = #FP.members
     FP.anchorPed = anchorPed
@@ -37662,14 +37959,13 @@ function FP.start()
     if FP.canRender and Menu then Menu.PreventResetFrame = true end
 
     notify()
-    log("started: peds=%d radius=%.0f anchor=%s pair=%d mode=native",
-        FP.count, FP.radius, tostring(selectedSid or "auto"),
-        math.floor(FP.count / 2))
+    log("started: peds=%d radius=%.0f anchor=%s clip=%s mode=scene",
+        FP.count, FP.radius, tostring(selectedSid or "auto"), FIGHT_CLIP)
     return true
 end
 
 -- ---------------------------------------------------------------------------
--- RENDER. Selection ring and a status line on the Susano overlay.
+-- RENDER. Selection ring, slot ring and a status line on the Susano overlay.
 -- ---------------------------------------------------------------------------
 local screenSize
 
@@ -37788,7 +38084,7 @@ function FP.render()
             height * 0.855, 18, 0.96, 0.52, 0.52, 0.92)
     else
         drawCentered(("FIGHT PARTY | %d BRAWLING | %s"):format(
-            #FP.members, string.upper(tostring(FP.mode or "native"))),
+            #FP.members, string.upper(tostring(FP.mode or "scene"))),
             height * 0.855, 18, 0.94, 0.98, 1.0, 0.92)
     end
 end
@@ -37912,7 +38208,7 @@ function FP.install()
 end
 
 -- One scheduler owns the periodic work. The period is jittered by O.every, so
--- the task re-arm never lines up on a fixed cadence.
+-- the scene gate never lines up on a fixed cadence.
 O.every("fightparty", CHECK_MS, tick, O.int(0, CHECK_MS))
 
 -- Test seam: lets the local harness drive one pass without starting the whole
@@ -38272,11 +38568,35 @@ Menu.__vgd_vendors = V
 -- ---------------------------------------------------------------------------
 -- EXPLOIT > BYPASS
 --
--- Each entry is isolated: WaveShield, FiveGuard and Electron AC apply their own
--- export profiles; Seed injects only into seed; Dynasty injects only into
--- Putin; Raven uses only Raven's documented client movement-grace export. No
--- entry applies a global profile to another vendor's resource.
+-- One universal AC row. It arms three vendor-agnostic layers:
+--   1. the outbound pattern choke (`_Stealth.blockAC` + `acPatterns`),
+--   2. the exact WaveShield token choke (random per build, computed from
+--      GlobalState.BanEventToken + the source substitution),
+--   3. the export suppression (`S.setSuppress` + `S.setOverlayProbe`).
+-- No resource stop and no freeze: WaveShield's heartbeat keeps beating.
+-- Seed injects only into seed; Dynasty injects only into Putin; Raven uses
+-- only Raven's documented client movement-grace export.
 -- ---------------------------------------------------------------------------
+Menu.__vgdUniversalBypass = function()
+    if type(_Stealth) == "table" then
+        _Stealth.blockAC = true
+        if not _Stealth._universal then
+            _Stealth._universal = true
+            StealthAcquire("ac")
+        end
+    end
+    Menu.__vgd_wsBanChoke = true
+    if type(Menu.__vgd_wsComputeBanNames) == "function" then
+        Menu.__vgd_wsComputeBanNames()
+    end
+    local shield = Menu.__vgd_shield
+    if type(shield) == "table" then
+        shield.setSuppress(true)
+        shield.setOverlayProbe(true)
+    end
+    return true
+end
+
 local function installBypassProfiles()
     local tab = findTab("Visual", "Bypass")
     if not tab then return false end
@@ -38303,32 +38623,9 @@ local function installBypassProfiles()
     -- action on this vendor.
     tab.items = {
         {
-            name = "WaveShield",
+            name = "Universal",
             type = "action",
-            onClick = function()
-                Menu.__vgd_wsBanChoke = true
-                local names = 0
-                if type(Menu.__vgd_wsComputeBanNames) == "function" then
-                    names = tonumber(Menu.__vgd_wsComputeBanNames()) or 0
-                end
-                O.log("waveshield: ban-event choke armed (%d name%s)",
-                    names, names == 1 and "" or "s")
-            end,
-        },
-        {
-            name = "FiveGuard",
-            type = "action",
-            onClick = function() V.applyVendor("fiveguard") end,
-        },
-        {
-            name = "Electron AC",
-            type = "action",
-            onClick = function() V.applyVendor("electron") end,
-        },
-        {
-            name = "Reason AC",
-            type = "action",
-            onClick = function() V.applyVendor("reason") end,
+            onClick = function() Menu.__vgdUniversalBypass() end,
         },
         {
             name = "Seed",
@@ -38527,7 +38824,8 @@ end
 --
 -- Two rows over one module (src/16_air_noclip.lua). Both keep the
 -- 423/falling/in-air read cover. Naruto keeps the upper-body freefall pose and
--- the 1.2 s warmup; No Clip plays no pose and is pure free-flight:
+-- the 1.2 s warmup; No Clip Undetect keeps the same skyfall pose and repairs
+-- it, while Detect stays pose-free:
 --   Naruto Run  horizontal only, no pitch and no Space/Ctrl lift, rides a low
 --               clearance band so it never lands and never rolls.
 --   No Clip     full 3D steering with a hard airborne floor and a live
@@ -42105,7 +42403,7 @@ Menu.__vgdInstallBan = function()
     local A = Menu.__vgdAudit
     if type(B) ~= "table" or type(A) ~= "table" then return false end
 
-    local banRow = FindItem("Online", "Troll", "Ban Player")
+    local banRow = findItem("Online", "Troll", "Ban Player")
     if banRow then
         banRow.type = "action"
         banRow.value = nil
