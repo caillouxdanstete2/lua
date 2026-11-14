@@ -1282,6 +1282,19 @@ do
         local baseHandleInput = Menu.HandleInput
         Menu.__vgdEscCapture = true
 
+        -- The stock capture list omits Insert, Delete, Page Up, Page Down, Home,
+        -- End and the numpad. Those keys stay invisible to the scan: Enter then
+        -- confirms the old key while the unlisted key is still held, and the
+        -- toggle branch reads that as a fresh press. Capture them here so the
+        -- card shows the real key and KeyStates owns the edge.
+        local extraCaptureKeys = {
+            0x21, 0x22, 0x23, 0x24, 0x2D, 0x2E,
+            0x60, 0x61, 0x62, 0x63, 0x64, 0x65, 0x66, 0x67, 0x68, 0x69,
+            0x6A, 0x6B, 0x6D, 0x6E, 0x6F,
+            0x90, 0x91,
+            0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5,
+        }
+
         local function countKeyStates()
             local total = 0
             local states = Menu.KeyStates
@@ -1326,6 +1339,9 @@ do
                     Menu.SelectedKey = Menu.__vgdKeyBefore
                     Menu.SelectedKeyName = Menu.__vgdKeyNameBefore
                     Menu.SelectingKey = false
+                    if Menu.SelectedKey then
+                        Menu.KeyStates[Menu.SelectedKey] = true
+                    end
                 else
                     Menu.SelectingBind = false
                     Menu.BindingItem = nil
@@ -1336,6 +1352,26 @@ do
             end
 
             local result = baseHandleInput()
+
+            if selectingKey and Menu.SelectingKey and not Menu.__vgdKeyCaptured then
+                for i = 1, #extraCaptureKeys do
+                    local keyCode = extraCaptureKeys[i]
+                    if Menu.IsKeyJustPressed(keyCode) then
+                        Menu.SelectedKey = keyCode
+                        Menu.SelectedKeyName = Menu.GetKeyName(keyCode)
+                        Menu.KeyStates[keyCode] = true
+                        Menu.__vgdKeyCaptured = true
+                        break
+                    end
+                end
+            end
+
+            -- Enter closes the capture on the same frame the key is still held.
+            -- Mark the selected key down so the toggle branch cannot turn that
+            -- hold into a menu open; the next release clears it normally.
+            if selectingKey and not Menu.SelectingKey and Menu.SelectedKey then
+                Menu.KeyStates[Menu.SelectedKey] = true
+            end
 
             if selectingKey and Menu.SelectingKey and not Menu.__vgdKeyCaptured then
                 local changed = Menu.__vgdKeyStart ~= nil
@@ -1381,6 +1417,7 @@ do
     Menu.Anim.dur = 0.22
     Menu.Anim.sigOpened = nil
     Menu.Anim.sigTab = nil
+    Menu.Anim.sigCount = nil
     Menu.AnimTime = 0.0
     Menu.AnimDelta = 0.016
     Menu.ContentEase = 1.0
@@ -1396,6 +1433,24 @@ do
 
     local function easeInCubic(t)
         return t * t * t
+    end
+
+    -- The overlay keeps every pixel from the previous frame unless the draw
+    -- list is reset. A shorter tab (or fewer Player List rows) would otherwise
+    -- leave the old rows and footer visible below the new panel. The count is
+    -- clamped exactly like DrawFooter, so scrolling inside a full page does not
+    -- trigger a reset.
+    local function currentVisibleCount()
+        if type(Menu.OpenedCategory) ~= "number" then return 0 end
+        local category = type(Menu.Categories) == "table"
+            and Menu.Categories[Menu.OpenedCategory] or nil
+        local tab = category and type(category.tabs) == "table"
+            and category.tabs[Menu.CurrentTab] or nil
+        if not tab or type(tab.items) ~= "table" then return 0 end
+        local count = #tab.items
+        local maxVisible = tonumber(Menu.ItemsPerPage) or 8
+        if count > maxVisible then count = maxVisible end
+        return count
     end
 
     local originalRender = Menu.Render
@@ -1455,15 +1510,23 @@ do
             Menu.Glow = 1.0 + 0.16 * math.sin(clock * 1.7)
             Menu.BarGlow = 0.82 + 0.18 * (0.5 + 0.5 * math.sin(clock * 1.45))
 
-            -- A new category or tab fades its rows in instead of popping them.
-            -- Two scalar fields instead of a concatenated key: no per-frame
-            -- string allocation and no chance of a "|" collision. The frame
-            -- that detects the change starts at zero; the following frames
-            -- advance the fade, so the rows do not pop in at the first step.
-            if Menu.OpenedCategory ~= Menu.Anim.sigOpened or Menu.CurrentTab ~= Menu.Anim.sigTab then
+            -- A new category, tab or visible row count fades its rows in and
+            -- clears the previous overlay. Two scalar fields instead of a
+            -- concatenated key: no per-frame string allocation and no chance
+            -- of a "|" collision. The frame that detects the change starts at
+            -- zero; the following frames advance the fade, so the rows do not
+            -- pop in at the first step.
+            local visibleCount = currentVisibleCount()
+            if Menu.OpenedCategory ~= Menu.Anim.sigOpened
+                or Menu.CurrentTab ~= Menu.Anim.sigTab
+                or visibleCount ~= Menu.Anim.sigCount then
                 Menu.Anim.sigOpened = Menu.OpenedCategory
                 Menu.Anim.sigTab = Menu.CurrentTab
+                Menu.Anim.sigCount = visibleCount
                 Menu.ContentEase = 0.0
+                if type(Susano) == "table" and type(Susano.ResetFrame) == "function" then
+                    Susano.ResetFrame()
+                end
             else
                 Menu.ContentEase = Menu.ContentEase + (1.0 - Menu.ContentEase) * (1.0 - math.exp(-18.0 * dt))
                 if Menu.ContentEase > 0.999 then Menu.ContentEase = 1.0 end
@@ -3633,9 +3696,8 @@ Menu.SelectedPlayers = {}
 Menu.PlayerListSelectIndex = 1
 Menu.PlayerListTeleportIndex = 1
 Menu.PlayerListSpectateEnabled = false
--- Target Type for Player > Target and Online > Player List:
--- 1 = All, 2 = On Foot, 3 = In Vehicle. Read live by both surfaces.
-Menu.TargetFilter = 1
+-- Target Type lives on the Lock Player row (toggle_selector). Both the Player
+-- List and the resolver read it live through Menu.GetTargetType().
 Menu.StaffModeEnabled = false
 Menu.DisableWeaponDamage = false
 Menu.WeaponDamageHookSet = false
@@ -5099,12 +5161,15 @@ local function UpdatePlayerList()
                     local myServerId = GetPlayerServerId(myPlayerId)
                     local myName = GetPlayerName(myPlayerId)
                     
-                    -- Target Type (Player > Target) filters the other-player
-                    -- rows. Self stays as the local identity row; the filter is
-                    -- about other players. Read every rebuild, so the selector
-                    -- takes effect on the next frame.
+                    -- Target Type is the Lock Player row's selector. The
+                    -- filter applies to other-player rows; self stays as the
+                    -- local identity row. Read every rebuild, so Left/Right on
+                    -- the row takes effect on the next frame.
                     local otherPlayers = {}
-                    local targetFilter = tonumber(Menu.TargetFilter) or 1
+                    local targetFilter = 1
+                    if type(Menu.GetTargetType) == "function" then
+                        targetFilter = tonumber(Menu.GetTargetType()) or 1
+                    end
                     if targetFilter < 1 or targetFilter > 3 then targetFilter = 1 end
                     for _, player in ipairs(GetActivePlayers()) do
                         if player ~= myPlayerId then
@@ -29520,8 +29585,11 @@ local function hookToggle(localVehicle, offset)
         return
     end
 
+    -- The stock path keeps its historical fixed offset; the assisted path
+    -- derives the hook from the model box.
+    local seat = offset.legacy or offset
     local attached = pcall(AttachEntityToEntity, target, localVehicle, 0,
-        offset.x, offset.y, offset.z,
+        seat.x, seat.y, seat.z,
         0.0, 0.0, 0.0,
         false, false, false, false, 2, true)
 
@@ -29542,77 +29610,102 @@ end
 -- the car must sit exactly under the hook and be pressed at the right frame,
 -- and its heading is overwritten.
 --
--- Every hook preset carries its own profile:
+-- No cargobob-specific native is called here. The hook point is derived from
+-- the parent model box, which is already loaded:
 --
---   * x/y/z is the real hook point in the parent frame;
---   * seat is the point on the target that must land on the hook: "roof"
---     seats the roof centre under the cargobob cable, "front" seats the front
---     bumper centre on the tow hook;
---   * snap is the grasp-to-hook distance that fires, range the widest search,
---     predict the lookahead, minArm the predicted pass that locks, window the
---     armed lifetime and maxGraspAbove the tolerance for a hook below the
---     grasp point.
+--   * Cargobob: the short belly hook just under min.z. The roof centre seats
+--     on it and the target keeps its own heading. The standard Cargobob cable
+--     is short; the old -5.0 m offset put the car below the visible hook.
+--   * Tow truck: the rear lift at min.z + 0.8. The front axle seats on it and
+--     the car aligns with the truck, which is the wheel-lift pose.
+--
+-- The target seat comes from its own model box. The only write is the same
+-- local AttachEntityToEntity the stock hook already uses, plus its matching
+-- DetachEntity; every other call is a read (coords, heading, velocity, model
+-- box). No event, no entity creation, no network write. A target owned by
+-- another client can still be restored by the server on a distance check,
+-- which is the same residual as the stock hook and is accepted, not hidden.
 --
 -- The shared loop predicts every candidate for `predict` seconds with its own
 -- velocity minus the parent velocity, so a car driving through the capture
--- sphere is scored at its closest approach, not where it sits now. The model
--- box (GetModelDimensions) gives the seat point, so the attach offset comes
--- from real geometry instead of a guessed constant. A moving target that is
--- not in range yet is locked for `window`; the grab fires on the first frame
--- its seat point passes within `snap` of the hook.
---
--- Every step is a local read plus one local AttachEntityToEntity: no event, no
--- entity creation, no network write. A target owned by another client can still
--- be restored by the server on a distance check, which is the same residual as
--- the stock hook and is accepted, not hidden.
+-- sphere is scored at its closest approach, not where it sits now. A moving
+-- target that is not in range yet is locked for `window`; the grab fires on
+-- the first frame its seat point passes within `snap` of the hook.
 
-local function hookPoint(vehicle, profile)
+local function modelBox(vehicle)
+    if type(GetModelDimensions) ~= "function" or type(GetEntityModel) ~= "function" then
+        return nil
+    end
+    local okModel, model = pcall(GetEntityModel, vehicle)
+    if not okModel or type(model) ~= "number" then return nil end
+    local okBox, min, max = pcall(GetModelDimensions, model)
+    if not okBox or not min or not max
+        or type(min.x) ~= "number" or type(max.x) ~= "number" then
+        return nil
+    end
+    return min, max
+end
+
+local function hookLocal(parent, profile)
+    local hx = profile.x or 0.0
+    local hy = profile.y or 0.0
+    local hz = profile.z or 0.0
+    local min, max = modelBox(parent)
+    if min and max then
+        if profile.yFrom == "rear" then
+            hy = min.y - (profile.rearOverhang or 0.5)
+        elseif profile.yFrom == "center" then
+            hy = (min.y + max.y) * 0.5
+        end
+        if profile.zFrom == "belly" then
+            hz = min.z - (profile.drop or 0.15)
+        elseif profile.zFrom == "lift" then
+            hz = min.z + (profile.rise or 0.8)
+        end
+    end
+    return hx, hy, hz
+end
+
+local function offsetFromEntity(vehicle, x, y, z)
     if type(GetOffsetFromEntityInWorldCoords) == "function" then
-        local ok, point = pcall(GetOffsetFromEntityInWorldCoords,
-            vehicle, profile.x, profile.y, profile.z)
+        local ok, point = pcall(GetOffsetFromEntityInWorldCoords, vehicle, x, y, z)
         if ok and point and type(point.x) == "number" then return point end
     end
-    return GetEntityCoords(vehicle)
+    local coords = GetEntityCoords(vehicle)
+    local angle = math.rad(GetEntityHeading(vehicle))
+    local ox = x * math.cos(angle) - y * math.sin(angle)
+    local oy = x * math.sin(angle) + y * math.cos(angle)
+    return { x = coords.x + ox, y = coords.y + oy, z = coords.z + z }
+end
+
+local function hookPoint(parent, profile)
+    local hx, hy, hz = hookLocal(parent, profile)
+    return offsetFromEntity(parent, hx, hy, hz)
 end
 
 local function targetBox(vehicle)
-    if type(GetModelDimensions) == "function" then
-        local modelOk, model = pcall(GetEntityModel, vehicle)
-        if modelOk and type(model) == "number" then
-            local dimsOk, min, max = pcall(GetModelDimensions, model)
-            if dimsOk and min and max
-                and type(min.x) == "number" and type(max.x) == "number" then
-                local top = max.z
-                if top < 0.4 then top = 0.4 elseif top > 3.5 then top = 3.5 end
-                return (min.x + max.x) * 0.5, (min.y + max.y) * 0.5, top, max.y
-            end
-        end
+    local min, max = modelBox(vehicle)
+    if min and max then
+        local top = max.z
+        if top < 0.4 then top = 0.4 elseif top > 3.5 then top = 3.5 end
+        return (min.x + max.x) * 0.5, (min.y + max.y) * 0.5, top, max.y
     end
     return 0.0, 0.0, 0.85, 2.2
 end
 
 local function seatPoint(vehicle, profile)
     local centerX, centerY, top, frontY = targetBox(vehicle)
-    if profile.seat == "front" then
-        return centerX, frontY, 0.0
+    if profile.seat == "frontAxle" then
+        return centerX, frontY - (profile.axleInset or 0.9),
+            (profile.wheelZ or 0.35)
     end
     return centerX, centerY, top
 end
 
 local function seatOffset(vehicle, hook, profile)
     local seatX, seatY, seatZ = seatPoint(vehicle, profile)
-    if type(GetOffsetFromEntityInWorldCoords) == "function" then
-        local ok, point = pcall(GetOffsetFromEntityInWorldCoords,
-            vehicle, seatX, seatY, seatZ)
-        if ok and point and type(point.x) == "number" then
-            return point.x - hook.x, point.y - hook.y, point.z - hook.z
-        end
-    end
-    local coords = GetEntityCoords(vehicle)
-    local angle = math.rad(GetEntityHeading(vehicle))
-    local ox = seatX * math.cos(angle) - seatY * math.sin(angle)
-    local oy = seatX * math.sin(angle) + seatY * math.cos(angle)
-    return coords.x + ox - hook.x, coords.y + oy - hook.y, coords.z + seatZ - hook.z
+    local point = offsetFromEntity(vehicle, seatX, seatY, seatZ)
+    return point.x - hook.x, point.y - hook.y, point.z - hook.z
 end
 
 local function predictPass(vehicle, hook, hookVelocity, profile)
@@ -29638,7 +29731,7 @@ local function predictPass(vehicle, hook, hookVelocity, profile)
     return math.sqrt(px * px + py * py + pz * pz), now
 end
 
-local function seatOnHook(parent, target, profile)
+local function seatOnHook(parent, target, profile, hx, hy, hz)
     local seatX, seatY, seatZ = seatPoint(target, profile)
     local relativeYaw = GetEntityHeading(target) - GetEntityHeading(parent)
     if profile.alignYaw then
@@ -29655,8 +29748,8 @@ local function seatOnHook(parent, target, profile)
     local shiftY = seatX * math.sin(angle) + seatY * math.cos(angle)
 
     return pcall(AttachEntityToEntity, target, parent, 0,
-        profile.x - shiftX, profile.y - shiftY,
-        profile.z - seatZ - (profile.gap or 0.0),
+        hx - shiftX, hy - shiftY,
+        hz - seatZ - (profile.gap or 0.0),
         0.0, 0.0, relativeYaw,
         false, false, false, false, 2, true)
 end
@@ -29667,13 +29760,14 @@ local function captureAssist(parent, target, profile)
         return false
     end
 
-    local hook = hookPoint(parent, profile)
+    local hx, hy, hz = hookLocal(parent, profile)
+    local hook = offsetFromEntity(parent, hx, hy, hz)
     local dx, dy, dz = seatOffset(target, hook, profile)
-    -- A roof hook must stay above the roof; a tow hook may sit below the
-    -- bumper. maxGraspAbove is the per-profile tolerance.
+    -- A roof hook must stay above the roof; a tow lift may sit below the
+    -- front axle. maxGraspAbove is the per-profile tolerance.
     if dz > profile.maxGraspAbove then return false end
     if math.sqrt(dx * dx + dy * dy + dz * dz) > profile.snap then return false end
-    if not seatOnHook(parent, target, profile) then
+    if not seatOnHook(parent, target, profile, hx, hy, hz) then
         VS.assistTarget = 0
         VS.assistUntil = 0
         O.log("vehicle spoof: assist attach failed")
@@ -29862,18 +29956,24 @@ presets.tow = {
     label = "Spoofed Tow Truck",
     models = { "towtruck", "towtruck2" },
     tick = tickHook,
-    -- Boom hook: 3.5 m behind the truck, 0.4 m below its origin. The car's
-    -- front bumper seats on it and the car aligns with the truck, which is the
-    -- classic wheel-lift pose.
+    -- Rear lift: just behind the rear bumper and 0.8 m above the lowest model
+    -- point. The car's front axle seats on it and the car aligns with the
+    -- truck, which is the wheel-lift pose. The y/z values are the fallback
+    -- when the model box is unavailable.
     hook = {
         x = 0.0, y = -3.5, z = -0.4,
-        seat = "front",
+        yFrom = "rear", rearOverhang = 0.5,
+        zFrom = "lift", rise = 0.8,
+        seat = "frontAxle",
+        axleInset = 0.9,
+        wheelZ = 0.35,
+        legacy = { x = 0.0, y = -3.5, z = -0.4 },
         range = 24.0,
-        snap = 6.0,
+        snap = 2.5,
         predict = 3.5,
-        minArm = 5.0,
+        minArm = 4.0,
         window = 8000,
-        maxGraspAbove = 2.0,
+        maxGraspAbove = 1.0,
         gap = 0.0,
         alignYaw = true,
     },
@@ -29897,18 +29997,23 @@ presets.cargobob = {
     label = "Spoofed Cargobob",
     models = { "cargobob", "cargobob2", "cargobob3" },
     tick = tickHook,
-    -- Cable hook: 1.5 m aft, 5 m below. The roof centre seats under the cable
-    -- and the target keeps its own heading.
+    -- Short belly hook: the standard cable is short, so the hook sits just
+    -- under the model's lowest point, not 5 m below it. The roof centre seats
+    -- on it and the target keeps its own heading. The y/z values are the
+    -- fallback when the model box is unavailable. drop is the only visual
+    -- knob: raise it if the deployed hook hangs lower on the build.
     hook = {
-        x = 0.0, y = -1.5, z = -5.0,
+        x = 0.0, y = -1.5, z = -2.6,
+        zFrom = "belly", drop = 0.15,
         seat = "roof",
+        legacy = { x = 0.0, y = -1.5, z = -5.0 },
         range = 45.0,
-        snap = 16.0,
+        snap = 4.0,
         predict = 4.0,
-        minArm = 8.0,
+        minArm = 7.0,
         window = 8000,
         maxGraspAbove = 0.35,
-        gap = 0.30,
+        gap = 0.0,
         alignYaw = false,
     },
 }
@@ -32628,11 +32733,26 @@ local function pedVehicle(ped)
     return 0
 end
 
+-- Raw seat state for the Target Type filter. A distant helicopter can be
+-- inside GetVehiclePedIsIn while its entity is not streamed locally; requiring
+-- DoesEntityExist there would misclassify an in-vehicle player as On Foot and
+-- let the resolver target them anyway. Coordinates and the own-vehicle gate
+-- still use pedVehicle so they never read a non-streamed entity.
+local function rawPedVehicle(ped)
+    local ok, veh = pcall(GetVehiclePedIsIn, ped, false)
+    if ok and type(veh) == "number" and veh ~= 0 then return veh end
+    return 0
+end
+
 -- Target Type is shared with Online > Player List: 1 = All, 2 = On Foot,
--- 3 = In Vehicle. The value is read live, so changing the row takes effect on
--- the next resolve without re-arming the feature.
+-- 3 = In Vehicle. The value is read live from the Lock Player row, so changing
+-- the selector takes effect on the next resolve without re-arming the feature.
 local function targetTypeAllows(veh)
-    local filter = type(Menu) == "table" and tonumber(Menu.TargetFilter) or 1
+    local filter = 1
+    if type(Menu) == "table" and type(Menu.GetTargetType) == "function" then
+        filter = tonumber(Menu.GetTargetType()) or 1
+    end
+    if filter < 1 or filter > 3 then filter = 1 end
     if filter == 2 then return veh == 0 end
     if filter == 3 then return veh ~= 0 end
     return true
@@ -32678,8 +32798,9 @@ local function nearestPlayer(veh, origin)
             if okPed and type(ped) == "number" and ped ~= 0 and DoesEntityExist(ped)
                 and not isSelfPed and not isDead(ped) then
                 local theirVeh = pedVehicle(ped)
-                if targetTypeAllows(theirVeh)
-                    and (theirVeh == 0 or theirVeh ~= veh) then
+                local rawVeh = rawPedVehicle(ped)
+                if targetTypeAllows(rawVeh)
+                    and (rawVeh == 0 or rawVeh ~= veh) then
                     local coords = entityCoords(theirVeh ~= 0 and theirVeh or ped)
                     if coords then
                         local d = O.distance(coords, origin)
@@ -32705,8 +32826,9 @@ local function resolveTarget(veh, origin)
     local ped, player = targetPed()
     if ped ~= 0 and not isDead(ped) then
         local theirVeh = pedVehicle(ped)
-        if targetTypeAllows(theirVeh)
-            and (theirVeh == 0 or theirVeh ~= veh) then
+        local rawVeh = rawPedVehicle(ped)
+        if targetTypeAllows(rawVeh)
+            and (rawVeh == 0 or rawVeh ~= veh) then
             local coords = entityCoords(theirVeh ~= 0 and theirVeh or ped)
             if coords and O.distance(coords, origin) <= MAX_RANGE then
                 return ped, player, "selected"
@@ -39275,9 +39397,11 @@ local function installLockPlayer()
     local startSpeed = previousSpeed and tonumber(previousSpeed.value) or nil
     if not startSpeed then startSpeed = L.speedValue() end
 
-    local filterIndex = tonumber(Menu.TargetFilter) or 1
+    local previousFilter = findItem("Player", "Target", "Lock Player (Ctrl)")
+    local previousSeparate = findItem("Player", "Target", "Target Type")
+    local filterIndex = previousFilter and tonumber(previousFilter.selected)
+        or previousSeparate and tonumber(previousSeparate.selected) or 1
     if filterIndex < 1 or filterIndex > 3 then filterIndex = 1 end
-    Menu.TargetFilter = filterIndex
 
     -- Remove every historical spelling on every load, including the Shift row
     -- a previous build installed. A stale onClick must not survive a reload.
@@ -39288,6 +39412,7 @@ local function installLockPlayer()
     removeItem("Player", "Target", "Lock Player (Shift)")
     removeItem("Player", "Target", "Lock Player")
     removeItem("Player", "Target", "Lock Speed")
+    removeItem("Player", "Target", "Target Type")
 
     category.tabs = category.tabs or {}
 
@@ -39306,8 +39431,10 @@ local function installLockPlayer()
     local row
     row = {
         name = "Lock Player (Ctrl)",
-        type = "toggle",
+        type = "toggle_selector",
         value = L.isActive(),
+        options = { "All", "On Foot", "In Vehicle" },
+        selected = filterIndex,
         onClick = function(value)
             local active
             if value then
@@ -39328,6 +39455,17 @@ local function installLockPlayer()
         row.value = active
     end
 
+    -- Target Type is the row's selector: All / On Foot / In Vehicle. The
+    -- library changes selected on Left/Right without firing onClick, so both
+    -- the Player List and the resolver read this function live.
+    function Menu.GetTargetType()
+        local targetRow = type(Menu.FindItem) == "function"
+            and Menu.FindItem("Player", "Target", "Lock Player (Ctrl)") or nil
+        local index = targetRow and tonumber(targetRow.selected) or 1
+        if index < 1 or index > 3 then index = 1 end
+        return index
+    end
+
     local speedRow = {
         name = "Lock Speed",
         type = "slider",
@@ -39337,22 +39475,7 @@ local function installLockPlayer()
         step = 10,
     }
 
-    local filterRow
-    filterRow = {
-        name = "Target Type",
-        type = "selector",
-        options = { "All", "On Foot", "In Vehicle" },
-        selected = filterIndex,
-        onClick = function(index)
-            index = tonumber(index) or 1
-            if index < 1 or index > 3 then index = 1 end
-            Menu.TargetFilter = index
-            filterRow.selected = index
-        end,
-    }
-
     tab.items = {
-        filterRow,
         { name = "", isSeparator = true, separatorText = "Hold Left Ctrl to ram" },
         row,
         speedRow,
