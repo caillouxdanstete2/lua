@@ -2099,6 +2099,15 @@ do
                 end
             end
 
+            -- Passive outbound recorder for the ban engine. Table lookups and
+            -- counters only: no native, no decode; a new name costs one lower
+            -- and a few finds, once. This is the only discovery surface that
+            -- sees an obfuscated AC report name.
+            local audit = Menu.__vgdAudit
+            if type(audit) == "table" and type(audit.record) == "function" then
+                audit.record(outName, outPayload)
+            end
+
             -- Exact ban-event name computed once by the VANGUARD module. A
             -- table lookup is safe inside this callback; no native call and no
             -- msgpack decode happens here.
@@ -13022,78 +13031,19 @@ end
 
 Actions.banPlayerItem = FindItem("Online", "Troll", "Ban Player")
 if Actions.banPlayerItem then
-    Actions.banPlayerItem.onClick = function(value)
-        banPlayerActive = value
-        if value then
-            if banPlayerThread then
-                return
+    Actions.banPlayerItem.type = "action"
+    Actions.banPlayerItem.value = nil
+    Actions.banPlayerItem.risk = true
+    Actions.banPlayerItem.onClick = function()
+        if type(Menu.__vgd_banPlayer) == "function" then
+            local ok, result, why = pcall(Menu.__vgd_banPlayer)
+            if not ok then
+                print("[VGD] ban: " .. tostring(result))
+            elseif not result then
+                print("[VGD] ban: " .. tostring(why))
             end
-            banPlayerThread = CreateThread(function()
-                local originalCoords = nil
-                local teleported = false
-                while banPlayerActive do
-                    local targetServerId = Menu.SelectedPlayer
-                    if not targetServerId then
-                        Wait(1000)
-                    else
-                        local clientId = GetPlayerFromServerId(targetServerId)
-                        if clientId and clientId ~= -1 then
-                            local targetPed = GetPlayerPed(clientId)
-                            if targetPed and DoesEntityExist(targetPed) then
-                                local myPed = PlayerPedId()
-                                if myPed then
-                                    local myCoords = GetEntityCoords(myPed)
-                                    local targetCoords = GetEntityCoords(targetPed)
-                                    if myCoords and targetCoords then
-                                        local distance = #(myCoords - targetCoords)
-                                        
-                                        if distance > 10.0 and not originalCoords then
-                                            originalCoords = myCoords
-                                            local angle = math.random() * 2 * math.pi
-                                            local radiusOffset = math.random(5, 9)
-                                            local xOffset = math.cos(angle) * radiusOffset
-                                            local yOffset = math.sin(angle) * radiusOffset
-                                            local newCoords = vector3(targetCoords.x + xOffset, targetCoords.y + yOffset, targetCoords.z)
-                                            SetEntityCoordsNoOffset(myPed, newCoords.x, newCoords.y, newCoords.z, false, false, false)
-                                            SetEntityVisible(myPed, false, 0)
-                                            teleported = true
-                                            Wait(100)
-                                        end
-                                        
-                                        local curTargetCoords = GetEntityCoords(targetPed)
-                                        if curTargetCoords then
-                                            ClearPedTasksImmediately(myPed)
-                                            SetEntityCoords(myPed, curTargetCoords.x, curTargetCoords.y, curTargetCoords.z + 0.5, false, false, false, false)
-                                            Wait(100)
-                                            AttachEntityToEntityPhysically(myPed, targetPed, 0, 0.0, 0.0, 0.0, 150.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1, false, false, 1, 2)
-                                            Wait(100)
-                                            DetachEntity(myPed, true, true)
-                                            Wait(200)
-                                        end
-                                    end
-                                end
-                            end
-                        end
-                    end
-                    Wait(200)
-                end
-                
-                local myPed = PlayerPedId()
-                if myPed then
-                    ClearPedTasksImmediately(myPed)
-                    if originalCoords then
-                        SetEntityCoords(myPed, originalCoords.x, originalCoords.y, originalCoords.z + 1.0, false, false, false, false)
-                        Wait(100)
-                        SetEntityCoords(myPed, originalCoords.x, originalCoords.y, originalCoords.z, false, false, false, false)
-                    end
-                    if teleported then
-                        SetEntityVisible(myPed, true, 0)
-                    end
-                end
-                banPlayerThread = nil
-            end)
         else
-            banPlayerActive = false
+            print("[VGD] ban: engine not installed")
         end
     end
 end
@@ -21428,10 +21378,11 @@ local FAMILIES = {
     -- Combat Unlock installs four scoped native hooks. The token caps how often
     -- the operator can re-install them, not the hook traffic itself.
     combat    = { strikes = 3, window = 8000,  cost = 1 },
-    -- Fight Party copies the ring's players into local clones and drives those
-    -- clones with TASK_COMBAT_PED. There is no network primitive: the token
-    -- caps how often the ring can be armed; the clone and re-task cadence lives
-    -- in the module. Six sights per window leaves five usable arms for testing.
+    -- Fight Party tasks the live player peds themselves: TASK_COMBAT_PED_TIMED
+    -- is applied by each victim's own client through GTA's scripted-task event.
+    -- No clone, entity or event is created by this script. The token caps how
+    -- often the ring can be armed; the pairing and re-task cadence lives in the
+    -- module. Six sights per window leaves five usable arms for testing.
     fight     = { strikes = 6, window = 10000, cost = 1 },
 }
 
@@ -30772,11 +30723,11 @@ local N = (function(O,B)
 -- ============================================================================
 -- VANGUARD / 16 AIR NOCLIP
 -- ----------------------------------------------------------------------------
--- Doctrine (L4): this is not a fall and it is not a position write. It is the
--- freefall pose at ground level, gravity disabled, with a real velocity written
--- every tick. The character keeps a skydive pose and floats; the engine owns
--- the body, so every position sample is continuous and every physics sample is
--- a velocity the engine itself integrated.
+-- Doctrine (L4): this is not a fall and it is not a position write. No Clip is
+-- free-flight: gravity and collision off, a real velocity written every tick,
+-- and no pose. Naruto adds the upper-body freefall pose at ground level. The
+-- engine owns the body, so every position sample is continuous and every
+-- physics sample is a velocity the engine itself integrated.
 --
 -- Design reference: doctrine/10_AIR_NOCLIP.md.
 --
@@ -30789,16 +30740,17 @@ local N = (function(O,B)
 --     at startup, and actorLoop reads those aliases, not _G;
 --   * the on-foot speed ceiling is 14.0 m/s, the falling ceiling 60 m/s.
 --
--- Pose: TASK_PLAY_ANIM with the base-game skydive@freefall dictionary and the
--- free_forward_anim clip. The flags depend on the row: Naruto uses
--- 1|16|32 = 49 (AF_LOOPING|AF_UPPERBODY|AF_SECONDARY) so the torso is posed
--- and the legs stay on locomotion; No Clip uses 1|32 = 33 (full-body
--- secondary) so the whole skeleton goes horizontal. Both are layered over the
--- normal on-foot task, so ZQSD keeps moving the ped. Neither has a landing
--- transition, an automatic parachute or a forced velocity. TASK_SKY_DIVE is
--- deliberately
--- rejected at ground level because live feedback showed it landing, sliding,
--- standing up and deploying a parachute immediately.
+-- Pose: Naruto uses TASK_PLAY_ANIM with the base-game skydive@freefall
+-- dictionary and free_forward_anim clip, flags 1|16|32 = 49
+-- (AF_LOOPING|AF_UPPERBODY|AF_SECONDARY), so the torso is posed and the legs
+-- stay on locomotion. No Clip plays no pose at all: the skydive clip carries
+-- the wind-trail PTFX under the arms and a task reset can restart it mid-flight,
+-- which made the body fight the operator's input after a prop contact. No Clip
+-- is pure free-flight (gravity off, collision off, velocity each tick). Neither
+-- row has a landing transition, an automatic parachute or a forced velocity.
+-- TASK_SKY_DIVE is deliberately rejected at ground level because live feedback
+-- showed it landing, sliding, standing up and deploying a parachute
+-- immediately.
 --
 -- Two layers, strongest genuine state first:
 --
@@ -30873,27 +30825,29 @@ local N = (function(O,B)
 -- SET_PED_GRAVITY; SET_ENTITY_HAS_GRAVITY is the entity-level backstop used
 -- after it. TASK_SKY_DIVE has one documented parameter
 -- (Ped); NativeDB mentions an undocumented second BOOL p1, so it is not used.
--- The pose is TASK_PLAY_ANIM, duration -1, playbackRate 1.0, locks false. The
--- Naruto row uses AF_LOOPING|AF_UPPERBODY|AF_SECONDARY = 1|16|32 = 49; the
--- No Clip row uses AF_LOOPING|AF_SECONDARY = 1|32 = 33 (full-body secondary,
--- the same pair the menu uses for carry/piggyback poses). The dictionary and
--- clip are the base-game skydive@freefall / free_forward_anim pair. The
--- dictionary is listed
--- by FiveForge (https://five-forge.com/gta/animations/skydive@freefall, 6
--- clips); the Pleb Masters preview for free_forward_anim shows the arms-out
--- arch from the operator's working reference. This is evidence, not a guessed
--- clip.
+-- The Naruto pose is TASK_PLAY_ANIM, duration -1, playbackRate 1.0, locks
+-- false, flags AF_LOOPING|AF_UPPERBODY|AF_SECONDARY = 1|16|32 = 49. The
+-- dictionary and clip are the base-game skydive@freefall / free_forward_anim
+-- pair. The dictionary is listed by FiveForge
+-- (https://five-forge.com/gta/animations/skydive@freefall, 6 clips); the Pleb
+-- Masters preview for free_forward_anim shows the arms-out arch. This is
+-- evidence, not a guessed clip.
 --
--- IMPORTANT: the animation must be a SECONDARY task, not a primary one. A
--- full-body TASK_PLAY_ANIM as primary replaces the player's on-foot task and
--- freezes both input and velocity. AF_SECONDARY (32) layers the pose over the
--- primary movement task; AF_UPPERBODY (16) masks it to the arms/torso so the
--- legs stay under locomotion. Flags 48-49 are the GTAForums-documented
--- "torso anim, legs can walk" values. AF_IGNORE_GRAVITY (2048) is deliberately
--- NOT set: it was the extra bit in the previous 2097 attempt that left the
--- ped visually wrong and unable to move. Gravity is already disabled by
--- SET_PED_GRAVITY. AF_HOLD_LAST_FRAME (2) is omitted because it contradicts
--- AF_LOOPING and can pin the last frame.
+-- No Clip never calls TASK_PLAY_ANIM. The freefall clip is what spawns the
+-- wind-trail PTFX under the hands and what a task reset can restart on a prop
+-- contact; both were visible in the operator's test and made the body fight
+-- the input. Free-flight is a movement, not an animation.
+--
+-- IMPORTANT (Naruto only): the animation must be a SECONDARY task, not a
+-- primary one. A full-body TASK_PLAY_ANIM as primary replaces the player's
+-- on-foot task and freezes both input and velocity. AF_SECONDARY (32) layers
+-- the pose over the primary movement task; AF_UPPERBODY (16) masks it to the
+-- arms/torso so the legs stay under locomotion. Flags 48-49 are the
+-- GTAForums-documented "torso anim, legs can walk" values. AF_IGNORE_GRAVITY
+-- (2048) is deliberately NOT set: it was the extra bit in the previous 2097
+-- attempt that left the ped visually wrong and unable to move. Gravity is
+-- already disabled by SET_PED_GRAVITY. AF_HOLD_LAST_FRAME (2) is omitted
+-- because it contradicts AF_LOOPING and can pin the last frame.
 -- ============================================================================
 
 local N = {}
@@ -30936,29 +30890,21 @@ local ANIM_CLIP = "free_forward_anim"
 -- Flags 49 = AF_LOOPING | AF_UPPERBODY | AF_SECONDARY. The GTAForums flag
 -- table documents 48-49 as "torso animation, legs can walk"; 49 adds looping.
 -- Do not add AF_IGNORE_GRAVITY (2048) or AF_HOLD_LAST_FRAME (2).
--- Two poses over the same verified clip. Naruto keeps the torso-only pose
--- (1|16|32 = 49) so the legs stay on locomotion and the run animates. No Clip
--- plays the same freefall clip as a full-body secondary task (1|32 = 33) so
--- the whole skeleton goes horizontal like a flat freefall, which is the flying
--- pose the operator wants. Flag 33 is the same full-body secondary pair the
--- menu already uses for carry/piggyback poses, so the on-foot task keeps
--- owning locomotion and the velocity write keeps moving the body.
+-- The clip is used by Naruto only. No Clip plays no pose (see above).
 local ANIM_FLAGS_NARUTO = 1 | 16 | 32 -- 49: AF_LOOPING|AF_UPPERBODY|AF_SECONDARY
-local ANIM_FLAGS_NOCLIP = 1 | 32      -- 33: AF_LOOPING|AF_SECONDARY (full body)
--- Dual mode. "noclip" keeps full 3D steering with a hard airborne floor;
--- "naruto" is horizontal-only and follows the ground at a low clearance so
--- the body never lands and never starts a landing roll. Both reuse the same
--- verified freefall pose and the same read cover; only the vertical policy
--- differs, so the evasion invariants (no coord write, no collision write, no
--- freeze) are unchanged.
+-- Dual mode. "noclip" is pure free-flight: no pose, collision off, full 3D
+-- steering with a hard airborne floor. "naruto" is a horizontal run with the
+-- upper-body pose, collision on, following the ground at a low clearance so the
+-- body never lands and never starts a landing roll. Both keep the same read
+-- cover; only the pose and vertical policy differ.
 local MODE_NOCLIP = "noclip"
 local MODE_NARUTO = "naruto"
 
--- Clearance is the real GET_ENTITY_HEIGHT_ABOVE_GROUND value: no coordinate
--- write and no collision write. The ground-height native does not include map
--- props, so a short vertical + forward shape-test probe lifts the written
--- velocity over a nacelle/roof lip. Naruto holds a low glide band and follows
--- the terrain; noclip keeps a hard minimum so the body never reaches the ground.
+-- Clearance is the real GET_ENTITY_HEIGHT_ABOVE_GROUND value: the module never
+-- writes coordinates. The ground-height native does not include map props, so a
+-- short vertical + forward shape-test probe lifts the written velocity over a
+-- nacelle/roof lip. Naruto holds a low glide band and follows the terrain;
+-- noclip keeps a hard minimum so the body never reaches the ground.
 local NARUTO_CLEARANCE = 0.9
 local NARUTO_BAND = 0.35
 local NARUTO_LIFT = 4.0
@@ -30974,26 +30920,33 @@ local EXPLICIT_VERT = 12.0
 local SPEED_CAP = 28.0
 -- Two No Clip profiles. Undetect keeps the 28 m/s budget that stays under the
 -- WaveShield teleport (50 m/s) and in-air speedHack (60 m/s) ceilings. Detect
--- is intentionally outside both ceilings: the operator trades stealth for
--- speed. The 3.2x scale also drives acceleration and the vertical axes.
-local SPEED_DETECT = 90.0
+-- is the true free-flight profile: 240 m/s, roughly 2.7x the old 90 m/s. The
+-- read cover still holds, because the guard sees GetEntitySpeed pinned near
+-- 28 m/s and its distance checks are invalidated by the falling cover; the
+-- higher write speed is therefore outside every speedHack ceiling it reads.
+local SPEED_DETECT = 240.0
 local DETECT_SCALE = SPEED_DETECT / SPEED_CAP
+-- Detect acceleration. Undetect keeps the soft ramp; a true noclip must answer
+-- the stick in a few ticks, so 1200 m/s^2 reaches 240 m/s in under 0.3 s and
+-- reverses in about 0.4 s at the 30 ms cadence.
+local ACCEL_DETECT = 1200.0
 -- A fixed hover with zero speed is a valid WaveShield noclip state when the
 -- collision flag is off. A tiny horizontal circle keeps GetEntitySpeed above
 -- zero without changing altitude; the radius is under 3 cm at this cadence.
 local HOVER_DITHER = 0.5
 local HOVER_PERIOD_MS = 500
--- Observed-speed ceiling. The velocity write is capped at 28, but Sprint,
--- slopes and pushes can add between ticks. If the engine reports more than
--- this, the module sheds its own contribution so the next sample falls back
--- under the teleport distance threshold (50 m/s) with margin.
+-- Observed-speed ceiling (Undetect only). The velocity write is capped at 28,
+-- but Sprint, slopes and pushes can add between ticks. If the engine reports
+-- more than this, the module sheds its own contribution so the next sample
+-- falls back under the teleport distance threshold (50 m/s) with margin.
+-- Detect deliberately skips this governor: its whole point is the higher speed.
 local SPEED_SAFE = 40.0
 local ACCEL = 18.0
 
--- Movement is the normal on-foot locomotion; the upper-body secondary pose
--- does not own the task. SET_PED_MOVE_RATE_OVERRIDE scales it (2.5, about
--- 19 m/s; with the 28 m/s velocity cap the worst case stays below 50). The
--- velocity write remains for vertical movement and as a fallback.
+-- Movement is the normal on-foot locomotion. SET_PED_MOVE_RATE_OVERRIDE scales
+-- it for the Undetect budget; Detect's velocity write dominates. The velocity
+-- write also carries vertical movement and remains the motion source for No
+-- Clip, which has no animation task of its own.
 local MOVE_RATE = 2.5
 local ANIM_CHECK_MS = 500
 
@@ -31396,28 +31349,34 @@ function N.arm(mode)
     -- Clear a stale locomotion multiplier from an interrupted previous session.
     pcall(SetPedMoveRateOverride, ped, 1.0)
 
-    -- Verified base-game freefall pose: skydive@freefall / free_forward_anim.
-    -- TaskPlayAnim has no landing transition, no auto parachute and no forced
-    -- velocity, unlike TaskSkyDive at ground level.
-    local okRequest = pcall(RequestAnimDict, ANIM_DICT)
-    if not okRequest then
-        cleanupMotion()
-        N.taskStarted = false
-        N.reason = "pose failed"
-        refundBudget()
-        return false
+    -- Naruto only: verified base-game freefall pose. No Clip deliberately
+    -- never requests the dictionary, because the skydive clip owns the wind
+    -- trails and a task reset can restart it on a prop contact. TaskPlayAnim
+    -- has no landing transition, no auto parachute and no forced velocity,
+    -- unlike TaskSkyDive at ground level.
+    if N.mode == MODE_NARUTO then
+        local okRequest = pcall(RequestAnimDict, ANIM_DICT)
+        if not okRequest then
+            cleanupMotion()
+            N.taskStarted = false
+            N.reason = "pose failed"
+            refundBudget()
+            return false
+        end
+        N.posePending = true
+        N.poseAt = O.now()
+        N.poseApplied = false
+    else
+        N.posePending = false
+        N.poseApplied = false
     end
-
-    N.posePending = true
-    N.poseAt = O.now()
-    N.poseApplied = false
     N.taskStarted = false
 
     N.active = true
     N.armAt = O.now()
     N.reason = "armed"
     N.stats.sessions = N.stats.sessions + 1
-    O.log("air movement armed (%s, freefall pose pending)", N.mode)
+    O.log("air movement armed (%s)", N.mode)
     if N.onChange then pcall(N.onChange, true) end
     return true
 end
@@ -31578,13 +31537,13 @@ function N.tick(now)
 
     -- A parachute that opens mid-session owns the physics and cancels the pose.
     -- Controls 22/36 are disabled below, so this is a repair path, not the
-    -- normal flow: clear the parachute task, re-disable gravity and re-layer
-    -- the flat pose without dropping the session. The retry is rate-limited so
-    -- a canopy that takes a few frames to detach cannot cause a clear loop.
+    -- normal flow: clear the parachute task and re-disable gravity without
+    -- dropping the session. Naruto also re-layers its upper-body pose; No Clip
+    -- stays pose-free. The retry is rate-limited so a canopy that takes a few
+    -- frames to detach cannot cause a clear loop.
     local okChute, chute = pcall(GetPedParachuteState, ped)
     if okChute and type(chute) == "number" and chute > 0 and now >= N.chuteNext then
         N.chuteNext = now + GRAVITY_REFRESH_MS
-        local flags = (N.mode == MODE_NARUTO) and ANIM_FLAGS_NARUTO or ANIM_FLAGS_NOCLIP
         pcall(ClearPedTasks, ped)
         pcall(SetPedGravity, ped, false)
         pcall(SetEntityHasGravity, ped, false)
@@ -31592,9 +31551,10 @@ function N.tick(now)
         pcall(SetPedRagdollOnCollision, ped, false)
         if N.mode == MODE_NOCLIP then
             pcall(SetEntityCollision, ped, false, false)
+        else
+            pcall(TaskPlayAnim, ped, ANIM_DICT, ANIM_CLIP,
+                8.0, 8.0, -1, ANIM_FLAGS_NARUTO, 1.0, false, false, false)
         end
-        pcall(TaskPlayAnim, ped, ANIM_DICT, ANIM_CLIP,
-            8.0, 8.0, -1, flags, 1.0, false, false, false)
         N.animCheckAt = 0
     end
 
@@ -31612,19 +31572,18 @@ function N.tick(now)
         end
     end
 
-    -- Apply the freefall pose once its dictionary is streamed. The ped is
-    -- briefly standing while the base-game dictionary loads; gravity is
-    -- already off, so it does not fall during that window.
+    -- Apply the Naruto pose once its dictionary is streamed. No Clip never
+    -- reaches this block (posePending is false for the whole free-flight
+    -- session). The ped is briefly standing for Naruto while the base-game
+    -- dictionary loads; gravity is already off, so it does not fall.
     if N.posePending then
         local okLoaded, loaded = pcall(HasAnimDictLoaded, ANIM_DICT)
         if okLoaded and loaded then
             -- The upper-body secondary is the movement-safe pose: flags 49
             -- are the documented torso-anim/legs-free combination. It is a
             -- pose, not a movement task; the on-foot task keeps ZQSD.
-            local flags = (N.mode == MODE_NARUTO)
-                and ANIM_FLAGS_NARUTO or ANIM_FLAGS_NOCLIP
             local okAnim = pcall(TaskPlayAnim, ped, ANIM_DICT, ANIM_CLIP,
-                8.0, 8.0, -1, flags, 1.0, false, false, false)
+                8.0, 8.0, -1, ANIM_FLAGS_NARUTO, 1.0, false, false, false)
             if not okAnim then
                 N.stop("pose failed")
                 return
@@ -31632,7 +31591,7 @@ function N.tick(now)
             N.posePending = false
             N.poseApplied = true
             N.taskStarted = true
-            O.log("air movement pose (%s, flags %d)", N.mode, flags)
+            O.log("air movement pose (%s, flags %d)", N.mode, ANIM_FLAGS_NARUTO)
         elseif now - N.poseAt > POSE_LOAD_MS then
             N.stop("pose failed")
             return
@@ -31675,7 +31634,7 @@ function N.tick(now)
     local detect = not naruto and N.detectMode() and N.speedCover()
     -- Renew the read cover only while the speed profile is actually in use.
     -- If the hook was not installed, Detect falls back to the 28 m/s profile
-    -- instead of writing 90 with no cover.
+    -- instead of writing 240 with no cover.
     local stealth = rawget(_G, "_Stealth")
     if type(stealth) == "table" then
         stealth.noclipDetectUntil = detect and (now + 250) or 0
@@ -31684,10 +31643,11 @@ function N.tick(now)
     local speedCap = SPEED_CAP * speedScale
     local tx, ty, tz = 0.0, 0.0, 0.0
 
-    -- Noclip keeps the full 3D camera direction, vertical share capped at 15
-    -- m/s so looking straight up is not a 28 m/s elevator. Naruto ignores
-    -- pitch entirely: the forward vector is flattened onto the yaw plane, so
-    -- the body can never climb no matter where the camera points.
+    -- No Clip keeps the full 3D camera direction, with the vertical share capped
+    -- so looking straight up is not a vertical elevator; the cap scales with the
+    -- active profile. Naruto ignores pitch entirely: the forward vector is
+    -- flattened onto the yaw plane, so the body can never climb no matter where
+    -- the camera points.
     if fwd ~= 0 then
         if naruto then
             tx = tx - math.sin(rz) * FWD_SPEED * fwd
@@ -31735,11 +31695,13 @@ function N.tick(now)
     end
     N.lastTickAt = now
 
-    -- Vector acceleration: the magnitude of the change is at most 18 m/s^2,
-    -- including diagonals. A no-key tick decelerates toward zero.
+    -- Vector acceleration: the magnitude of the change is capped, including
+    -- diagonals. Undetect keeps the soft 18 m/s^2 ramp; Detect uses its own
+    -- near-instant ramp so a true noclip answers the stick in a few ticks. A
+    -- no-key tick decelerates toward zero.
     local dx, dy, dz = tx - N.vx, ty - N.vy, tz - N.vz
     local delta = math.sqrt(dx * dx + dy * dy + dz * dz)
-    local step = ACCEL * speedScale * dt
+    local step = (detect and ACCEL_DETECT or ACCEL) * dt
     if delta > step and delta > 0.0 then
         local scale = step / delta
         dx, dy, dz = dx * scale, dy * scale, dz * scale
@@ -31747,12 +31709,11 @@ function N.tick(now)
     N.vx, N.vy, N.vz = N.vx + dx, N.vy + dy, N.vz + dz
 
     -- Clearance. Height above ground is the real engine value, so this is a
-    -- velocity correction only: no coordinate write, no collision write and no
-    -- freeze. The prop probe below is a read plus a velocity lift, never a
-    -- position write. Naruto rides a low band and follows the
-    -- terrain down slopes; noclip keeps a hard floor so it never lands. The
-    -- freefall pose is horizontal, so the clearance also keeps the capsule
-    -- from eating the horizontal velocity on contact.
+    -- velocity correction only: no coordinate write and no freeze. The prop
+    -- probe below is a read plus a velocity lift, never a position write.
+    -- Naruto rides a low band and follows the terrain down slopes; No Clip
+    -- keeps a hard floor so it never lands. The per-frame gate keeps collision
+    -- disabled, so the clearance only has to keep the free-flight above ground.
     local okH, height = pcall(GetEntityHeightAboveGround, ped)
     if okH and type(height) == "number" then
         if naruto then
@@ -31854,9 +31815,10 @@ function N.tick(now)
         if N.mode ~= MODE_NOCLIP then
             return
         end
+        -- End the ragdoll without re-layering the skydive clip. The clip is the
+        -- source of the wind trails and of the visible fight with movement, so
+        -- re-applying it here is exactly what the operator saw after a contact.
         pcall(ClearPedTasks, ped)
-        pcall(TaskPlayAnim, ped, ANIM_DICT, ANIM_CLIP,
-            8.0, 8.0, -1, ANIM_FLAGS_NOCLIP, 1.0, false, false, false)
         -- A ragdoll reset can restore gravity/ragdoll/collision flags; re-assert
         -- them immediately instead of waiting for the 250 ms refresh.
         pcall(SetPedGravity, ped, false)
@@ -31866,22 +31828,19 @@ function N.tick(now)
         pcall(SetEntityCollision, ped, false, false)
     end
 
-    -- Movement. Flags 49 are an upper-body secondary task, so the normal
-    -- on-foot task owns locomotion and ZQSD cannot be swallowed by the pose.
-    -- No TASK_GO_STRAIGHT_TO_COORD is needed.
+    -- Movement. The on-foot task owns locomotion, so ZQSD is never swallowed by
+    -- a pose. No TASK_GO_STRAIGHT_TO_COORD is needed.
     local moving = (fwd ~= 0 or strafe ~= 0)
     local rate = (moving and now >= N.warmupUntil) and MOVE_RATE or 1.0
     pcall(SetPedMoveRateOverride, ped, rate)
     if moving and not N.moveLogged then
         N.moveLogged = true
-        O.log("air noclip move: upper-body pose")
+        O.log("air noclip move: %s", N.mode)
     end
     -- Pose repair. Naruto keeps the light 500 ms recheck because its legs stay
-    -- on the on-foot task. No Clip does not re-clear or re-layer the pose on a
-    -- read: the old 120 ms CLEAR_PED_TASKS/re-apply loop restarted the freefall
-    -- clip and made the body spin. With collision disabled the only pose loss is
-    -- a real ragdoll, already repaired above. The lock is one read plus one task
-    -- write for Naruto only; no position write.
+    -- on the on-foot task. No Clip has no pose to repair: the old
+    -- CLEAR_PED_TASKS/re-apply loop restarted the freefall clip and made the
+    -- body spin. With collision disabled per frame there is no pose loss.
     if N.mode ~= MODE_NOCLIP and N.poseApplied and now >= N.animCheckAt then
         N.animCheckAt = now + ANIM_CHECK_MS
         local okPlaying, playing = pcall(IsEntityPlayingAnim, ped, ANIM_DICT, ANIM_CLIP, 3)
@@ -31913,10 +31872,19 @@ end
 -- frame while armed. Per-frame, not per-tick: a 30 ms tick leaves a frame where
 -- the game could still read the key. controlDown sees the held key through
 -- IS_DISABLED_CONTROL_PRESSED.
+--
+-- The same frame gate reasserts No Clip collision. A task reset, a ragdoll
+-- transition or another noclip (vMenu) can restore the ped collision between
+-- the 30 ms ticks; a prop then resolves the capsule against the body and the
+-- old behaviour was exactly the visible fight after a contact. Reasserting
+-- every frame is the smallest write that keeps the pass-through true.
 O.every("airnoclip_gate", 0, function()
     if not N.active then return end
     pcall(DisableControlAction, 0, CTL_UP, true)
     pcall(DisableControlAction, 0, CTL_DOWN, true)
+    if N.mode == MODE_NOCLIP and N.ped ~= 0 and N.holdUntil == 0 then
+        pcall(SetEntityCollision, N.ped, false, false)
+    end
 end, 0)
 
 -- 30 ms nominal, jittered by O.every(); phase zero makes the first tick
@@ -36736,104 +36704,104 @@ end)(Menu)
 -- ---------------------------------------------------------------------------
 local FP = (function(O,S,B,Menu)
 -- ============================================================================
--- VANGUARD / 28 FIGHT PARTY (LIVE REMOTE BRAWL, HOST-RESOURCE GRAFT)
+-- VANGUARD / 28 FIGHT PARTY (NETWORK BRAWL ON REAL PLAYER PEDS)
 -- ----------------------------------------------------------------------------
--- The old build copied every player into a networked CLONE_PED and drove the
--- clone with TASK_COMBAT_PED. That made a body only the operator could trust:
--- the real player ped was hidden locally, the clone carried the task, and the
--- victim could still walk away because the clone was a separate entity. The
--- reference menu needs the REAL player ped to perform the animation.
+-- The effect the reference menu produces is not a pose. The ring's real
+-- players square up and trade melee blows, move under AI control and take
+-- native damage. Two earlier routes were tried and both were wrong for this:
 --
--- This build does not create a ped, does not register a network entity, does
--- not create a synchronised scene and does not send damage. A remote
--- TaskPlayAnim is local-only: the scripted-task event carries the entity and a
--- task id, not the dictionary/clip, so the owner never learns what to play.
--- That is why an apparently successful local task never reached any other
--- player. The animation has to be executed by the victim's own client through
--- a server resource that already relays it. The resource the server already
--- trusts is therefore the only path, and it runs first:
+--   * CLONE_PED + TASK_COMBAT_PED: the brawl lives on a duplicate body only
+--     the operator trusts, while the real player keeps walking. No.
+--   * A resource emote relay (dpemotes `ServerValidEmote`, cmg2/cmg3 sync):
+--     the victim's own client plays a single reaction clip and attaches
+--     itself to the operator. That is one punch, not a party, and it needs a
+--     relay resource the server may not run.
 --
---   * dpemotes / official rpemotes (first): `ServerValidEmote` takes the
---     target's server id plus the shared pair. The stock handler sends
---     `SyncPlayEmoteSource` to the target and `SyncPlayEmote` to the source.
---     The victim's own client cancels its emote, teleports itself in front of
---     the closest ped and plays `punched` / `headbutted` / `slapped`; the
---     operator's own client plays `punch` / `headbutt` / `slap`. This is the
---     exact path the working reference menus use, and it needs no host chunk.
---   * cmg2_animations / cmg3_animations: the resource's own sync event
---     attaches the target to the caller and plays one raw dict/clip on each
---     side. The target's own client performs AttachEntityToEntity and
---     TaskPlayAnim on itself, so the animation and the movement lock are
---     created by the victim, not by this executor. cmg3 and cmg3_animations1
---     are the same relay with one dictionary and an optional attach flag.
+-- A remote TaskPlayAnim is one-way: the clip names are not in the scripted
+-- task packet when the ped belongs to another client, which is why the old
+-- animation route only ever animated on the caller. COMBAT is different.
+-- TASK_COMBAT_PED and TASK_COMBAT_PED_TIMED serialise a real task with a
+-- target entity. When called on another player's ped, GTA V raises its own
+-- givePedScriptedTaskEvent for that ped; the server forwards it to the ped
+-- owner and the owner's client applies the combat task to its own character.
+-- That is the network path the reference menu uses: no control request, no
+-- entity write, no teleport and no synthetic event from this script — the
+-- game's own task packet carries it, and the victim's AI does the rest.
 --
--- Both details that make the graft act on the victim, not on the caller:
---   * cmg2_animations:sync takes the target in the first field on one build
---     and in the ninth field on another. Both fields carry the target's server
---     id. The old payload used the caller's client index in the first field,
---     so a build that reads the first field delivered syncTarget to whichever
---     player owned that server id (often the caller), and only the caller
---     moved.
---   * A provider is not trusted because an event was sent. After 900 ms the
---     tick reads the target ped it already sees: the victim clip is playing,
---     or the victim moved to the attach/teleport point. If neither is true,
---     the same clip is retried through the next provider, and the log records
---     the miss. A provider that has never produced a target-side result cannot
---     masquerade as a working one.
+--   assembly   TASK_GO_TO_COORD_ANY_MEANS walks each member to a slot on a
+--              tight circle around the anchor. The same task packet, so the
+--              victim's client paths the walk; if the build ignores movement
+--              tasks the victims simply brawl where they already stand.
+--   brawl      Each member is paired with the nearest unpaired member and
+--              both receive TASK_COMBAT_PED_TIMED with the other as target,
+--              flags 16 (fight immediately, no flee). Every pair is mutual,
+--              so both clients task their own ped and the fight is visible to
+--              everyone. An odd member targets the nearest pair and makes the
+--              circle a three-way brawl, exactly the shape in the reference
+--              clip. Tasks are re-armed at a slow jittered cadence while the
+--              toggle is on; a timed task expires by itself if the client is
+--              gone.
+--   release    No CLEAR_PED_TASKS on a remote player: V4's anti-clear handler
+--              cancels a clear whose sender is not the ped owner. A short
+--              TASK_STAND_STILL replaces the combat task instead, and the
+--              15 s timed combat is the backstop if even that task is lost.
 --
--- Why this is invisible:
---   * No entity is created, cloned, registered or deleted. The entity manager
---     never sees a new ped from this feature.
---   * The relay events are the resource's normal shared-emote/carry events
---     with the payload that resource already accepts. The target is animated
---     and moved by its own client through the host handler.
---   * The event is emitted from a host resource through the injector, which is
---     the same path the working reference menus use. WaveShield's client
---     TriggerServerEvent wrapper drops a call made directly by the executor,
---     so the one-line event chunk runs inside a resource VM and passes the
---     resource execution check. It is not written to disk and does not
---     persist: the host executes one TriggerServerEvent and returns.
---   * The overlay ring is drawn by Susano outside the game framebuffer.
+-- Why this is not a new observable:
+--   * The only network artefact is the scripted-task event the game generates
+--     for the native call itself. Its payload is the entity net id and a task
+--     id; V4's handler is a stub (it does not cancel), and there is no custom
+--     event name, entity or global.
+--   * No ped, clone, object or vehicle is created or deleted. The members are
+--     the live player peds already in scope.
+--   * No health, armour, weapon or coordinate is written. Damage is the
+--     game's own melee damage event, produced by the victim's own client.
+--   * The ring and the status line are Susano overlay draws, outside the game
+--     framebuffer.
+--
+-- The fallback is only for a build that refuses remote player tasks: after
+-- the brawl window shows no movement, no combat state and no closing distance
+-- on any member, the module switches to the resource relay the server already
+-- trusts (dpemotes first, then cmg2/cmg3) and verifies each reaction on the
+-- target ped. A relay that never produces a target-side result stops the
+-- feature instead of pretending the victim is fighting.
 --
 -- Residual risk:
---   1. The relay produces one shared-emote/carry event per attack. The tick is
---      one attack per finished clip (about 1.3-1.8 s), and a miss produces one
---      extra event instead of silently leaving the caller alone.
---   2. A host resource can validate range or consent. The dpemotes stock
---      handler relays without a range check; the official rpemotes
---      ServerValidEmote rejects targets beyond 3 m, and rpemotes-reborn
---      requires a pending request. The cmg2 reference handler does not
---      range-check. The target-side proof marks that provider as missed and
---      the next provider is tried; if every provider misses, the feature
---      stops with NO REMOTE PROVIDER instead of pretending the victim is
---      fighting.
---   3. A server that runs none of these relays cannot be forced from the
---      client. The feature stops instead of playing a local-only animation and
---      calling it a success.
---   4. The victim's own client owns the emote and its input can cancel it.
---      The proof then fails and the next attack retries; no fake success is
---      recorded.
+--   1. Remote player tasks are a client-to-server game event. A server build
+--      that blacklists task ids (Icarus task-blacklist style) can drop them;
+--      V4 does not. The fallback then animates through the resource relay.
+--   2. A victim who is handcuffed, dead, in a vehicle, or streaming out is
+--      dropped on the next pass; the rest re-pair.
+--   3. An armed victim fights with the weapon they already hold. The module
+--      does not remove weapons remotely: removeAllWeaponsEvent on another
+--      player is exactly what V4's AntiRemoveWeapons cancels and detects.
+--   4. The timed combat is a 15 s task. Release sends a stand-still task; if
+--      the server drops it too, the brawl ends on its own within that window.
 -- ============================================================================
 
 local FP = {}
 
-local MAX_TARGETS   = 12
-local RING_POINTS   = 72
-local CHECK_MS      = 200
-local ATTACK_MS     = 1800
-local ATTACK_JITTER = 250
-local RADIUS_MIN    = 8.0
-local RADIUS_MAX    = 40.0
-local LEASH_M       = 4.0
-local CMG_FRONT     = 0.92
-local DICT          = "melee@unarmed@streamed_variations"
-local DP_DICT       = "melee@unarmed@streamed_variations"
+local MAX_TARGETS      = 12
+local RING_POINTS      = 72
+local CHECK_MS         = 150
+local RADIUS_MIN       = 8.0
+local RADIUS_MAX       = 40.0
+local ASSEMBLY_MS      = 2200
+local COMBAT_MS        = 15000
+local TASK_REFRESH_MS  = 4200
+local PROOF_MS         = 5000
+local RELEASE_MS       = 900
+local WALK_SPEED       = 2.0
+local COMBAT_FLAGS     = 0
+local THREAT_FLAGS     = 16
+local SLOT_BASE_R      = 2.0
+local SLOT_STEP_R      = 0.42
+local SLOT_MAX_R       = 7.0
+local RELAY_GAP_MS     = 2000
+local RELAY_CHECK_MS   = 900
+local RELAY_FRONT      = 0.92
+local CMG_DICT         = "melee@unarmed@streamed_variations"
+local DP_DICT          = "melee@unarmed@streamed_variations"
 
--- Attacker clip and the matching victim reaction. Every pair below is the
--- exact clip set dpemotes ships for its shared punch/headbutt/slap entries, so
--- both names are known to resolve in the current game build and both sides of
--- the relay use the same dictionary. The previous streamed_core set was
--- unverified; if a victim clip was absent, only the caller animated.
 local CMG_ATTACKS = {
     { self = "plyr_takedown_rear_lefthook",  victim = "victim_takedown_front_cross_r",   ms = 1100 },
     { self = "plyr_takedown_front_headbutt", victim = "victim_takedown_front_headbutt",  ms = 1200 },
@@ -36841,8 +36809,6 @@ local CMG_ATTACKS = {
     { self = "plyr_takedown_front_backslap", victim = "victim_takedown_front_backslap",  ms = 1100 },
 }
 
--- dpemotes DP.Shared pairs. ServerValidEmote(target, requested, other) sends
--- the requested emote to the target and the other emote to the caller.
 local DP_PAIRS = {
     { self = "punch",    victim = "punched",    victimClip = "victim_takedown_front_cross_r" },
     { self = "headbutt", victim = "headbutted", victimClip = "victim_takedown_front_headbutt" },
@@ -36858,28 +36824,29 @@ FP.anchorPed    = nil
 FP.anchorPlayer = nil
 FP.anchorKey    = nil
 FP.ring         = nil
+FP.innerRing    = nil
+FP.slotRadius   = nil
 FP.members      = {}
 FP.byKey        = {}
 FP.count        = 0
 FP.startedAt    = 0
+FP.combatAt     = 0
 FP.onChange     = nil
 FP.note         = nil
 FP.noteUntil    = 0
-FP.provider     = nil
+FP.mode         = "native"
+FP.proof        = false
+FP.warned       = false
 FP.providers    = {}
 FP.providerIndex = 1
-FP.verifiedProvider = nil
-FP.providerFails = 0
+FP.provider     = nil
 FP.pending      = nil
-FP.retry        = nil
-FP.attacks      = CMG_ATTACKS
+FP.relayTarget  = nil
+FP.relayFails   = 0
+FP.nextRelay    = 0
+FP.memberIndex  = 0
 FP.attackIndex  = 1
 FP.dpIndex      = 1
-FP.memberIndex  = 0
-FP.nextAttack   = 0
-FP.activeTarget = nil
-FP.activeProvider = nil
-FP.selfPlayed   = false
 
 FP.canRender = type(Susano) == "table"
     and type(Susano.DrawLine) == "function"
@@ -36916,7 +36883,9 @@ local function pedUsable(ped)
 end
 
 local function keyOf(rec)
-    if type(rec.sid) == "number" and rec.sid > 0 then return "s" .. tostring(rec.sid) end
+    if type(rec.sid) == "number" and rec.sid > 0 then
+        return "s" .. tostring(rec.sid)
+    end
     if rec.player then return "p" .. tostring(rec.player) end
     return "e" .. tostring(rec.source)
 end
@@ -36929,42 +36898,12 @@ local function isVec(v)
 end
 
 -- ---------------------------------------------------------------------------
--- PROVIDER CHAIN. The shared-emote relay is first because it is the path the
--- working reference menus use: dpemotes and the official rpemotes register
--- `ServerValidEmote` server-side, so a client only has to emit the event with
--- the target's server id. No resource enumeration is needed and no code is
--- injected; an event a server does not handle is simply ignored, and the
--- target-side proof moves the tick to the next provider.
---
--- cmg2/cmg3 follow. They are attempted even when the resource name cannot be
--- listed, because the event is what matters and the server-side handler is
--- what forwards it to the victim's client. rpemotes-reborn's confirmEmote is
--- not in the chain: it requires a pending request and a manual accept, so it
--- can never animate an unwilling target and pretending otherwise only burns
--- the operator's own punch.
+-- RESOURCE RELAY (fallback only). Same provider contract as the verified V4
+-- module: the server-side handler of dpemotes/official rpemotes or cmg2/cmg3
+-- forwards the shared pair, and the target's own client performs it. The
+-- server event is emitted from a host resource through the injector because
+-- WaveShield signs the executor's TriggerServerEvent and drops it otherwise.
 -- ---------------------------------------------------------------------------
-local function detectProviders()
-    return {
-        { name = "dpemotes" },
-        { name = "cmg2" },
-        { name = "cmg3" },
-        { name = "cmg31" },
-    }
-end
-
-local function isCmg(name)
-    return name == "cmg2" or name == "cmg3" or name == "cmg31"
-end
-
--- The server event must be emitted from inside a resource VM. WaveShield
--- replaces the client TriggerServerEvent with a wrapper that signs the event,
--- and the server registers the signed name, so the executor's own call never
--- reaches a handler. Susano.InjectResource runs the same TriggerServerEvent
--- from a host resource, which is what the working reference menus do. Those
--- menus inject into `monitor` on this framework; the emote resources and the
--- framework are the next choices. GetInjectableResources is the only reliable
--- list, so it is asked first and the preferred names are tried when the list
--- is empty.
 local HOSTS = {
     "monitor", "dpemotes", "rpemotes", "framework",
     "es_extended", "qb-core", "ox_lib", "ox_inventory",
@@ -37018,62 +36957,64 @@ local function emit(event, ...)
     if type(Susano) == "table" and type(Susano.InjectResource) == "function" then
         local host = emitHost or "any"
         if pcall(Susano.InjectResource, host, code) then return true end
-        if host ~= "any" and pcall(Susano.InjectResource, "any", code) then return true end
+        if host ~= "any" and pcall(Susano.InjectResource, "any", code) then
+            return true
+        end
     end
-    -- Last resort for a build without the injector.
     if type(TriggerServerEvent) == "function" then
         return pcall(TriggerServerEvent, event, ...)
     end
     return false
 end
 
--- cmg2_animations:sync(targetId, lib, lib2, anim1, anim2, distans,
--- distans2, height, targetServer, length, spin, controlFlagMe,
--- controlFlagTarget, animFlagTarget). The two target fields are the same
--- server id on purpose: one cmg2 build reads the first field, another reads
--- the ninth. Passing the client index in the first field made the server
--- deliver syncTarget to whichever player owned that server id (often the
--- caller itself), which is why only the caller used to animate. The server
--- forwards source and the two pairs to syncMe/syncTarget; the target's own
--- client attaches itself to the caller and plays the victim clip.
---
--- cmg3_animations:sync uses one dictionary and two clips (attacker, victim)
--- and cmg3_animations1:sync appends the attach flag. Both are the same relay
--- contract with a different frame, so the same proof covers them.
+local function detectProviders()
+    return {
+        { name = "dpemotes" },
+        { name = "cmg2" },
+        { name = "cmg3" },
+        { name = "cmg31" },
+    }
+end
+
+local function isCmg(name)
+    return name == "cmg2" or name == "cmg3" or name == "cmg31"
+end
+
 local function cmgSync(rec, attack)
     if not rec or not rec.player then return false end
     if not pedUsable(rec.source) then return false end
     local sid = rec.sid
-    if type(sid) ~= "number" or sid <= 0 then sid = GetPlayerServerId(rec.player) end
+    if type(sid) ~= "number" or sid <= 0 then
+        sid = GetPlayerServerId(rec.player)
+    end
     if type(sid) ~= "number" or sid <= 0 then return false end
 
     local ok
     if FP.provider == "cmg3" then
-        ok = emit("cmg3_animations:sync", sid, DICT, attack.self, attack.victim,
-            CMG_FRONT, 0.0, 0.0, sid, attack.ms, 180.0, 0, 0, 0)
+        ok = emit("cmg3_animations:sync", sid, CMG_DICT, attack.self,
+            attack.victim, RELAY_FRONT, 0.0, 0.0, sid, attack.ms,
+            180.0, 0, 0, 0)
     elseif FP.provider == "cmg31" then
-        ok = emit("cmg3_animations1:sync", sid, DICT, attack.self, attack.victim,
-            CMG_FRONT, 0.0, 0.0, sid, attack.ms, 180.0, 0, 0, 0, 1)
+        ok = emit("cmg3_animations1:sync", sid, CMG_DICT, attack.self,
+            attack.victim, RELAY_FRONT, 0.0, 0.0, sid, attack.ms,
+            180.0, 0, 0, 0, 1)
     else
-        ok = emit("cmg2_animations:sync", sid, DICT, DICT, attack.self, attack.victim,
-            CMG_FRONT, 0.0, 0.0, sid, attack.ms, 180.0, 0, 0, 0)
+        ok = emit("cmg2_animations:sync", sid, CMG_DICT, CMG_DICT,
+            attack.self, attack.victim, RELAY_FRONT, 0.0, 0.0, sid,
+            attack.ms, 180.0, 0, 0, 0)
     end
-
-    -- syncMe also lands on the source's client; the operator's own ped gets the
-    -- attacker clip. Mark it so stop clears that local task.
-    if ok then FP.selfPlayed = true end
     return ok
 end
 
-local function cmgStop(rec, provider)
+local function cmgStop(rec)
     if not rec or not rec.player then return false end
     local sid = rec.sid
-    if type(sid) ~= "number" or sid <= 0 then sid = GetPlayerServerId(rec.player) end
+    if type(sid) ~= "number" or sid <= 0 then
+        sid = GetPlayerServerId(rec.player)
+    end
     if type(sid) ~= "number" or sid <= 0 then return false end
-    provider = provider or FP.activeProvider or FP.provider
+    local provider = FP.provider
     if provider == "cmg3" or provider == "cmg31" then
-        -- cmg3 and cmg3_animations1 share one attachment table on the host;
-        -- the reference menu sends both stops, so one detach releases either.
         local a = emit("cmg3_animations:stop", sid)
         local b = emit("cmg3_animations1:stop", sid)
         return a or b
@@ -37081,63 +37022,30 @@ local function cmgStop(rec, provider)
     return emit("cmg2_animations:stop", sid)
 end
 
--- dpemotes shared emote relay. The victim emote is the target side; the
--- attacker emote is the caller side. Both are names already present in the
--- resource's DP.Shared table.
 local function dpSync(rec, pair)
     if not rec or not rec.player then return false end
     if not pedUsable(rec.source) then return false end
     local sid = rec.sid
-    if type(sid) ~= "number" or sid <= 0 then sid = GetPlayerServerId(rec.player) end
+    if type(sid) ~= "number" or sid <= 0 then
+        sid = GetPlayerServerId(rec.player)
+    end
     if type(sid) ~= "number" or sid <= 0 then return false end
-    -- dpemotes and the official rpemotes both register this event with the
-    -- stock handler: SyncPlayEmoteSource to the target, SyncPlayEmote to the
-    -- source. The victim's client teleports itself and plays the victim clip;
-    -- the operator's client plays the attacker clip. No consent step exists in
-    -- that handler, which is why the reference menus use it.
-    local ok = emit("ServerValidEmote", sid, pair.victim, pair.self)
-    if ok then FP.selfPlayed = true end
-    return ok
+    return emit("ServerValidEmote", sid, pair.victim, pair.self)
 end
 
--- ---------------------------------------------------------------------------
--- TARGET-SIDE PROOF. The tick does not trust that an event was accepted: it
--- reads the target ped it can already see. A remote player ped replicates the
--- animation it plays and the position it is moved to by its own client, so
--- these are the only two facts needed to decide whether a provider did work.
--- ---------------------------------------------------------------------------
 local function playing(ped, dict, clip)
     if type(IsEntityPlayingAnim) ~= "function" then return false end
     local ok, value = pcall(IsEntityPlayingAnim, ped, dict, clip, 3)
     return ok and value == true
 end
 
--- A moving target can cross the operator's 1.8 m disk during the proof window
--- without any provider acting on it. The position fallback therefore also
--- requires the target to be effectively stopped; the attach/teleport stops the
--- victim, while a walking or sprinting ped does not pass.
 local function still(ped)
     if type(GetEntitySpeed) ~= "function" then return true end
     local ok, speed = pcall(GetEntitySpeed, ped)
     return ok and type(speed) == "number" and speed < 0.6
 end
 
--- The operator's own ped is the one entity this client owns, so a local
--- TaskPlayAnim on it is replicated to every other client. It gives the
--- operator immediate feedback and makes the attacker side visible even when
--- the victim relay is silent. It is not a substitute for the target-side
--- proof and never marks the victim as fighting.
-local function playSelf(clip)
-    if type(clip) ~= "string" or type(TaskPlayAnim) ~= "function" then return end
-    local me = PlayerPedId()
-    if type(me) ~= "number" or me == 0 or not DoesEntityExist(me) then return end
-    if type(IsPedInAnyVehicle) == "function" and IsPedInAnyVehicle(me, false) then return end
-    if type(IsPedDeadOrDying) == "function" and IsPedDeadOrDying(me, true) then return end
-    pcall(RequestAnimDict, DICT)
-    pcall(TaskPlayAnim, me, DICT, clip, 8.0, -8.0, -1, 0, 0.0, false, false, false)
-end
-
-local function verify(rec, attack, name, pair, pre)
+local function verifyRelay(rec, attack, name, pair, pre)
     if not rec or not pedUsable(rec.source) then return false end
 
     local moved = false
@@ -37149,18 +37057,11 @@ local function verify(rec, attack, name, pair, pre)
     end
 
     if isCmg(name) then
-        if playing(rec.source, DICT, attack.victim) then return true end
-        -- The cmg handler attaches the target to the caller, so a moved and
-        -- stopped target is the second fact. The operator distance is not
-        -- required: the target's own handler picks the nearest ped.
+        if playing(rec.source, CMG_DICT, attack.victim) then return true end
         return moved and still(rec.source)
     end
 
     if name == "dpemotes" then
-        -- The dpemotes target handler plays a named emote, not a raw clip, so
-        -- the clip on the target ped is the only trustworthy fact. A moved
-        -- target is not enough: another player can cross the target's spot
-        -- during the window and would credit a relay that never fired.
         local chosen = pair or DP_PAIRS[1]
         return playing(rec.source, DP_DICT, chosen.victimClip)
     end
@@ -37179,8 +37080,7 @@ local function groundAt(x, y, probe)
     return nil
 end
 
-local function buildRing()
-    if not FP.center then FP.ring = nil return end
+local function sampleRing(radius)
     local n = RING_POINTS
     local base = FP.center.z
     local probe = base + 2.0
@@ -37188,14 +37088,29 @@ local function buildRing()
 
     for i = 1, n do
         local angle = (i - 1) / n * math.pi * 2.0
-        local x = FP.center.x + math.cos(angle) * FP.radius
-        local y = FP.center.y + math.sin(angle) * FP.radius
+        local x = FP.center.x + math.cos(angle) * radius
+        local y = FP.center.y + math.sin(angle) * radius
         local z = groundAt(x, y, probe)
         if not z or math.abs(z - base) > 3.0 then z = base end
         points[i] = { x = x, y = y, z = z + 0.035 }
     end
 
-    FP.ring = points
+    return points
+end
+
+local function buildRing()
+    if not FP.center then
+        FP.ring = nil
+        FP.innerRing = nil
+        return
+    end
+
+    FP.ring = sampleRing(FP.radius)
+    if FP.slotRadius and FP.slotRadius < FP.radius then
+        FP.innerRing = sampleRing(FP.slotRadius)
+    else
+        FP.innerRing = nil
+    end
 end
 
 function FP.setRadius(value)
@@ -37205,8 +37120,8 @@ function FP.setRadius(value)
 end
 
 -- ---------------------------------------------------------------------------
--- WORLD READ. Only real, active players are targets. NPCs cannot be addressed
--- by the host's server-side emote/carry event, so they are not collected.
+-- WORLD READ. Real, active players only. The operator is dropped before the
+-- list is built, so no later path can select him as a fighter.
 -- ---------------------------------------------------------------------------
 local function gather(radius)
     local out = {}
@@ -37230,8 +37145,6 @@ local function gather(radius)
                         sid = sid,
                         source = ped,
                         dist = dist,
-                        lastAt = 0,
-                        nextAt = 0,
                     }
                 end
             end
@@ -37243,7 +37156,8 @@ local function gather(radius)
 end
 
 -- ---------------------------------------------------------------------------
--- AIM ANCHOR. Four native reads, once per start, when no player is selected.
+-- AIM ANCHOR. Same selection order as the rest of the menu: selected player,
+-- then the ped under the camera ray, then the nearest other player.
 -- ---------------------------------------------------------------------------
 local function aimedPed()
     if type(GetGameplayCamCoord) ~= "function"
@@ -37274,271 +37188,179 @@ local function aimedPed()
 end
 
 -- ---------------------------------------------------------------------------
--- MEMBERSHIP. No clone lifecycle: a record is only the live player ped and the
--- client index used to address it.
+-- PAIRING. Mutual nearest pairs; an odd member targets the nearest pair and
+-- turns the circle into a three-way fight. Only live member peds are targets.
 -- ---------------------------------------------------------------------------
-local function reconcile(list)
-    local fresh = {}
-    for i = 1, #list do fresh[keyOf(list[i])] = list[i] end
-
-    for i = #FP.members, 1, -1 do
-        local rec = FP.members[i]
-        local key = keyOf(rec)
-        local candidate = fresh[key]
-        if not candidate then
-            FP.byKey[key] = nil
-            table.remove(FP.members, i)
-        else
-            rec.player = candidate.player
-            rec.sid = candidate.sid
-            rec.source = candidate.source
-            rec.dist = candidate.dist
-        end
-    end
-
-    for i = 1, #list do
-        if #FP.members >= MAX_TARGETS then break end
-        local candidate = list[i]
-        local key = keyOf(candidate)
-        if not FP.byKey[key] then
-            FP.members[#FP.members + 1] = candidate
-            FP.byKey[key] = candidate
-        end
-    end
-
-    FP.count = #FP.members
-    return FP.count
+local function partnerOf(rec)
+    if not rec or type(rec.partner) ~= "string" then return nil end
+    return FP.byKey[rec.partner]
 end
 
--- A record can be removed and re-added between two ticks (player crosses the
--- leash and comes back). Re-point the pending/retry/active record at the fresh
--- table so its ped handle, server id and readiness stay current.
-local function rebind(rec)
-    if not rec then return nil end
-    local fresh = FP.byKey[keyOf(rec)]
-    if fresh and fresh ~= rec then return fresh end
-    return rec
-end
-
-local function nextMember(now)
+local function refreshPartners()
     local n = #FP.members
-    if n == 0 then return nil end
-    local myPos = GetEntityCoords(PlayerPedId())
-    local best, bestDist = nil, nil
+    for i = 1, n do FP.members[i].partner = nil end
 
-    -- Prefer the nearest READY member to the operator. The cmg attach is
-    -- easiest to read at close range; the dpemotes relay teleports the target
-    -- to its own closest player, so distance is still a good order. A member
-    -- that is still finishing its clip is skipped, not attacked on a fixed
-    -- global cadence.
-    for off = 1, n do
-        local idx = ((FP.memberIndex + off - 1) % n) + 1
-        local rec = FP.members[idx]
-        if rec and pedUsable(rec.source) and now >= (rec.nextAt or 0) then
-            local dist = O.distance(GetEntityCoords(rec.source), myPos)
-            if not bestDist or dist < bestDist then
-                best, bestDist = rec, dist
-                FP.memberIndex = idx
-            end
-        end
-    end
-
-    return best
-end
-
--- ---------------------------------------------------------------------------
--- TICK. One attack per pass window. A provider is not trusted until the
--- target-side proof arrives. When the proof fails, the same target and the
--- same clip are retried through the next provider, so a server that runs a
--- broken carry resource and a working emote menu still ends up animating the
--- victim. The previous cmg attachment is stopped before a different target is
--- attached, so the host resource never has two carried peds for one source;
--- the same target is re-attached in place, without a stop/re-attach blink.
--- ---------------------------------------------------------------------------
-local function tick(now)
-    if not FP.active then return end
-    if not FP.center then FP.stop("no centre") return end
-    if not FP.provider then FP.stop("no provider") return end
-
-    local list = gather(FP.radius + LEASH_M)
-
-    -- A cmg attach and the dpemotes source relay both move the victim to the
-    -- operator. When the ring is anchored on a selected player away from the
-    -- operator, that pull takes the victim outside the ring and the next
-    -- gather would evict it after one hit. Existing members are therefore
-    -- retained while they are within the same leash of the operator as well;
-    -- new players near the operator are still not recruited, so the original
-    -- ring remains the selection.
-    if #FP.members > 0 then
-        local myPos = GetEntityCoords(PlayerPedId())
-        for i = 1, #FP.members do
-            local rec = FP.members[i]
-            if rec and pedUsable(rec.source) then
-                local distMe = O.distance(GetEntityCoords(rec.source), myPos)
-                if distMe <= (FP.radius + LEASH_M) then
-                    local key = keyOf(rec)
-                    local found = false
-                    for j = 1, #list do
-                        if keyOf(list[j]) == key then found = true break end
-                    end
-                    if not found then
-                        rec.dist = distMe
-                        list[#list + 1] = rec
-                    end
+    for i = 1, n do
+        local rec = FP.members[i]
+        if not rec.partner then
+            local pos = GetEntityCoords(rec.source)
+            local best, bestD = nil, nil
+            for j = i + 1, n do
+                local other = FP.members[j]
+                if other ~= rec and not other.partner then
+                    local d = O.distance(pos, GetEntityCoords(other.source))
+                    if not bestD or d < bestD then best, bestD = other, d end
                 end
             end
+            if best then
+                rec.partner = best.key
+                best.partner = rec.key
+            end
         end
     end
 
-    local count = reconcile(list)
-    if count < 1 then FP.stop("empty") return end
-
-    FP.activeTarget = rebind(FP.activeTarget)
-    if FP.pending then FP.pending.rec = rebind(FP.pending.rec) end
-    if FP.retry then FP.retry.rec = rebind(FP.retry.rec) end
-
-    if FP.pending and not FP.byKey[keyOf(FP.pending.rec)] then
-        FP.pending = nil
-        FP.retry = nil
-        FP.nextAttack = now
-        if FP.activeTarget then
-            cmgStop(FP.activeTarget)
-            FP.activeTarget = nil
-            FP.activeProvider = nil
+    for i = 1, n do
+        local rec = FP.members[i]
+        if not rec.partner then
+            local pos = GetEntityCoords(rec.source)
+            local best, bestD = nil, nil
+            for j = 1, n do
+                local other = FP.members[j]
+                if other ~= rec then
+                    local d = O.distance(pos, GetEntityCoords(other.source))
+                    if not bestD or d < bestD then best, bestD = other, d end
+                end
+            end
+            if best then rec.partner = best.key end
         end
     end
 
+    -- Combat proof is a pair that closes on its target, not a pair that was
+    -- already standing together. Snapshot the opening distance per member.
+    for i = 1, n do
+        local rec = FP.members[i]
+        local partner = partnerOf(rec)
+        if partner then
+            rec.startPair = O.distance(GetEntityCoords(rec.source),
+                GetEntityCoords(partner.source))
+        else
+            rec.startPair = nil
+        end
+    end
+end
+
+local function dropMember(i, now)
+    local rec = FP.members[i]
+    FP.byKey[rec.key] = nil
+    table.remove(FP.members, i)
+    if FP.pending and FP.pending.rec == rec then FP.pending = nil end
+    if FP.relayTarget == rec then FP.relayTarget = nil end
+    refreshPartners()
+    local n = #FP.members
+    for k = 1, n do FP.members[k].nextTask = now end
+    FP.count = n
+end
+
+local function issueWalk(rec)
+    local pos = GetEntityCoords(rec.source)
+    if O.distance(pos, rec.slot) > 3.5 then
+        TaskGoToCoordAnyMeans(rec.source, rec.slot.x, rec.slot.y,
+            rec.slot.z, WALK_SPEED, 0, false, 786603, -1.0)
+    end
+end
+
+local function issueCombat(rec, now)
+    local partner = partnerOf(rec)
+    if not partner or not pedUsable(partner.source) then return false end
+    TaskCombatPedTimed(rec.source, partner.source, COMBAT_MS, THREAT_FLAGS)
+    rec.taskAt = now
+    rec.nextTask = now + TASK_REFRESH_MS
+    return true
+end
+
+local function releaseMember(rec)
+    if not rec or not pedUsable(rec.source) then return end
+    TaskStandStill(rec.source, RELEASE_MS)
+end
+
+-- ---------------------------------------------------------------------------
+-- RELAY FALLBACK. One verified reaction at a time, paced well below any
+-- emote-relay burst threshold. This only runs when the native task path
+-- produced no observable effect on any member.
+-- ---------------------------------------------------------------------------
+local function relayTick(now)
     if FP.pending then
         if now < FP.pending.at then return end
-
         local p = FP.pending
-        if not p.checked then
-            -- One second chance. The target's own handler cancels its emote,
-            -- waits 300 ms and teleports before it plays, so a single 900 ms
-            -- read can land inside that window on a loaded server.
-            p.checked = true
-            p.at = now + 700
-            return
-        end
         FP.pending = nil
 
-        if verify(p.rec, p.attack, p.name, p.pair, p.pre) then
-            local changed = FP.verifiedProvider ~= p.name
+        if verifyRelay(p.rec, p.attack, p.name, p.pair, p.pre) then
             FP.provider = p.name
-            FP.verifiedProvider = p.name
-            FP.providerFails = 0
-            FP.retry = nil
-            FP.activeTarget = isCmg(p.name) and p.rec or nil
-            FP.activeProvider = isCmg(p.name) and p.name or nil
-            p.rec.lastAt = now
-            local waitMs = (p.duration or ATTACK_MS) - (now - (p.start or now))
-            if waitMs < 150 then waitMs = 150 end
-            p.rec.nextAt = now + waitMs
-            FP.nextAttack = now + waitMs + O.int(0, ATTACK_JITTER)
-            FP.attackIndex = (FP.attackIndex % #FP.attacks) + 1
-            if p.name == "dpemotes" then
-                FP.dpIndex = (FP.dpIndex % #DP_PAIRS) + 1
+            FP.relayFails = 0
+            FP.proof = true
+            log("relay provider %s verified", p.name)
+        else
+            FP.relayFails = FP.relayFails + 1
+            FP.providerIndex = (FP.providerIndex % #FP.providers) + 1
+            if FP.relayFails > #FP.providers then
+                FP.stop("no remote provider")
+                note("NO REMOTE PROVIDER")
             end
-            if changed then log("provider %s verified", p.name) end
-            return
         end
-
-        if isCmg(p.name) then
-            cmgStop(p.rec, p.name)
-            FP.activeTarget = nil
-            FP.activeProvider = nil
-        end
-
-        FP.providerFails = (FP.providerFails or 0) + 1
-        if FP.providerFails > #FP.providers then
-            FP.stop("no remote provider")
-            note("NO REMOTE PROVIDER")
-            return
-        end
-
-        -- Same target, same clip, next provider. The attempt window keeps the
-        -- ring stable and prevents a false negative from silently dropping the
-        -- victim.
-        FP.retry = { rec = p.rec, attack = p.attack, pair = p.pair }
-        FP.providerIndex = (FP.providerIndex % #FP.providers) + 1
-        FP.nextAttack = now + 250
-        log("provider %s missed, trying next", p.name)
         return
     end
 
-    if now < (FP.nextAttack or 0) then return end
+    if now < (FP.nextRelay or 0) then return end
 
-    local rec = FP.retry and FP.retry.rec or nextMember(now)
-    if rec and (not pedUsable(rec.source) or not FP.byKey[keyOf(rec)]) then
-        FP.retry = nil
-        rec = nextMember(now)
-    end
-    if not rec then
-        FP.nextAttack = now + 500
+    local n = #FP.members
+    if n == 0 then return end
+    FP.memberIndex = (FP.memberIndex % n) + 1
+    local rec = FP.members[FP.memberIndex]
+    if not rec or not pedUsable(rec.source) then
+        FP.nextRelay = now + 250
         return
     end
 
-    local attack = FP.retry and FP.retry.attack or FP.attacks[FP.attackIndex]
+    local entry = FP.providers[FP.providerIndex]
+    if not entry then FP.stop("no provider") return end
+    FP.provider = entry.name
+
+    local attack = CMG_ATTACKS[FP.attackIndex]
     if not attack then
         FP.attackIndex = 1
-        attack = FP.attacks[1]
+        attack = CMG_ATTACKS[1]
     end
-
-    local pair = FP.retry and FP.retry.pair or DP_PAIRS[FP.dpIndex]
+    local pair = DP_PAIRS[FP.dpIndex]
     if not pair then
         FP.dpIndex = 1
         pair = DP_PAIRS[1]
     end
 
-    local entry = FP.providers[FP.providerIndex]
-    if not entry then FP.stop("no provider") return end
-
-    -- A different target means the previous cmg attachment must be released
-    -- before the new one, or one source owns two carried peds. The same target
-    -- is left attached: syncTarget replaces its task and attachment in place,
-    -- and a stop/re-attach pair would make the victim visibly blink.
-    if FP.activeTarget and FP.activeTarget.source ~= rec.source then
-        cmgStop(FP.activeTarget)
-        FP.activeTarget = nil
-        FP.activeProvider = nil
+    if FP.relayTarget and FP.relayTarget.source ~= rec.source then
+        cmgStop(FP.relayTarget)
+        FP.relayTarget = nil
     end
 
     local before = GetEntityCoords(rec.source)
-    local pre = nil
-    if isVec(before) then
-        pre = { x = before.x, y = before.y, z = before.z }
-    end
+    local pre = isVec(before) and { x = before.x, y = before.y, z = before.z } or nil
 
-    FP.provider = entry.name
-
-    -- The attacker side is the operator's own networked ped. It always plays,
-    -- so the punch is visible to every client even when the victim relay is
-    -- silent. The victim side still depends on the provider and the proof.
-    playSelf(attack.self)
-
-    local ok = false
-    local duration = attack.ms or ATTACK_MS
+    local ok
     if isCmg(entry.name) then
         ok = cmgSync(rec, attack)
+        if ok then FP.relayTarget = rec end
     else
         ok = dpSync(rec, pair)
-        duration = 1800
     end
 
     if not ok then
-        FP.providerFails = (FP.providerFails or 0) + 1
+        FP.relayFails = FP.relayFails + 1
         FP.providerIndex = (FP.providerIndex % #FP.providers) + 1
-        FP.retry = { rec = rec, attack = attack, pair = pair }
-        FP.nextAttack = now + 300
-        if FP.providerFails > #FP.providers then
+        FP.nextRelay = now + 400
+        if FP.relayFails > #FP.providers then
             FP.stop("no remote provider")
             note("NO REMOTE PROVIDER")
         end
         return
-    end
-
-    if isCmg(entry.name) then
-        FP.activeTarget = rec
     end
 
     FP.pending = {
@@ -37546,12 +37368,103 @@ local function tick(now)
         attack = attack,
         pair = pair,
         name = entry.name,
-        duration = duration,
         pre = pre,
-        start = now,
-        at = now + 900,
+        at = now + RELAY_CHECK_MS,
     }
-    FP.nextAttack = now + 1000000
+    FP.nextRelay = now + RELAY_GAP_MS
+    FP.attackIndex = (FP.attackIndex % #CMG_ATTACKS) + 1
+    FP.dpIndex = (FP.dpIndex % #DP_PAIRS) + 1
+end
+
+-- ---------------------------------------------------------------------------
+-- TICK
+-- ---------------------------------------------------------------------------
+local function tick(now)
+    if not FP.active then return end
+    if not FP.center then FP.stop("no centre") return end
+    if #FP.members == 0 then FP.stop("empty") return end
+
+    local dirty = false
+    for i = #FP.members, 1, -1 do
+        local rec = FP.members[i]
+        local ped = rec.source
+        if not pedUsable(ped) then
+            dropMember(i, now)
+            dirty = true
+        else
+            local pos = GetEntityCoords(ped)
+            local delta = O.distance(pos, rec.lastPos)
+            if delta < 3.0 then rec.moved = rec.moved + delta end
+            rec.lastPos = O.v3(pos)
+
+            if now >= FP.combatAt then
+                local partner = partnerOf(rec)
+                if partner and pedUsable(partner.source) then
+                    local pd = O.distance(pos, GetEntityCoords(partner.source))
+                    if IsPedInCombat(ped, partner.source) == true then
+                        rec.inCombat = true
+                        FP.proof = true
+                    end
+                    if rec.moved >= 0.25 then FP.proof = true end
+                    if type(rec.startPair) == "number"
+                        and pd <= rec.startPair - 0.6 then
+                        FP.proof = true
+                    end
+                end
+            end
+        end
+    end
+
+    if dirty then
+        if #FP.members == 0 then FP.stop("empty") return end
+        FP.count = #FP.members
+    end
+
+    if not FP.proof and not FP.warned and #FP.members > 0 then
+        if now >= FP.combatAt + PROOF_MS and FP.mode == "native" then
+            FP.warned = true
+            local host, injectable = pickHost()
+            emitHost = host
+            FP.providers = detectProviders()
+            if #FP.providers > 0 then
+                FP.mode = "relay"
+                FP.providerIndex = 1
+                FP.provider = FP.providers[1].name
+                FP.relayFails = 0
+                FP.nextRelay = now
+                log("native brawl unproven; relay fallback (host %s)", host)
+                if type(injectable) == "table" and #injectable > 0 then
+                    log("injectable: %s", table.concat(injectable, ", "))
+                end
+            else
+                log("native brawl unproven; no relay provider")
+                note("NO REMOTE PATH")
+            end
+        end
+    end
+
+    if FP.mode == "relay" then
+        relayTick(now)
+        return
+    end
+
+    if now < FP.combatAt then return end
+
+    for i = 1, #FP.members do
+        local rec = FP.members[i]
+        if rec.nextTask <= now then
+            local nearEnd = (now - rec.taskAt) >= (COMBAT_MS - 2500)
+            if not rec.inCombat or nearEnd then
+                if not issueCombat(rec, now) then
+                    rec.nextTask = now + 500
+                else
+                    rec.inCombat = false
+                end
+            else
+                rec.nextTask = now + 500
+            end
+        end
+    end
 end
 
 -- ---------------------------------------------------------------------------
@@ -37562,43 +37475,50 @@ function FP.isActive()
 end
 
 function FP.status()
-    local mode = tostring(FP.provider or "-")
-    if FP.pending then mode = mode .. "?" end
     return ("active=%s peds=%d radius=%.0f mode=%s"):format(
-        tostring(FP.active), #FP.members, FP.radius, mode)
+        tostring(FP.active), #FP.members, FP.radius,
+        tostring(FP.mode or "-"))
 end
 
 function FP.stop(reason)
     local was = FP.active
     FP.active = false
 
-    if FP.activeTarget then
-        cmgStop(FP.activeTarget)
+    for i = 1, #FP.members do
+        releaseMember(FP.members[i])
     end
-    if FP.selfPlayed or FP.activeTarget or FP.pending then
-        pcall(ClearPedTasks, PlayerPedId())
+    if FP.relayTarget then cmgStop(FP.relayTarget) end
+    if FP.pending and isCmg(FP.pending.name) then
+        cmgStop(FP.pending.rec)
     end
 
     FP.ring = nil
+    FP.innerRing = nil
+    FP.slotRadius = nil
     FP.center = nil
     FP.centerSid = nil
     FP.anchorPed = nil
     FP.anchorPlayer = nil
     FP.anchorKey = nil
-    FP.byKey = {}
     FP.members = {}
+    FP.byKey = {}
     FP.count = 0
     FP.note = nil
-    FP.activeTarget = nil
-    FP.activeProvider = nil
-    FP.selfPlayed = false
-    FP.provider = nil
+    FP.mode = "native"
+    FP.proof = false
+    FP.warned = false
     FP.providers = {}
     FP.providerIndex = 1
-    FP.verifiedProvider = nil
-    FP.providerFails = 0
+    FP.provider = nil
     FP.pending = nil
-    FP.retry = nil
+    FP.relayTarget = nil
+    FP.relayFails = 0
+    FP.nextRelay = 0
+    FP.memberIndex = 0
+    FP.attackIndex = 1
+    FP.dpIndex = 1
+    FP.startedAt = 0
+    FP.combatAt = 0
 
     if FP.canRender and Menu then Menu.PreventResetFrame = false end
 
@@ -37618,6 +37538,10 @@ function FP.start()
     FP.anchorPed = nil
     FP.anchorKey = nil
     FP.note = nil
+    FP.warned = false
+    FP.proof = false
+    FP.mode = "native"
+    FP.providers = {}
 
     local selectedSid = nil
     local anchorPed = nil
@@ -37634,9 +37558,7 @@ function FP.start()
         end
     end
 
-    if not anchorPed then
-        anchorPed = aimedPed()
-    end
+    if not anchorPed then anchorPed = aimedPed() end
     if not anchorPed then
         local base = GetEntityCoords(PlayerPedId())
         local best, bestDist = nil, nil
@@ -37662,7 +37584,6 @@ function FP.start()
 
     FP.center = O.v3(GetEntityCoords(anchorPed))
     FP.radius = clampRadius(FP.radius)
-    buildRing()
 
     local list = gather(FP.radius)
     if #list < 1 then
@@ -37674,99 +37595,81 @@ function FP.start()
         return false
     end
 
-    FP.providers = detectProviders()
-    if #FP.providers < 1 then
+    if not B.spend("fight") then
         FP.center = nil
         FP.ring = nil
-        FP.stop("no provider")
-        note("NO EMOTE PROVIDER")
-        log("start refused: no host provider")
-        return false
-    end
-    FP.providerIndex = 1
-    FP.provider = FP.providers[1].name
-    FP.verifiedProvider = nil
-    FP.providerFails = 0
-    FP.pending = nil
-    FP.retry = nil
-
-    -- Host selection and a one-shot diagnostic. The log names the injector
-    -- host, the state of every relay resource and the injectable list, so a
-    -- silent relay can be told apart from a missing resource without guessing.
-    local host, injectable = pickHost()
-    emitHost = host
-    log("host: %s", host)
-
-    if type(GetResourceState) == "function" then
-        local names = {
-            "dpemotes", "rpemotes", "cmg2_animations",
-            "cmg3_animations", "cmg3_animations1",
-        }
-        local states = {}
-        for i = 1, #names do
-            local ok, state = pcall(GetResourceState, names[i])
-            states[#states + 1] = names[i] .. "=" .. tostring(ok and state or "?")
-        end
-        log("resources: %s", table.concat(states, " "))
-    end
-    if type(injectable) == "table" and #injectable > 0 then
-        log("injectable: %s", table.concat(injectable, ", "))
-    end
-
-    local chain = {}
-    for i = 1, #FP.providers do chain[i] = FP.providers[i].name end
-    log("providers: %s", table.concat(chain, " > "))
-
-    if not B.spend("fight") then
-        log("budget refused")
         FP.stop("budget")
         note("BUDGET COOLDOWN")
         return false
     end
 
-    local anchorKey = nil
-    for i = 1, #list do
-        if list[i].source == anchorPed then
-            anchorKey = keyOf(list[i])
-            break
-        end
-    end
-    if not anchorKey then anchorKey = keyOf(list[1]) end
+    local now = O.now()
+    local n = math.min(#list, MAX_TARGETS)
+    local slotR = SLOT_BASE_R + SLOT_STEP_R * n
+    if slotR > SLOT_MAX_R then slotR = SLOT_MAX_R end
+    FP.slotRadius = slotR
+    buildRing()
 
     FP.members = {}
     FP.byKey = {}
-    FP.startedAt = O.now()
-    FP.attackIndex = 1
-    FP.dpIndex = 1
-    FP.memberIndex = 0
-    FP.activeTarget = nil
-    FP.activeProvider = nil
-    FP.nextAttack = O.now() + O.int(250, 500)
-    FP.selfPlayed = false
+    FP.count = 0
+    FP.startedAt = now
+    FP.combatAt = now + ASSEMBLY_MS
+    FP.proof = false
 
-    for i = 1, math.min(#list, MAX_TARGETS) do
+    for i = 1, n do
         local rec = list[i]
-        FP.members[#FP.members + 1] = rec
-        FP.byKey[keyOf(rec)] = rec
+        local key = keyOf(rec)
+        if not FP.byKey[key] then
+            local angle = (i - 1) / n * math.pi * 2.0
+            rec.key = key
+            rec.home = O.v3(GetEntityCoords(rec.source))
+            rec.lastPos = O.v3(rec.home)
+            rec.slot = {
+                x = FP.center.x + math.cos(angle) * slotR,
+                y = FP.center.y + math.sin(angle) * slotR,
+                z = FP.center.z,
+            }
+            rec.moved = 0.0
+            rec.inCombat = false
+            rec.partner = nil
+            rec.taskAt = 0
+            rec.nextTask = now + ASSEMBLY_MS
+            FP.members[#FP.members + 1] = rec
+            FP.byKey[key] = rec
+        end
     end
+
+    if #FP.members < 1 then
+        FP.center = nil
+        FP.ring = nil
+        FP.stop("no targets")
+        note("NO PLAYER IN RANGE")
+        return false
+    end
+
+    refreshPartners()
+    for i = 1, #FP.members do issueWalk(FP.members[i]) end
 
     FP.count = #FP.members
     FP.anchorPed = anchorPed
     FP.anchorPlayer = selectedSid and GetPlayerFromServerId(selectedSid) or nil
-    FP.anchorKey = anchorKey
+    FP.anchorKey = keyOf({ sid = selectedSid, player = FP.anchorPlayer,
+        source = anchorPed })
     FP.centerSid = selectedSid
     FP.active = true
+
     if FP.canRender and Menu then Menu.PreventResetFrame = true end
 
     notify()
-    log("started: peds=%d radius=%.0f anchor=%s mode=%s",
+    log("started: peds=%d radius=%.0f anchor=%s pair=%d mode=native",
         FP.count, FP.radius, tostring(selectedSid or "auto"),
-        tostring(FP.provider))
+        math.floor(FP.count / 2))
     return true
 end
 
 -- ---------------------------------------------------------------------------
--- RENDER. Ring and status only; the target peds are never hidden or touched.
+-- RENDER. Selection ring and a status line on the Susano overlay.
 -- ---------------------------------------------------------------------------
 local screenSize
 
@@ -37810,6 +37713,11 @@ local function stroke(x1, y1, x2, y2, alpha)
     if type(Susano.DrawLine) ~= "function" then return end
     pcall(Susano.DrawLine, x1, y1, x2, y2, 0.24, 0.80, 1.0, alpha * 0.22, 5.0)
     pcall(Susano.DrawLine, x1, y1, x2, y2, 0.24, 0.80, 1.0, alpha, 1.6)
+end
+
+local function strokeSoft(x1, y1, x2, y2, alpha)
+    if type(Susano.DrawLine) ~= "function" then return end
+    pcall(Susano.DrawLine, x1, y1, x2, y2, 0.58, 0.90, 1.0, alpha * 0.34, 1.0)
 end
 
 local function drawCentered(text, y, size, r, g, b, a)
@@ -37858,13 +37766,29 @@ function FP.render()
         end
     end
 
+    local inner = FP.innerRing
+    if inner and #inner > 1 then
+        local m = #inner
+        prevOk, px, py = false, 0.0, 0.0
+        for k = 1, m + 1 do
+            local point = inner[((k - 1) % m) + 1]
+            local ok, sx, sy = project(point)
+            if ok then
+                if prevOk then strokeSoft(px, py, sx, sy, pulse * 0.85) end
+                prevOk, px, py = true, sx, sy
+            else
+                prevOk = false
+            end
+        end
+    end
+
     local _, height = screenSize()
     if #FP.members == 0 then
         drawCentered("FIGHT PARTY | NO TARGET IN RING",
             height * 0.855, 18, 0.96, 0.52, 0.52, 0.92)
     else
-        drawCentered(("FIGHT PARTY | %d FIGHTING | %s"):format(
-            #FP.members, string.upper(tostring(FP.provider or "-"))),
+        drawCentered(("FIGHT PARTY | %d BRAWLING | %s"):format(
+            #FP.members, string.upper(tostring(FP.mode or "native"))),
             height * 0.855, 18, 0.94, 0.98, 1.0, 0.92)
     end
 end
@@ -37987,9 +37911,8 @@ function FP.install()
     return true
 end
 
--- One scheduler owns the periodic work. The melee dictionary is requested at
--- start and by the direct task; cmg2/dpemotes load the clip on the target
--- client. The scheduler itself never blocks on a dictionary.
+-- One scheduler owns the periodic work. The period is jittered by O.every, so
+-- the task re-arm never lines up on a fixed cadence.
 O.every("fightparty", CHECK_MS, tick, O.int(0, CHECK_MS))
 
 -- Test seam: lets the local harness drive one pass without starting the whole
@@ -38002,7 +37925,6 @@ end
 return FP
 
 end)(O,S,B,Menu)
-
 
 -- ---------------------------------------------------------------------------
 -- PART: 07_menu.lua
@@ -38415,6 +38337,32 @@ local function installBypassProfiles()
             type = "action",
             onClick = function() V.setRaven(not V.ravenActive) end,
         },
+        {
+            name = "Freeze Resource",
+            type = "selector",
+            options = { "WaveShield", "FiveGuard", "Electron AC" },
+            selected = 1,
+            onClick = function(index, option)
+                if index == 1 then
+                    Menu.__vgd_wsBanChoke = true
+                    if type(Menu.__vgd_wsComputeBanNames) == "function" then
+                        Menu.__vgd_wsComputeBanNames()
+                    end
+                    local shield = Menu.__vgd_shield
+                    if type(shield) == "table" then
+                        shield.setSuppress(true)
+                        shield.setOverlayProbe(true)
+                    end
+                    O.log("freeze: WaveShield token choke armed (export path is strict on this vendor)")
+                elseif index == 2 then
+                    V.applyVendor("fiveguard")
+                    O.log("freeze: FiveGuard export path armed")
+                else
+                    V.applyVendor("electron")
+                    O.log("freeze: Electron export path armed")
+                end
+            end,
+        },
     }
 
     return true
@@ -38595,15 +38543,17 @@ end
 -- ---------------------------------------------------------------------------
 -- PLAYER > MOVEMENT > NARUTO RUN / NO CLIP
 --
--- Two rows over one module (src/16_air_noclip.lua). Both keep the verified
--- freefall pose, the 423/falling/in-air read cover and the 1.2 s warmup for
--- the undetect profile. They differ in vertical policy and speed:
+-- Two rows over one module (src/16_air_noclip.lua). Both keep the
+-- 423/falling/in-air read cover. Naruto keeps the upper-body freefall pose and
+-- the 1.2 s warmup; No Clip plays no pose and is pure free-flight:
 --   Naruto Run  horizontal only, no pitch and no Space/Ctrl lift, rides a low
 --               clearance band so it never lands and never rolls.
 --   No Clip     full 3D steering with a hard airborne floor and a live
 --               Undetect/Detect selector: Undetect keeps the 28 m/s profile
---               with a tiny hover dither; Detect uses 90 m/s and is expected
---               to trip the WaveShield speed/teleport ceilings.
+--               with a tiny hover dither; Detect is the true free-flight line
+--               at 240 m/s (about 2.7x the old 90 m/s), collision reasserted
+--               every frame and no skydive clip, so there is no wind PTFX and
+--               no animation to fight the input.
 -- The rows are rebuilt on every load, so a stale copy cannot survive a reload.
 -- ---------------------------------------------------------------------------
 local function installMovement()
@@ -39046,15 +38996,16 @@ end
 -- EXPLOIT > EXPLOIT > FIGHT PARTY
 --
 -- One toggle and one radius slider, installed at the top of the Exploit tab
--- after the flash rows exist. The module drives the real player peds through a
--- host resource the server already trusts: `ServerValidEmote` first (dpemotes
--- and the official rpemotes shared punch/headbutt/slap pairs), then cmg2/cmg3
--- sync for the raw shared pair. The target client animates and moves itself
--- through the resource's own handler; this executor only emits the same server
--- event a normal client emits, with no injected chunk. There is no clone, no
--- new networked entity, no synchronised scene, no remote task, no ragdoll
--- request and no damage write. The module owns its rows so a re-injection
--- cannot duplicate them.
+-- after the flash rows exist. The module pairs the real player peds in the
+-- ring and gives each one a timed combat task aimed at its partner. The task
+-- is applied by the victim's own client through GTA's scripted-task event, so
+-- the brawl, the movement and the melee damage are all native and visible to
+-- every client. There is no clone, no new networked entity, no synchronised
+-- scene, no coordinate write and no damage write. If a build refuses remote
+-- player tasks, the module falls back to the shared-emote relay the server
+-- already trusts (dpemotes ServerValidEmote, then cmg2/cmg3) and verifies the
+-- target-side reaction before counting it. The module owns its rows so a
+-- re-injection cannot duplicate them.
 -- ---------------------------------------------------------------------------
 local function installFightParty()
     return FP.install()
@@ -41273,6 +41224,7 @@ local MAIN_CATEGORY_ORDER = {
     "Vehicle",  -- Vehicle
     "Combat",   -- Weapon
     "Exploit",  -- Destroyer
+    "Audit",    -- Audit
     "Visual",   -- Misc
     "Settings", -- Settings
     "Search",   -- Search
@@ -41639,6 +41591,676 @@ local function removeLegacyEntries()
 end
 
 -- ---------------------------------------------------------------------------
+-- AUDIT (DISCOVERY)
+--
+-- The ban engine can only replay an event the server already accepts. This
+-- module discovers those events without guessing: it records every outbound
+-- TriggerServerEvent frame this client sends, and it statically reads the
+-- started resources' client files for TriggerServerEvent("name", ...) call
+-- sites. Both surfaces are passive: no event is emitted and no native is
+-- hooked. The outbound recorder runs inside Susano's event callback, so it is
+-- string-only and native-free by construction; a native call there re-enters
+-- the native layer and freezes the menu.
+--
+-- The scan is the only part that touches the filesystem. It runs on an
+-- explicit row press in a worker thread with a time budget. A resource whose
+-- client files are not downloadable yields paths but no contents; the scan
+-- reports that as zero files read, never as an error.
+-- ---------------------------------------------------------------------------
+Menu.__vgdAudit = (function()
+    local A = {
+        enabled = true,
+        paused = false,
+        scanning = false,
+        seq = 0,
+        names = {},
+        nameCount = 0,
+        candidates = {},
+        candidateCount = 0,
+        scannedResources = 0,
+        readFiles = 0,
+        lastScan = 0,
+        lastScanMs = 0,
+        maxNames = 1024,
+        maxFileBytes = 262144,
+        maxFilesPerResource = 96,
+        maxResources = 256,
+        maxScanMs = 8000,
+        maxCandidates = 512,
+    }
+
+    local STRONG = { "ban", "kick", "punish", "detain", "jail", "blacklist" }
+    local MEDIUM = { "report", "flag", "detect", "violation", "cheat", "hack", "anticheat", "security", "integrity", "admin", "ac_", "_ac" }
+    local SAFE = { "unban", "banlist", "ban_list", "banned", "bancheck", "ban_check", "banappeal", "ban_appeal", "kickstart", "kick_veh", "bank" }
+
+    local function scoreName(name)
+        local low = string.lower(name)
+        for i = 1, #SAFE do
+            if string.find(low, SAFE[i], 1, true) then return -50 end
+        end
+        local score = 0
+        for i = 1, #STRONG do
+            if string.find(low, STRONG[i], 1, true) then score = score + 10 end
+        end
+        for i = 1, #MEDIUM do
+            if string.find(low, MEDIUM[i], 1, true) then score = score + 3 end
+        end
+        if string.find(low, "waveshield", 1, true) then score = score - 40 end
+        return score
+    end
+
+    function A.score(name)
+        return scoreName(name)
+    end
+
+    function A.record(name, payload)
+        if not A.enabled or A.paused then return end
+        if type(name) ~= "string" or name == "" then return end
+        A.seq = A.seq + 1
+        local rec = A.names[name]
+        if not rec then
+            if A.nameCount >= A.maxNames then return end
+            rec = { count = 0, first = A.seq, last = 0, score = scoreName(name), bytes = 0 }
+            A.names[name] = rec
+            A.nameCount = A.nameCount + 1
+        end
+        rec.count = rec.count + 1
+        rec.last = A.seq
+        if type(payload) == "string" then rec.bytes = #payload end
+    end
+
+    local function addCandidate(name, resource, file)
+        if type(name) ~= "string" or name == "" or #name > 160 then return end
+        local score = scoreName(name)
+        if score < 3 then return end
+        local rec = A.candidates[name]
+        if rec then
+            if score > rec.score then rec.score = score end
+            return
+        end
+        if A.candidateCount >= A.maxCandidates then return end
+        A.candidates[name] = { score = score, resource = resource or "", file = file or "" }
+        A.candidateCount = A.candidateCount + 1
+    end
+
+    local function scanCode(code, resource, path)
+        for name in code:gmatch("TriggerServerEvent%s*%(%s*[\"']([^\"']+)[\"']") do
+            addCandidate(name, resource, path)
+        end
+        for name in code:gmatch("TriggerServerEventInternal%s*%(%s*[\"']([^\"']+)[\"']") do
+            addCandidate(name, resource, path)
+        end
+        for name in code:gmatch("TriggerServerEvent%s*%(%s*%[%[([^%]]+)%]%]") do
+            addCandidate(name, resource, path)
+        end
+    end
+
+    local function resourceFiles(resource)
+        if type(Susano) == "table" and type(Susano.GetResourceFiles) == "function" then
+            local ok, list = pcall(Susano.GetResourceFiles, resource)
+            if ok and type(list) == "table" and #list > 0 then return list end
+        end
+        local files = {}
+        if type(LoadResourceFile) ~= "function" then return files end
+        local manifest = nil
+        local ok, content = pcall(LoadResourceFile, resource, "fxmanifest.lua")
+        if ok and type(content) == "string" then manifest = content end
+        if not manifest then
+            ok, content = pcall(LoadResourceFile, resource, "__resource.lua")
+            if ok and type(content) == "string" then manifest = content end
+        end
+        if not manifest then return files end
+        for path in manifest:gmatch("[\"']([^\"']+%.lua)[\"']") do
+            files[#files + 1] = path
+        end
+        return files
+    end
+
+    local function scanResource(resource)
+        local files = resourceFiles(resource)
+        local read = 0
+        for i = 1, #files do
+            if read >= A.maxFilesPerResource then break end
+            local path = files[i]
+            if type(path) == "string" and #path > 4 and string.sub(path, -4) == ".lua" then
+                local ok, code = pcall(LoadResourceFile, resource, path)
+                if ok and type(code) == "string" and #code > 0 and #code <= A.maxFileBytes then
+                    read = read + 1
+                    A.readFiles = A.readFiles + 1
+                    scanCode(code, resource, path)
+                    if read % 16 == 0 then Citizen.Wait(0) end
+                end
+            end
+        end
+        return read
+    end
+
+    function A.scan()
+        if A.scanning then return false, "scan already running" end
+        A.scanning = true
+        local start = GetGameTimer()
+        local resources = 0
+        local total = 0
+        if type(GetNumResources) == "function" then
+            local ok, n = pcall(GetNumResources)
+            if ok and type(n) == "number" then total = n end
+        end
+        for i = 0, math.min(total, A.maxResources) - 1 do
+            if GetGameTimer() - start > A.maxScanMs then break end
+            local ok, resource = pcall(GetResourceByFindIndex, i)
+            if ok and type(resource) == "string" and resource ~= "" then
+                local okState, state = pcall(GetResourceState, resource)
+                if okState and state == "started" then
+                    resources = resources + 1
+                    scanResource(resource)
+                    if resources % 8 == 0 then Citizen.Wait(0) end
+                end
+            end
+        end
+        A.scannedResources = resources
+        A.lastScan = GetGameTimer()
+        A.lastScanMs = A.lastScan - start
+        A.scanning = false
+        return true, ("%d resource(s), %d file(s), %d candidate(s), %d ms"):format(
+            resources, A.readFiles, A.candidateCount, A.lastScanMs)
+    end
+
+    function A.scanAsync()
+        if A.scanning then return false, "scan already running" end
+        Citizen.CreateThread(function()
+            local ok, msg = A.scan()
+            O.log("audit: scan %s", tostring(msg))
+        end)
+        return true
+    end
+
+    local function sorted(map)
+        local list = {}
+        for key, rec in pairs(map) do list[#list + 1] = { key = key, rec = rec } end
+        table.sort(list, function(a, b)
+            local sa = (a.rec.score or 0) * 100000 + (a.rec.count or 0)
+            local sb = (b.rec.score or 0) * 100000 + (b.rec.count or 0)
+            if sa ~= sb then return sa > sb end
+            return a.key < b.key
+        end)
+        return list
+    end
+
+    function A.dump()
+        O.log("audit: %d outbound name(s), %d candidate(s), %d resource(s), %d file(s)",
+            A.nameCount, A.candidateCount, A.scannedResources, A.readFiles)
+        local out = sorted(A.names)
+        for i = 1, math.min(#out, 24) do
+            local e = out[i]
+            O.log("  out  %-44s score %-3d count %-4d bytes %d",
+                e.key, e.rec.score or 0, e.rec.count or 0, e.rec.bytes or 0)
+        end
+        local cand = sorted(A.candidates)
+        for i = 1, math.min(#cand, 24) do
+            local e = cand[i]
+            O.log("  cand %-44s score %-3d %s / %s",
+                e.key, e.rec.score or 0, e.rec.resource or "", e.rec.file or "")
+        end
+        return true
+    end
+
+    function A.clear()
+        A.names = {}
+        A.nameCount = 0
+        A.candidates = {}
+        A.candidateCount = 0
+        A.scannedResources = 0
+        A.readFiles = 0
+        A.lastScan = 0
+        A.lastScanMs = 0
+        return true
+    end
+
+    return A
+end)()
+
+-- ---------------------------------------------------------------------------
+-- BAN ENGINE
+--
+-- A ban is an authority decision made by the server. The client cannot make
+-- the server ban someone it does not want to ban; it can only send an event
+-- the server already accepts. Every AC that bans a payload id instead of the
+-- event source is a vector. Every AC that binds the ban to the sender is not.
+--
+-- WaveShield v4 and v15.1 bind the ban to the event source and to the state
+-- bag owner: BanEventHandler(source, data) uses the event source, and the
+-- server's player state bag is registered with the client's slot as owning
+-- peer, so a write to player:<victim> is dropped before the handler runs.
+-- The WaveShield probe below is therefore a legacy-build check only. It names
+-- the victim's bag, never our own, so a build without the ownership check
+-- bans the victim and a modern build drops the packet; it cannot self-ban.
+--
+-- No event name is hard-coded. A server whose AC is not discovered by the
+-- audit produces zero candidates and a one-line diagnosis, never a spray.
+-- ---------------------------------------------------------------------------
+Menu.__vgdBan = (function(AUDIT)
+    local B = {
+        cooldown = 2500,
+        last = -100000,
+        bulk = false,
+        delay = 150,
+        maxCandidates = 8,
+        maxShapes = 4,
+        reason = "Cheat Detected",
+        lastReport = nil,
+    }
+
+    local STRONG = { "ban", "kick", "punish" }
+    local REPORT_NAMES = { "report", "flag", "detect", "violation", "cheat", "hack" }
+
+    local function isWsName(name)
+        local set = Menu.__vgd_wsBanNames
+        if type(set) == "table" and set[name] then return true end
+        if type(name) == "string" and string.find(string.lower(name), "waveshield", 1, true) then return true end
+        return false
+    end
+
+    local function kindOf(name)
+        if type(name) ~= "string" then return nil end
+        local low = string.lower(name)
+        for i = 1, #STRONG do
+            if string.find(low, STRONG[i], 1, true) then return "ban" end
+        end
+        for i = 1, #REPORT_NAMES do
+            if string.find(low, REPORT_NAMES[i], 1, true) then return "report" end
+        end
+        return nil
+    end
+
+    -- A report event on a guard that binds the ban to the event source is a
+    -- self-ban, not a vector. The guard scan already names the known vendors;
+    -- an unknown resource is still allowed, because the 069-class ACs publish
+    -- no vendor metadata and their report event is the actual payload vector.
+    local function knownSelfBinding(resource)
+        if type(resource) ~= "string" or resource == "" then return false end
+        local acs = (type(S) == "table") and S.acs or nil
+        if type(acs) ~= "table" then return false end
+        for i = 1, #acs do
+            local ac = acs[i]
+            if ac.resource == resource and ac.vendor ~= "unknown" then
+                return true
+            end
+        end
+        return false
+    end
+
+    local function sendEvent(name, args)
+        local send = rawget(_G, "TriggerServerEventInternal")
+        local plain = rawget(_G, "TriggerServerEvent")
+        local mp = rawget(_G, "msgpack")
+        local cmp = rawget(_G, "cmsgpack")
+        local delivered = false
+        if type(send) == "function" then
+            local ok, packed
+            if type(mp) == "table" and type(mp.pack_args) == "function" then
+                ok, packed = pcall(mp.pack_args, table.unpack(args))
+            elseif type(mp) == "table" and type(mp.pack) == "function" then
+                ok, packed = pcall(mp.pack, args)
+            elseif type(cmp) == "table" and type(cmp.pack) == "function" then
+                ok, packed = pcall(cmp.pack, args)
+            end
+            if ok and type(packed) == "string" then
+                delivered = pcall(send, name, packed, #packed) or delivered
+            end
+        end
+        if type(plain) == "function" then
+            delivered = pcall(plain, name, table.unpack(args)) or delivered
+        end
+        return delivered
+    end
+
+    local function shapesFor(id)
+        local r = B.reason
+        return {
+            { id },
+            { id, r },
+            { r, id },
+            { id, r, 0 },
+            { { playerId = id, reason = r } },
+            { { id = id, reason = r } },
+            { { target = id, reason = r } },
+            { { source = id, reason = r } },
+            { { src = id, reason = r } },
+            { { player = id, reason = r } },
+        }
+    end
+
+    local function reportShapesFor(id)
+        local r = B.reason
+        return {
+            { id, r },
+            { id },
+            { { targetId = id, reason = r } },
+            { { playerId = id, reason = r } },
+        }
+    end
+
+    local function candidates(force)
+        local list = {}
+        local seen = {}
+        local function add(name, score, source, outbound)
+            if type(name) ~= "string" or name == "" or seen[name] then return end
+            if isWsName(name) then return end
+            local kind = kindOf(name)
+            if not kind then return end
+            if kind == "report" then
+                if outbound and not force then return end
+                if not outbound and not force and knownSelfBinding(source) then return end
+            end
+            seen[name] = true
+            list[#list + 1] = {
+                name = name,
+                score = score or 0,
+                source = source or "",
+                kind = kind,
+            }
+        end
+        for name, rec in pairs(AUDIT.candidates) do
+            add(name, rec.score, rec.resource, false)
+        end
+        for name, rec in pairs(AUDIT.names) do
+            local score = rec.score or 0
+            if score >= 10 then
+                add(name, score, "outbound", true)
+            elseif force and score >= 3 then
+                add(name, score, "outbound", true)
+            end
+        end
+        table.sort(list, function(a, b)
+            if a.kind ~= b.kind then return a.kind == "ban" end
+            if a.score ~= b.score then return a.score > b.score end
+            return a.name < b.name
+        end)
+        return list
+    end
+
+    local function dispatch(targetId, force)
+        local list = candidates(force)
+        if #list == 0 then return 0, 0 end
+        local sent = 0
+        AUDIT.paused = true
+        for i = 1, math.min(#list, B.maxCandidates) do
+            local cand = list[i]
+            local shapes = (cand.kind == "ban") and shapesFor(targetId) or reportShapesFor(targetId)
+            for s = 1, math.min(#shapes, B.maxShapes) do
+                sendEvent(cand.name, shapes[s])
+                sent = sent + 1
+                Citizen.Wait(B.delay)
+            end
+        end
+        AUDIT.paused = false
+        return sent, #list
+    end
+
+    local function wsProbe(targetId)
+        local set = rawget(_G, "SetStateBagValue")
+        local mp = rawget(_G, "msgpack")
+        local cmp = rawget(_G, "cmsgpack")
+        local pack = nil
+        if type(mp) == "table" and type(mp.pack) == "function" then
+            pack = mp.pack
+        elseif type(cmp) == "table" and type(cmp.pack) == "function" then
+            pack = cmp.pack
+        end
+        if type(set) ~= "function" or not pack then
+            return false, "no state-bag primitive"
+        end
+        local names = Menu.__vgd_wsBanNames
+        if type(names) ~= "table" then return false, "no WaveShield token" end
+        local bag = ("player:%d"):format(targetId)
+        local okPack, packed = pcall(pack, { "Cheat Detected", {}, 0, 0 })
+        if not okPack or type(packed) ~= "string" then return false, "pack failed" end
+        local tried = 0
+        for token in pairs(names) do
+            if type(token) == "string" and token ~= "" then
+                local ok, accepted = pcall(set, bag, token, packed, #packed, true)
+                tried = tried + 1
+                if ok and accepted == true then
+                    return true, ("accepted locally (%d token(s))"):format(tried)
+                end
+                if tried >= 4 then break end
+            end
+        end
+        return false, ("rejected locally (%d token(s))"):format(tried)
+    end
+
+    function B.banPlayer(targetId, force)
+        targetId = tonumber(targetId)
+        if not targetId then return false, "no target selected" end
+        local okSelf, selfId = pcall(GetPlayerServerId, PlayerId())
+        if okSelf and targetId == selfId then return false, "target is self" end
+        local now = GetGameTimer()
+        if not B.bulk and now - B.last < B.cooldown then
+            return false, ("cooldown %d ms"):format(B.cooldown - (now - B.last))
+        end
+        B.last = now
+        Citizen.CreateThread(function()
+            local sent, cands = dispatch(targetId, force)
+            local wsOk, wsWhy = wsProbe(targetId)
+            B.lastReport = {
+                target = targetId,
+                sent = sent,
+                candidates = cands,
+                ws = wsWhy,
+                at = GetGameTimer(),
+            }
+            O.log("ban: target %d | %d event(s) / %d candidate(s) | statebag %s",
+                targetId, sent, cands, wsWhy)
+            if sent == 0 and not wsOk then
+                O.log("ban: no vector found. open Audit > Events, run Scan, then retry")
+            end
+        end)
+        return true
+    end
+
+    function B.banAll()
+        if B.bulk then return false, "ban all already running" end
+        local okSelf, selfId = pcall(GetPlayerServerId, PlayerId())
+        local targets = {}
+        for _, player in ipairs(GetActivePlayers()) do
+            local ok, id = pcall(GetPlayerServerId, player)
+            if ok and type(id) == "number" and (not okSelf or id ~= selfId) then
+                targets[#targets + 1] = id
+            end
+        end
+        if #targets == 0 then return false, "no other players" end
+        B.bulk = true
+        Citizen.CreateThread(function()
+            O.log("ban: all -> %d target(s)", #targets)
+            for i = 1, #targets do
+                local sent = dispatch(targets[i])
+                local wsOk, wsWhy = wsProbe(targets[i])
+                O.log("ban: %d/%d target %d -> %d event(s), statebag %s",
+                    i, #targets, targets[i], sent, wsWhy)
+                Citizen.Wait(500)
+            end
+            B.bulk = false
+            O.log("ban: all done")
+        end)
+        return true, #targets
+    end
+
+    function B.report()
+        local r = B.lastReport
+        if r then
+            O.log("ban: last target %d | %d event(s) / %d candidate(s) | statebag %s",
+                r.target, r.sent, r.candidates, r.ws)
+        else
+            O.log("ban: no report yet")
+        end
+        local list = candidates(true)
+        O.log("ban: %d candidate event(s)", #list)
+        for i = 1, math.min(#list, 16) do
+            O.log("  %-44s %-6s score %-3d %s",
+                list[i].name, list[i].kind, list[i].score, list[i].source)
+        end
+        return true
+    end
+
+    return B
+end)(Menu.__vgdAudit)
+
+Menu.__vgd_banPlayer = function(targetId, force)
+    local B = Menu.__vgdBan
+    if type(B) ~= "table" then return false, "engine not installed" end
+    return B.banPlayer(targetId or Menu.SelectedPlayer, force)
+end
+
+-- ---------------------------------------------------------------------------
+-- AUDIT > EVENTS (rows)
+-- ---------------------------------------------------------------------------
+Menu.__vgdInstallAudit = function()
+    if type(Menu) ~= "table" or type(Menu.Categories) ~= "table" then return false end
+    local A = Menu.__vgdAudit
+    if type(A) ~= "table" then return false end
+
+    local category = findCategory("Audit")
+    if not category then
+        category = addCategory({
+            name = "Audit",
+            hasTabs = true,
+            tabs = { { name = "Events", items = {} } },
+        })
+    end
+    if not category or not category.tabs then return false end
+
+    local tab = nil
+    for _, candidate in ipairs(category.tabs) do
+        if candidate.name == "Events" then tab = candidate break end
+    end
+    if not tab then
+        tab = { name = "Events", items = {} }
+        category.tabs[#category.tabs + 1] = tab
+    end
+
+    tab.items = {
+        {
+            name = "Scan Server Events",
+            type = "action",
+            onClick = function() A.scanAsync() end,
+        },
+        {
+            name = "Sniff Outbound",
+            type = "toggle",
+            value = A.enabled,
+            onClick = function(value)
+                A.enabled = value and true or false
+                O.log("audit: outbound sniffer %s", A.enabled and "on" or "off")
+                return A.enabled
+            end,
+        },
+        { name = "", isSeparator = true, separatorText = "Data" },
+        {
+            name = "Dump Audit",
+            type = "action",
+            onClick = function() A.dump() end,
+        },
+        {
+            name = "Clear Audit",
+            type = "action",
+            onClick = function() A.clear() end,
+        },
+        { name = "", isSeparator = true, separatorText = "Ban" },
+        {
+            name = "Ban Diagnostics",
+            type = "action",
+            onClick = function()
+                if type(Menu.__vgdBan) == "table" then Menu.__vgdBan.report() end
+            end,
+        },
+        {
+            name = "Send Top Candidate",
+            type = "action",
+            risk = true,
+            onClick = function()
+                local target = tonumber(Menu.SelectedPlayer)
+                if not target then
+                    O.log("audit: no target selected")
+                    return
+                end
+                O.log("audit: forcing every candidate at target %d", target)
+                if type(Menu.__vgd_banPlayer) == "function" then
+                    Menu.__vgd_banPlayer(target, true)
+                end
+            end,
+        },
+    }
+
+    return true
+end
+
+-- ---------------------------------------------------------------------------
+-- BAN ROWS
+--
+-- Online > Troll > Ban Player becomes a real action. The old toggle ran a
+-- local attach thread that never produced a ban and has been retired.
+-- Exploit > Exploit gets the mass action and the diagnosis row. The sweep is
+-- idempotent, so a reload cannot append a second Ban block.
+-- ---------------------------------------------------------------------------
+Menu.__vgdInstallBan = function()
+    if type(Menu) ~= "table" or type(Menu.Categories) ~= "table" then return false end
+    local B = Menu.__vgdBan
+    if type(B) ~= "table" then return false end
+
+    local banRow = FindItem("Online", "Troll", "Ban Player")
+    if banRow then
+        banRow.type = "action"
+        banRow.value = nil
+        banRow.risk = true
+        banRow.onClick = function()
+            local ok, result, why = pcall(Menu.__vgd_banPlayer)
+            if not ok then
+                O.log("ban: %s", tostring(result))
+            elseif not result then
+                O.log("ban: %s", tostring(why))
+            end
+        end
+    end
+
+    local tab = collapseExploitTab()
+    if not tab then return false end
+    tab.items = tab.items or {}
+    for i = #tab.items, 1, -1 do
+        local item = tab.items[i]
+        if item.name == "Ban All Players" or item.name == "Ban Diagnostics"
+            or (item.isSeparator and item.separatorText == "Ban") then
+            table.remove(tab.items, i)
+        end
+    end
+
+    tab.items[#tab.items + 1] = {
+        name = "",
+        isSeparator = true,
+        separatorText = "Ban",
+    }
+    tab.items[#tab.items + 1] = {
+        name = "Ban All Players",
+        type = "action",
+        risk = true,
+        onClick = function()
+            local ok, result, count = pcall(B.banAll)
+            if not ok then
+                O.log("ban: %s", tostring(result))
+            elseif not result then
+                O.log("ban: %s", tostring(count))
+            end
+        end,
+    }
+    tab.items[#tab.items + 1] = {
+        name = "Ban Diagnostics",
+        type = "action",
+        onClick = function() B.report() end,
+    }
+
+    return true
+end
+
+-- ---------------------------------------------------------------------------
 -- BUILD
 -- ---------------------------------------------------------------------------
 local function build()
@@ -41658,6 +42280,8 @@ local function build()
     installProtection()
     installCrasher()
     installServerActions()
+    Menu.__vgdInstallAudit()
+    Menu.__vgdInstallBan()
     installSink()
     installFlash()
     installFightParty()
