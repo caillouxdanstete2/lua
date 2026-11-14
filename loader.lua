@@ -223,11 +223,9 @@ end
 -- PATCH: reference paint
 -- ============================================
 -- The chrome stays anthracite and smoke-grey so the frame disappears into the
--- banner. The highlight is carried by the selection material only: a white
--- line over frosted graphite on the list, with the same line on the tab pill,
--- toggle and loading card (see Menu.__vgdDrawSelectionPlate and the VANGUARD
--- THEME PATCH). The banner stays a slot; its image is chosen by the theme
--- table, not by this patch.
+-- banner. The highlight is carried by the selection material only: a light rim
+-- over dark graphite on every list plate. The banner stays a slot; its image is
+-- chosen by the theme table, not by this patch.
 do
     -- Header frame: keep the same 1px frame geometry, lower the contrast.
     LibraryCode = replacePlain(
@@ -363,7 +361,7 @@ do
         if Menu.SelectorY == 0 then]]
     )
 
-    -- Selected item: frosted graphite glass with a white rim. Geometry unchanged.
+    -- Selected item: dark glass with a light rim. Geometry unchanged.
     LibraryCode = replacePlain(
         LibraryCode,
         [[        local baseR = (Menu.Colors.SelectedBg and Menu.Colors.SelectedBg.r) and (Menu.Colors.SelectedBg.r / 255.0) or 1.0
@@ -388,17 +386,23 @@ do
             Menu.DrawRoundedRect(selX, selY, selW, selH, 55, 55, 55, 250, selRadius)
             Menu.DrawRoundedRect(selX + 1, selY + 1, selW - 2, selH - 2, math.floor(baseR * 255), math.floor(baseG * 255), math.floor(baseB * 255), 217, selRadius)
         end]],
-        [[        local floatPad = 6
+        [[        local baseR = 0.97
+        local baseG = 0.97
+        local baseB = 0.98
+
+        -- Dark glass plate with a light rim; no accent flood.
+        local floatPad = 6
         local selX = x + floatPad
         local selW = width - (floatPad * 2)
         local selH = itemHeight - 8
         local selY = drawY + math.floor((itemHeight - selH) / 2)
         local selRadius = 5
-        if type(Menu.__vgdDrawSelectionPlate) == "function" then
-            Menu.__vgdDrawSelectionPlate(selX, selY, selW, selH, selRadius)
-        elseif Susano and Susano.DrawRectFilled then
+        if Susano and Susano.DrawRectFilled then
+            Susano.DrawRectFilled(selX - 8, selY - 5, selW + 16, selH + 10, baseR, baseG, baseB, 0.035, selRadius + 7)
+            Susano.DrawRectFilled(selX - 4, selY - 2, selW + 8, selH + 4, baseR, baseG, baseB, 0.050, selRadius + 3)
             Susano.DrawRectFilled(selX, selY, selW, selH, 0.320, 0.320, 0.340, 1.0, selRadius)
             Susano.DrawRectFilled(selX + 1, selY + 1, selW - 2, selH - 2, 0.095, 0.095, 0.105, 1.0, selRadius - 1)
+            Susano.DrawRectFilled(selX + 1, selY + 1, selW - 2, math.floor(selH * 0.5), 1.0, 1.0, 1.0, 0.035, selRadius - 1)
         else
             Menu.DrawRoundedRect(selX, selY, selW, selH, 82, 82, 87, 255, selRadius)
             Menu.DrawRoundedRect(selX + 1, selY + 1, selW - 2, selH - 2, 24, 24, 27, 255, selRadius - 1)
@@ -451,17 +455,22 @@ do
                     Menu.DrawRoundedRect(selX, selY, selW, selH, 55, 55, 55, 250, selRadius)
                     Menu.DrawRoundedRect(selX + 1, selY + 1, selW - 2, selH - 2, math.floor(baseR * 255), math.floor(baseG * 255), math.floor(baseB * 255), 217, selRadius)
                 end]],
-        [[                local floatPad = 6
+        [[                local baseR = 0.97
+                local baseG = 0.97
+                local baseB = 0.98
+
+                local floatPad = 6
                 local selX = x + floatPad
                 local selW = width - (floatPad * 2)
                 local selH = itemHeight - 8
                 local selY = drawY + math.floor((itemHeight - selH) / 2)
                 local selRadius = 5
-                if type(Menu.__vgdDrawSelectionPlate) == "function" then
-                    Menu.__vgdDrawSelectionPlate(selX, selY, selW, selH, selRadius)
-                elseif Susano and Susano.DrawRectFilled then
+                if Susano and Susano.DrawRectFilled then
+                    Susano.DrawRectFilled(selX - 8, selY - 5, selW + 16, selH + 10, baseR, baseG, baseB, 0.035, selRadius + 7)
+                    Susano.DrawRectFilled(selX - 4, selY - 2, selW + 8, selH + 4, baseR, baseG, baseB, 0.050, selRadius + 3)
                     Susano.DrawRectFilled(selX, selY, selW, selH, 0.320, 0.320, 0.340, 1.0, selRadius)
                     Susano.DrawRectFilled(selX + 1, selY + 1, selW - 2, selH - 2, 0.095, 0.095, 0.105, 1.0, selRadius - 1)
+                    Susano.DrawRectFilled(selX + 1, selY + 1, selW - 2, math.floor(selH * 0.5), 1.0, 1.0, 1.0, 0.035, selRadius - 1)
                 else
                     Menu.DrawRoundedRect(selX, selY, selW, selH, 82, 82, 87, 255, selRadius)
                     Menu.DrawRoundedRect(selX + 1, selY + 1, selW - 2, selH - 2, 24, 24, 27, 255, selRadius - 1)
@@ -590,9 +599,22 @@ do
     --     bottom-anchor left a wide dark band above the image and a hairline
     --     below it, so the banner read as off-centre.
 
-    -- 4. The selection bloom is drawn by Menu.__vgdDrawSelectionPlate, which
-    --    reads Menu.Glow directly. The old per-string bloom replacements are
-    --    gone with the flat plate they used to brighten.
+    -- 4. Breathing bloom on both selection bars.
+    LibraryCode = replaceAllPlain(
+        LibraryCode,
+        "baseB, 0.07, selRadius + 8)",
+        "baseB, 0.07 * (Menu.Glow or 1), selRadius + 8)"
+    )
+    LibraryCode = replaceAllPlain(
+        LibraryCode,
+        "baseB, 0.15, selRadius + 4)",
+        "baseB, 0.15 * (Menu.Glow or 1), selRadius + 4)"
+    )
+    LibraryCode = replaceAllPlain(
+        LibraryCode,
+        "baseB, 0.22, selRadius + 1)",
+        "baseB, 0.22 * (Menu.Glow or 1), selRadius + 1)"
+    )
 
     -- 5. Gentle pulse on the vertical tab accent.
     LibraryCode = replacePlain(
@@ -1616,11 +1638,11 @@ end
 -- match this build. White is the default and Cyan restores the reference
 -- accent and its original banner. An unknown name falls back to White.
 --
--- Each theme carries the accent used by every selection surface: the list
--- rim, tab pill, scrollbar thumb, toggle track, slider fill and the loading
--- card. White is the monochrome plate: a soft-white line over frosted
--- graphite, so the selected row no longer reads as a black slot. Cyan carries
--- the sky tone of its own banner.
+-- Each theme carries the accent used by every selection surface: the tab pill,
+-- scrollbar thumb, toggle track and slider fill. The list rows keep their own
+-- dark glass with a neutral light rim, so the selected row stays legible on
+-- both themes. White carries the monochrome plate; Cyan carries the sky tone of
+-- its own banner.
 do
     local themes = {
         White = {
@@ -1746,106 +1768,6 @@ do
         tabPillEdge  = { 0.640, 0.640, 0.670, 1.0 },
         tabText      = { 0.035, 0.035, 0.040, 1.0 },
     }
-
-    -- Selected-row glass shared by the library's DrawItem and the local
-    -- category painter. The white rim is the line that was always right; the
-    -- fill now takes the banner's silver instead of a black slot. The short
-    -- white marker bar is back: it travels with the plate as the categories
-    -- change, so the old moving selection reads exactly as before. The accent
-    -- is read at draw time, so the White plate stays white and the Cyan plate
-    -- gets its sky line without a restart.
-    local function themeAccent()
-        local accent = type(Menu) == "table" and Menu.Colors and Menu.Colors.SelectedBg
-        local r = type(accent) == "table" and tonumber(accent.r) or nil
-        local g = type(accent) == "table" and tonumber(accent.g) or nil
-        local b = type(accent) == "table" and tonumber(accent.b) or nil
-        return (r or 245) / 255.0, (g or 246) / 255.0, (b or 250) / 255.0
-    end
-
-    function Menu.__vgdSelectionFill()
-        -- Silver taken from the banner's mist: a mid grey base with 10 % of
-        -- the theme accent. White stays neutral silver; Cyan gets a faint sky
-        -- cast. This is the fill that is no longer black.
-        local ar, ag, ab = themeAccent()
-        return 0.16 + (ar - 0.16) * 0.10,
-            0.17 + (ag - 0.17) * 0.10,
-            0.19 + (ab - 0.19) * 0.10
-    end
-
-    function Menu.__vgdDrawSelectionPlate(px, py, pw, ph, pr)
-        px, py = tonumber(px), tonumber(py)
-        pw, ph = tonumber(pw), tonumber(ph)
-        if not px or not py or not pw or not ph then return end
-        if pw <= 2 or ph <= 2 then return end
-        pr = tonumber(pr) or 5
-
-        local ar, ag, ab = themeAccent()
-        local fr, fg, fb = Menu.__vgdSelectionFill()
-        local fade = tonumber(Menu.DrawAlpha) or 1.0
-        if fade < 0.0 then fade = 0.0 elseif fade > 1.0 then fade = 1.0 end
-        local glow = (tonumber(Menu.Glow) or 1.0) * fade
-
-        if type(Susano) == "table" and type(Susano.DrawRectFilled) == "function" then
-            -- Halo: the line breathes a little outside the row.
-            Susano.DrawRectFilled(px - 8, py - 5, pw + 16, ph + 10,
-                ar, ag, ab, 0.030 * glow, pr + 7)
-            Susano.DrawRectFilled(px - 4, py - 2, pw + 8, ph + 4,
-                ar, ag, ab, 0.040 * glow, pr + 3)
-
-            -- The line stays white.
-            Susano.DrawRectFilled(px, py, pw, ph, ar, ag, ab, 0.86 * fade, pr)
-
-            -- The fill: silver glass taken from the banner's mist, then a
-            -- white wash from the top-left so the plate reads as lit material
-            -- instead of a black slot.
-            Susano.DrawRectFilled(px + 1, py + 1, pw - 2, ph - 2,
-                fr, fg, fb, 1.0 * fade, math.max(1, pr - 1))
-            Susano.DrawRectFilled(px + 1, py + 1, pw - 2,
-                math.max(1, math.floor((ph - 2) * 0.62)),
-                1.0, 1.0, 1.0, 0.110 * fade, math.max(1, pr - 1))
-            Susano.DrawRectFilled(px + 1, py + 1,
-                math.max(1, math.floor((pw - 2) * 0.58)), ph - 2,
-                1.0, 1.0, 1.0, 0.030 * fade, math.max(1, pr - 1))
-
-            -- Crisp top sheen and a one-pixel inner shadow at the bottom for
-            -- depth. Both stay inside the rim.
-            Susano.DrawRectFilled(px + math.floor(pr * 0.5), py,
-                pw - pr, 1, 1.0, 1.0, 1.0, 0.075 * fade, 0)
-            Susano.DrawRectFilled(px + pr, py + ph - 2,
-                pw - pr * 2, 1, 0.0, 0.0, 0.0, 0.22 * fade, 0)
-
-            -- The old moving marker: a short white bar pinned to the left of
-            -- the plate. It travels with the plate between categories.
-            local scale = tonumber(Menu.Scale) or 1.0
-            local markerW = math.max(2, math.floor(2.5 * scale + 0.5))
-            local markerH = math.max(6, math.floor((ph - 6) * 0.52 + 0.5))
-            local markerX = px + math.max(3, math.floor(2.5 * scale + 0.5))
-            local markerY = py + math.floor((ph - markerH) * 0.5)
-            Susano.DrawRectFilled(markerX - markerW, markerY, markerW * 3, markerH,
-                ar, ag, ab, 0.10 * glow, markerW)
-            Susano.DrawRectFilled(markerX, markerY, markerW, markerH,
-                ar, ag, ab, 0.95 * fade, math.max(1, markerW * 0.5))
-        elseif type(Menu) == "table" and type(Menu.DrawRoundedRect) == "function" then
-            Menu.DrawRoundedRect(px, py, pw, ph,
-                math.floor(ar * 255), math.floor(ag * 255), math.floor(ab * 255),
-                math.floor(219 * fade), pr)
-            Menu.DrawRoundedRect(px + 1, py + 1, pw - 2, ph - 2,
-                math.floor(fr * 255), math.floor(fg * 255), math.floor(fb * 255),
-                math.floor(255 * fade), math.max(1, pr - 1))
-            Menu.DrawRoundedRect(px + 1, py + 1, pw - 2,
-                math.max(1, math.floor((ph - 2) * 0.62)), 255, 255, 255,
-                math.floor(28 * fade), math.max(1, pr - 1))
-
-            local scale = tonumber(Menu.Scale) or 1.0
-            local markerW = math.max(2, math.floor(2.5 * scale + 0.5))
-            local markerH = math.max(6, math.floor((ph - 6) * 0.52 + 0.5))
-            local markerX = px + math.max(3, math.floor(2.5 * scale + 0.5))
-            local markerY = py + math.floor((ph - markerH) * 0.5)
-            Menu.DrawRoundedRect(markerX, markerY, markerW, markerH,
-                math.floor(ar * 255), math.floor(ag * 255), math.floor(ab * 255),
-                math.floor(242 * fade), math.max(1, markerW * 0.5))
-        end
-    end
 
     Menu.ApplyTheme("White")
 end
@@ -3533,8 +3455,8 @@ end
 -- UI: uniform category list
 -- ============================================
 -- The main list is one continuous plate. Unselected rows have no individual
--- fill; the selected category keeps the frosted graphite glass rectangle with
--- a white rim, so selection reads as a row rather than a floating pill.
+-- fill; the selected category keeps the familiar dark glass rectangle with a
+-- light rim, so selection reads as a row rather than a floating pill.
 local originalDrawCategories = Menu.DrawCategories
 if type(originalDrawCategories) == "function" then
     local categoryWarned = false
@@ -3599,13 +3521,14 @@ if type(originalDrawCategories) == "function" then
                         local plateY = Menu.CategorySelectorY + math.floor((itemHeight - plateH) * 0.5)
                         local plateR = math.floor(5 * scale)
                         if plateW > 2 and plateH > 2 then
-                            if type(Menu.__vgdDrawSelectionPlate) == "function" then
-                                Menu.__vgdDrawSelectionPlate(plateX, plateY, plateW, plateH, plateR)
-                            else
-                                fill(plateX, plateY, plateW, plateH, 0.320, 0.320, 0.340, 1.0, plateR)
-                                fill(plateX + 1, plateY + 1, plateW - 2, plateH - 2,
-                                    0.095, 0.095, 0.105, 1.0, math.max(1, plateR - 1))
-                            end
+                            fill(plateX - math.floor(6 * scale), plateY - math.floor(3 * scale),
+                                plateW + math.floor(12 * scale), plateH + math.floor(6 * scale),
+                                0.97, 0.97, 0.98, 0.035, plateR + math.floor(4 * scale))
+                            fill(plateX, plateY, plateW, plateH, 0.320, 0.320, 0.340, 1.0, plateR)
+                            fill(plateX + 1, plateY + 1, plateW - 2, plateH - 2,
+                                0.095, 0.095, 0.105, 1.0, math.max(1, plateR - 1))
+                            fill(plateX + 1, plateY + 1, plateW - 2, math.floor(plateH * 0.5),
+                                1.0, 1.0, 1.0, 0.035, math.max(1, plateR - 1))
                         end
                     end
 
@@ -3637,9 +3560,7 @@ if type(originalDrawCategories) == "function" then
                         local ring = math.max(2, math.floor(2 * scale))
                         local inner = math.max(3, iconSize - ring * 2)
                         local bgR, bgG, bgB = 0.052, 0.052, 0.056
-                        if isSelected and type(Menu.__vgdSelectionFill) == "function" then
-                            bgR, bgG, bgB = Menu.__vgdSelectionFill()
-                        end
+                        if isSelected then bgR, bgG, bgB = 0.095, 0.095, 0.105 end
                         fill(iconX, iconY, iconSize, iconSize, textR, textG, textB, 1.0, iconSize / 2)
                         fill(iconX + ring, iconY + ring, inner, inner, bgR, bgG, bgB, 1.0, inner / 2)
 
@@ -3712,6 +3633,9 @@ Menu.SelectedPlayers = {}
 Menu.PlayerListSelectIndex = 1
 Menu.PlayerListTeleportIndex = 1
 Menu.PlayerListSpectateEnabled = false
+-- Target Type for Player > Target and Online > Player List:
+-- 1 = All, 2 = On Foot, 3 = In Vehicle. Read live by both surfaces.
+Menu.TargetFilter = 1
 Menu.StaffModeEnabled = false
 Menu.DisableWeaponDamage = false
 Menu.WeaponDamageHookSet = false
@@ -5175,7 +5099,13 @@ local function UpdatePlayerList()
                     local myServerId = GetPlayerServerId(myPlayerId)
                     local myName = GetPlayerName(myPlayerId)
                     
+                    -- Target Type (Player > Target) filters the other-player
+                    -- rows. Self stays as the local identity row; the filter is
+                    -- about other players. Read every rebuild, so the selector
+                    -- takes effect on the next frame.
                     local otherPlayers = {}
+                    local targetFilter = tonumber(Menu.TargetFilter) or 1
+                    if targetFilter < 1 or targetFilter > 3 then targetFilter = 1 end
                     for _, player in ipairs(GetActivePlayers()) do
                         if player ~= myPlayerId then
                             local targetPed = GetPlayerPed(player)
@@ -5186,17 +5116,22 @@ local function UpdatePlayerList()
                                 local playerId = GetPlayerServerId(player)
                                 local playerName = GetPlayerName(player)
                                 local playerInVehicle, playerIsDriver = vehicleBadgeState(targetPed)
-                                table.insert(otherPlayers, {
-                                    id = playerId,
-                                    localId = player,
-                                    ped = targetPed,
-                                    name = playerName,
-                                    distance = math.floor(distance),
-                                    inVehicle = playerInVehicle,
-                                    inVehicleDriver = playerIsDriver,
-                                    dead = Menu.__vgdPlayerDeadFlag(targetPed),
-                                    inApartment = Menu.__vgdPlayerInteriorFlag(targetPed),
-                                })
+                                local matchesFilter = targetFilter == 1
+                                    or (targetFilter == 2 and not playerInVehicle)
+                                    or (targetFilter == 3 and playerInVehicle)
+                                if matchesFilter then
+                                    table.insert(otherPlayers, {
+                                        id = playerId,
+                                        localId = player,
+                                        ped = targetPed,
+                                        name = playerName,
+                                        distance = math.floor(distance),
+                                        inVehicle = playerInVehicle,
+                                        inVehicleDriver = playerIsDriver,
+                                        dead = Menu.__vgdPlayerDeadFlag(targetPed),
+                                        inApartment = Menu.__vgdPlayerInteriorFlag(targetPed),
+                                    })
+                                end
                             end
                         end
                     end
@@ -29434,6 +29369,10 @@ local VS = {}
 local H_GET_ENTITY_SCRIPT = 0xA6E9C38DB51D7748
 local H_IS_VEHICLE_ON_ALL_WHEELS = 0xB104CD1BABF302E2
 
+-- Assisted hook tuning. The shared minimum speed is the one value every hook
+-- profile uses; geometry, ranges and windows live on the preset itself.
+local ASSIST_MIN_SPEED = 1.5   -- m/s; above this the target is treated as moving
+
 VS.enabled = false
 VS.carrier = 0
 VS.localVeh = 0
@@ -29448,6 +29387,9 @@ VS.scriptHook = false
 VS.wheelHook = false
 VS.coverMode = nil
 VS.coverResource = nil
+VS.hookAssist = false
+VS.assistTarget = 0
+VS.assistUntil = 0
 
 local presets = {}
 VS.presets = presets
@@ -29556,13 +29498,19 @@ local function findNearestVehicle(center, radius)
     return best
 end
 
-local function hookToggle(localVehicle, offset)
+local function releaseHook()
     if VS.towed and VS.towed ~= 0 then
         if DoesEntityExist(VS.towed) then
             pcall(DetachEntity, VS.towed, true, true)
         end
         VS.towed = 0
         O.log("vehicle spoof: hook released")
+    end
+end
+
+local function hookToggle(localVehicle, offset)
+    if VS.towed and VS.towed ~= 0 then
+        releaseHook()
         return
     end
 
@@ -29584,6 +29532,245 @@ local function hookToggle(localVehicle, offset)
 
     VS.towed = target
     O.log("vehicle spoof: hook attached to %s", tostring(target))
+end
+
+-- ---------------------------------------------------------------------------
+-- ASSISTED HOOK
+-- ---------------------------------------------------------------------------
+-- The stock hook attaches the target origin at a fixed local offset and picks
+-- the closest vehicle to the parent body. Both make the grab a timing problem:
+-- the car must sit exactly under the hook and be pressed at the right frame,
+-- and its heading is overwritten.
+--
+-- Every hook preset carries its own profile:
+--
+--   * x/y/z is the real hook point in the parent frame;
+--   * seat is the point on the target that must land on the hook: "roof"
+--     seats the roof centre under the cargobob cable, "front" seats the front
+--     bumper centre on the tow hook;
+--   * snap is the grasp-to-hook distance that fires, range the widest search,
+--     predict the lookahead, minArm the predicted pass that locks, window the
+--     armed lifetime and maxGraspAbove the tolerance for a hook below the
+--     grasp point.
+--
+-- The shared loop predicts every candidate for `predict` seconds with its own
+-- velocity minus the parent velocity, so a car driving through the capture
+-- sphere is scored at its closest approach, not where it sits now. The model
+-- box (GetModelDimensions) gives the seat point, so the attach offset comes
+-- from real geometry instead of a guessed constant. A moving target that is
+-- not in range yet is locked for `window`; the grab fires on the first frame
+-- its seat point passes within `snap` of the hook.
+--
+-- Every step is a local read plus one local AttachEntityToEntity: no event, no
+-- entity creation, no network write. A target owned by another client can still
+-- be restored by the server on a distance check, which is the same residual as
+-- the stock hook and is accepted, not hidden.
+
+local function hookPoint(vehicle, profile)
+    if type(GetOffsetFromEntityInWorldCoords) == "function" then
+        local ok, point = pcall(GetOffsetFromEntityInWorldCoords,
+            vehicle, profile.x, profile.y, profile.z)
+        if ok and point and type(point.x) == "number" then return point end
+    end
+    return GetEntityCoords(vehicle)
+end
+
+local function targetBox(vehicle)
+    if type(GetModelDimensions) == "function" then
+        local modelOk, model = pcall(GetEntityModel, vehicle)
+        if modelOk and type(model) == "number" then
+            local dimsOk, min, max = pcall(GetModelDimensions, model)
+            if dimsOk and min and max
+                and type(min.x) == "number" and type(max.x) == "number" then
+                local top = max.z
+                if top < 0.4 then top = 0.4 elseif top > 3.5 then top = 3.5 end
+                return (min.x + max.x) * 0.5, (min.y + max.y) * 0.5, top, max.y
+            end
+        end
+    end
+    return 0.0, 0.0, 0.85, 2.2
+end
+
+local function seatPoint(vehicle, profile)
+    local centerX, centerY, top, frontY = targetBox(vehicle)
+    if profile.seat == "front" then
+        return centerX, frontY, 0.0
+    end
+    return centerX, centerY, top
+end
+
+local function seatOffset(vehicle, hook, profile)
+    local seatX, seatY, seatZ = seatPoint(vehicle, profile)
+    if type(GetOffsetFromEntityInWorldCoords) == "function" then
+        local ok, point = pcall(GetOffsetFromEntityInWorldCoords,
+            vehicle, seatX, seatY, seatZ)
+        if ok and point and type(point.x) == "number" then
+            return point.x - hook.x, point.y - hook.y, point.z - hook.z
+        end
+    end
+    local coords = GetEntityCoords(vehicle)
+    local angle = math.rad(GetEntityHeading(vehicle))
+    local ox = seatX * math.cos(angle) - seatY * math.sin(angle)
+    local oy = seatX * math.sin(angle) + seatY * math.cos(angle)
+    return coords.x + ox - hook.x, coords.y + oy - hook.y, coords.z + seatZ - hook.z
+end
+
+local function predictPass(vehicle, hook, hookVelocity, profile)
+    local dx, dy, dz = seatOffset(vehicle, hook, profile)
+    local velocity = GetEntityVelocity(vehicle)
+    local vx = (velocity.x or 0.0) - (hookVelocity.x or 0.0)
+    local vy = (velocity.y or 0.0) - (hookVelocity.y or 0.0)
+    local vz = (velocity.z or 0.0) - (hookVelocity.z or 0.0)
+    local now = math.sqrt(dx * dx + dy * dy + dz * dz)
+
+    local speedSq = vx * vx + vy * vy + vz * vz
+    local t = 0.0
+    if speedSq > 0.25 then
+        t = -(dx * vx + dy * vy + dz * vz) / speedSq
+        if t < 0.0 then
+            t = 0.0
+        elseif t > profile.predict then
+            t = profile.predict
+        end
+    end
+
+    local px, py, pz = dx + vx * t, dy + vy * t, dz + vz * t
+    return math.sqrt(px * px + py * py + pz * pz), now
+end
+
+local function seatOnHook(parent, target, profile)
+    local seatX, seatY, seatZ = seatPoint(target, profile)
+    local relativeYaw = GetEntityHeading(target) - GetEntityHeading(parent)
+    if profile.alignYaw then
+        relativeYaw = 0.0
+    else
+        while relativeYaw > 180.0 do relativeYaw = relativeYaw - 360.0 end
+        while relativeYaw < -180.0 do relativeYaw = relativeYaw + 360.0 end
+    end
+
+    -- The seat point is expressed in the target frame; rotate it by the
+    -- relative yaw so the correction lands in the parent frame.
+    local angle = math.rad(relativeYaw)
+    local shiftX = seatX * math.cos(angle) - seatY * math.sin(angle)
+    local shiftY = seatX * math.sin(angle) + seatY * math.cos(angle)
+
+    return pcall(AttachEntityToEntity, target, parent, 0,
+        profile.x - shiftX, profile.y - shiftY,
+        profile.z - seatZ - (profile.gap or 0.0),
+        0.0, 0.0, relativeYaw,
+        false, false, false, false, 2, true)
+end
+
+local function captureAssist(parent, target, profile)
+    if target == 0 or not DoesEntityExist(target) then return false end
+    if type(GetEntityAttachedTo) == "function" and GetEntityAttachedTo(target) ~= 0 then
+        return false
+    end
+
+    local hook = hookPoint(parent, profile)
+    local dx, dy, dz = seatOffset(target, hook, profile)
+    -- A roof hook must stay above the roof; a tow hook may sit below the
+    -- bumper. maxGraspAbove is the per-profile tolerance.
+    if dz > profile.maxGraspAbove then return false end
+    if math.sqrt(dx * dx + dy * dy + dz * dz) > profile.snap then return false end
+    if not seatOnHook(parent, target, profile) then
+        VS.assistTarget = 0
+        VS.assistUntil = 0
+        O.log("vehicle spoof: assist attach failed")
+        return false
+    end
+
+    VS.towed = target
+    VS.assistTarget = 0
+    VS.assistUntil = 0
+    O.log("vehicle spoof: assist hook attached to %s", tostring(target))
+    return true
+end
+
+local function acquireAssistTarget(parent, profile)
+    if type(FindFirstVehicle) ~= "function" then return 0, math.huge end
+
+    local hook = hookPoint(parent, profile)
+    local hookVelocity = GetEntityVelocity(parent)
+    local parentCoords = GetEntityCoords(parent)
+    local handle, vehicle = FindFirstVehicle()
+    if not handle then return 0, math.huge end
+
+    local best, bestScore, bestNow = 0, math.huge, math.huge
+    repeat
+        if vehicle and vehicle ~= 0 and vehicle ~= VS.localVeh
+            and vehicle ~= VS.carrier and vehicle ~= VS.towed
+            and DoesEntityExist(vehicle) then
+            local attached = type(GetEntityAttachedTo) == "function"
+                and GetEntityAttachedTo(vehicle) or 0
+            if attached == 0 then
+                local predicted, now = predictPass(vehicle, hook, hookVelocity, profile)
+                local score = math.min(predicted, now)
+                local velocity = GetEntityVelocity(vehicle)
+                local speed = math.sqrt((velocity.x or 0.0) ^ 2 + (velocity.y or 0.0) ^ 2
+                    + (velocity.z or 0.0) ^ 2)
+                -- Only actionable candidates compete: an immediate grab, a
+                -- parked target the operator can fly over, or a moving target
+                -- with a clean pass. A car closing from far away cannot steal
+                -- the press from a car already under the hook.
+                local immediate = now <= profile.snap
+                local clean = speed < ASSIST_MIN_SPEED or predicted <= profile.minArm
+                if (immediate or clean) and score < bestScore
+                    and (now <= profile.range or predicted <= profile.range) then
+                    local coords = GetEntityCoords(vehicle)
+                    local _, _, seatZ = seatPoint(vehicle, profile)
+                    -- A car on a bridge above the parent is not a candidate, and
+                    -- a seat point too far above the hook would drop the car.
+                    if coords.z <= parentCoords.z + 1.0
+                        and coords.z + seatZ <= hook.z + profile.maxGraspAbove then
+                        best, bestScore, bestNow = vehicle, score, now
+                    end
+                end
+            end
+        end
+        local ok, nextVehicle = FindNextVehicle(handle)
+        vehicle = nextVehicle
+        if not ok then break end
+    until false
+
+    pcall(EndFindVehicle, handle)
+    return best, bestNow
+end
+
+local function assistPress(vehicle, profile)
+    if VS.towed and VS.towed ~= 0 then
+        releaseHook()
+        return
+    end
+
+    local target, nowDistance = acquireAssistTarget(vehicle, profile)
+    if target == 0 then
+        VS.assistTarget = 0
+        VS.assistUntil = 0
+        O.log("vehicle spoof: no vehicle in assist range")
+        return
+    end
+
+    if nowDistance <= profile.snap and captureAssist(vehicle, target, profile) then
+        return
+    end
+
+    VS.assistTarget = target
+    VS.assistUntil = GetGameTimer() + profile.window
+    O.log("vehicle spoof: assist locked; fly the hook over the target")
+end
+
+local function assistTick(vehicle, profile)
+    if VS.assistTarget == 0 then return end
+
+    local target = VS.assistTarget
+    if GetGameTimer() > VS.assistUntil or not DoesEntityExist(target) then
+        VS.assistTarget = 0
+        VS.assistUntil = 0
+        return
+    end
+
+    captureAssist(vehicle, target, profile)
 end
 
 local function tickOppressor(vehicle)
@@ -29616,15 +29803,26 @@ local function tickRuiner(vehicle)
     end
 end
 
-local function tickTow(vehicle)
-    if type(IsControlJustPressed) == "function" and IsControlJustPressed(0, 86) then
-        hookToggle(vehicle, vector3(0.0, -3.5, -0.4))
-    end
-end
+local function tickHook(vehicle)
+    local preset = VS.activePreset
+    local profile = preset and preset.hook
+    if not profile then return end
 
-local function tickCargobob(vehicle)
-    if type(IsControlJustPressed) == "function" and IsControlJustPressed(0, 86) then
-        hookToggle(vehicle, vector3(0.0, -1.5, -5.0))
+    local pressed = type(IsControlJustPressed) == "function" and IsControlJustPressed(0, 86)
+
+    if VS.hookAssist then
+        if pressed then assistPress(vehicle, profile) end
+        assistTick(vehicle, profile)
+        return
+    end
+
+    if VS.assistTarget ~= 0 then
+        VS.assistTarget = 0
+        VS.assistUntil = 0
+    end
+
+    if pressed then
+        hookToggle(vehicle, profile)
     end
 end
 
@@ -29663,7 +29861,22 @@ presets.rc = {
 presets.tow = {
     label = "Spoofed Tow Truck",
     models = { "towtruck", "towtruck2" },
-    tick = tickTow,
+    tick = tickHook,
+    -- Boom hook: 3.5 m behind the truck, 0.4 m below its origin. The car's
+    -- front bumper seats on it and the car aligns with the truck, which is the
+    -- classic wheel-lift pose.
+    hook = {
+        x = 0.0, y = -3.5, z = -0.4,
+        seat = "front",
+        range = 24.0,
+        snap = 6.0,
+        predict = 3.5,
+        minArm = 5.0,
+        window = 8000,
+        maxGraspAbove = 2.0,
+        gap = 0.0,
+        alignYaw = true,
+    },
 }
 
 presets.ruiner = {
@@ -29683,7 +29896,21 @@ presets.stromberg = {
 presets.cargobob = {
     label = "Spoofed Cargobob",
     models = { "cargobob", "cargobob2", "cargobob3" },
-    tick = tickCargobob,
+    tick = tickHook,
+    -- Cable hook: 1.5 m aft, 5 m below. The roof centre seats under the cable
+    -- and the target keeps its own heading.
+    hook = {
+        x = 0.0, y = -1.5, z = -5.0,
+        seat = "roof",
+        range = 45.0,
+        snap = 16.0,
+        predict = 4.0,
+        minArm = 8.0,
+        window = 8000,
+        maxGraspAbove = 0.35,
+        gap = 0.30,
+        alignYaw = false,
+    },
 }
 
 -- ---------------------------------------------------------------------------
@@ -29928,6 +30155,8 @@ local function restoreCarrier(restorePed)
         end
     end
     VS.towed = 0
+    VS.assistTarget = 0
+    VS.assistUntil = 0
 
     if carrier and carrier ~= 0 and DoesEntityExist(carrier) then
         pcall(SetEntityLocallyVisible, carrier)
@@ -30081,6 +30310,35 @@ function VS.togglePreset(key)
     end
     return VS.enablePreset(key)
 end
+
+function VS.setHookAssist(value)
+    VS.hookAssist = value == true
+    if not VS.hookAssist then
+        VS.assistTarget = 0
+        VS.assistUntil = 0
+    end
+    return VS.hookAssist
+end
+
+-- Internal test seam. The vehicle-spoof harness drives the assist math without
+-- starting the spoof thread; `key` selects the shipped hook preset so the
+-- harness exercises the same profiles the menu uses. Nothing here is a row.
+Menu.__vgd_vehicleHookAssist = {
+    set = VS.setHookAssist,
+    press = function(parent, key)
+        local preset = presets[key or "cargobob"]
+        if not preset or not preset.hook then return end
+        assistPress(parent, preset.hook)
+    end,
+    tick = function(parent, key)
+        local preset = presets[key or "cargobob"]
+        if not preset or not preset.hook then return end
+        assistTick(parent, preset.hook)
+    end,
+    state = function()
+        return VS.hookAssist, VS.assistTarget, VS.towed, VS.assistUntil
+    end,
+}
 
 function VS.status()
     if not VS.enabled then return "Spoofed vehicle: off" end
@@ -32370,6 +32628,16 @@ local function pedVehicle(ped)
     return 0
 end
 
+-- Target Type is shared with Online > Player List: 1 = All, 2 = On Foot,
+-- 3 = In Vehicle. The value is read live, so changing the row takes effect on
+-- the next resolve without re-arming the feature.
+local function targetTypeAllows(veh)
+    local filter = type(Menu) == "table" and tonumber(Menu.TargetFilter) or 1
+    if filter == 2 then return veh == 0 end
+    if filter == 3 then return veh ~= 0 end
+    return true
+end
+
 local function entityCoords(entity)
     local ok, coords = pcall(GetEntityCoords, entity)
     if ok and coords then return coords end
@@ -32410,7 +32678,8 @@ local function nearestPlayer(veh, origin)
             if okPed and type(ped) == "number" and ped ~= 0 and DoesEntityExist(ped)
                 and not isSelfPed and not isDead(ped) then
                 local theirVeh = pedVehicle(ped)
-                if theirVeh == 0 or theirVeh ~= veh then
+                if targetTypeAllows(theirVeh)
+                    and (theirVeh == 0 or theirVeh ~= veh) then
                     local coords = entityCoords(theirVeh ~= 0 and theirVeh or ped)
                     if coords then
                         local d = O.distance(coords, origin)
@@ -32436,7 +32705,8 @@ local function resolveTarget(veh, origin)
     local ped, player = targetPed()
     if ped ~= 0 and not isDead(ped) then
         local theirVeh = pedVehicle(ped)
-        if theirVeh == 0 or theirVeh ~= veh then
+        if targetTypeAllows(theirVeh)
+            and (theirVeh == 0 or theirVeh ~= veh) then
             local coords = entityCoords(theirVeh ~= 0 and theirVeh or ped)
             if coords and O.distance(coords, origin) <= MAX_RANGE then
                 return ped, player, "selected"
@@ -38988,6 +39258,11 @@ end
 -- normalised to Self | Target | Movement | Wardrobe, with Wardrobe at the far
 -- right. Voice now lives in Exploit. The old Online copy is removed on every
 -- load so a stale onClick cannot survive a reload.
+--
+-- "Target Type" sits at the top of the tab: All / On Foot / In Vehicle. It
+-- filters the Online > Player List to other players of that type and is read
+-- live by Lock Player's selected and nearest resolver. The self row stays in
+-- the list as the local identity row; the filter is about other players.
 -- ---------------------------------------------------------------------------
 local function installLockPlayer()
     local category = findCategory("Player")
@@ -38999,6 +39274,10 @@ local function installLockPlayer()
     local previousSpeed = findItem("Player", "Target", "Lock Speed")
     local startSpeed = previousSpeed and tonumber(previousSpeed.value) or nil
     if not startSpeed then startSpeed = L.speedValue() end
+
+    local filterIndex = tonumber(Menu.TargetFilter) or 1
+    if filterIndex < 1 or filterIndex > 3 then filterIndex = 1 end
+    Menu.TargetFilter = filterIndex
 
     -- Remove every historical spelling on every load, including the Shift row
     -- a previous build installed. A stale onClick must not survive a reload.
@@ -39058,7 +39337,22 @@ local function installLockPlayer()
         step = 10,
     }
 
+    local filterRow
+    filterRow = {
+        name = "Target Type",
+        type = "selector",
+        options = { "All", "On Foot", "In Vehicle" },
+        selected = filterIndex,
+        onClick = function(index)
+            index = tonumber(index) or 1
+            if index < 1 or index > 3 then index = 1 end
+            Menu.TargetFilter = index
+            filterRow.selected = index
+        end,
+    }
+
     tab.items = {
+        filterRow,
         { name = "", isSeparator = true, separatorText = "Hold Left Ctrl to ram" },
         row,
         speedRow,
@@ -40045,6 +40339,18 @@ local function installVehicleSpoof()
             }
         end
     end
+
+    items[#items + 1] = {
+        name = "Hook Assist",
+        type = "toggle",
+        value = VS.hookAssist == true,
+        onClick = function(value)
+            VS.setHookAssist(value == true)
+            local row = Menu.__vgd_vehicleHookAssistRow
+            if type(row) == "table" then row.value = VS.hookAssist == true end
+        end,
+    }
+    Menu.__vgd_vehicleHookAssistRow = items[#items]
 
     items[#items + 1] = {
         name = "Remove Spoof",
