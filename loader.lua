@@ -141,6 +141,19 @@ LibraryCode = string.gsub(
 )
 
 -- ============================================
+-- PATCH: Selector chevrons match the main-menu white
+-- ============================================
+-- The toggle_selector row (Lock Player / Target Type) and the generic selector
+-- drew their < > at TextWhite*0.8 with alpha 0.8, so they read grey next to
+-- the full-white category chevron. Recolour every selector chevron with the
+-- exact same TextWhite at alpha 1.0.
+LibraryCode = replaceAllPlain(
+    LibraryCode,
+    "Menu.Colors.TextWhite.r / 255.0 * 0.8, Menu.Colors.TextWhite.g / 255.0 * 0.8, Menu.Colors.TextWhite.b / 255.0 * 0.8, 0.8)",
+    "Menu.Colors.TextWhite.r / 255.0, Menu.Colors.TextWhite.g / 255.0, Menu.Colors.TextWhite.b / 255.0, 1.0)"
+)
+
+-- ============================================
 -- PATCH: Double category chevron
 -- ============================================
 -- The reference list uses two chevrons. The main-list painter in loader.lua
@@ -1954,6 +1967,8 @@ _Stealth = {
     ammo = false,
     punch = false,
     blockAC = false,
+    speedHook = false,
+    noclipDetectUntil = 0,
     _speedUsers = 0,
     _acUsers = 0,
     _godUsers = 0,
@@ -1998,16 +2013,24 @@ do
             return true
         end)
 
-        -- GetEntitySpeed  cap 6.5-8.0 m/s
-        Susano.HookNative(0xD5037BA82E12416F, function(entity)
-            if _Stealth.speed then
-                local ped = PlayerPedId()
-                if entity == ped and not IsPedInAnyVehicle(ped, false) then
+        -- GetEntitySpeed. The base stealth cap keeps the local ped under the
+        -- on-foot speed checks. No Clip Detect reuses the same hook: WaveShield
+        -- v15.1 caches playerSpeed from this native in updateInfos(), so the
+        -- guard sees the proven 28 m/s profile while the body is written at 90.
+        local speedHookOk, speedHookResult = pcall(Susano.HookNative,
+            0xD5037BA82E12416F, function(entity)
+            local ped = PlayerPedId()
+            if entity == ped and not IsPedInAnyVehicle(ped, false) then
+                if _Stealth.speed then
                     return false, 6.5 + math.random() * 1.5
+                end
+                if _Stealth.noclipDetectUntil > GetGameTimer() then
+                    return false, 27.6 + math.random() * 0.4
                 end
             end
             return true
         end)
+        _Stealth.speedHook = speedHookOk and speedHookResult ~= false
 
         -- GetAmmoInPedWeapon  fake count dcroissant
 
@@ -29412,7 +29435,8 @@ local VS = (function(O)
 --
 -- Weapons are deliberately not added. Only movement/utility features are
 -- implemented: Deluxo hover, Oppressor boost, Ruiner jump/parachute, RC
--- camera, tow/Cargobob hooks, boat and Stromberg native water behaviour.
+-- camera and the native tow/Cargobob model hooks (no scripted attach), boat
+-- and Stromberg native water behaviour.
 -- ============================================================================
 
 local VS = {}
@@ -29434,10 +29458,6 @@ local VS = {}
 local H_GET_ENTITY_SCRIPT = 0xA6E9C38DB51D7748
 local H_IS_VEHICLE_ON_ALL_WHEELS = 0xB104CD1BABF302E2
 
--- Assisted hook tuning. The shared minimum speed is the one value every hook
--- profile uses; geometry, ranges and windows live on the preset itself.
-local ASSIST_MIN_SPEED = 1.5   -- m/s; above this the target is treated as moving
-
 VS.enabled = false
 VS.carrier = 0
 VS.localVeh = 0
@@ -29445,16 +29465,12 @@ VS.activeKey = nil
 VS.activePreset = nil
 VS.thread = false
 VS.cam = 0
-VS.towed = 0
 VS.rcActive = false
 VS.currentModel = nil
 VS.scriptHook = false
 VS.wheelHook = false
 VS.coverMode = nil
 VS.coverResource = nil
-VS.hookAssist = false
-VS.assistTarget = 0
-VS.assistUntil = 0
 
 local presets = {}
 VS.presets = presets
@@ -29535,338 +29551,6 @@ local function cleanupRc()
     pcall(SetEntityLocallyVisible, PlayerPedId())
 end
 
-local function findNearestVehicle(center, radius)
-    if type(FindFirstVehicle) ~= "function" then return 0 end
-
-    local centerCoords = GetEntityCoords(center)
-    local handle, vehicle = FindFirstVehicle()
-    if not handle then return 0 end
-
-    local best, bestDistance = 0, radius or 12.0
-    repeat
-        if vehicle and vehicle ~= 0 and vehicle ~= center
-            and vehicle ~= VS.localVeh and vehicle ~= VS.carrier
-            and DoesEntityExist(vehicle) then
-            local coords = GetEntityCoords(vehicle)
-            local dx, dy, dz = coords.x - centerCoords.x, coords.y - centerCoords.y, coords.z - centerCoords.z
-            local distance = math.sqrt(dx * dx + dy * dy + dz * dz)
-            if distance < bestDistance then
-                best, bestDistance = vehicle, distance
-            end
-        end
-        local ok, nextVehicle = FindNextVehicle(handle)
-        vehicle = nextVehicle
-        if not ok then break end
-    until false
-
-    pcall(EndFindVehicle, handle)
-    return best
-end
-
-local function releaseHook()
-    if VS.towed and VS.towed ~= 0 then
-        if DoesEntityExist(VS.towed) then
-            pcall(DetachEntity, VS.towed, true, true)
-        end
-        VS.towed = 0
-        O.log("vehicle spoof: hook released")
-    end
-end
-
-local function hookToggle(localVehicle, offset)
-    if VS.towed and VS.towed ~= 0 then
-        releaseHook()
-        return
-    end
-
-    local target = findNearestVehicle(localVehicle, 12.0)
-    if target == 0 then
-        O.log("vehicle spoof: no vehicle close enough for the hook")
-        return
-    end
-
-    -- The stock path keeps its historical fixed offset; the assisted path
-    -- derives the hook from the model box.
-    local seat = offset.legacy or offset
-    local attached = pcall(AttachEntityToEntity, target, localVehicle, 0,
-        seat.x, seat.y, seat.z,
-        0.0, 0.0, 0.0,
-        false, false, false, false, 2, true)
-
-    if not attached then
-        O.log("vehicle spoof: hook attach failed")
-        return
-    end
-
-    VS.towed = target
-    O.log("vehicle spoof: hook attached to %s", tostring(target))
-end
-
--- ---------------------------------------------------------------------------
--- ASSISTED HOOK
--- ---------------------------------------------------------------------------
--- The stock hook attaches the target origin at a fixed local offset and picks
--- the closest vehicle to the parent body. Both make the grab a timing problem:
--- the car must sit exactly under the hook and be pressed at the right frame,
--- and its heading is overwritten.
---
--- No cargobob-specific native is called here. The hook point is derived from
--- the parent model box, which is already loaded:
---
---   * Cargobob: the short belly hook just under min.z. The roof centre seats
---     on it and the target keeps its own heading. The standard Cargobob cable
---     is short; the old -5.0 m offset put the car below the visible hook.
---   * Tow truck: the rear lift at min.z + 0.8. The front axle seats on it and
---     the car aligns with the truck, which is the wheel-lift pose.
---
--- The target seat comes from its own model box. The only write is the same
--- local AttachEntityToEntity the stock hook already uses, plus its matching
--- DetachEntity; every other call is a read (coords, heading, velocity, model
--- box). No event, no entity creation, no network write. A target owned by
--- another client can still be restored by the server on a distance check,
--- which is the same residual as the stock hook and is accepted, not hidden.
---
--- The shared loop predicts every candidate for `predict` seconds with its own
--- velocity minus the parent velocity, so a car driving through the capture
--- sphere is scored at its closest approach, not where it sits now. A moving
--- target that is not in range yet is locked for `window`; the grab fires on
--- the first frame its seat point passes within `snap` of the hook.
-
-local function modelBox(vehicle)
-    if type(GetModelDimensions) ~= "function" or type(GetEntityModel) ~= "function" then
-        return nil
-    end
-    local okModel, model = pcall(GetEntityModel, vehicle)
-    if not okModel or type(model) ~= "number" then return nil end
-    local okBox, min, max = pcall(GetModelDimensions, model)
-    if not okBox or not min or not max
-        or type(min.x) ~= "number" or type(max.x) ~= "number" then
-        return nil
-    end
-    return min, max
-end
-
-local function hookLocal(parent, profile)
-    local hx = profile.x or 0.0
-    local hy = profile.y or 0.0
-    local hz = profile.z or 0.0
-    local min, max = modelBox(parent)
-    if min and max then
-        if profile.yFrom == "rear" then
-            hy = min.y - (profile.rearOverhang or 0.5)
-        elseif profile.yFrom == "center" then
-            hy = (min.y + max.y) * 0.5
-        end
-        if profile.zFrom == "belly" then
-            hz = min.z - (profile.drop or 0.15)
-        elseif profile.zFrom == "lift" then
-            hz = min.z + (profile.rise or 0.8)
-        end
-    end
-    return hx, hy, hz
-end
-
-local function offsetFromEntity(vehicle, x, y, z)
-    if type(GetOffsetFromEntityInWorldCoords) == "function" then
-        local ok, point = pcall(GetOffsetFromEntityInWorldCoords, vehicle, x, y, z)
-        if ok and point and type(point.x) == "number" then return point end
-    end
-    local coords = GetEntityCoords(vehicle)
-    local angle = math.rad(GetEntityHeading(vehicle))
-    local ox = x * math.cos(angle) - y * math.sin(angle)
-    local oy = x * math.sin(angle) + y * math.cos(angle)
-    return { x = coords.x + ox, y = coords.y + oy, z = coords.z + z }
-end
-
-local function hookPoint(parent, profile)
-    local hx, hy, hz = hookLocal(parent, profile)
-    return offsetFromEntity(parent, hx, hy, hz)
-end
-
-local function targetBox(vehicle)
-    local min, max = modelBox(vehicle)
-    if min and max then
-        local top = max.z
-        if top < 0.4 then top = 0.4 elseif top > 3.5 then top = 3.5 end
-        return (min.x + max.x) * 0.5, (min.y + max.y) * 0.5, top, max.y
-    end
-    return 0.0, 0.0, 0.85, 2.2
-end
-
-local function seatPoint(vehicle, profile)
-    local centerX, centerY, top, frontY = targetBox(vehicle)
-    if profile.seat == "frontAxle" then
-        return centerX, frontY - (profile.axleInset or 0.9),
-            (profile.wheelZ or 0.35)
-    end
-    return centerX, centerY, top
-end
-
-local function seatOffset(vehicle, hook, profile)
-    local seatX, seatY, seatZ = seatPoint(vehicle, profile)
-    local point = offsetFromEntity(vehicle, seatX, seatY, seatZ)
-    return point.x - hook.x, point.y - hook.y, point.z - hook.z
-end
-
-local function predictPass(vehicle, hook, hookVelocity, profile)
-    local dx, dy, dz = seatOffset(vehicle, hook, profile)
-    local velocity = GetEntityVelocity(vehicle)
-    local vx = (velocity.x or 0.0) - (hookVelocity.x or 0.0)
-    local vy = (velocity.y or 0.0) - (hookVelocity.y or 0.0)
-    local vz = (velocity.z or 0.0) - (hookVelocity.z or 0.0)
-    local now = math.sqrt(dx * dx + dy * dy + dz * dz)
-
-    local speedSq = vx * vx + vy * vy + vz * vz
-    local t = 0.0
-    if speedSq > 0.25 then
-        t = -(dx * vx + dy * vy + dz * vz) / speedSq
-        if t < 0.0 then
-            t = 0.0
-        elseif t > profile.predict then
-            t = profile.predict
-        end
-    end
-
-    local px, py, pz = dx + vx * t, dy + vy * t, dz + vz * t
-    return math.sqrt(px * px + py * py + pz * pz), now
-end
-
-local function seatOnHook(parent, target, profile, hx, hy, hz)
-    local seatX, seatY, seatZ = seatPoint(target, profile)
-    local relativeYaw = GetEntityHeading(target) - GetEntityHeading(parent)
-    if profile.alignYaw then
-        relativeYaw = 0.0
-    else
-        while relativeYaw > 180.0 do relativeYaw = relativeYaw - 360.0 end
-        while relativeYaw < -180.0 do relativeYaw = relativeYaw + 360.0 end
-    end
-
-    -- The seat point is expressed in the target frame; rotate it by the
-    -- relative yaw so the correction lands in the parent frame.
-    local angle = math.rad(relativeYaw)
-    local shiftX = seatX * math.cos(angle) - seatY * math.sin(angle)
-    local shiftY = seatX * math.sin(angle) + seatY * math.cos(angle)
-
-    return pcall(AttachEntityToEntity, target, parent, 0,
-        hx - shiftX, hy - shiftY,
-        hz - seatZ - (profile.gap or 0.0),
-        0.0, 0.0, relativeYaw,
-        false, false, false, false, 2, true)
-end
-
-local function captureAssist(parent, target, profile)
-    if target == 0 or not DoesEntityExist(target) then return false end
-    if type(GetEntityAttachedTo) == "function" and GetEntityAttachedTo(target) ~= 0 then
-        return false
-    end
-
-    local hx, hy, hz = hookLocal(parent, profile)
-    local hook = offsetFromEntity(parent, hx, hy, hz)
-    local dx, dy, dz = seatOffset(target, hook, profile)
-    -- A roof hook must stay above the roof; a tow lift may sit below the
-    -- front axle. maxGraspAbove is the per-profile tolerance.
-    if dz > profile.maxGraspAbove then return false end
-    if math.sqrt(dx * dx + dy * dy + dz * dz) > profile.snap then return false end
-    if not seatOnHook(parent, target, profile, hx, hy, hz) then
-        VS.assistTarget = 0
-        VS.assistUntil = 0
-        O.log("vehicle spoof: assist attach failed")
-        return false
-    end
-
-    VS.towed = target
-    VS.assistTarget = 0
-    VS.assistUntil = 0
-    O.log("vehicle spoof: assist hook attached to %s", tostring(target))
-    return true
-end
-
-local function acquireAssistTarget(parent, profile)
-    if type(FindFirstVehicle) ~= "function" then return 0, math.huge end
-
-    local hook = hookPoint(parent, profile)
-    local hookVelocity = GetEntityVelocity(parent)
-    local parentCoords = GetEntityCoords(parent)
-    local handle, vehicle = FindFirstVehicle()
-    if not handle then return 0, math.huge end
-
-    local best, bestScore, bestNow = 0, math.huge, math.huge
-    repeat
-        if vehicle and vehicle ~= 0 and vehicle ~= VS.localVeh
-            and vehicle ~= VS.carrier and vehicle ~= VS.towed
-            and DoesEntityExist(vehicle) then
-            local attached = type(GetEntityAttachedTo) == "function"
-                and GetEntityAttachedTo(vehicle) or 0
-            if attached == 0 then
-                local predicted, now = predictPass(vehicle, hook, hookVelocity, profile)
-                local score = math.min(predicted, now)
-                local velocity = GetEntityVelocity(vehicle)
-                local speed = math.sqrt((velocity.x or 0.0) ^ 2 + (velocity.y or 0.0) ^ 2
-                    + (velocity.z or 0.0) ^ 2)
-                -- Only actionable candidates compete: an immediate grab, a
-                -- parked target the operator can fly over, or a moving target
-                -- with a clean pass. A car closing from far away cannot steal
-                -- the press from a car already under the hook.
-                local immediate = now <= profile.snap
-                local clean = speed < ASSIST_MIN_SPEED or predicted <= profile.minArm
-                if (immediate or clean) and score < bestScore
-                    and (now <= profile.range or predicted <= profile.range) then
-                    local coords = GetEntityCoords(vehicle)
-                    local _, _, seatZ = seatPoint(vehicle, profile)
-                    -- A car on a bridge above the parent is not a candidate, and
-                    -- a seat point too far above the hook would drop the car.
-                    if coords.z <= parentCoords.z + 1.0
-                        and coords.z + seatZ <= hook.z + profile.maxGraspAbove then
-                        best, bestScore, bestNow = vehicle, score, now
-                    end
-                end
-            end
-        end
-        local ok, nextVehicle = FindNextVehicle(handle)
-        vehicle = nextVehicle
-        if not ok then break end
-    until false
-
-    pcall(EndFindVehicle, handle)
-    return best, bestNow
-end
-
-local function assistPress(vehicle, profile)
-    if VS.towed and VS.towed ~= 0 then
-        releaseHook()
-        return
-    end
-
-    local target, nowDistance = acquireAssistTarget(vehicle, profile)
-    if target == 0 then
-        VS.assistTarget = 0
-        VS.assistUntil = 0
-        O.log("vehicle spoof: no vehicle in assist range")
-        return
-    end
-
-    if nowDistance <= profile.snap and captureAssist(vehicle, target, profile) then
-        return
-    end
-
-    VS.assistTarget = target
-    VS.assistUntil = GetGameTimer() + profile.window
-    O.log("vehicle spoof: assist locked; fly the hook over the target")
-end
-
-local function assistTick(vehicle, profile)
-    if VS.assistTarget == 0 then return end
-
-    local target = VS.assistTarget
-    if GetGameTimer() > VS.assistUntil or not DoesEntityExist(target) then
-        VS.assistTarget = 0
-        VS.assistUntil = 0
-        return
-    end
-
-    captureAssist(vehicle, target, profile)
-end
-
 local function tickOppressor(vehicle)
     if type(IsControlPressed) == "function" and IsControlPressed(0, 21) then
         pcall(_SET_VEHICLE_ROCKET_BOOST_PERCENTAGE, vehicle, 100.0)
@@ -29894,29 +29578,6 @@ local function tickRuiner(vehicle)
         end
     else
         setParachute(vehicle, false)
-    end
-end
-
-local function tickHook(vehicle)
-    local preset = VS.activePreset
-    local profile = preset and preset.hook
-    if not profile then return end
-
-    local pressed = type(IsControlJustPressed) == "function" and IsControlJustPressed(0, 86)
-
-    if VS.hookAssist then
-        if pressed then assistPress(vehicle, profile) end
-        assistTick(vehicle, profile)
-        return
-    end
-
-    if VS.assistTarget ~= 0 then
-        VS.assistTarget = 0
-        VS.assistUntil = 0
-    end
-
-    if pressed then
-        hookToggle(vehicle, profile)
     end
 end
 
@@ -29955,28 +29616,6 @@ presets.rc = {
 presets.tow = {
     label = "Spoofed Tow Truck",
     models = { "towtruck", "towtruck2" },
-    tick = tickHook,
-    -- Rear lift: just behind the rear bumper and 0.8 m above the lowest model
-    -- point. The car's front axle seats on it and the car aligns with the
-    -- truck, which is the wheel-lift pose. The y/z values are the fallback
-    -- when the model box is unavailable.
-    hook = {
-        x = 0.0, y = -3.5, z = -0.4,
-        yFrom = "rear", rearOverhang = 0.5,
-        zFrom = "lift", rise = 0.8,
-        seat = "frontAxle",
-        axleInset = 0.9,
-        wheelZ = 0.35,
-        legacy = { x = 0.0, y = -3.5, z = -0.4 },
-        range = 24.0,
-        snap = 2.5,
-        predict = 3.5,
-        minArm = 4.0,
-        window = 8000,
-        maxGraspAbove = 1.0,
-        gap = 0.0,
-        alignYaw = true,
-    },
 }
 
 presets.ruiner = {
@@ -29996,26 +29635,6 @@ presets.stromberg = {
 presets.cargobob = {
     label = "Spoofed Cargobob",
     models = { "cargobob", "cargobob2", "cargobob3" },
-    tick = tickHook,
-    -- Short belly hook: the standard cable is short, so the hook sits just
-    -- under the model's lowest point, not 5 m below it. The roof centre seats
-    -- on it and the target keeps its own heading. The y/z values are the
-    -- fallback when the model box is unavailable. drop is the only visual
-    -- knob: raise it if the deployed hook hangs lower on the build.
-    hook = {
-        x = 0.0, y = -1.5, z = -2.6,
-        zFrom = "belly", drop = 0.15,
-        seat = "roof",
-        legacy = { x = 0.0, y = -1.5, z = -5.0 },
-        range = 45.0,
-        snap = 4.0,
-        predict = 4.0,
-        minArm = 7.0,
-        window = 8000,
-        maxGraspAbove = 0.35,
-        gap = 0.0,
-        alignYaw = false,
-    },
 }
 
 -- ---------------------------------------------------------------------------
@@ -30254,15 +29873,6 @@ local function restoreCarrier(restorePed)
     local localVehicle = VS.localVeh
     local ped = PlayerPedId()
 
-    if VS.towed and VS.towed ~= 0 then
-        if DoesEntityExist(VS.towed) then
-            pcall(DetachEntity, VS.towed, true, true)
-        end
-    end
-    VS.towed = 0
-    VS.assistTarget = 0
-    VS.assistUntil = 0
-
     if carrier and carrier ~= 0 and DoesEntityExist(carrier) then
         pcall(SetEntityLocallyVisible, carrier)
         pcall(SetEntityCollision, carrier, true, true)
@@ -30415,35 +30025,6 @@ function VS.togglePreset(key)
     end
     return VS.enablePreset(key)
 end
-
-function VS.setHookAssist(value)
-    VS.hookAssist = value == true
-    if not VS.hookAssist then
-        VS.assistTarget = 0
-        VS.assistUntil = 0
-    end
-    return VS.hookAssist
-end
-
--- Internal test seam. The vehicle-spoof harness drives the assist math without
--- starting the spoof thread; `key` selects the shipped hook preset so the
--- harness exercises the same profiles the menu uses. Nothing here is a row.
-Menu.__vgd_vehicleHookAssist = {
-    set = VS.setHookAssist,
-    press = function(parent, key)
-        local preset = presets[key or "cargobob"]
-        if not preset or not preset.hook then return end
-        assistPress(parent, preset.hook)
-    end,
-    tick = function(parent, key)
-        local preset = presets[key or "cargobob"]
-        if not preset or not preset.hook then return end
-        assistTick(parent, preset.hook)
-    end,
-    state = function()
-        return VS.hookAssist, VS.assistTarget, VS.towed, VS.assistUntil
-    end,
-}
 
 function VS.status()
     if not VS.enabled then return "Spoofed vehicle: off" end
@@ -31187,7 +30768,7 @@ end)(O,S,B)
 -- ---------------------------------------------------------------------------
 -- PART: 16_air_noclip.lua
 -- ---------------------------------------------------------------------------
-local N = (function(O,S,B)
+local N = (function(O,B)
 -- ============================================================================
 -- VANGUARD / 16 AIR NOCLIP
 -- ----------------------------------------------------------------------------
@@ -31219,22 +30800,20 @@ local N = (function(O,S,B)
 -- rejected at ground level because live feedback showed it landing, sliding,
 -- standing up and deploying a parachute immediately.
 --
--- Three layers, strongest genuine state first:
+-- Two layers, strongest genuine state first:
 --
 --   task    A task (if one is present) really makes all three reads true. No
 --           hook at all. TaskPlayAnim does not set 423, so in practice the
 --           native layer below is the normal path.
 --   native  A scoped Susano.HookNative for each read that is still false. The
 --           callback makes no native call: cached fields plus os.clock only.
---   stage-b A payload injected into the guard resource through
---           Susano.InjectResource, used only when the native hook is missing or
---           refused. The payload has no Susano.* reference and is armed by a
---           random local event with a 2.5 s window. It wraps _G.GetIsTaskActive,
---           _G.IsPedFalling and _G.IsEntityInAir, and also replaces
---           WaveShield.Native.IsPedFalling / .IsEntityInAir when that alias
---           table exists and is mutable. If the aliases are absent or
---           immutable, Tier B alone covers only task 423; falling/in-air must
---           come from the genuine task or Tier A.
+--
+-- There is no resource injection in this module. WaveShield v15.1 routine_16
+-- deep-compares WaveShield.Lua and WaveShield.Native and reports "Protected
+-- namespace replaced" when an alias is swapped, so a Stage B alias graft is a
+-- detection vector, not a cover. If Susano.HookNative is unavailable or
+-- refuses a read, the module stops with "no cover" instead of running with a
+-- read it cannot hide.
 --
 -- Movement is deliberately slow at first: for 1200 ms after arming the written
 -- speed stays below the guard's 14.0 m/s on-foot ceiling while its 1000 ms
@@ -31269,7 +30848,8 @@ local N = (function(O,S,B)
 --   IS_ENTITY_PLAYING_ANIM   0x1F0B79228E461EC9  (Entity, char*, char*, int) -> BOOL
 --   GET_ENTITY_SPEED         0xD5037BA82E12416F  (Entity) -> float
 --   SET_PED_GRAVITY          0x9FF447B6B6AD960A  (Ped, BOOL) -> void
---   SET_ENTITY_HAS_GRAVITY   0x4A4722448F18EEF5  entity alternative, not called
+--   SET_ENTITY_HAS_GRAVITY   0x4A4722448F18EEF5  (Entity, BOOL) -> void
+--     entity-level backstop when the ped flag is ignored; restored on stop
 --   SET_ENTITY_VELOCITY      0x1C99BB7B6E96D16F  (Entity, float, float, float)
 --   GET_GAMEPLAY_CAM_ROT     0x837765A25378F0BB  (int) -> Vector3
 --   IS_CONTROL_PRESSED       0xF3A21BCD95725A4A  (int, int) -> BOOL
@@ -31290,8 +30870,8 @@ local N = (function(O,S,B)
 --   GET_SHAPE_TEST_RESULT    0x3D87450E15D98694  (int, BOOL*, Vector3*, Vector3*, Entity*) -> int
 --
 -- SET_ENTITY_GRAVITY is not in natives.json: never call it. The ped-native is
--- SET_PED_GRAVITY; SET_ENTITY_HAS_GRAVITY is the entity alternative if the ped
--- flag is ignored by the runtime. TASK_SKY_DIVE has one documented parameter
+-- SET_PED_GRAVITY; SET_ENTITY_HAS_GRAVITY is the entity-level backstop used
+-- after it. TASK_SKY_DIVE has one documented parameter
 -- (Ped); NativeDB mentions an undocumented second BOOL p1, so it is not used.
 -- The pose is TASK_PLAY_ANIM, duration -1, playbackRate 1.0, locks false. The
 -- Naruto row uses AF_LOOPING|AF_UPPERBODY|AF_SECONDARY = 1|16|32 = 49; the
@@ -31331,8 +30911,6 @@ local GATE_SECONDS = 1.5
 local FALL_GRACE = 1.2
 local WARMUP_MS = 1200
 local WARMUP_SPEED = 13.5
-local STAGE_B_PULSE = 1500
-local STAGE_B_WINDOW = 2.5
 local POSE_LOAD_MS = 1200
 -- A task reset can restore ped gravity, collision or the ragdoll flags (the
 -- No Clip ragdoll repair clears tasks). Refresh them on this cadence so a reset
@@ -31394,6 +30972,17 @@ local STRAFE_SPEED = 20.0
 local CAM_VERT_MAX = 15.0
 local EXPLICIT_VERT = 12.0
 local SPEED_CAP = 28.0
+-- Two No Clip profiles. Undetect keeps the 28 m/s budget that stays under the
+-- WaveShield teleport (50 m/s) and in-air speedHack (60 m/s) ceilings. Detect
+-- is intentionally outside both ceilings: the operator trades stealth for
+-- speed. The 3.2x scale also drives acceleration and the vertical axes.
+local SPEED_DETECT = 90.0
+local DETECT_SCALE = SPEED_DETECT / SPEED_CAP
+-- A fixed hover with zero speed is a valid WaveShield noclip state when the
+-- collision flag is off. A tiny horizontal circle keeps GetEntitySpeed above
+-- zero without changing altitude; the radius is under 3 cm at this cadence.
+local HOVER_DITHER = 0.5
+local HOVER_PERIOD_MS = 500
 -- Observed-speed ceiling. The velocity write is capped at 28, but Sprint,
 -- slopes and pushes can add between ticks. If the engine reports more than
 -- this, the module sheds its own contribution so the next sample falls back
@@ -31444,17 +31033,24 @@ N.taskStarted = false
 N.animCheckAt = 0
 N.moveLogged = false
 N.gravityOff = false
+N.entityGravityOff = false
 N.ragdollOff = false
 N.collisionOff = false
 N.hooks = {}
-N.stageB = { event = nil, injected = false, next = 0 }
 N.coverChecked = false
 N.recheckAt = 0
 N.gravityNext = 0
 N.chuteNext = 0
 N.probeAt = 0
 local motionStopped = false
-local stageBResource = nil
+
+-- The GetEntitySpeed cover is installed once by the base stealth block. No
+-- Clip Detect only renews the deadline while it is active; if this chunk dies,
+-- the read falls back to the real speed after 250 ms.
+local function clearSpeedCover()
+    local stealth = rawget(_G, "_Stealth")
+    if type(stealth) == "table" then stealth.noclipDetectUntil = 0 end
+end
 
 -- ---------------------------------------------------------------------------
 -- WATCHDOG CLOCK. CPU time, not wall time: it keeps moving if this chunk is
@@ -31577,156 +31173,6 @@ local function installHooks(need)
 end
 
 -- ---------------------------------------------------------------------------
--- TIER B: guard-side read repair. The payload has no Susano.* reference. It is
--- idempotent through a marker in the guard state; a guard restart removes the
--- marker with the resource and the next arm injects again. The event name is
--- random and never written to a global.
---
--- V4's actorLoop reads WaveShield.Native.IsPedFalling/IsEntityInAir, copied at
--- startup by initializer.lua. The payload replaces those aliases too when the
--- table exists and the fields are mutable. If the table is absent or
--- immutable, Tier A is the only cover for falling/in-air; Tier B alone then
--- covers only task 423. The payload must not claim more than that.
--- ---------------------------------------------------------------------------
-local function stageBName()
-    return string.format("sf_%06x", math.floor(O.int(0x100000, 0xffffff)))
-end
-
-local function stageBPayload(eventName)
-    return ([[
-pcall(function()
-    if rawget(_G, "__sfnc") then return end
-    local clock = os.clock
-    if type(clock) ~= "function" then clock = os.time end
-    if type(clock) ~= "function" then return end
-    local expiry = -1
-    AddEventHandler(%q, function(duration)
-        if type(duration) == "number" and duration > 0 then
-            expiry = clock() + duration
-        else
-            expiry = -1
-        end
-    end)
-    local function localPed()
-        local guard = rawget(_G, "WaveShield")
-        if guard and type(guard.playerPed) == "number" and guard.playerPed ~= 0 then
-            return guard.playerPed
-        end
-        return PlayerPedId()
-    end
-    local guardTable = rawget(_G, "WaveShield")
-    local native = (guardTable and type(guardTable.Native) == "table") and guardTable.Native or nil
-    local origTask = rawget(_G, "GetIsTaskActive")
-    local origFall = rawget(_G, "IsPedFalling")
-    local origAir = rawget(_G, "IsEntityInAir")
-    local oldNativeFall = native and native.IsPedFalling or nil
-    local oldNativeAir = native and native.IsEntityInAir or nil
-
-    local function makeFall(original)
-        return function(ped)
-            if clock() <= expiry and ped == localPed() then return true end
-            if type(original) == "function" then return original(ped) end
-            return false
-        end
-    end
-    local function makeAir(original)
-        return function(entity)
-            if clock() <= expiry and entity == localPed() then return true end
-            if type(original) == "function" then return original(entity) end
-            return false
-        end
-    end
-    local function replaceField(tbl, key, value)
-        local ok = pcall(function() tbl[key] = value end)
-        -- A refused or silently ignored write leaves the original in place:
-        -- Tier A is then the only cover for that read. Never claim otherwise.
-        return ok and tbl[key] == value
-    end
-
-    if type(origTask) == "function" then
-        _G.GetIsTaskActive = function(ped, taskIndex)
-            if taskIndex == 423 and clock() <= expiry and ped == localPed() then
-                return true
-            end
-            return origTask(ped, taskIndex)
-        end
-    end
-    if type(origFall) == "function" then
-        _G.IsPedFalling = makeFall(origFall)
-    end
-    if type(origAir) == "function" then
-        _G.IsEntityInAir = makeAir(origAir)
-    end
-
-    -- WaveShield V4 copies IsPedFalling/IsEntityInAir into WaveShield.Native
-    -- at startup and actorLoop reads those aliases. Replace the aliases too
-    -- when the table/fields are mutable. The alias wrappers share the same
-    -- gating logic but call their own saved original, so neither path recurses.
-    -- If the table is absent or immutable, Tier A is the only cover for
-    -- falling/in-air; Tier B alone then covers only task 423. This is a
-    -- coverage limit, not a success claim.
-    if native then
-        if type(oldNativeFall) == "function" then
-            replaceField(native, "IsPedFalling", makeFall(oldNativeFall))
-        end
-        if type(oldNativeAir) == "function" then
-            replaceField(native, "IsEntityInAir", makeAir(oldNativeAir))
-        end
-    end
-    _G.__sfnc = true
-end)
-]]):format(eventName)
-end
-
-local function injectStageB()
-    if type(S) ~= "table" then return false, "no scanner" end
-    if type(S.acs) ~= "table" then return false, "no resource list" end
-    if #S.acs == 0 and type(S.scan) == "function" then pcall(S.scan) end
-
-    local target = stageBResource
-    if not target then
-        for i = 1, #S.acs do
-            if S.acs[i].vendor == "waveshield" then
-                target = S.acs[i].resource
-                break
-            end
-        end
-    end
-    if not target then return false, "no WaveShield resource" end
-
-    if type(GetResourceState) ~= "function" then
-        return false, "resource state unavailable"
-    end
-    local okState, state = pcall(GetResourceState, target)
-    if not okState or state ~= "started" then return false, "guard not started" end
-
-    local api = rawget(_G, "Susano")
-    if type(api) ~= "table" or type(api.InjectResource) ~= "function" then
-        return false, "InjectResource unavailable"
-    end
-
-    if not N.stageB.event then N.stageB.event = stageBName() end
-    local code = stageBPayload(N.stageB.event)
-
-    local ok, result
-    local injectionType = api.InjectionType
-    if type(injectionType) == "table" and injectionType.NEW_THREAD ~= nil then
-        ok, result = pcall(api.InjectResource, target, code, injectionType.NEW_THREAD)
-    else
-        ok, result = pcall(api.InjectResource, target, code)
-    end
-
-    if not ok or result == false then
-        return false, tostring(result or "injection failed")
-    end
-
-    stageBResource = target
-    N.stageB.injected = true
-    N.stageB.next = 0
-    return true
-end
-
--- ---------------------------------------------------------------------------
 -- COVER. Read the genuine state after the settle window. Install a hook only
 -- for a read that is false. If every read is true, the task is the state and
 -- there is no hook at all.
@@ -31753,27 +31199,13 @@ local function ensureCover()
 
     if #need > 0 then
         local okHook, hookWhy = installHooks(need)
-        if okHook then
-            if N.layer ~= "stage-b" then N.layer = "native" end
-        elseif N.layer ~= "stage-b" then
-            local okB, whyB = injectStageB()
-            if okB then
-                N.layer = "stage-b"
-                if N.stageB.event then
-                    pcall(TriggerEvent, N.stageB.event, STAGE_B_WINDOW)
-                    -- NEW_THREAD injection can finish after this first pulse.
-                    -- Retry on the next tick (30 ms) instead of waiting a full
-                    -- pulse period, so an asynchronously registered handler
-                    -- cannot leave a 1.5 s gap.
-                    N.stageB.next = O.now() + 1
-                end
-            elseif N.layer == "none" then
-                return false, whyB or hookWhy
-            end
+        if not okHook then
+            return false, hookWhy
         end
+        N.layer = "native"
     end
 
-    if task and falling and inAir and next(N.hooks) == nil and N.layer ~= "stage-b" then
+    if task and falling and inAir and next(N.hooks) == nil then
         N.layer = "task"
     end
     return true
@@ -31793,9 +31225,12 @@ local function cleanupMotion()
         pcall(SetPedMoveRateOverride, ped, 1.0)
         pcall(ClearPedTasks, ped)
         if N.gravityOff then
-            -- Restore only the ped-native that was disabled at arm. Never call
+            -- Restore only the natives that were disabled at arm. Never call
             -- SET_ENTITY_GRAVITY: it is absent from natives.json.
             pcall(SetPedGravity, ped, true)
+        end
+        if N.entityGravityOff then
+            pcall(SetEntityHasGravity, ped, true)
         end
         if N.ragdollOff then
             -- Restore the collision entry points cleared at arm. The global
@@ -31814,11 +31249,13 @@ local function cleanupMotion()
     pcall(RemoveAnimDict, ANIM_DICT)
 
     N.gravityOff = false
+    N.entityGravityOff = false
     N.ragdollOff = false
     N.collisionOff = false
     N.posePending = false
     N.poseApplied = false
     N.vx, N.vy, N.vz = 0.0, 0.0, 0.0
+    clearSpeedCover()
 end
 
 local function holdOrStop(reason)
@@ -31834,12 +31271,6 @@ local function holdOrStop(reason)
     N.untilAt = c + GATE_SECONDS
     N.fallGateUntil = c + FALL_GRACE
     cleanupMotion()
-
-    -- A Stage B gate must stay open across the hold too.
-    if N.layer == "stage-b" and N.stageB.event then
-        pcall(TriggerEvent, N.stageB.event, STAGE_B_WINDOW)
-        N.stageB.next = O.now() + O.jitter(STAGE_B_PULSE, 0.25)
-    end
 
     N.stats.holds = N.stats.holds + 1
     O.log("air noclip cover hold (%s)", tostring(reason))
@@ -31871,12 +31302,9 @@ function N.arm(mode)
         return false
     end
 
-    -- A stale trampoline or an open guard-side gate from a previous execution
-    -- must not survive a refused arm either.
+    -- A stale trampoline from a previous execution must not survive a refused
+    -- arm either.
     removeHooks()
-    if N.stageB.event then
-        pcall(TriggerEvent, N.stageB.event, 0)
-    end
 
     -- One Skyfall token per 4 s window. A refused arm leaves nothing behind.
     if not B.spend("airnoclip") then
@@ -31905,10 +31333,11 @@ function N.arm(mode)
     N.chuteNext = 0
     N.probeAt = 0
     N.gravityOff = false
+    N.entityGravityOff = false
     N.ragdollOff = false
     N.collisionOff = false
     motionStopped = false
-    N.stageB.next = 0
+    clearSpeedCover()
 
     local c = clock()
     N.untilAt = c + GATE_SECONDS
@@ -31927,6 +31356,10 @@ function N.arm(mode)
         return false
     end
     N.gravityOff = true
+    -- The ped flag is ignored by some runtimes while the entity still
+    -- integrates gravity. The entity-level flag is the verified backstop:
+    -- SET_ENTITY_HAS_GRAVITY 0x4A4722448F18EEF5 (Entity, BOOL).
+    N.entityGravityOff = pcall(SetEntityHasGravity, ped, false) and true or false
 
     -- No Clip: collision off is the feature. With collision on, a map prop
     -- (wind-turbine nacelle, roof lip, trailer) resolves the capsule against
@@ -31991,7 +31424,7 @@ end
 
 function N.stop(reason)
     local wasActive = N.active
-    local had = wasActive or next(N.hooks) ~= nil or N.stageB.injected
+    local had = wasActive or next(N.hooks) ~= nil
     if not had then
         N.reason = reason or "off"
         return false
@@ -32021,20 +31454,15 @@ function N.stop(reason)
     N.lastTickAt = 0
     N.armAt = 0
     N.vx, N.vy, N.vz = 0.0, 0.0, 0.0
+    clearSpeedCover()
 
-    -- A second stop after a Stage B session must not write velocity or clear a
-    -- task that the operator has started since. Only an active session (or a
-    -- gravity flag left by it) owns motion cleanup.
+    -- A second stop must not write velocity or clear a task that the operator
+    -- has started since. Only an active session (or a gravity flag left by it)
+    -- owns motion cleanup.
     if wasActive or N.gravityOff then
         cleanupMotion()
     end
     removeHooks()
-
-    -- Close the guard-side gate immediately; the wrapper itself stays inert.
-    if N.stageB.event then
-        pcall(TriggerEvent, N.stageB.event, 0)
-    end
-    N.stageB.next = 0
     motionStopped = false
 
     if shouldRefund then refundBudget() end
@@ -32049,6 +31477,23 @@ end
 
 function N.isActive()
     return N.active == true
+end
+
+-- The No Clip row is a toggle_selector: 1 = Undetect, 2 = Detect. The library
+-- changes selected on Left/Right without firing onClick, so read the row live
+-- on every tick. A missing row (early load) defaults to the safe profile.
+function N.detectMode()
+    local row = type(Menu) == "table" and type(Menu.FindItem) == "function"
+        and Menu.FindItem("Player", "Movement", "No Clip") or nil
+    return row ~= nil and tonumber(row.selected) == 2
+end
+
+-- Detect is only allowed when the base GetEntitySpeed hook installed. Without
+-- that read cover, the 90 m/s write would be visible to the guard's cached
+-- playerSpeed; fall back to the proven 28 m/s profile instead.
+function N.speedCover()
+    local stealth = rawget(_G, "_Stealth")
+    return type(stealth) == "table" and stealth.speedHook == true
 end
 
 -- ---------------------------------------------------------------------------
@@ -32142,6 +31587,7 @@ function N.tick(now)
         local flags = (N.mode == MODE_NARUTO) and ANIM_FLAGS_NARUTO or ANIM_FLAGS_NOCLIP
         pcall(ClearPedTasks, ped)
         pcall(SetPedGravity, ped, false)
+        pcall(SetEntityHasGravity, ped, false)
         pcall(SetPedCanRagdollFromPlayerImpact, ped, false)
         pcall(SetPedRagdollOnCollision, ped, false)
         if N.mode == MODE_NOCLIP then
@@ -32158,6 +31604,7 @@ function N.tick(now)
     if now >= N.gravityNext then
         N.gravityNext = now + O.jitter(GRAVITY_REFRESH_MS, 0.3)
         pcall(SetPedGravity, ped, false)
+        pcall(SetEntityHasGravity, ped, false)
         pcall(SetPedCanRagdollFromPlayerImpact, ped, false)
         pcall(SetPedRagdollOnCollision, ped, false)
         if N.mode == MODE_NOCLIP then
@@ -32196,8 +31643,7 @@ function N.tick(now)
     -- layer every COVER_RECHECK_MS. Until the first check the warmup cap keeps
     -- every written speed below the guard's on-foot ceiling. Revalidation only
     -- adds a hook for a read that became false and is not already covered; it
-    -- never tears down a working layer and never re-injects Stage B, whose
-    -- payload already covers all three reads in the guard VM.
+    -- never tears down a working layer. A failed hook is a no-cover stop.
     if not N.coverChecked and (now - N.taskAt) >= COVER_DELAY_MS then
         N.coverChecked = true
         local okCover, why = ensureCover()
@@ -32207,22 +31653,13 @@ function N.tick(now)
             return
         end
         N.recheckAt = now + COVER_RECHECK_MS
-    elseif N.coverChecked and N.layer ~= "stage-b" and now >= N.recheckAt then
+    elseif N.coverChecked and now >= N.recheckAt then
         N.recheckAt = now + COVER_RECHECK_MS
         local okCover, why = ensureCover()
-        if not okCover and N.layer == "none" then
+        if not okCover then
             N.stop("no cover")
             O.log("air noclip refused: %s", tostring(why))
             return
-        end
-    end
-
-    -- Tier B liveness: a jittered pulse keeps the guard-side gate open. If this
-    -- chunk dies, the last pulse expires on its own.
-    if N.layer == "stage-b" and N.stageB.event then
-        if now >= N.stageB.next then
-            pcall(TriggerEvent, N.stageB.event, STAGE_B_WINDOW)
-            N.stageB.next = now + O.jitter(STAGE_B_PULSE, 0.25)
         end
     end
 
@@ -32235,6 +31672,16 @@ function N.tick(now)
     local vertical = (controlDown(CTL_UP, VK_SPACE) and 1 or 0) - (controlDown(CTL_DOWN, VK_CONTROL) and 1 or 0)
 
     local naruto = N.mode == MODE_NARUTO
+    local detect = not naruto and N.detectMode() and N.speedCover()
+    -- Renew the read cover only while the speed profile is actually in use.
+    -- If the hook was not installed, Detect falls back to the 28 m/s profile
+    -- instead of writing 90 with no cover.
+    local stealth = rawget(_G, "_Stealth")
+    if type(stealth) == "table" then
+        stealth.noclipDetectUntil = detect and (now + 250) or 0
+    end
+    local speedScale = detect and DETECT_SCALE or 1.0
+    local speedCap = SPEED_CAP * speedScale
     local tx, ty, tz = 0.0, 0.0, 0.0
 
     -- Noclip keeps the full 3D camera direction, vertical share capped at 15
@@ -32246,30 +31693,39 @@ function N.tick(now)
             tx = tx - math.sin(rz) * FWD_SPEED * fwd
             ty = ty + math.cos(rz) * FWD_SPEED * fwd
         else
-            tx = tx + dir.x * FWD_SPEED * fwd
-            ty = ty + dir.y * FWD_SPEED * fwd
-            local camV = dir.z * FWD_SPEED * fwd
-            if camV > CAM_VERT_MAX then camV = CAM_VERT_MAX end
-            if camV < -CAM_VERT_MAX then camV = -CAM_VERT_MAX end
+            tx = tx + dir.x * FWD_SPEED * speedScale * fwd
+            ty = ty + dir.y * FWD_SPEED * speedScale * fwd
+            local camV = dir.z * FWD_SPEED * speedScale * fwd
+            if camV > CAM_VERT_MAX * speedScale then camV = CAM_VERT_MAX * speedScale end
+            if camV < -CAM_VERT_MAX * speedScale then camV = -CAM_VERT_MAX * speedScale end
             tz = tz + camV
         end
     end
 
     -- Strafe is horizontal only: cos/sin of yaw, no pitch component.
     if strafe ~= 0 then
-        tx = tx + math.cos(rz) * STRAFE_SPEED * strafe
-        ty = ty + math.sin(rz) * STRAFE_SPEED * strafe
+        tx = tx + math.cos(rz) * STRAFE_SPEED * speedScale * strafe
+        ty = ty + math.sin(rz) * STRAFE_SPEED * speedScale * strafe
     end
 
     -- Explicit vertical keys belong to noclip only. Naruto has no vertical
     -- input at all; its altitude is the terrain-following band below.
     if not naruto and vertical ~= 0 then
-        tz = tz + EXPLICIT_VERT * vertical
+        tz = tz + EXPLICIT_VERT * speedScale * vertical
+    end
+
+    -- Undetect hover. A zero-velocity hover with collision off is a valid
+    -- WaveShield noclip state; a small horizontal circle keeps the observed
+    -- speed non-zero while the altitude stays fixed. Detect has no dither.
+    if not naruto and not detect and fwd == 0 and strafe == 0 and vertical == 0 then
+        local phase = (now % HOVER_PERIOD_MS) / HOVER_PERIOD_MS * math.pi * 2.0
+        tx = math.cos(phase) * HOVER_DITHER
+        ty = math.sin(phase) * HOVER_DITHER
     end
 
     local targetSpeed = math.sqrt(tx * tx + ty * ty + tz * tz)
-    if targetSpeed > SPEED_CAP then
-        local scale = SPEED_CAP / targetSpeed
+    if targetSpeed > speedCap then
+        local scale = speedCap / targetSpeed
         tx, ty, tz = tx * scale, ty * scale, tz * scale
     end
 
@@ -32283,7 +31739,7 @@ function N.tick(now)
     -- including diagonals. A no-key tick decelerates toward zero.
     local dx, dy, dz = tx - N.vx, ty - N.vy, tz - N.vz
     local delta = math.sqrt(dx * dx + dy * dy + dz * dz)
-    local step = ACCEL * dt
+    local step = ACCEL * speedScale * dt
     if delta > step and delta > 0.0 then
         local scale = step / delta
         dx, dy, dz = dx * scale, dy * scale, dz * scale
@@ -32353,8 +31809,8 @@ function N.tick(now)
     end
 
     local speed = math.sqrt(N.vx * N.vx + N.vy * N.vy + N.vz * N.vz)
-    if speed > SPEED_CAP then
-        local scale = SPEED_CAP / speed
+    if speed > speedCap then
+        local scale = speedCap / speed
         N.vx, N.vy, N.vz = N.vx * scale, N.vy * scale, N.vz * scale
     end
 
@@ -32362,22 +31818,26 @@ function N.tick(now)
     -- frame, but Sprint, a slope or an external push can add between ticks.
     -- O.Ctx already samples GetEntitySpeed every 50 ms; the native read is only
     -- the fallback. Above the safe band, shed our contribution so the next
-    -- physics sample drops back under the teleport distance with margin.
-    local observed = 0.0
-    if O.Ctx and type(O.Ctx.speed) == "number" then
-        observed = O.Ctx.speed
-    else
-        local okS, s = pcall(GetEntitySpeed, ped)
-        if okS and type(s) == "number" then observed = s end
-    end
-    if observed > SPEED_SAFE then
-        local scale = SPEED_SAFE / observed
-        N.vx, N.vy, N.vz = N.vx * scale, N.vy * scale, N.vz * scale
+    -- physics sample drops back under the teleport distance with margin. Detect
+    -- deliberately exceeds this band.
+    if not detect then
+        local observed = 0.0
+        if O.Ctx and type(O.Ctx.speed) == "number" then
+            observed = O.Ctx.speed
+        else
+            local okS, s = pcall(GetEntitySpeed, ped)
+            if okS and type(s) == "number" then observed = s end
+        end
+        if observed > SPEED_SAFE then
+            local scale = SPEED_SAFE / observed
+            N.vx, N.vy, N.vz = N.vx * scale, N.vy * scale, N.vz * scale
+        end
     end
 
     -- The guard's actorLoop caches isEntityInAir/isPedFalling for 1000 ms.
-    -- Keep the first 1200 ms below its 14.0 m/s on-foot ceiling.
-    if now < N.warmupUntil then
+    -- Keep the first 1200 ms below its 14.0 m/s on-foot ceiling. Detect skips
+    -- the warmup because it is already outside the safe profile.
+    if not detect and now < N.warmupUntil then
         local warm = math.sqrt(N.vx * N.vx + N.vy * N.vy + N.vz * N.vz)
         if warm > WARMUP_SPEED then
             local scale = WARMUP_SPEED / warm
@@ -32400,6 +31860,7 @@ function N.tick(now)
         -- A ragdoll reset can restore gravity/ragdoll/collision flags; re-assert
         -- them immediately instead of waiting for the 250 ms refresh.
         pcall(SetPedGravity, ped, false)
+        pcall(SetEntityHasGravity, ped, false)
         pcall(SetPedCanRagdollFromPlayerImpact, ped, false)
         pcall(SetPedRagdollOnCollision, ped, false)
         pcall(SetEntityCollision, ped, false, false)
@@ -32464,7 +31925,7 @@ O.every("airnoclip", 30, N.tick, 0)
 
 return N
 
-end)(O,S,B)
+end)(O,B)
 
 -- ---------------------------------------------------------------------------
 -- PART: 17_lockplayer.lua
@@ -39135,17 +38596,23 @@ end
 -- PLAYER > MOVEMENT > NARUTO RUN / NO CLIP
 --
 -- Two rows over one module (src/16_air_noclip.lua). Both keep the verified
--- freefall pose, the 28 m/s velocity profile, the 1.2 s warmup and the
--- 423/falling/in-air read cover. They differ only in vertical policy:
+-- freefall pose, the 423/falling/in-air read cover and the 1.2 s warmup for
+-- the undetect profile. They differ in vertical policy and speed:
 --   Naruto Run  horizontal only, no pitch and no Space/Ctrl lift, rides a low
 --               clearance band so it never lands and never rolls.
---   No Clip     full 3D steering with a hard airborne floor, so it never
---               reaches the ground and keeps the fall reads alive.
+--   No Clip     full 3D steering with a hard airborne floor and a live
+--               Undetect/Detect selector: Undetect keeps the 28 m/s profile
+--               with a tiny hover dither; Detect uses 90 m/s and is expected
+--               to trip the WaveShield speed/teleport ceilings.
 -- The rows are rebuilt on every load, so a stale copy cannot survive a reload.
 -- ---------------------------------------------------------------------------
 local function installMovement()
     local category = findCategory("Player")
     if not category then return false end
+
+    local previousNoClip = findItem("Player", "Movement", "No Clip")
+    local noclipSelected = previousNoClip and tonumber(previousNoClip.selected) or 1
+    if noclipSelected < 1 or noclipSelected > 2 then noclipSelected = 1 end
 
     category.tabs = category.tabs or {}
     for i = #category.tabs, 1, -1 do
@@ -39197,8 +38664,10 @@ local function installMovement()
 
     noclip = {
         name = "No Clip",
-        type = "toggle",
+        type = "toggle_selector",
         value = false,
+        options = { "Undetect", "Detect" },
+        selected = noclipSelected,
         onClick = function(value)
             if value then
                 local active = N.arm("noclip")
@@ -40462,18 +39931,6 @@ local function installVehicleSpoof()
             }
         end
     end
-
-    items[#items + 1] = {
-        name = "Hook Assist",
-        type = "toggle",
-        value = VS.hookAssist == true,
-        onClick = function(value)
-            VS.setHookAssist(value == true)
-            local row = Menu.__vgd_vehicleHookAssistRow
-            if type(row) == "table" then row.value = VS.hookAssist == true end
-        end,
-    }
-    Menu.__vgd_vehicleHookAssistRow = items[#items]
 
     items[#items + 1] = {
         name = "Remove Spoof",
