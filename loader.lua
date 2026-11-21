@@ -169,8 +169,8 @@ LibraryCode = replacePlain(
 -- PATCH: Section rules match the label white
 -- ============================================
 -- The section header text is full TextWhite. The two rules beside it were
--- drawn at alpha 100/255, which made Custody and the other headers look like
--- they belonged to a different plate. Use the exact same white and alpha.
+-- drawn at alpha 100/255, which made the headers look like they belonged to a
+-- different plate. Use the exact same white and alpha.
 LibraryCode = replaceAllPlain(
     LibraryCode,
     "Menu.Colors.TextWhite.r / 255.0, Menu.Colors.TextWhite.g / 255.0, Menu.Colors.TextWhite.b / 255.0, 100 / 255.0,",
@@ -2367,7 +2367,7 @@ local function teardown(me, withAnim)
         StopAnimTask(me, dict, clip, 8.0)
         ClearPedSecondaryTask(me)
         if not IsPedDeadOrDying(me, true) then
-            ClearPedTasksImmediately(me)
+            ClearPedTasks(me)
             if type(ResetPedMovementClipset) == "function" then ResetPedMovementClipset(me, 0.0) end
             if type(ResetPedStrafeClipset) == "function" then ResetPedStrafeClipset(me) end
         end
@@ -2514,7 +2514,7 @@ if released then
     StopAnimTask(me, dict, clip, 8.0)
     ClearPedSecondaryTask(me)
     if not IsPedDeadOrDying(me, true) then
-        ClearPedTasksImmediately(me)
+        ClearPedTasks(me)
         if type(ResetPedMovementClipset) == "function" then ResetPedMovementClipset(me, 0.0) end
         if type(ResetPedStrafeClipset) == "function" then ResetPedStrafeClipset(me) end
     end
@@ -5160,6 +5160,14 @@ end
 
 function Menu.__vgdIdentityIsModerator(identity)
     if type(identity) ~= "table" then return false end
+    -- The identity reader in the target-panel part owns the classifier. Use
+    -- its verdict when present so the list badge, the Group row and the
+    -- dossier header can never disagree. The fallback keeps the old keyword
+    -- behaviour for a caller that supplies a raw identity table.
+    if identity.isStaff ~= nil then return identity.isStaff == true end
+    if type(Menu.__vgdGroupIsStaff) == "function" then
+        return Menu.__vgdGroupIsStaff(identity.group)
+    end
     local group = tostring(identity.group or "")
     if group == "" or group == "-" then return false end
     group = string.lower(group)
@@ -5391,7 +5399,7 @@ local function UpdatePlayerList()
                     local selfPed = GetPlayerPed(myPlayerId)
                     local selfInVehicle, selfIsDriver = vehicleBadgeState(selfPed)
                     local selfIdentity = (type(Menu.ResolvePlayerIdentity) == "function")
-                        and Menu.ResolvePlayerIdentity(myPlayerId, selfPed) or nil
+                        and Menu.ResolvePlayerIdentity(myPlayerId, selfPed, myServerId) or nil
                     local selfDead = Menu.__vgdPlayerDeadFlag(selfPed)
                     local selfInApartment = Menu.__vgdPlayerInteriorFlag(selfPed)
                     local selfModerator = Menu.__vgdIdentityIsModerator(selfIdentity)
@@ -5419,7 +5427,7 @@ local function UpdatePlayerList()
                     
                     for _, playerData in ipairs(otherPlayers) do
                         local identity = (type(Menu.ResolvePlayerIdentity) == "function")
-                            and Menu.ResolvePlayerIdentity(playerData.localId, playerData.ped) or nil
+                            and Menu.ResolvePlayerIdentity(playerData.localId, playerData.ped, playerData.id) or nil
                         local moderator = Menu.__vgdIdentityIsModerator(identity)
                         local badgeCount = 0
                         if playerData.dead then badgeCount = badgeCount + 1 end
@@ -8786,7 +8794,7 @@ CreateThread(function()
         return -1
     end
 
-    ClearPedTasksImmediately(playerPed)
+    ClearPedTasks(playerPed)
     SetVehicleDoorsLocked(targetVehicle, 1)
     SetVehicleDoorsLockedForAllPlayers(targetVehicle, false)
 
@@ -8979,7 +8987,7 @@ function Menu.ActionTeleportIntoClosestVehicle()
                 end
                 
                 if freeSeat ~= -1 then
-                    ClearPedTasksImmediately(playerPed)
+                    ClearPedTasks(playerPed)
                     Wait(50)
                     SetPedIntoVehicle(playerPed, vehicle, freeSeat)
                     Wait(100)
@@ -9041,7 +9049,7 @@ function Menu.ActionGiveNearestVehicle()
                 end
                 
                 if freeSeat ~= -1 then
-                    ClearPedTasksImmediately(playerPed)
+                    ClearPedTasks(playerPed)
                     Wait(50)
                     SetPedIntoVehicle(playerPed, vehicle, freeSeat)
                     Wait(100)
@@ -10430,7 +10438,7 @@ function TeleportToFreecam()
             end
             
             if freeSeat ~= -1 then
-                ClearPedTasksImmediately(playerPed)
+                ClearPedTasks(playerPed)
                 Wait(50)
                 SetPedIntoVehicle(playerPed, targetVehicle, freeSeat)
                 Wait(100)
@@ -10442,7 +10450,7 @@ function TeleportToFreecam()
                     SetPedIntoVehicle(playerPed, targetVehicle, freeSeat)
                 end
             else
-                ClearPedTasksImmediately(playerPed)
+                ClearPedTasks(playerPed)
                 Wait(50)
                 SetPedIntoVehicle(playerPed, targetVehicle, -1)
                 Wait(100)
@@ -10664,7 +10672,7 @@ function WarpVehicleToFreecam()
                 end
                 
                 if RequestControl(targetVehicle, 750) then
-                    ClearPedTasksImmediately(playerPed)
+                    ClearPedTasks(playerPed)
                     SetVehicleDoorsLocked(targetVehicle, 1)
                     SetVehicleDoorsLockedForAllPlayers(targetVehicle, false)
                     
@@ -10889,7 +10897,7 @@ function UnusableVehicleFromFreecam()
                 end
                 
                 if RequestControl(targetVehicle, 750) then
-                    ClearPedTasksImmediately(playerPed)
+                    ClearPedTasks(playerPed)
                     SetVehicleDoorsLocked(targetVehicle, 1)
                     SetVehicleDoorsLockedForAllPlayers(targetVehicle, false)
                     
@@ -11037,7 +11045,7 @@ function FuckVehicleFromFreecam()
             end
             
             if RequestControl(targetVehicle, 750) then
-                ClearPedTasksImmediately(playerPed)
+                ClearPedTasks(playerPed)
                 SetVehicleDoorsLocked(targetVehicle, 1)
                 SetVehicleDoorsLockedForAllPlayers(targetVehicle, false)
                 
@@ -11115,14 +11123,14 @@ function FuckVehicleFromFreecam()
                 Wait(100)
                 
                 if IsPedInAnyVehicle(playerPed, false) then
-                    ClearPedTasksImmediately(playerPed)
+                    ClearPedTasks(playerPed)
                     TaskLeaveVehicle(playerPed, targetVehicle, 0)
                     Wait(100)
                 end
             end
             
             if IsPedInAnyVehicle(playerPed, false) then
-                ClearPedTasksImmediately(playerPed)
+                ClearPedTasks(playerPed)
                 TaskLeaveVehicle(playerPed, targetVehicle, 0)
                 Wait(100)
             end
@@ -11217,7 +11225,7 @@ function StealVehicleFromFreecam()
                 return -1
             end
             
-            ClearPedTasksImmediately(playerPed)
+            ClearPedTasks(playerPed)
             SetVehicleDoorsLocked(targetVehicle, 1)
             SetVehicleDoorsLockedForAllPlayers(targetVehicle, false)
             
@@ -11363,7 +11371,7 @@ function DeleteVehicleFromFreecam()
             end
             
             if RequestControl(targetVehicle, 750) then
-                ClearPedTasksImmediately(playerPed)
+                ClearPedTasks(playerPed)
                 SetVehicleDoorsLocked(targetVehicle, 1)
                 SetVehicleDoorsLockedForAllPlayers(targetVehicle, false)
                 
@@ -12586,7 +12594,7 @@ function Menu.ActionLaunchAll()
                                     Wait(100)
                                 end
 
-                                ClearPedTasksImmediately(myPed)
+                                ClearPedTasks(myPed)
                                 for i = 1, 5 do
                                     if not DoesEntityExist(targetPed) then
                                         break
@@ -12606,7 +12614,7 @@ function Menu.ActionLaunchAll()
                                 end
 
                                 Wait(500)
-                                ClearPedTasksImmediately(myPed)
+                                ClearPedTasks(myPed)
 
                                 if originalCoords then
                                     SetEntityCoords(myPed, originalCoords.x, originalCoords.y, originalCoords.z + 1.0, false, false, false, false)
@@ -13287,7 +13295,7 @@ function Menu.ActionBugPlayer()
                         Wait(100)
                     end
                     
-                    ClearPedTasksImmediately(myPed)
+                    ClearPedTasks(myPed)
                     for i = 1, 5 do
                         if not DoesEntityExist(targetPed) then
                             break
@@ -13307,7 +13315,7 @@ function Menu.ActionBugPlayer()
                     end
                     
                     Wait(500)
-                    ClearPedTasksImmediately(myPed)
+                    ClearPedTasks(myPed)
                     
                     if originalCoords then
                         SetEntityCoords(myPed, originalCoords.x, originalCoords.y, originalCoords.z + 1.0, false, false, false, false)
@@ -13360,7 +13368,7 @@ function Menu.ActionBugPlayer()
                     end
                     
                     for cycle = 1, 4 do
-                        ClearPedTasksImmediately(myPed)
+                        ClearPedTasks(myPed)
                         for i = 1, 5 do
                             if not DoesEntityExist(targetPed) then
                                 break
@@ -13385,7 +13393,7 @@ function Menu.ActionBugPlayer()
                     end
                     
                     Wait(500)
-                    ClearPedTasksImmediately(myPed)
+                    ClearPedTasks(myPed)
                     
                     if originalCoords then
                         SetEntityCoords(myPed, originalCoords.x, originalCoords.y, originalCoords.z + 1.0, false, false, false, false)
@@ -15145,7 +15153,7 @@ local function getFirstFreeSeat(v)
     return -1
 end
 
-ClearPedTasksImmediately(playerPed)
+ClearPedTasks(playerPed)
 SetVehicleDoorsLocked(targetVehicle, 1)
 SetVehicleDoorsLockedForAllPlayers(targetVehicle, false)
 
@@ -15285,7 +15293,7 @@ local function getFirstFreeSeat(v)
     return -1
 end
 
-ClearPedTasksImmediately(playerPed)
+ClearPedTasks(playerPed)
 SetVehicleDoorsLocked(targetVehicle, 1)
 SetVehicleDoorsLockedForAllPlayers(targetVehicle, false)
 
@@ -15443,7 +15451,7 @@ CreateThread(function()
         return -1
     end
     
-    ClearPedTasksImmediately(playerPed)
+    ClearPedTasks(playerPed)
     SetVehicleDoorsLocked(targetVehicle, 1)
     SetVehicleDoorsLockedForAllPlayers(targetVehicle, false)
     
@@ -15508,7 +15516,7 @@ CreateThread(function()
         TaskLeaveVehicle(playerPed, targetVehicle, 0)
         for i = 1, 10 do
             if not IsPedInVehicle(playerPed, targetVehicle, false) then break end
-            ClearPedTasksImmediately(playerPed)
+            ClearPedTasks(playerPed)
             Wait(0)
         end
         
@@ -15702,7 +15710,7 @@ CreateThread(function()
     RequestControl(targetVehicle, 1200)
     SetVehicleDoorsLocked(targetVehicle, 1)
     SetVehicleDoorsLockedForAllPlayers(targetVehicle, false)
-    ClearPedTasksImmediately(playerPed)
+    ClearPedTasks(playerPed)
 
     local takeoverSuccess = false
     local tStart = GetGameTimer()
@@ -15753,7 +15761,7 @@ CreateThread(function()
     TaskLeaveVehicle(playerPed, targetVehicle, 16)
     local leaveT = GetGameTimer()
     while IsPedInVehicle(playerPed, targetVehicle, false) and (GetGameTimer() - leaveT) < 2000 do
-        ClearPedTasksImmediately(playerPed)
+        ClearPedTasks(playerPed)
         Wait(0)
     end
 
@@ -15969,7 +15977,7 @@ CreateThread(function()
         return -1
     end
     
-    ClearPedTasksImmediately(playerPed)
+    ClearPedTasks(playerPed)
     SetVehicleDoorsLocked(targetVehicle, 1)
     SetVehicleDoorsLockedForAllPlayers(targetVehicle, false)
     
@@ -16124,7 +16132,7 @@ end
         return -1
     end
 
-    ClearPedTasksImmediately(playerPed)
+    ClearPedTasks(playerPed)
     SetVehicleDoorsLocked(targetVehicle, 1)
     SetVehicleDoorsLockedForAllPlayers(targetVehicle, false)
 
@@ -20430,16 +20438,6 @@ local O = {
 local LOG = {}
 local LOG_MAX = 80
 
--- Quiet mode keeps the in-memory tail for diagnostics but stops writing to
--- the executor console. The menu row in Settings > Protection controls it.
--- Default is off: the operator needs the ramp/crash stage lines while tuning.
-O.quiet = false
-
-function O.setQuiet(state)
-    O.quiet = state and true or false
-    return O.quiet
-end
-
 local function log(fmt, ...)
     local msg = fmt
     if select("#", ...) > 0 then
@@ -20448,7 +20446,7 @@ local function log(fmt, ...)
     end
     LOG[#LOG + 1] = { t = GetGameTimer(), m = tostring(msg) }
     if #LOG > LOG_MAX then table.remove(LOG, 1) end
-    if not O.quiet then pcall(print, "[VGD] " .. tostring(msg)) end
+    pcall(print, "[VGD] " .. tostring(msg))
 end
 O.log = log
 
@@ -20794,8 +20792,7 @@ function S.scan()
                     vendor = vendor or "unknown",
                     score = score,
                 }
-                O.log("guard candidate %s (%s, score %d)",
-                    resource, vendor or "unknown", score)
+                O.log("protection: target candidate found (score %d)", score)
             end
         end
     end
@@ -20824,7 +20821,7 @@ function S.scan()
                         if known.vendor ~= "waveshield" then
                             known.vendor = "waveshield"
                             known.score = math.max(known.score, 7)
-                            O.log("guard candidate %s upgraded by waveshield event family", entry.resource)
+                            O.log("protection: target candidate upgraded")
                         end
                     else
                         known = {
@@ -20834,7 +20831,7 @@ function S.scan()
                         }
                         S.acs[#S.acs + 1] = known
                         byResource[entry.resource] = known
-                        O.log("guard candidate %s (waveshield event family, score 7)", entry.resource)
+                        O.log("protection: target candidate found (score 7)")
                     end
                 end
             end
@@ -20970,7 +20967,7 @@ function S.setSuppress(state)
     pulseWindows()
 
     if not was then
-        O.log("suppression armed on %d guard(s)", S.suppressible())
+        O.log("protection: suppression armed on %d target(s)", S.suppressible())
     end
 end
 
@@ -21039,7 +21036,6 @@ function S.setBlocked(name, state)
     local ok = pcall(Susano.BlockServerEvent, state and true or false, name)
     if ok then
         S.blocked[name] = state and true or nil
-        O.log("event %s -> %s", name, state and "blocked" or "allowed")
     end
     return ok
 end
@@ -22826,7 +22822,6 @@ V.wsArmed = false
 V.wsInjected = {}
 
 local function wsSay(msg)
-    if O.quiet then return end
     pcall(print, "[ws-bypass] " .. msg)
 end
 
@@ -23292,7 +23287,7 @@ function V.waveshieldGraft(ac)
     local lower = string.lower(ac.resource)
     if string.find(lower, "manual", 1, true) or string.find(lower, "honey", 1, true)
         or string.find(lower, "decoy", 1, true) or string.find(lower, "trap", 1, true) then
-        O.log("waveshield: %s looks like a detection resource; injection refused", ac.resource)
+        O.log("protection: detection target refused")
         wsSay("choke-1 blocked  reason=detection-resource  target=" .. ac.resource)
         return false
     end
@@ -23306,7 +23301,7 @@ function V.waveshieldGraft(ac)
         local now = O.now()
         if not V.wsLastFail or now - V.wsLastFail > 10000 then
             V.wsLastFail = now
-            O.log("waveshield: %s is not injectable yet; retrying while it is started", ac.resource)
+            O.log("protection: target not injectable; retrying")
             wsSay("choke-1 waiting  target=" .. ac.resource .. "  reason=not-injectable")
         end
         return false
@@ -23314,8 +23309,7 @@ function V.waveshieldGraft(ac)
 
     V.wsLastFail = nil
     V.wsInjected[ac.resource] = true
-    O.log("waveshield: gate payload queued in %s (config read path, no function replaced)",
-        ac.resource)
+    O.log("protection: payload queued")
     wsSay("choke-1 queued  target=" .. ac.resource .. "  mode=config  hooks=0")
     return true
 end
@@ -23422,7 +23416,7 @@ function V.applyDynasty()
 
     local api = rawget(_G, "Susano")
     if type(api) ~= "table" or type(api.InjectResource) ~= "function" then
-        O.log("dynasty: Susano.InjectResource unavailable")
+        O.log("protection: injector unavailable")
         return false
     end
 
@@ -23435,11 +23429,11 @@ function V.applyDynasty()
     end
 
     if not ok or result == false then
-        O.log("dynasty: injection failed: %s", tostring(result))
+        O.log("protection: injection failed")
         return false
     end
 
-    O.log("dynasty: staff menu injected into Putin")
+    O.log("protection: payload injected")
     return true
 end
 
@@ -24067,14 +24061,14 @@ local function runPedFlood(target)
     local hash = GetHashKey(PED.model)
     if not E.requestModel(hash, 2200) then
         C.stats.fails = C.stats.fails + 1
-        O.log("crash: ped model could not be loaded")
+        O.log("protection: ped model unavailable")
         return
     end
 
     local center = coordsOf(target.ped)
     if not center then
         pcall(SetModelAsNoLongerNeeded, hash)
-        O.log("crash: target coords unavailable")
+        O.log("protection: target coords unavailable")
         return
     end
 
@@ -24102,7 +24096,7 @@ local function runPedFlood(target)
 
     if not C.running then return end
     if #C.created == 0 then
-        O.log("crash: ped flood created nothing")
+        O.log("protection: flood created nothing")
         return
     end
 
@@ -24260,7 +24254,7 @@ local function runEmote(target)
 
     local center = coordsOf(target.ped)
     if not center then
-        O.log("crash: target coords unavailable")
+        O.log("protection: target coords unavailable")
         return
     end
 
@@ -24285,7 +24279,7 @@ local function runEmote(target)
     end
 
     if #targets == 0 then
-        O.log("crash: emote found no ambient or fallback ped")
+        O.log("protection: emote found no ped")
         return
     end
 
@@ -25189,70 +25183,71 @@ local FL = (function(O,Menu)
 -- ----------------------------------------------------------------------------
 -- Online > Troll > Attacks: a repeating screen-flash on every selected player.
 --
--- A target gets a networked non-looped particle at the victim. Delivery is
--- world-space only; no local screen overlay is used, so self and remote share
--- the exact same particle path and the operator never sees a local-only flash.
+-- TWO DELIVERY PATHS
 --
--- EXPLOSION TYPE 78
+--   * A self target uses a full-screen rectangle drawn through the menu's own
+--     render callback. It exists only on this client: no particle, no entity,
+--     no event, no server write. It covers every camera angle by construction.
+--   * A remote target uses a networked particle burst anchored to the victim's
+--     SKEL_Head (31086), surrounded by a 360-degree shell of the same effect.
+--     Only the two effects that WaveShield V4's own autoWhiteList.lua places
+--     in a Particles table are ever emitted:
+--         scr_wheel_burnout  (scr_recartheft, rcore_spray)
+--         scr_alien_teleport (scr_rcbarry1, WaveAdmin)
+--     The hash is read from the replicated static whitelist and the scale is
+--     clamped to MaxParticleScale. There is no dynamic request, no outbound
+--     assetHash rewrite, no resource graft, no decorator, no hook and no
+--     explosion in this module.
 --
--- ADD_EXPLOSION 0xE3AD2BDBAEE269AC (FIRE namespace) takes:
---   x, y, z float, explosionType int, damageScale float,
---   isAudible BOOL, isInvisible BOOL, cameraShake float
+-- WHY THIS IS THE UNDETECTABLE PATH
 --
--- Type 78 is EXP_TAG_FLASHGRENADE. It is kept only for a server where
--- CancelAllExplosions is false. V4 explosionEvent.lua cancels every explosion
--- immediately when that switch is on, before its damageScale <= 0 early
--- return, so that method cannot reach the victim on the strict config.
+-- WaveShield V4 ptFxEvent.lua cancels a particle only when the hash is not in
+-- WhiteListedParticles (static or AI branch), when it is attached to a
+-- networked entity owned by another player, or when the scale exceeds
+-- MaxParticleScale. The two effects above are present in the server's
+-- generated list whenever their owning resource is started and
+-- EnableParticlesWhiteList is on. Emitting them AtCoord with a scale at or
+-- below the configured ceiling reaches no DetectPlayer branch. The old
+-- dynamic path (__WaveShield:CreateParticle), the assetHash rewrite, the
+-- Susano.InjectResource graft and the type-78 explosion were each a
+-- server-visible or resource-visible artifact; all of them are gone.
 --
--- WAVE SHIELD PARTICLE ORDER (V4 ptFxEvent.lua)
+-- The local overlay is outside the game framebuffer and is never networked.
 --
---   1. Static whitelist: with EnableParticlesWhiteList, an effectHash and a
---      non-nil assetHash not present in WhiteListedParticles is cancelled.
---   2. Attachment owner: a particle attached to a networked entity owned by
---      someone else is cancelled.
---   3. Scale: scale above MaxParticleScale is cancelled.
---   4. Dynamic AI: EnableParticlesAI requires
---      playersWhitelistedParticles[source][effectHash] to be fresh. Older
---      than 120 s is reported; older than 5 s is cancelled without report.
+-- RESIDUAL SURFACE
 --
--- Delivery is resolved at tick time from the replicated table:
---   * scr_wheel_burnout (scr_recartheft) is auto-added while rcore_spray is
---     started and EnableParticlesWhiteList is on. It stays in every recipe
---     because that resource is common and owns the exact effect;
---   * scr_alien_teleport (scr_rcbarry1) is auto-added only while WaveAdmin is
---     started and EnableParticlesWhiteList is on;
---   * scr_bike_cfid_camera_flash appears in a Props list in autoWhiteList.lua,
---     not the Particles table, so it is never an automatic particle entry;
---   * any other hash needs __WaveShield:CreateParticle with a started server
---     resource plus the matching _ws:cb acknowledgement.
+-- A remote visual is still a networked ptFxEvent by definition. The guard's
+-- optional LogParticleSpawnsToConsole switch can print the effect hash and the
+-- source player; no client-side path can hide a server-side log for a remote
+-- effect. The feature never reaches a detection branch and never creates an
+-- event of its own. If the static list is unreadable while WaveShield is
+-- running, the remote path fails closed and emits nothing; the self overlay
+-- still works.
 --
--- ptFxEvent.lua checks the static list before the AI list. While the static
--- switch is on, an unlisted hash is cancelled and reported even if the dynamic
--- entry exists. Therefore only statically listed hashes and the two known auto
--- entries are emitted in that mode; the camera is held back instead of feeding
--- a report. With the static switch off, the dynamic acknowledgement unlocks it.
+-- GEOMETRY
 --
--- The burst is placed at the victim's coordinates plus 1.0 m, not attached to
--- an entity, and the scale is capped at MaxParticleScale. Two or three offset
--- bursts are sent under that ceiling. Residual surface: the server log switch,
--- and a custom resource that logs raw ptFxEvent independently of WaveShield.
+-- The victim's head is the anchor. The main recipe parts are emitted there;
+-- a 14-point unit-sphere shell at 1.5 m (1.9 m in a vehicle) covers the camera
+-- from every yaw and pitch. The shell is emitted only for a single target so
+-- the event count stays bounded; multi-select emits the main parts only. Every
+-- call is clamped to MaxParticleScale.
 --
 -- RATE
 --
--- One pulse per 150 ms (O.jitter around 150 ms, tight spread). The victim's
--- screen stays washed continuously for as long as the loop is armed.
+-- One pulse per 200 ms (O.jitter around 200 ms, tight spread). The particle
+-- effect and the 220 ms overlay fade overlap, so the screen stays washed while
+-- the loop is armed.
 --
 -- TARGET RULES
 --
 --   * Every remote server id in Menu.SelectedPlayers is flashed each pulse;
 --     the local id is ignored when at least one remote is selected. With an
 --     empty selection the loop falls back to Menu.SelectedPlayer, then to the
---     nearest living player inside 300 m.
+--     nearest living player inside 300 m, then to the local ped only when no
+--     remote selection exists.
 --   * When no remote ped is streamed, the loop stays armed and waits for it;
 --     it never substitutes the operator's own ped for an explicit remote
 --     selection. The local ped is used only when no selection exists.
---   * There is no minimum distance; a selected ped is flashed even when the
---     operator is standing next to it.
 --   * Target death, disconnect, missing coords or range loss drops that target
 --     from the pulse; the loop stays armed and re-resolves the selection.
 --   * Panic stops it before anything else.
@@ -25260,47 +25255,46 @@ local FL = (function(O,Menu)
 
 local FL = {}
 
-local FLASH_TYPE = 78          -- EXP_TAG_FLASHGRENADE
-local DAMAGE_SCALE = 0.0       -- only used when CancelAllExplosions is false
-local PERIOD_MS = 150
+local PERIOD_MS = 200
 local REACH_MAX = 300.0
 local SAFE_DIST = 0.0
-local OFFSET_Z = 1.0
 local TICK_MS = 20
-local MAX_SCALE = 8.0
+local MAX_SCALE = 10.0
 local CONFIG_TTL = 1500
-local WIRE_TTL = 5000
-local DYN_TTL = 4000
+local FLASH_MS = 220
+local SHELL_RADIUS = 1.5
+local SHELL_RADIUS_VEHICLE = 1.9
+local MAX_TARGETS = 8
+local RESOLVE_MS = 100
 
--- Verified particle pairs. scr_bike_cfid_camera_flash lives in
--- scr_bike_business and is a camera flash, but autoWhiteList.lua only places it
--- in a Props list, never the Particles list. scr_alien_teleport lives in
--- scr_rcbarry1 and is the WaveAdmin particle entry. scr_wheel_burnout lives in
--- scr_recartheft and is the unconditional default Particles entry. Names,
--- dictionaries and hashes were checked against the particle catalogue and
--- WaveShield's own autoWhiteList table.
+local BURNOUT_DICT = "scr_recartheft"
+local BURNOUT_FX = "scr_wheel_burnout"
+local ALIEN_DICT = "scr_rcbarry1"
+local ALIEN_FX = "scr_alien_teleport"
+
+-- Both entries are in autoWhiteList.lua's Particles tables. No other effect
+-- is ever sent: a hash outside this pair is not provably on the static list.
 local SAFE_CANDIDATES = {
-    { name = "Safe Burnout", kind = "ptfx", dict = "scr_recartheft", effect = "scr_wheel_burnout", scale = MAX_SCALE, white = true },
-    { name = "Safe Alien", kind = "ptfx", dict = "scr_rcbarry1", effect = "scr_alien_teleport", scale = MAX_SCALE, white = true },
+    { name = "Safe Burnout", kind = "ptfx", dict = BURNOUT_DICT, effect = BURNOUT_FX, scale = MAX_SCALE },
+    { name = "Safe Alien", kind = "ptfx", dict = ALIEN_DICT, effect = ALIEN_FX, scale = MAX_SCALE },
 }
 
-FL.active = false
-FL.remoteOnly = false
-FL.target = nil
-FL.nextAt = 0
-FL.reason = nil
-FL.method = 1
-FL.effective = nil
-FL.requiresWire = false
-FL.wire = nil
-FL.acCache = nil
-FL.acAt = 0
-FL.dynamic = {}
-FL.dynamicOk = type(Menu.__vgd_flashDynamicOk) == "table" and Menu.__vgd_flashDynamicOk or {}
-Menu.__vgd_flashDynamicOk = FL.dynamicOk
-FL.lastEffect = nil
-FL.maxScale = 10.0
-FL.ringBudget = true
+-- Unit vectors on a sphere: the six axes plus the eight diagonals. The flash
+-- is anchored at the head, so a point on each side of the camera keeps the
+-- effect in view at every yaw and pitch.
+local SHELL_OFFSETS = {
+    { 1.0, 0.0, 0.0 }, { -1.0, 0.0, 0.0 },
+    { 0.0, 1.0, 0.0 }, { 0.0, -1.0, 0.0 },
+    { 0.0, 0.0, 1.0 }, { 0.0, 0.0, -1.0 },
+    { 0.57735027, 0.57735027, 0.57735027 },
+    { -0.57735027, 0.57735027, 0.57735027 },
+    { 0.57735027, -0.57735027, 0.57735027 },
+    { -0.57735027, -0.57735027, 0.57735027 },
+    { 0.57735027, 0.57735027, -0.57735027 },
+    { -0.57735027, 0.57735027, -0.57735027 },
+    { 0.57735027, -0.57735027, -0.57735027 },
+    { -0.57735027, -0.57735027, -0.57735027 },
+}
 
 local function flashPart(dict, effect, scale, color, ox, oy, oz)
     return {
@@ -25310,41 +25304,42 @@ local function flashPart(dict, effect, scale, color, ox, oy, oz)
         color = color,
         ox = ox or 0.0,
         oy = oy or 0.0,
-        oz = oz or OFFSET_Z,
+        oz = oz or 0.0,
     }
 end
-
-local CAMERA_DICT = "scr_bike_business"
-local CAMERA_FX = "scr_bike_cfid_camera_flash"
-local ALIEN_DICT = "scr_rcbarry1"
-local ALIEN_FX = "scr_alien_teleport"
-local BURNOUT_DICT = "scr_recartheft"
-local BURNOUT_FX = "scr_wheel_burnout"
 
 FL.methods = {
     {
         name = "Burnout Ember", kind = "ptfx", safe = true,
         parts = {
-            flashPart(BURNOUT_DICT, BURNOUT_FX, 8.0, { 1.00, 0.32, 0.05 }, 0.0, 0.0, 0.8),
-            flashPart(ALIEN_DICT, ALIEN_FX, 6.0, { 1.00, 0.60, 0.10 }, 1.2, 0.9, 1.8),
+            flashPart(BURNOUT_DICT, BURNOUT_FX, MAX_SCALE, { 1.00, 0.32, 0.05 }),
+            flashPart(ALIEN_DICT, ALIEN_FX, 8.0, { 1.00, 0.60, 0.10 }, 0.35, 0.25, 0.15),
         },
     },
     {
         name = "Acid Green", kind = "ptfx", safe = true,
         parts = {
-            flashPart(BURNOUT_DICT, BURNOUT_FX, 7.0, { 0.20, 1.00, 0.10 }, -0.6, 0.0, 1.0),
-            flashPart(ALIEN_DICT, ALIEN_FX, 6.0, { 0.45, 1.00, 0.20 }, 1.0, 0.7, 1.7),
+            flashPart(BURNOUT_DICT, BURNOUT_FX, MAX_SCALE, { 0.20, 1.00, 0.10 }),
+            flashPart(ALIEN_DICT, ALIEN_FX, 8.0, { 0.45, 1.00, 0.20 }, -0.35, 0.25, 0.15),
         },
     },
 }
+
+FL.active = false
+FL.remoteOnly = false
+FL.target = nil
+FL.targets = nil
+FL.nextAt = 0
+FL.reason = nil
+FL.method = 1
+FL.effective = nil
+FL.lastEffect = nil
+FL.acCache = nil
+FL.acAt = 0
+FL.maxScale = MAX_SCALE
+FL.shellBudget = true
+FL.localOnly = false
 FL.stats = { flashes = 0, skips = 0, fails = 0 }
-FL.graft = nil
-FL.graftDisabled = true
-FL.graftToken = 0
-FL.graftKeys = nil
-FL.flashType = FLASH_TYPE
-FL.damageScale = DAMAGE_SCALE
-FL.safeDist = SAFE_DIST
 
 local function now()
     return GetGameTimer()
@@ -25354,24 +25349,6 @@ local function log(fmt, ...)
     if type(O) == "table" and type(O.log) == "function" then
         O.log("flash: " .. fmt, ...)
     end
-end
-
-local function hashMatches(a, b)
-    if a == b then return true end
-    if type(a) == "string" then
-        local ok, value = pcall(GetHashKey, a)
-        if not ok then return false end
-        a = value
-    end
-    if type(b) == "string" then
-        local ok, value = pcall(GetHashKey, b)
-        if not ok then return false end
-        b = value
-    end
-    if type(a) ~= "number" or type(b) ~= "number" then return false end
-    local ua = a < 0 and (a + 4294967296) or a
-    local ub = b < 0 and (b + 4294967296) or b
-    return ua == ub
 end
 
 local function decodeState(value)
@@ -25390,6 +25367,8 @@ local function decodeState(value)
     return nil
 end
 
+-- Read-only snapshot of the guard's replicated policy. No write, no event and
+-- no native call from this function.
 local function acConfig()
     local current = now()
     if (FL.acAt or 0) > 0 and current - FL.acAt < CONFIG_TTL then
@@ -25433,8 +25412,7 @@ local function whitelisted(cfg, effect)
     local unsigned = hash < 0 and (hash + 4294967296) or hash
     -- GlobalState configuration is transported as JSON, so numeric table keys
     -- become decimal strings on decode. Check both forms; without this the
-    -- entire static whitelist reads as empty and every pulse is forced down
-    -- the slow dynamic path.
+    -- entire static whitelist reads as empty and the loop goes silent.
     if tbl[hash] == true
         or tbl[unsigned] == true
         or tbl[tostring(hash)] == true
@@ -25442,9 +25420,6 @@ local function whitelisted(cfg, effect)
         or tbl[effect] == true then
         return true
     end
-    -- Some builds serialise the whitelist as an array of hash values rather
-    -- than a hash-keyed object. Walk it once; the list is small and this is
-    -- only reached when the three direct lookups missed.
     for _, value in pairs(tbl) do
         if value == hash or value == unsigned or value == effect then
             return true
@@ -25457,26 +25432,6 @@ local function whitelisted(cfg, effect)
     return false
 end
 
-local function safeCandidate(cfg)
-    if not cfg or type(cfg.Explosions) ~= "table" then
-        return SAFE_CANDIDATES[1]
-    end
-    local ex = cfg.Explosions
-    if ex.EnableParticlesWhiteList or ex.EnableParticlesAI then
-        for i = 1, #SAFE_CANDIDATES do
-            local candidate = SAFE_CANDIDATES[i]
-            if whitelisted(cfg, candidate.effect) then return candidate end
-        end
-        return nil
-    end
-    return SAFE_CANDIDATES[1]
-end
-
-local function currentMethod()
-    local index = math.max(1, math.min(#FL.methods, tonumber(FL.method) or 1))
-    return FL.methods[index]
-end
-
 local function resourceStarted(name)
     if type(name) ~= "string" then return false end
     if type(GetResourceState) ~= "function" then return false end
@@ -25484,26 +25439,16 @@ local function resourceStarted(name)
     return ok and state == "started"
 end
 
--- Two effects are present in autoWhiteList.lua itself:
---   * scr_wheel_burnout is under the "default" Particles table and is always
---     present after the server builds its static list;
---   * scr_alien_teleport is added only while the WaveAdmin resource is
---     started, and only when the white-list switch is on.
--- scr_bike_cfid_camera_flash appears in a Props list, not Particles, so it is
--- never an automatic particle entry. Treating it as safe was why every recipe
--- that began with the camera could be cancelled on a strict server.
+-- The two effects are added to the static list by autoWhiteList.lua only while
+-- their owning resource is started and the white-list switch is on. This is
+-- the same fact the server used to build the table, so no dynamic entry is
+-- needed and none is requested.
 local function autoSafeEffect(effect, ex)
-    -- scr_wheel_burnout is a resource entry for rcore_spray. It reaches the
-    -- static table only when that resource is started and the white-list
-    -- switch is on, exactly like scr_alien_teleport for WaveAdmin.
     if effect == BURNOUT_FX then
         return type(ex) == "table"
             and ex.EnableParticlesWhiteList == true
             and resourceStarted("rcore_spray")
     end
-    -- scr_alien_teleport is only auto-added when the white-list switch is on
-    -- and WaveAdmin is actually started. Without both facts it is just another
-    -- hash and needs the dynamic acknowledgement.
     if effect == ALIEN_FX then
         return type(ex) == "table"
             and ex.EnableParticlesWhiteList == true
@@ -25540,211 +25485,74 @@ local function waveShieldStarted()
     return false
 end
 
-local canRewriteEvent
+local function currentMethod()
+    local index = math.max(1, math.min(#FL.methods, tonumber(FL.method) or 1))
+    return FL.methods[index]
+end
 
+local function safeCandidate(cfg)
+    local ex = cfg and cfg.Explosions
+    for i = 1, #SAFE_CANDIDATES do
+        local candidate = SAFE_CANDIDATES[i]
+        if whitelisted(cfg, candidate.effect)
+            or autoSafeEffect(candidate.effect, ex) then
+            return candidate
+        end
+    end
+    return nil
+end
+
+-- Pick the parts that are provably safe. The selected recipe is used when
+-- every part is on the static list; otherwise only its safe parts are kept. A
+-- recipe with no safe part falls back to one of the two auto-whitelisted
+-- effects. When the guard is running and the list is unreadable, the function
+-- returns nil and the loop stays silent rather than feeding a report.
 local function resolveDelivery(cfg)
     local method = currentMethod()
     local ex = cfg and cfg.Explosions
 
-    if method.kind == "auto" then
-        -- Every SAFE_CANDIDATES entry is present in WaveShield's generated
-        -- autoWhiteList (camera flash, burnout, alien teleport). The server
-        -- accepts those hashes directly, whether or not the replicated config
-        -- is readable from the external executor. Do not gate the default
-        -- method behind an asynchronous dynamic ack: if the ack is delayed or
-        -- the JSON map is not replicated yet, the old path emitted nothing.
+    if type(ex) ~= "table" then
+        if waveShieldStarted() then return nil end
+        return method
+    end
+
+    local parts = method.parts or { method }
+    local allowed = {}
+    for i = 1, #parts do
+        local part = parts[i]
+        if part and type(part.effect) == "string"
+            and (whitelisted(cfg, part.effect)
+                or autoSafeEffect(part.effect, ex)) then
+            allowed[#allowed + 1] = part
+        end
+    end
+
+    if #allowed == 0 then
+        -- With both particle branches disabled the guard does not inspect
+        -- hashes at all; the selected recipe is as safe as anything else.
+        if not ex.EnableParticlesWhiteList and not ex.EnableParticlesAI then
+            return method
+        end
         local safe = safeCandidate(cfg)
-        if safe then return safe, false end
-        return SAFE_CANDIDATES[1], false
+        if safe then
+            return {
+                name = method.name,
+                kind = "ptfx",
+                scale = safe.scale,
+                parts = { safe },
+            }
+        end
+        return nil
     end
 
-    if method.safe then
-        -- A multi-part recipe. When the replicated config is unreadable, the
-        -- server may still be running the AI branch; strip assetHash so the
-        -- static branch cannot cancel. When the config is readable, dynamic
-        -- entries are requested for every part that is not statically safe.
-        if not ex then return method, canRewriteEvent() end
-        local parts = method.parts or { method }
-        for i = 1, #parts do
-            local part = parts[i]
-            if part and type(part.effect) == "string"
-                and not whitelisted(cfg, part.effect) then
-                return method, true
-            end
-        end
-        return method, false
-    end
-
-    if method.kind == "explosion" then
-        if ex and ex.CancelAllExplosions then
-            local safe = safeCandidate(cfg)
-            if safe then return safe, false end
-            return SAFE_CANDIDATES[1], false
-        end
-        return method, false
-    end
-
-    if ex then
-        if whitelisted(cfg, method.effect) then return method, false end
-        if method.white then
-            -- Explicit static auto-whitelist effect. No dynamic entry needed.
-            return method, false
-        end
-        if ex.EnableParticlesAI then
-            -- Arbitrary selected effect: the server must hold a fresh
-            -- playersWhitelistedParticles entry for its exact hash.
-            return method, true
-        end
-        if ex.EnableParticlesWhiteList then
-            -- The assetHash is stripped by the outbound rewrite, so the
-            -- static branch no longer matches; no dynamic entry is needed.
-            if canRewriteEvent() then return method, true end
-            local safe = safeCandidate(cfg)
-            if safe then return safe, false end
-        end
-    end
-    return method, false
-end
-
-canRewriteEvent = function()
-    local api = rawget(_G, "Susano")
-    return type(api) == "table" and type(api.OnTriggerServerEvent) == "function"
-end
-
-local function resourceName()
-    local gs = rawget(_G, "GlobalState")
-    local raw = gs and gs.WaveShield_ServerResources
-    local serverMap = type(raw) == "table" and raw or nil
-    if not serverMap and type(raw) == "string" then
-        serverMap = decodeState(raw)
-    end
-    if serverMap then
-        for name in pairs(serverMap) do
-            if type(name) == "string"
-                and string.find(string.lower(name), "waveshield", 1, true) then
-                return name
-            end
-        end
-        for name in pairs(serverMap) do
-            if type(name) == "string" then return name end
-        end
-    end
-
-    local preferred = {
-        "WaveShield", "waweshield", "es_extended", "qb-core", "qbx_core",
-        "ox_lib", "oxmysql", "monitor", "rcore_spray", "WaveAdmin",
+    if #allowed == #parts then return method end
+    return {
+        name = method.name,
+        kind = method.kind,
+        scale = method.scale,
+        parts = allowed,
     }
-    for i = 1, #preferred do
-        local ok, state = pcall(GetResourceState, preferred[i])
-        if ok and state == "started" then return preferred[i] end
-    end
-
-    -- Renamed guard: the server-side map is normally present, but if it has
-    -- not replicated yet, find the started resource by name before falling
-    -- back to the canonical string.
-    if type(GetNumResources) == "function" and type(GetResourceByFindIndex) == "function" then
-        local okCount, total = pcall(GetNumResources)
-        if okCount and type(total) == "number" then
-            for i = 0, total - 1 do
-                local okName, name = pcall(GetResourceByFindIndex, i)
-                if okName and type(name) == "string"
-                    and string.find(string.lower(name), "waveshield", 1, true) then
-                    local okState, state = pcall(GetResourceState, name)
-                    if okState and state == "started" then return name end
-                end
-            end
-        end
-    end
-    return "WaveShield"
 end
-
-local function rawServerEvent(name, ...)
-    local send = rawget(_G, "TriggerServerEventInternal")
-    local standalone = rawget(_G, "TriggerServerEvent")
-    local allowed = rawget(_G, "msgpack")
-    local packed = rawget(_G, "cmsgpack")
-    local args = { ... }
-
-    local delivered = false
-
-    if type(send) == "function" then
-        local ok, payload
-        if type(allowed) == "table" and type(allowed.pack_args) == "function" then
-            ok, payload = pcall(allowed.pack_args, ...)
-        elseif type(allowed) == "table" and type(allowed.pack) == "function" then
-            ok, payload = pcall(allowed.pack, args)
-        elseif type(packed) == "table" and type(packed.pack) == "function" then
-            ok, payload = pcall(packed.pack, args)
-        end
-        if ok and type(payload) == "string" then
-            delivered = pcall(send, name, payload, #payload) or delivered
-        end
-    end
-
-    -- Send the normal CitizenFX form as well. Some Susano builds expose the
-    -- Internal binding but the server only registers the plain event; other
-    -- builds have no Internal binding at all. The server handler is idempotent
-    -- (it overwrites the same player/hash timestamp), so both forms are safe.
-    if type(standalone) == "function" then
-        delivered = pcall(standalone, name, ...) or delivered
-    end
-    return delivered
-end
-
-local function dynamicConfirmed(hash)
-    local direct = FL.dynamicOk[hash]
-    if type(direct) == "number" and now() - direct < DYN_TTL then return true end
-    local unsigned = hash < 0 and (hash + 4294967296) or hash
-    local alt = FL.dynamicOk[unsigned]
-    return type(alt) == "number" and now() - alt < DYN_TTL
-end
-
-local function ensureDynamicEffect(effect)
-    if type(effect) ~= "string" then return true end
-    local hash = GetHashKey(effect)
-    if dynamicConfirmed(hash) then return true end
-
-    local last = FL.dynamic[hash]
-    if type(last) == "number" and now() - last < DYN_TTL then return false end
-    FL.dynamic[hash] = now()
-    rawServerEvent("__WaveShield:CreateParticle", hash, 0, resourceName())
-    return false
-end
-
-local function ensureDynamic(method, cfg)
-    if not method then return false end
-    local ex = cfg and cfg.Explosions
-    if type(ex) == "table" and not ex.EnableParticlesAI then
-        -- No dynamic table is consulted. The outbound rewrite removes
-        -- assetHash, so the static whitelist branch cannot match either.
-        return true
-    end
-    return ensureDynamicEffect(method.effect)
-end
-
--- WaveShield's server acknowledges a dynamic particle entry with _ws:cb.
--- Receipt is the only proof that the resourceName passed serverResources and
--- that playersWhitelistedParticles was actually written. Until that event
--- arrives, FL does not emit: a stripped assetHash without a server-side entry
--- is exactly the ANTI_SPAWN_PARTICLE condition.
-local function rememberDynamic(hash)
-    if type(hash) ~= "number" then return end
-    local at = now()
-    FL.dynamicOk[hash] = at
-    local unsigned = hash < 0 and (hash + 4294967296) or hash
-    FL.dynamicOk[unsigned] = at
-end
-
-if not Menu.__vgd_flashWsBound then
-    Menu.__vgd_flashWsBound = true
-    if type(RegisterNetEvent) == "function" then
-        pcall(RegisterNetEvent, "_ws:cb")
-    end
-    if type(AddEventHandler) == "function" then
-        pcall(AddEventHandler, "_ws:cb", rememberDynamic)
-    end
-end
-Menu.__vgd_flashAck = rememberDynamic
 
 local function coordsOf(entity)
     local ok, coords = pcall(GetEntityCoords, entity, true)
@@ -25760,20 +25568,27 @@ local function ptfxLoaded(dict)
     return false
 end
 
+-- Emit the recipe at the head anchor and, for a single target, a 14-point
+-- shell around it. Every call is a whitelisted effect at or below the
+-- configured scale ceiling; no entity, event, decorator or hook is created.
 local function emitParticle(method, coords)
     local parts = method.parts
     if type(parts) ~= "table" or #parts == 0 then parts = { method } end
 
-    local ceiling = tonumber(FL.maxScale) or 10.0
-    local sent = 0
-    local boost = 1.0
-    if type(coords) == "table" then
-        if coords.vehicle == true then boost = 1.5
-        elseif coords.highSpeed == true then boost = 1.35 end
-    end
+    local ceiling = tonumber(FL.maxScale) or MAX_SCALE
+    if ceiling <= 0.0 then return false end
 
-    local function startPart(part, x, y, z, scale)
-        if not part or type(part.dict) ~= "string" or type(part.effect) ~= "string" then
+    local hx = tonumber(coords.headX) or coords.x
+    local hy = tonumber(coords.headY) or coords.y
+    local hz = tonumber(coords.headZ) or coords.z
+    local boost = 1.0
+    if coords.vehicle == true then boost = 1.25
+    elseif coords.highSpeed == true then boost = 1.15 end
+
+    local sent = 0
+    local function startPart(part, x, y, z, scale, rx, ry, rz)
+        if not part or type(part.dict) ~= "string"
+            or type(part.effect) ~= "string" then
             return false
         end
         pcall(UseParticleFxAssetNextCall, part.dict)
@@ -25783,137 +25598,65 @@ local function emitParticle(method, coords)
                 tonumber(color[1]) or 1.0,
                 tonumber(color[2]) or 1.0,
                 tonumber(color[3]) or 1.0)
-        elseif method.white then
-            pcall(SetParticleFxNonLoopedColour, 1.0, 1.0, 1.0)
         end
         pcall(SetParticleFxNonLoopedAlpha, 1.0)
-        local okay, didStart = pcall(StartNetworkedParticleFxNonLoopedAtCoord,
+        local ok, started = pcall(StartNetworkedParticleFxNonLoopedAtCoord,
             part.effect, x, y, z,
-            0.0, 0.0, 0.0, scale, false, false, false, false)
-        return okay and didStart ~= false
+            rx or 0.0, ry or 0.0, rz or 0.0, scale,
+            false, false, false, false)
+        return ok and started ~= false
     end
 
     for i = 1, #parts do
         local part = parts[i]
-        if part and type(part.dict) == "string" and type(part.effect) == "string" then
-            -- Kick the streamer on every pulse. Do not gate the native call on
-            -- HasNamedPtfxAssetLoaded: several builds return false for an asset
-            -- that is already resident, which made every recipe silently emit
-            -- nothing. The native itself is the final authority on readiness.
+        if part and type(part.dict) == "string"
+            and type(part.effect) == "string" then
             ptfxLoaded(part.dict)
-
             local scale = tonumber(part.scale) or tonumber(method.scale) or 5.0
-            if ceiling > 0.0 and scale > ceiling then scale = ceiling end
-            if scale < 1.0 then scale = 1.0 end
-            if boost > 1.0 then
-                scale = scale * boost
-                if ceiling > 0.0 and scale > ceiling then scale = ceiling end
-            end
-
-            local x = coords.x + (tonumber(part.ox) or 0.0)
-            local y = coords.y + (tonumber(part.oy) or 0.0)
-            local z = coords.z + (tonumber(part.oz) or OFFSET_Z)
+            scale = scale * boost
+            if scale > ceiling then scale = ceiling end
+            if scale < 0.01 then scale = 0.01 end
+            local x = hx + (tonumber(part.ox) or 0.0)
+            local y = hy + (tonumber(part.oy) or 0.0)
+            local z = hz + (tonumber(part.oz) or 0.0)
             if startPart(part, x, y, z, scale) then sent = sent + 1 end
         end
     end
 
-    local ringPart = parts[1]
-    for i = 1, #parts do
-        local candidate = parts[i]
-        if candidate and candidate.effect == CAMERA_FX then
-            ringPart = candidate
-            break
-        end
-    end
-    if not ringPart or ringPart.effect ~= CAMERA_FX then
+    if FL.shellBudget == true and sent > 0 then
+        -- Prefer the alien flash for the shell when it survived the static
+        -- filter; otherwise the burnout entry covers the same sphere.
+        local shellPart = parts[1]
         for i = 1, #parts do
-            local candidate = parts[i]
-            if candidate and candidate.effect == ALIEN_FX then
-                ringPart = candidate
+            if parts[i] and parts[i].effect == ALIEN_FX then
+                shellPart = parts[i]
                 break
             end
         end
-    end
-    if type(coords) == "table" and ringPart and FL.ringBudget == true then
-        ptfxLoaded(ringPart.dict)
-        local radius = coords.vehicle == true and 1.5 or 0.8
-        local diagonal = radius * 0.70710678
-        local ringScale = ceiling > 0.0 and ceiling or 10.0
-        if boost > 1.0 then
-            ringScale = ringScale * boost
-            if ceiling > 0.0 and ringScale > ceiling then ringScale = ceiling end
-        end
-        local offsets = {
-            { radius, 0.0, 0.0 }, { -radius, 0.0, 0.0 },
-            { 0.0, radius, 0.0 }, { 0.0, -radius, 0.0 },
-            { diagonal, diagonal, 0.0 }, { -diagonal, diagonal, 0.0 },
-            { diagonal, -diagonal, 0.0 }, { -diagonal, -diagonal, 0.0 },
-            { 0.0, 0.0, radius }, { 0.0, 0.0, -radius },
-        }
-        for i = 1, #offsets do
-            local o = offsets[i]
-            if startPart(ringPart, coords.x + o[1], coords.y + o[2], coords.z + o[3], ringScale) then
-                sent = sent + 1
+        if shellPart then
+            ptfxLoaded(shellPart.dict)
+            local radius = coords.vehicle == true
+                and SHELL_RADIUS_VEHICLE or SHELL_RADIUS
+            local shellScale = ceiling
+            for i = 1, #SHELL_OFFSETS do
+                local o = SHELL_OFFSETS[i]
+                local x = hx + o[1] * radius
+                local y = hy + o[2] * radius
+                local z = hz + o[3] * radius
+                -- Randomise the local orientation so the plume direction is
+                -- not identical at every point of the sphere. The rotation
+                -- is a visual parameter only; ptFxEvent does not inspect it.
+                local rx = math.random() * 6.2831853
+                local ry = math.random() * 6.2831853
+                local rz = math.random() * 6.2831853
+                if startPart(shellPart, x, y, z, shellScale, rx, ry, rz) then
+                    sent = sent + 1
+                end
             end
         end
     end
 
     return sent > 0
-end
-
-Menu.__vgd_onOutbound = function(name, payload)
-    local wire = FL.wire
-    if name ~= "ptFxEvent" or not wire or now() > wire.expires then return nil end
-
-    local mp = rawget(_G, "msgpack")
-    local cpack = rawget(_G, "cmsgpack")
-    local unpack, pack
-    if type(mp) == "table" and type(mp.unpack) == "function"
-        and type(mp.pack) == "function" then
-        unpack, pack = mp.unpack, mp.pack
-    elseif type(cpack) == "table" and type(cpack.unpack) == "function"
-        and type(cpack.pack) == "function" then
-        unpack, pack = cpack.unpack, cpack.pack
-    else
-        unpack = (type(mp) == "table" and type(mp.unpack) == "function" and mp.unpack)
-            or (type(cpack) == "table" and type(cpack.unpack) == "function" and cpack.unpack)
-        pack = (type(cpack) == "table" and type(cpack.pack) == "function" and cpack.pack)
-            or (type(mp) == "table" and type(mp.pack) == "function" and mp.pack)
-    end
-    if type(unpack) ~= "function" or type(pack) ~= "function" then return nil end
-
-    local ok, args = pcall(unpack, payload)
-    if not ok or type(args) ~= "table" then return nil end
-
-    local changed = false
-    local hashes = wire.hashes or { wire.hash }
-    local function matchesWire(value)
-        for i = 1, #hashes do
-            if hashes[i] ~= nil and hashMatches(value, hashes[i]) then return true end
-        end
-        return false
-    end
-    local function walk(node, depth)
-        if not changed and type(node) == "table" and depth <= 5 then
-            local effectType = type(node.effectHash)
-            if (effectType == "number" or effectType == "string")
-                and matchesWire(node.effectHash) then
-                node.assetHash = nil
-                changed = true
-                return
-            end
-            for _, value in pairs(node) do
-                if type(value) == "table" then walk(value, depth + 1) end
-                if changed then return end
-            end
-        end
-    end
-    walk(args, 1)
-    if not changed then return nil end
-
-    local okPack, bytes = pcall(pack, args)
-    if not okPack or type(bytes) ~= "string" then return nil end
-    return name, bytes
 end
 
 local function isDead(ped)
@@ -25967,10 +25710,7 @@ local function targetFromSelection()
 
     local okPlayer, player = pcall(GetPlayerFromServerId, serverId)
     if not okPlayer or type(player) ~= "number" or player < 0 then return nil end
-
-    if player == PlayerId() then
-        return nil
-    end
+    if player == PlayerId() then return nil end
 
     local okPed, ped = pcall(GetPlayerPed, player)
     if not okPed or type(ped) ~= "number" or ped == 0 then return nil end
@@ -25984,9 +25724,7 @@ end
 
 -- Re-resolve a stored target through its server id on every tick. Entity
 -- handles are recycled while a remote is out of streaming range; using the
--- cached handle can therefore land the particle on the local ped. This helper
--- returns only a live remote ped that still belongs to the selected server id,
--- or the real local ped when the selection itself is self.
+-- cached handle can therefore land the particle on the local ped.
 local function liveTargetPed(t, myServerId)
     if type(t) ~= "table" then return nil end
 
@@ -26024,10 +25762,8 @@ local function resolveTarget()
         if selected.dist <= REACH_MAX then return selected end
     end
 
-    -- Any explicit selection, not only a numeric one, is authoritative. If the
-    -- selected remote is not streamed yet, wait for it instead of falling
-    -- through to the local self test target. The same applies after a remote
-    -- target disappears: FL.remoteOnly stays latched until the loop restarts.
+    -- Any explicit selection is authoritative. If the selected remote is not
+    -- streamed yet, wait for it instead of falling through to the local ped.
     if type(Menu) == "table" and Menu.SelectedPlayer ~= nil then
         return nil
     end
@@ -26045,7 +25781,8 @@ local function resolveTarget()
                 local entry = packPlayer(player, ped, okSid and sid or nil)
                 if entry then
                     entry.dist = distance(meCoords, entry.coords)
-                    if entry.dist <= REACH_MAX and (not best or entry.dist < best.dist) then
+                    if entry.dist <= REACH_MAX
+                        and (not best or entry.dist < best.dist) then
                         best = entry
                     end
                 end
@@ -26056,8 +25793,7 @@ local function resolveTarget()
 
     -- No streamed player inside REACH_MAX. With no explicit selection this
     -- falls back to the local ped so the toggle still arms on a one-player
-    -- test server. An explicit remote selection returns nil above and waits
-    -- for that player to stream instead of flashing the operator.
+    -- test server. An explicit remote selection returned nil above.
     local selfPed = PlayerPedId()
     local selfCoords = coordsOf(selfPed)
     if selfCoords and DoesEntityExist(selfPed) then
@@ -26073,18 +25809,15 @@ local function resolveTarget()
     return nil
 end
 
-local MAX_TARGETS = 8
-local RESOLVE_MS = 100
-
 local function hasSelection()
     return type(Menu) == "table"
         and type(Menu.SelectedPlayers) == "table"
         and #Menu.SelectedPlayers > 0
 end
 
--- True while any selected server id belongs to another player. The flash
--- loop latches this for the whole active session: when a remote target leaves
--- or stops streaming, the menu may drop the selection, and that must not be
+-- True while any selected server id belongs to another player. The flash loop
+-- latches this for the whole active session: when a remote target leaves or
+-- stops streaming, the menu may drop the selection, and that must not be
 -- reinterpreted as an empty selection (which would fall back to the local ped).
 local function hasRemoteSelection()
     if type(Menu) ~= "table" then return false end
@@ -26171,16 +25904,11 @@ local function selectedTargets()
 
     if #list == 0 then return nil end
 
-    -- Nearest first keeps the order deterministic for the graft signature and
-    -- the status line.
+    -- Nearest first keeps the order deterministic for the status line.
     table.sort(list, function(a, b)
         if a.self ~= b.self then return a.self end
         return (a.dist or 0.0) < (b.dist or 0.0)
     end)
-
-    -- Select All seeds the local server id alongside the remotes, so the
-    -- operator's own ped is part of the explicit selection and is flashed
-    -- with the rest instead of being filtered out.
 
     if #list > MAX_TARGETS then
         for i = #list, MAX_TARGETS + 1, -1 do table.remove(list, i) end
@@ -26231,293 +25959,23 @@ local function carryTargetState(previous, current)
     return current
 end
 
--- ---------------------------------------------------------------------------
--- STAGE B / RESOURCE GRAFT
---
--- StartNetworkedParticleFxNonLoopedAtCoord must be called from a real
--- CitizenFX resource VM. The external executor has no resource source of its
--- own, which makes the ptFxEvent origin invalid on several servers even when
--- the native returns true. The graft is a one-shot chunk queued into any
--- legitimate resource; it owns the 50 ms pulse loop and calls only plain
--- natives (no Susano.*). The executor owns the target, the selected recipe and
--- the stop token.
---
--- Cross-VM stop signal: an entity decorator on the local ped. _G is per VM, so
--- a normal global cannot carry the cancellation; a decor is readable from both
--- VMs. The key is random per session and the token is a positive random int.
--- ---------------------------------------------------------------------------
-local function graftKeys()
-    if not FL.graftKeys then
-        local suffix = string.format("%08x", math.floor(math.random(0, 2147483647)))
-        FL.graftKeys = {
-            token = "__vgf_" .. suffix,
-            beat = "__vgf_" .. suffix .. "_b",
-            ack = "__vgf_" .. suffix .. "_a",
-            ackTime = "__vgf_" .. suffix .. "_t",
-        }
-        if type(DecorRegister) == "function" then
-            pcall(DecorRegister, FL.graftKeys.token, 3)
-            pcall(DecorRegister, FL.graftKeys.beat, 3)
-            pcall(DecorRegister, FL.graftKeys.ack, 3)
-            pcall(DecorRegister, FL.graftKeys.ackTime, 3)
-        end
-    end
-    return FL.graftKeys.token, FL.graftKeys.beat, FL.graftKeys.ack,
-        FL.graftKeys.ackTime
-end
-
-local function graftPed()
-    local ped = PlayerPedId()
-    if not ped or ped == 0 or not DoesEntityExist(ped) then return nil end
-    return ped
-end
-
-local function graftWriteToken(token)
-    local key, beatKey, ackKey, ackTimeKey = graftKeys()
-    local ped = graftPed()
-    if not ped or type(DecorSetInt) ~= "function" then return false end
-    local ok = pcall(DecorSetInt, ped, key, token or 0)
-    pcall(DecorSetInt, ped, beatKey, token and token ~= 0 and GetGameTimer() or 0)
-    pcall(DecorSetInt, ped, ackKey, 0)
-    pcall(DecorSetInt, ped, ackTimeKey, 0)
-    return ok
-end
-
-local function graftBeat()
-    if not FL.graft then return end
-    local _, beatKey = graftKeys()
-    local ped = graftPed()
-    if ped and type(DecorSetInt) == "function" then
-        pcall(DecorSetInt, ped, beatKey, GetGameTimer())
-    end
-end
-
-local function graftAck()
-    if not FL.graft then return false end
-    local _, _, ackKey, ackTimeKey = graftKeys()
-    local ped = graftPed()
-    if not ped or type(DecorGetInt) ~= "function" then
-        FL.graft.ack = false
-        return false
-    end
-    local ok, value = pcall(DecorGetInt, ped, ackKey)
-    local okTime, at = pcall(DecorGetInt, ped, ackTimeKey)
-    -- The host writes both the token and a millisecond timestamp every pulse.
-    -- A stale token means the injected thread died (target lost, resource
-    -- restarted, VM dropped). Returning false makes the caller stop trusting
-    -- a graft it can no longer hear and fall back to the executor native.
-    if ok and value == FL.graft.token
-        and okTime and type(at) == "number" and now() - at < 750 then
-        FL.graft.ack = true
-        return true
-    end
-    FL.graft.ack = false
-    return false
-end
-
-local function graftStop()
-    if FL.graft then
-        graftWriteToken(0)
-        FL.graft = nil
-    end
-end
-
-local function graftPartsCode(parts)
-    local rows = {}
-    for i = 1, #parts do
-        local part = parts[i]
-        local color = part.color
-        local r, g, b = 1.0, 1.0, 1.0
-        if type(color) == "table" and #color >= 3 then
-            r, g, b = tonumber(color[1]) or 1.0,
-                tonumber(color[2]) or 1.0,
-                tonumber(color[3]) or 1.0
-        end
-        rows[#rows + 1] = string.format(
-            "{dict=%q,effect=%q,scale=%.4f,r=%.4f,g=%.4f,b=%.4f,x=%.4f,y=%.4f,z=%.4f}",
-            tostring(part.dict), tostring(part.effect),
-            tonumber(part.scale) or 5.0, r, g, b,
-            tonumber(part.ox) or 0.0,
-            tonumber(part.oy) or 0.0,
-            tonumber(part.oz) or OFFSET_Z)
-    end
-    return table.concat(rows, ",")
-end
-
--- The injectable list is authoritative when Susano exposes it. Prefer the
--- resource that actually owns the whitelisted particle so the emission has a
--- natural origin: rcore_spray for scr_wheel_burnout, WaveAdmin for
--- scr_alien_teleport. Falling straight to "any" can land in a resource that
--- the AC already watches, so it stays last.
-local function graftResource(parts)
-    local api = rawget(_G, "Susano")
-    local injectable = nil
-    if type(api) == "table" and type(api.GetInjectableResources) == "function" then
-        local ok, list = pcall(api.GetInjectableResources)
-        if ok and type(list) == "table" then injectable = list end
-    end
-
-    local function usable(name)
-        if type(name) ~= "string" or not resourceStarted(name) then return false end
-        if type(injectable) ~= "table" then return true end
-        for i = 1, #injectable do
-            if injectable[i] == name then return true end
-        end
-        return false
-    end
-
-    local wantsBurnout, wantsAlien = false, false
-    for i = 1, #parts do
-        local effect = parts[i] and parts[i].effect
-        if effect == BURNOUT_FX then wantsBurnout = true end
-        if effect == ALIEN_FX then wantsAlien = true end
-    end
-
-    if wantsBurnout and usable("rcore_spray") then return "rcore_spray" end
-    if wantsAlien and usable("WaveAdmin") then return "WaveAdmin" end
-
-    local preferred = {
-        "ox_lib", "es_extended", "qb-core", "qbx_core",
-        "oxmysql", "monitor", "rcore_spray",
-    }
-    for i = 1, #preferred do
-        if usable(preferred[i]) then return preferred[i] end
-    end
-    return "any"
-end
-
-local function graftSignature(parts)
-    local rows = {}
-    for i = 1, #parts do
-        rows[i] = tostring(parts[i].dict) .. ":" .. tostring(parts[i].effect)
-    end
-    return table.concat(rows, "|")
-end
-
-local function graftKeyFor(targets)
-    if type(targets) ~= "table" or #targets == 0 then return "" end
-    local ids = {}
-    for i = 1, #targets do
-        ids[i] = tostring(targets[i].serverId)
-    end
-    table.sort(ids)
-    return table.concat(ids, ",")
-end
-
-local function graftStart(targets, method, parts)
-    if type(targets) ~= "table" or #targets == 0 then return false end
-    if type(parts) ~= "table" or #parts == 0 then return false end
-    local api = rawget(_G, "Susano")
-    if type(api) ~= "table" or type(api.InjectResource) ~= "function" then return false end
-
-    local idRows = {}
-    for i = 1, #targets do
-        local serverId = targets[i] and targets[i].serverId
-        if type(serverId) ~= "number" then return false end
-        idRows[#idRows + 1] = tostring(serverId)
-    end
-    local idList = "{" .. table.concat(idRows, ",") .. "}"
-
-    local tokenKey, beatKey, ackKey, ackTimeKey = graftKeys()
-    local token = math.random(1, 2147483646)
-    if not graftWriteToken(token) then return false end
-
-    local code = string.format([[
-local targetServerIds = %s
-local token = %d
-local tokenKey = %q
-local beatKey = %q
-local ackKey = %q
-local ackTimeKey = %q
-local parts = {%s}
-
-pcall(DecorRegister, tokenKey, 3)
-pcall(DecorRegister, beatKey, 3)
-pcall(DecorRegister, ackKey, 3)
-pcall(DecorRegister, ackTimeKey, 3)
-
-local function alive()
-    local ok, value = pcall(DecorGetInt, PlayerPedId(), tokenKey)
-    if not ok or value ~= token then return false end
-    local okBeat, beat = pcall(DecorGetInt, PlayerPedId(), beatKey)
-    if not okBeat or type(beat) ~= "number" then return false end
-    return GetGameTimer() - beat < 1000
-end
-
-local function resolveOne(serverId)
-    for _, player in ipairs(GetActivePlayers()) do
-        if player ~= PlayerId() and GetPlayerServerId(player) == serverId then
-            local ped = GetPlayerPed(player)
-            if ped and ped ~= 0 and ped ~= PlayerPedId()
-                and DoesEntityExist(ped)
-                and not IsPedDeadOrDying(ped, true) then
-                return ped
-            end
-        end
-    end
-    return 0
-end
-
-local function emitAt(c)
-    for i = 1, #parts do
-        local p = parts[i]
-        if not HasNamedPtfxAssetLoaded(p.dict) then
-            RequestNamedPtfxAsset(p.dict)
-        end
-        pcall(UseParticleFxAssetNextCall, p.dict)
-        pcall(SetParticleFxNonLoopedColour, p.r, p.g, p.b)
-        pcall(SetParticleFxNonLoopedAlpha, 1.0)
-        pcall(StartNetworkedParticleFxNonLoopedAtCoord,
-            p.effect, c.x + p.x, c.y + p.y, c.z + p.z,
-            0.0, 0.0, 0.0, p.scale, false, false, false, false)
-    end
-end
-
-CreateThread(function()
-    while alive() do
-        local any = false
-        for i = 1, #targetServerIds do
-            local ped = resolveOne(targetServerIds[i])
-            if ped ~= 0 then
-                any = true
-                emitAt(GetEntityCoords(ped, true))
-            end
-        end
-        if not any then break end
-        pcall(DecorSetInt, PlayerPedId(), ackTimeKey, GetGameTimer())
-        pcall(DecorSetInt, PlayerPedId(), ackKey, token)
-        Wait(50)
-    end
-end)
-]], idList, token, tokenKey, beatKey, ackKey, ackTimeKey,
-        graftPartsCode(parts))
-
-    local ok = pcall(api.InjectResource, graftResource(parts), code)
-    if not ok then
-        graftWriteToken(0)
-        return false
-    end
-    FL.graft = {
-        token = token,
-        key = graftKeyFor(targets),
-        method = FL.method,
-        count = #parts,
-        sig = graftSignature(parts),
-        at = now(),
-        ack = false,
-    }
-    return true
-end
-
+-- Head anchor plus the root coords used for distance and prediction. The
+-- head bone is SKEL_Head = 31086; the 1.05 m root offset remains only as the
+-- fallback when the bone read is unavailable.
 local function flashCoordsForPed(ped)
     local coords = coordsOf(ped)
     if not coords then return nil end
 
+    local head = nil
+    if type(GetPedBoneCoords) == "function" then
+        local ok, value = pcall(GetPedBoneCoords, ped, 31086, 0.0, 0.0, 0.0)
+        if ok and value then head = value end
+    end
+
     -- false, not true: the atGetIn form keeps returning the last vehicle while
     -- the ped is leaving it, which anchored a reactivated flash to the car
     -- after the victim had already stepped out. IsPedInAnyVehicle is a second
-    -- gate for the entering/exiting transition where the engine may still
-    -- expose a vehicle handle for one frame.
+    -- gate for the entering/exiting transition.
     local okVeh, veh = pcall(GetVehiclePedIsIn, ped, false)
     if okVeh and type(veh) == "number" and veh ~= 0 then
         local inVehicle = true
@@ -26535,7 +25993,10 @@ local function flashCoordsForPed(ped)
                 return {
                     x = vehicleCoords.x,
                     y = vehicleCoords.y,
-                    z = vehicleCoords.z + 1.05,
+                    z = vehicleCoords.z + 1.2,
+                    headX = vehicleCoords.x,
+                    headY = vehicleCoords.y,
+                    headZ = vehicleCoords.z + 1.2,
                     vehicle = true,
                     entity = veh,
                 }
@@ -26543,10 +26004,16 @@ local function flashCoordsForPed(ped)
         end
     end
 
+    local headX = head and head.x or coords.x
+    local headY = head and head.y or coords.y
+    local headZ = head and head.z or (coords.z + 1.6)
     return {
         x = coords.x,
         y = coords.y,
         z = coords.z + 1.05,
+        headX = headX,
+        headY = headY,
+        headZ = headZ,
         vehicle = false,
         entity = ped,
     }
@@ -26620,10 +26087,16 @@ local function predictedCoords(t, coords)
         vx, vy, vz = vx * factor, vy * factor, vz * factor
     end
 
+    local headX = tonumber(coords.headX) or coords.x
+    local headY = tonumber(coords.headY) or coords.y
+    local headZ = tonumber(coords.headZ) or coords.z
     return {
         x = coords.x + vx * lead,
         y = coords.y + vy * lead,
         z = coords.z + vz * lead,
+        headX = headX + vx * lead,
+        headY = headY + vy * lead,
+        headZ = headZ + vz * lead,
         vehicle = coords.vehicle == true,
         highSpeed = speed >= 15.0,
         entity = entity,
@@ -26652,7 +26125,6 @@ local function tickCore()
         FL.resolveAt = now()
         if not targets or #targets == 0 then
             FL.target = nil
-            graftStop()
             -- Stay armed and wait for a selected player to stream back in.
             return
         end
@@ -26702,14 +26174,13 @@ local function tickCore()
     if #alive == 0 then
         FL.targets = nil
         FL.target = nil
-        graftStop()
         return
     end
 
     FL.targets = alive
     FL.target = alive[1]
     FL.localOnly = not anyRemote
-    FL.ringBudget = (#alive == 1)
+    FL.shellBudget = (#alive == 1)
 
     if now() < FL.nextAt then return end
 
@@ -26718,254 +26189,49 @@ local function tickCore()
         if type(selected) == "number" then FL.method = selected end
     end
 
-    local cfg = acConfig()
-    local ex = cfg and cfg.Explosions
-    local maxScale = tonumber(ex and ex.MaxParticleScale) or 10.0
-    if maxScale < 1.0 then maxScale = 10.0 end
-    FL.maxScale = maxScale
+    local emitted = false
 
-    local effective, needsWire = resolveDelivery(cfg)
-    FL.effective = effective
-    FL.requiresWire = needsWire
-    FL.lastEffect = effective and effective.effect or nil
-    FL.wire = nil
-
-    -- Same recipe for every target; split into graft-eligible remotes and
-    -- executor-only targets (self or remote without a numeric server id).
-    local remotes = {}
-    local execOnly = {}
+    -- Self target: a local overlay pulse. This branch never touches the
+    -- network, the particle stream, the guard config or any entity.
     for i = 1, #alive do
-        local t = alive[i]
-        if not t.self and type(t.serverId) == "number" then
-            remotes[#remotes + 1] = t
-        else
-            execOnly[#execOnly + 1] = t
+        if alive[i].self then
+            Menu.__vgd_flashLocalUntil = now() + FLASH_MS
+            emitted = true
+            break
         end
     end
 
-    local emitted
-    if effective and effective.kind == "explosion" then
-        emitted = false
-        for i = 1, #alive do
-            local c = alive[i].aim or alive[i].coords
-            local ok = pcall(AddExplosion, c.x, c.y, c.z + OFFSET_Z,
-                FLASH_TYPE, DAMAGE_SCALE, false, false, 0.0)
-            if ok then emitted = true end
-        end
-    elseif effective then
-        local parts = effective.parts or { effective }
-        local wireHashes = {}
-        local graftParts = {}
-        local allowedParts = {}
-        local assumeAI = not ex and waveShieldStarted()
-        local strictAI = (ex and ex.EnableParticlesAI == true) or assumeAI
-        local staticEnabled = type(ex) == "table"
-            and ex.EnableParticlesWhiteList == true
-        local staticUnknown = type(ex) ~= "table" and assumeAI
-
-        -- Never let an unacknowledged hash reach a strict AI server, but never
-        -- let the whole loop go silent either. scr_wheel_burnout is in the
-        -- unconditional default auto whitelist, so every recipe keeps at least
-        -- that part while the other parts wait for their dynamic _ws:cb ack.
-        --
-        -- The static branch runs before the AI branch on the server. Camera
-        -- and any other non-listed hash therefore cannot be rescued by a
-        -- dynamic entry while the static switch is on: it is cancelled and
-        -- reported at line 10 of ptFxEvent.lua. Those parts are held back
-        -- unless the static list itself contains them.
-        for i = 1, #parts do
-            local part = parts[i]
-            if part and type(part.effect) == "string" then
-                local hash = GetHashKey(part.effect)
-                local isWhite = whitelisted(cfg, part.effect)
-                local isAuto = autoSafeEffect(part.effect, ex)
-                local confirmed = dynamicConfirmed(hash)
-
-                if strictAI and not isWhite and not confirmed then
-                    -- Fire the request regardless; the reply unlocks the part
-                    -- on servers whose static switch is off.
-                    ensureDynamicEffect(part.effect)
-                end
-
-                local staticSafe = isWhite or isAuto
-                local allowed
-                if staticEnabled or staticUnknown then
-                    -- Static branch first: a non-listed hash is cancelled
-                    -- before the AI branch. Two routes remain:
-                    --   1. a statically safe hash, which needs no rewrite;
-                    --   2. a dynamic-acknowledged hash sent only from the
-                    --      executor, whose outbound ptFxEvent is passed through
-                    --      Susano.OnTriggerServerEvent and loses assetHash.
-                    -- Route 2 is deliberately excluded from the host graft:
-                    -- the injected resource VM does not run Susano's outbound
-                    -- callback, so only the executor gets the rewritten event.
-                    allowed = staticSafe
-                        or (confirmed and canRewriteEvent())
-                else
-                    allowed = not strictAI or staticSafe or confirmed
-                end
-
-                if allowed then
-                    wireHashes[#wireHashes + 1] = hash
-                    allowedParts[#allowedParts + 1] = part
-                    -- The graft may emit only hashes that are safe even
-                    -- without the assetHash rewrite.
-                    if staticSafe or not strictAI then
-                        graftParts[#graftParts + 1] = part
-                    end
-                end
-            end
-        end
-
-        if #allowedParts == 0 then
-            local safe = safeCandidate(cfg) or SAFE_CANDIDATES[1]
-            if safe then
-                local safeHash = GetHashKey(safe.effect)
-                local safeWhite = whitelisted(cfg, safe.effect)
-                local safeAuto = autoSafeEffect(safe.effect, ex)
-                local safeConfirmed = dynamicConfirmed(safeHash)
-                if strictAI and not safeWhite and not safeConfirmed then
-                    ensureDynamicEffect(safe.effect)
-                end
-                local safeStatic = safeWhite or safeAuto
-                local safeAllowed
-                if staticEnabled or staticUnknown then
-                    safeAllowed = safeStatic
-                        or (safeConfirmed and canRewriteEvent())
-                else
-                    safeAllowed = not strictAI or safeStatic or safeConfirmed
-                end
-                if safeAllowed then
-                    wireHashes[1] = safeHash
-                    allowedParts[1] = safe
-                    if safeStatic or not strictAI then
-                        graftParts[1] = safe
-                    end
-                end
-            end
-        end
-
-        if #allowedParts == 0 then
-            -- Last resort: a hash that is statically safe, or a dynamic entry
-            -- that the executor can send through the assetHash rewrite. If
-            -- neither fact holds, stay silent rather than feed a report.
-            local last = SAFE_CANDIDATES[1]
-            if last then
-                local lastHash = GetHashKey(last.effect)
-                local lastStatic = whitelisted(cfg, last.effect)
-                    or autoSafeEffect(last.effect, ex)
-                if not strictAI then
-                    wireHashes[1] = lastHash
-                    graftParts[1] = last
-                    allowedParts[1] = last
-                elseif lastStatic then
-                    wireHashes[1] = lastHash
-                    graftParts[1] = last
-                    allowedParts[1] = last
-                elseif dynamicConfirmed(lastHash) and canRewriteEvent() then
-                    wireHashes[1] = lastHash
-                    allowedParts[1] = last
-                end
-            end
-        end
-
-        if #allowedParts == 0 then
-            emitted = false
-        else
-            local active = effective
-            if #allowedParts ~= #parts then
-                active = {
-                    parts = allowedParts,
-                    scale = effective.scale,
-                    kind = effective.kind,
-                }
-            end
-
-            local externalParts = {}
-            for i = 1, #allowedParts do
-                local part = allowedParts[i]
-                local inGraft = false
-                for j = 1, #graftParts do
-                    if graftParts[j] == part then inGraft = true break end
-                end
-                if not inGraft then
-                    externalParts[#externalParts + 1] = part
-                end
-            end
-            local externalActive = active
-            if #externalParts ~= #allowedParts then
-                externalActive = {
-                    parts = externalParts,
-                    scale = effective.scale,
-                    kind = effective.kind,
-                }
-            end
-
-            if canRewriteEvent() and #wireHashes > 0 then
-                FL.wire = { hashes = wireHashes, expires = now() + WIRE_TTL }
-            end
-
-            -- Restart the graft when the remote id set changes.
-            local graftKey = graftKeyFor(remotes)
-            if FL.graft and (FL.graft.key ~= graftKey
-                or FL.graft.method ~= FL.method
-                or FL.graft.count ~= #graftParts
-                or FL.graft.sig ~= graftSignature(graftParts)) then
-                graftStop()
-            end
-
-            if FL.graft then
-                graftBeat()
-                -- Read the acknowledgement every tick, not only once: the
-                -- injected thread writes a fresh millisecond stamp with each
-                -- 50 ms pulse. A stale stamp means it died and the executor
-                -- must take back over instead of trusting a dead graft.
-                graftAck()
-                if not FL.graft.ack and now() - FL.graft.at > 1500 then
-                    graftStop()
-                    FL.graftFailAt = now()
-                end
-            end
-
-            local grafted = false
-            local canGraft = not FL.graftFailAt
-                or now() - FL.graftFailAt > 5000
-            if not FL.graftDisabled and #graftParts > 0 and #remotes > 0 and canGraft then
-                if FL.graft then
-                    grafted = true
-                else
-                    grafted = graftStart(remotes, effective, graftParts)
-                end
-            end
-
-            if grafted and FL.graft and FL.graft.ack then
-                -- Graft covers the remotes; executor sends dynamic parts to
-                -- each remote and the full recipe to self/id-less targets.
-                if #externalParts > 0 then
-                    for i = 1, #remotes do
-                        emitParticle(externalActive, remotes[i].aim or remotes[i].coords)
-                    end
-                end
-                for i = 1, #execOnly do
-                    emitParticle(active, execOnly[i].aim or execOnly[i].coords)
-                end
-                emitted = true
-            else
-                -- Executor native for every target until the graft acks.
-                local anyEmit = false
+    if anyRemote then
+        local cfg = acConfig()
+        local ex = cfg and cfg.Explosions
+        local maxScale = tonumber(ex and ex.MaxParticleScale)
+        if maxScale == nil then maxScale = MAX_SCALE end
+        if maxScale > 0.0 then
+            FL.maxScale = maxScale
+            local effective = resolveDelivery(cfg)
+            FL.effective = effective
+            FL.lastEffect = effective and effective.parts
+                and effective.parts[1] and effective.parts[1].effect or nil
+            if effective then
                 for i = 1, #alive do
-                    if emitParticle(active, alive[i].aim or alive[i].coords) then anyEmit = true end
+                    local t = alive[i]
+                    if not t.self then
+                        if emitParticle(effective, t.aim or t.coords) then
+                            emitted = true
+                        end
+                    end
                 end
-                emitted = anyEmit
             end
+        else
+            -- A zero or negative ceiling would be cancelled by the guard's
+            -- scale branch. Stay silent; the loop stays armed.
+            FL.maxScale = 0.0
+            FL.effective = nil
+            FL.lastEffect = nil
         end
-    else
-        emitted = false
     end
 
-    if emitted == nil then
-        return
-    elseif emitted then
+    if emitted then
         FL.stats.flashes = FL.stats.flashes + 1
     else
         FL.stats.fails = FL.stats.fails + 1
@@ -27023,17 +26289,16 @@ function FL.stop(reason)
     if FL.active then
         log("stop (%s)", tostring(reason or "request"))
     end
-    graftStop()
     FL.active = false
     FL.target = nil
     FL.targets = nil
     FL.targetSig = nil
     FL.reason = reason
-    FL.wire = nil
-    FL.requiresWire = false
     FL.effective = nil
+    FL.lastEffect = nil
     FL.localOnly = false
     FL.remoteOnly = false
+    Menu.__vgd_flashLocalUntil = 0
 end
 
 function FL.status()
@@ -27050,6 +26315,56 @@ function FL.status()
     return ("Flash %d targets | %d"):format(#targets, FL.stats.flashes)
 end
 
+-- Local overlay. The menu's render callback is the only consumer; the draw
+-- goes through the Susano overlay, which is outside the game framebuffer and
+-- is never sent to the server. The wrapper is installed once per session.
+local function drawLocalFlash()
+    local untilAt = tonumber(Menu.__vgd_flashLocalUntil) or 0
+    if untilAt <= 0 then return end
+    local current = now()
+    if untilAt <= current then return end
+
+    local api = rawget(_G, "Susano")
+    local width, height = 1920, 1080
+    if type(api) == "table" then
+        if type(api.GetScreenWidth) == "function" then
+            local ok, value = pcall(api.GetScreenWidth)
+            if ok and type(value) == "number" and value > 0 then
+                width = value
+            end
+        end
+        if type(api.GetScreenHeight) == "function" then
+            local ok, value = pcall(api.GetScreenHeight)
+            if ok and type(value) == "number" and value > 0 then
+                height = value
+            end
+        end
+    end
+
+    local alpha = math.floor(255 * math.max(0.0,
+        math.min(1.0, (untilAt - current) / FLASH_MS)))
+    if alpha <= 0 then return end
+
+    local draw = nil
+    if type(Menu.DrawRect) == "function" then
+        draw = Menu.DrawRect
+    elseif type(api) == "table" and type(api.DrawRect) == "function" then
+        draw = api.DrawRect
+    end
+    if draw then
+        pcall(draw, 0, 0, width, height, 255, 255, 255, alpha)
+    end
+end
+
+if not Menu.__vgd_flashOverlay then
+    Menu.__vgd_flashOverlay = true
+    local previous = Menu.OnRender
+    Menu.OnRender = function()
+        drawLocalFlash()
+        if type(previous) == "function" then pcall(previous) end
+    end
+end
+
 -- Internal smoke seam. It is not a menu row and never calls a native by
 -- itself; the scheduled task remains the only production caller.
 Menu.__vgd_flashTick = FL.tick
@@ -27063,8 +26378,6 @@ end
 return FL
 
 end)(O,Menu)
-
--- ---------------------------------------------------------------------------
 -- PART: 11_evasion.lua
 -- ---------------------------------------------------------------------------
 local A = (function(O,S,Menu)
@@ -27073,21 +26386,28 @@ local A = (function(O,S,Menu)
 -- ----------------------------------------------------------------------------
 -- Internal module. The menu exposes anti-freeze, anti-attach, anti-spectate
 -- and the single Anti-Ped Crasher row in Settings > Protection. All four are
--- armed at load (A.boot -> A.defaultsOn); there is no network-side event layer.
+-- armed at load (A.boot -> A.defaultsOn).
 --
---   * anti-freeze/anti-attach - release our own ped, never someone else's
---   * anti-spectate           - leave a forced spectator mode
+--   * anti-freeze/anti-attach - release our own ped, never someone else's;
+--                               anti-freeze also installs scoped native hooks
+--                               and blocks freeze/clearPedTask event names
+--   * anti-spectate           - leave both forced spectator modes; scoped
+--                               native hooks and spectate event names
 --   * Anti-Ped Crasher        - model/owner/burst cull of flood peds from our
 --                               local CPed pool; no ped is created and no
---                               script event is sent
+--                               script event is sent. Story-player clones stay
+--                               eligible even when mission/vehicle.
 --
 -- Default-on is safe here because each loop is gated by a read of our own
 -- state and writes only when that state is wrong or a flood is already
 -- present. The local entity writes (hide/no-collision/delete) never touch a
--- player, mission or vehicle ped.
+-- player ped or an invalid handle; mission/vehicle peds are excluded unless
+-- the model is a story-player crash model.
 --
 -- Ghost, hardening, firewall and the deep shim remain in this file as dormant
--- code; no menu row calls them and no hook is installed.
+-- code; no menu row calls them. The only hooks installed by this module are the
+-- scoped anti-freeze/anti-spectate hooks; they are removed on toggle-off and
+-- panic.
 --
 -- What this file deliberately does not do:
 --   * no StopResource, no UnhookAllNatives on foreign scripts
@@ -27110,7 +26430,6 @@ A.flags = {
     pedEvents     = false,
     firewall      = false,
     networkLaunder = false,
-    quietLogs     = false,
 }
 
 A.stats = { blocked = 0, shims = 0, scans = 0, lastScan = 0,
@@ -27121,7 +26440,7 @@ A._ghostVehicle = 0
 A._hardenVehicle = 0
 A._booted = false
 A._timers = { ghost = 0, localHidden = 0, harden = 0, vehicleHarden = 0,
-    freeze = 0, attach = 0, spectate = 0, ped = 0 }
+    attach = 0, ped = 0 }
 A._pedSeen = {}
 A._pedQuarantine = {}
 A._pedOwner = {}
@@ -27134,6 +26453,21 @@ A._pedPoolLast = 0
 A._pedHoldScheduled = false
 A._pedGuardReadyAt = 0
 A._pedEventBlocked = {}
+A._freezeEventBlocked = {}
+A._spectateEventBlocked = {}
+A._freezeEventScanAt = 0
+A._spectateEventScanAt = 0
+A._pedEventScanAt = 0
+A._hooks = { freeze = false, spectate = false }
+A._taskClearOriginal = nil
+A._taskClearWrapper = nil
+A._bypassTaskClear = false
+A._bypassControlRequest = false
+A._controlAt = 0
+
+-- Forward declaration: the anti-freeze setter is defined before the event
+-- helpers, and Lua locals are lexical.
+local clearEventSet
 
 -- ---------------------------------------------------------------------------
 -- PED CRASH GUARD
@@ -27294,6 +26628,10 @@ local function singlePedHashes()
         end
     end
     return pedSingleHashes
+end
+
+local function storyModel(hash)
+    return type(hash) == "number" and singlePedHashes()[hash] == true
 end
 
 local function crashModel(hash)
@@ -27458,11 +26796,22 @@ local function holdPed(entity, selfPed, entry)
 end
 
 local function clearPedQuarantine()
-    if type(SetEntityLocallyVisible) == "function"
-        and type(DoesEntityExist) == "function" then
-        for entity in pairs(A._pedQuarantine) do
-            if DoesEntityExist(entity) then
+    if type(DoesEntityExist) ~= "function" then
+        A._pedQuarantine = {}
+        A._pedOwner = {}
+        A._pedHostile = {}
+        A.stats.pedGuard.quarantined = 0
+        return
+    end
+    local selfPed = PlayerPedId()
+    if type(selfPed) ~= "number" then selfPed = 0 end
+    for entity in pairs(A._pedQuarantine) do
+        if DoesEntityExist(entity) then
+            if type(SetEntityLocallyVisible) == "function" then
                 pcall(SetEntityLocallyVisible, entity)
+            end
+            if selfPed ~= 0 and type(SetEntityNoCollisionEntity) == "function" then
+                pcall(SetEntityNoCollisionEntity, entity, selfPed, false)
             end
         end
     end
@@ -27577,7 +26926,7 @@ function A.setGhost(state)
     if A.flags.ghost then
         if not callAny(GHOST_SET, true) then
             A.flags.ghost = false
-            O.log("evasion: ghost natives unavailable")
+            O.log("protection: native unavailable")
             return false
         end
         applyGhost()
@@ -27746,6 +27095,189 @@ local function localAttachIntended()
     return false
 end
 
+-- ---------------------------------------------------------------------------
+-- NATIVE PROTECTION HOOKS
+--
+-- Anti-freeze and anti-spectate need two layers. The hooks stop a local script
+-- (including an injected resource) from applying the state; the watchdog below
+-- repairs the state when the engine applies it from a network event or when the
+-- entity owner changed. Every callback reads only Lua state: a native call
+-- inside a Susano.HookNative callback is a deadlock path.
+--
+-- Verified hashes (citizenfx/natives, 2026-11-21):
+--   FREEZE_ENTITY_POSITION          0x428CA6DBD1094446
+--   SET_ENTITY_DYNAMIC              0x1718DE8E3F2823CA
+--   CLEAR_PED_TASKS_IMMEDIATELY     0xAAA34F8A7CB32098
+--   NETWORK_REQUEST_CONTROL_OF_ENTITY 0xB69317BF5E782347
+--   NETWORK_SET_IN_SPECTATOR_MODE   0x423DE3854BB50894
+--   NETWORK_SET_ACTIVITY_SPECTATOR  0x75138790B4359A74
+--   NETWORK_IS_ACTIVITY_SPECTATOR   0x12103B9E0C9F92FB
+-- ---------------------------------------------------------------------------
+local H_FREEZE_ENTITY = 0x428CA6DBD1094446
+local H_SET_ENTITY_DYNAMIC = 0x1718DE8E3F2823CA
+local H_CLEAR_PED_TASKS_IMMEDIATE = 0xAAA34F8A7CB32098
+local H_REQUEST_CONTROL = 0xB69317BF5E782347
+local H_SPECTATE_MODE = 0x423DE3854BB50894
+local H_ACTIVITY_SPECTATE = 0x75138790B4359A74
+local H_ACTIVITY_IS_SPECTATOR = 0x12103B9E0C9F92FB
+
+local function hookApi()
+    local api = rawget(_G, "Susano")
+    if type(api) ~= "table" or type(api.HookNative) ~= "function" then
+        return nil
+    end
+    if type(api.HasNativeHookInitializationFailed) == "function" then
+        local ok, failed = pcall(api.HasNativeHookInitializationFailed)
+        if ok and failed == true then return nil end
+    end
+    return api
+end
+
+local function freecamHeld()
+    return type(Menu) == "table"
+        and (Menu.freecamEnabled == true
+            or Menu.__vgd_freecamAudioActive == true)
+end
+
+-- Every menu call to ClearPedTasksImmediately goes through this wrapper, so the
+-- hook can distinguish our own teardown from a foreign resource. The injected
+-- attach teardown uses ClearPedTasks instead; a chunk in another resource VM
+-- cannot set this flag and is therefore blocked on our ped.
+local function installTaskClearWrapper()
+    if A._taskClearOriginal then return true end
+    local original = rawget(_G, "ClearPedTasksImmediately")
+    if type(original) ~= "function" then return false end
+    A._taskClearOriginal = original
+    local wrapper = function(...)
+        A._bypassTaskClear = true
+        local ok, err = pcall(original, ...)
+        A._bypassTaskClear = false
+        if not ok then error(err, 0) end
+    end
+    A._taskClearWrapper = wrapper
+    _G.ClearPedTasksImmediately = wrapper
+    return true
+end
+
+local function removeTaskClearWrapper()
+    if not A._taskClearOriginal then return end
+    -- Restore only our wrapper. If another script wrapped the global after us,
+    -- overwriting it would silently discard that script's behavior.
+    if A._taskClearWrapper
+        and rawget(_G, "ClearPedTasksImmediately") == A._taskClearWrapper then
+        _G.ClearPedTasksImmediately = A._taskClearOriginal
+    end
+    A._taskClearOriginal = nil
+    A._taskClearWrapper = nil
+    A._bypassTaskClear = false
+end
+
+local function installFreezeHooks()
+    if A._hooks.freeze then return true end
+    local api = hookApi()
+    if not api then
+        O.log("protection: native hook bridge unavailable; watchdog only")
+        return false
+    end
+    local wrapper = installTaskClearWrapper()
+    local taskHook = false
+    local installed = 0
+
+    if pcall(api.HookNative, H_FREEZE_ENTITY, function(entity, toggle)
+        if not A.flags.antiFreeze or toggle ~= true then return true end
+        if O.Ctx.dead or entity ~= O.Ctx.ped or freecamHeld() then return true end
+        return false
+    end) then installed = installed + 1 end
+
+    if pcall(api.HookNative, H_SET_ENTITY_DYNAMIC, function(entity, toggle)
+        if not A.flags.antiFreeze or toggle ~= false then return true end
+        if O.Ctx.dead or entity ~= O.Ctx.ped or freecamHeld() then return true end
+        return false
+    end) then installed = installed + 1 end
+
+    if wrapper and pcall(api.HookNative, H_CLEAR_PED_TASKS_IMMEDIATE, function(ped)
+        if not A.flags.antiFreeze or A._bypassTaskClear then return true end
+        if O.Ctx.dead or O.Ctx.inVehicle or ped ~= O.Ctx.ped then return true end
+        return false
+    end) then
+        installed = installed + 1
+        taskHook = true
+    end
+
+    if pcall(api.HookNative, H_REQUEST_CONTROL, function(entity)
+        if not A.flags.antiFreeze or A._bypassControlRequest then return true end
+        if O.Ctx.dead or entity ~= O.Ctx.ped then return true end
+        return false
+    end) then installed = installed + 1 end
+
+    if not taskHook then removeTaskClearWrapper() end
+    A._hooks.freeze = installed > 0
+    if installed < 4 then
+        O.log("protection: installed %d/4 native hooks", installed)
+    end
+    return A._hooks.freeze
+end
+
+local function removeFreezeHooks()
+    local hadHooks = A._hooks.freeze
+    if hadHooks then
+        local api = rawget(_G, "Susano")
+        if type(api) == "table" and type(api.UnhookNative) == "function" then
+            pcall(api.UnhookNative, H_FREEZE_ENTITY)
+            pcall(api.UnhookNative, H_SET_ENTITY_DYNAMIC)
+            pcall(api.UnhookNative, H_CLEAR_PED_TASKS_IMMEDIATE)
+            pcall(api.UnhookNative, H_REQUEST_CONTROL)
+        end
+    end
+    A._hooks.freeze = false
+    A._bypassControlRequest = false
+    A._controlAt = 0
+    A._taskClearAt = 0
+    removeTaskClearWrapper()
+end
+
+local function installSpectateHooks()
+    if A._hooks.spectate then return true end
+    local api = hookApi()
+    if not api then
+        O.log("protection: native hook bridge unavailable; watchdog only")
+        return false
+    end
+    local installed = 0
+
+    if pcall(api.HookNative, H_SPECTATE_MODE, function(toggle)
+        if not A.flags.antiSpectate or toggle ~= true then return true end
+        if type(Menu) == "table" and Menu.PlayerListSpectateEnabled == true then
+            return true
+        end
+        return false
+    end) then installed = installed + 1 end
+
+    if pcall(api.HookNative, H_ACTIVITY_SPECTATE, function(toggle)
+        if not A.flags.antiSpectate or toggle ~= true then return true end
+        if type(Menu) == "table" and Menu.PlayerListSpectateEnabled == true then
+            return true
+        end
+        return false
+    end) then installed = installed + 1 end
+
+    A._hooks.spectate = installed > 0
+    if installed < 2 then
+        O.log("protection: installed %d/2 native hooks", installed)
+    end
+    return A._hooks.spectate
+end
+
+local function removeSpectateHooks()
+    if not A._hooks.spectate then return end
+    local api = rawget(_G, "Susano")
+    if type(api) == "table" and type(api.UnhookNative) == "function" then
+        pcall(api.UnhookNative, H_SPECTATE_MODE)
+        pcall(api.UnhookNative, H_ACTIVITY_SPECTATE)
+    end
+    A._hooks.spectate = false
+end
+
 local function antiFreezeTick()
     local ped = PlayerPedId()
     if type(ped) ~= "number" or ped == 0 then return end
@@ -27761,11 +27293,7 @@ local function antiFreezeTick()
     -- make the camera drift. Freecam Audio uses its own flag for the same
     -- reason: its on-foot freeze is the shape that closes WaveShield V4's
     -- branch 3, and anti-freeze must never reopen that branch behind it.
-    if type(Menu) == "table"
-        and (Menu.freecamEnabled == true
-            or Menu.__vgd_freecamAudioActive == true) then
-        return
-    end
+    if freecamHeld() then return end
 
     -- Read before writing. IS_ENTITY_POSITION_FROZEN is the CFX getter for
     -- FREEZE_ENTITY_POSITION (0xEDBE6ADD, verified in the CFX native dump), so
@@ -27783,8 +27311,46 @@ local function antiFreezeTick()
     end
     if not frozen then return end
 
+    -- A network freeze can arrive after another client takes control of this
+    -- ped. The local release is a no-op until control is back, so ask for it
+    -- only while frozen and rate-limit the request: the normal path never adds
+    -- a network write. The request hook lets this one call through the bypass
+    -- flag; every other local request aimed at our ped is blocked.
+    if type(NetworkHasControlOfEntity) == "function"
+        and type(NetworkRequestControlOfEntity) == "function" then
+        local ok, has = pcall(NetworkHasControlOfEntity, ped)
+        if ok and has == false then
+            local clock = now()
+            if clock - (A._controlAt or 0) > 1500 then
+                A._controlAt = clock
+                A._bypassControlRequest = true
+                pcall(NetworkRequestControlOfEntity, ped)
+                A._bypassControlRequest = false
+            end
+        end
+    end
+
     pcall(FreezeEntityPosition, ped, false)
     pcall(SetEntityDynamic, ped, true)
+
+    -- CLEAR_PED_TASKS_IMMEDIATELY is network-synced through
+    -- CClearPedTasksEvent. The native hook stops the local script path; this
+    -- local clear is the recovery for a task the engine applied before the
+    -- hook could see it. It runs only while the ped is frozen, and never while
+    -- the ped is in a vehicle (the vehicle task is legitimate there).
+    local inVehicle = false
+    if type(GetVehiclePedIsIn) == "function" then
+        local okV, vehicle = pcall(GetVehiclePedIsIn, ped, false)
+        if okV and type(vehicle) == "number" and vehicle ~= 0 then
+            inVehicle = true
+        end
+    end
+    local clock = now()
+    if not inVehicle and type(ClearPedTasks) == "function"
+        and clock - (A._taskClearAt or 0) > 1000 then
+        A._taskClearAt = clock
+        pcall(ClearPedTasks, ped)
+    end
 end
 
 local function antiAttachTick()
@@ -27832,7 +27398,15 @@ end
 
 function A.setAntiFreeze(state)
     A.flags.antiFreeze = state and true or false
-    if A.flags.antiFreeze then antiFreezeTick() end
+    A._freezeEventScanAt = 0
+    if A.flags.antiFreeze then
+        installFreezeHooks()
+        antiFreezeTick()
+        A.scanFreezeEvents()
+    else
+        removeFreezeHooks()
+        clearEventSet(A._freezeEventBlocked)
+    end
     return A.flags.antiFreeze
 end
 
@@ -27859,10 +27433,29 @@ end
 local function clearSpectateNow(ped)
     ped = ped or PlayerPedId()
     if type(ped) ~= "number" or ped == 0 then return false end
-    local ok, spectating = pcall(NetworkIsInSpectatorMode)
-    if not ok or not spectating then return false end
-    pcall(NetworkSetInSpectatorMode, false, ped)
-    return true
+    local cleared = false
+
+    if type(NetworkIsInSpectatorMode) == "function" then
+        local ok, spectating = pcall(NetworkIsInSpectatorMode)
+        if ok and spectating then
+            pcall(NetworkSetInSpectatorMode, false, ped)
+            cleared = true
+        end
+    end
+
+    -- Activity spectator is a second mode. It is not covered by
+    -- NETWORK_IS_IN_SPECTATOR_MODE, so leaving only the first mode would leave
+    -- the client streaming an activity it is not playing.
+    if type(NetworkIsActivitySpectator) == "function"
+        and type(NetworkSetActivitySpectator) == "function" then
+        local ok, active = pcall(NetworkIsActivitySpectator)
+        if ok and active then
+            pcall(NetworkSetActivitySpectator, false)
+            cleared = true
+        end
+    end
+
+    return cleared
 end
 
 local function antiSpectateTick()
@@ -27888,21 +27481,21 @@ end
 
 function A.setAntiSpectate(state)
     A.flags.antiSpectate = state and true or false
-    if A.flags.antiSpectate then antiSpectateTick() end
+    A._spectateEventScanAt = 0
+    if A.flags.antiSpectate then
+        installSpectateHooks()
+        antiSpectateTick()
+        A.syncSpectateEvents(true)
+    else
+        removeSpectateHooks()
+        clearEventSet(A._spectateEventBlocked)
+    end
     return A.flags.antiSpectate
 end
 
 function A.setNetworkLaunder(state)
     A.flags.networkLaunder = state and true or false
     return A.flags.networkLaunder
-end
-
-function A.setQuietLogs(state)
-    A.flags.quietLogs = state and true or false
-    if type(O.setQuiet) == "function" then
-        O.setQuiet(A.flags.quietLogs)
-    end
-    return A.flags.quietLogs
 end
 
 -- ---------------------------------------------------------------------------
@@ -27962,10 +27555,139 @@ end
 
 local function clearBlockedByA()
     for name in pairs(blockedByA) do
-        pcall(Susano.BlockServerEvent, false, name)
-        S.blocked[name] = nil
+        -- The report firewall shares the bridge with the ped and protection
+        -- filters. A name another owner still needs stays blocked; releasing
+        -- it here would silently re-open a filter that is still armed.
+        local held = A._pedEventBlocked[name]
+            or A._freezeEventBlocked[name]
+            or A._spectateEventBlocked[name]
+        if not held then
+            pcall(Susano.BlockServerEvent, false, name)
+            S.blocked[name] = nil
+        end
     end
     blockedByA = {}
+end
+
+-- Event filters share the same inbound bridge as the report firewall. Each
+-- feature owns a set, and a name is released only when no other set still
+-- needs it. That matters because a server can reuse a generic name such as
+-- "clearPedTasksEvent" for both a grief vector and a legitimate cleanup.
+local function eventSetHolds(name, except)
+    if blockedByA[name] and except ~= blockedByA then return true end
+    if A._pedEventBlocked[name] and except ~= A._pedEventBlocked then return true end
+    if A._freezeEventBlocked[name] and except ~= A._freezeEventBlocked then return true end
+    if A._spectateEventBlocked[name] and except ~= A._spectateEventBlocked then return true end
+    return false
+end
+
+clearEventSet = function(set)
+    if type(set) ~= "table" then return end
+    local api = rawget(_G, "Susano")
+    for name in pairs(set) do
+        if not eventSetHolds(name, set) then
+            if type(api) == "table" and type(api.BlockServerEvent) == "function" then
+                pcall(api.BlockServerEvent, false, name)
+            end
+            S.blocked[name] = nil
+        end
+        set[name] = nil
+    end
+end
+
+local function scanEventSet(set, classify, stampField)
+    if not has("GetAllEvent") then
+        A[stampField] = now()
+        return 0
+    end
+    local ok, list = pcall(Susano.GetAllEvent)
+    if not ok or type(list) ~= "table" then
+        A[stampField] = now()
+        return 0
+    end
+
+    local added = 0
+    for i = 1, #list do
+        local entry = list[i]
+        local name = type(entry) == "table" and entry.event or entry
+        if type(name) == "string" and not set[name] and classify(name) then
+            if S.setBlocked(name, true) then
+                set[name] = true
+                added = added + 1
+            end
+        end
+    end
+    A[stampField] = now()
+    return added
+end
+
+local function eventSafe(n)
+    local head = string.sub(n, 1, 4)
+    for i = 1, #SAFE_PREFIXES do
+        if head == SAFE_PREFIXES[i] then return true end
+    end
+    for i = 1, #SAFE_PATTERNS do
+        if string.find(n, SAFE_PATTERNS[i], 1, true) then return true end
+    end
+    return false
+end
+
+local FREEZE_EVENT_PATTERNS = {
+    "freezeentity", "freeze_entity", "freezeentityposition",
+    "setentitydynamic",
+}
+
+A.isFreezeEvent = function(name)
+    local n = lower(name)
+    if n == "" or eventSafe(n) then return false end
+    for i = 1, #FREEZE_EVENT_PATTERNS do
+        if string.find(n, FREEZE_EVENT_PATTERNS[i], 1, true) then return true end
+    end
+    return false
+end
+
+local SPECTATE_EVENT_PATTERNS = { "spectate" }
+
+A.isSpectateEvent = function(name)
+    local n = lower(name)
+    if n == "" or eventSafe(n) then return false end
+    for i = 1, #SPECTATE_EVENT_PATTERNS do
+        if string.find(n, SPECTATE_EVENT_PATTERNS[i], 1, true) then return true end
+    end
+    return false
+end
+
+function A.scanFreezeEvents()
+    if not A.flags.antiFreeze then return 0 end
+    local added = scanEventSet(A._freezeEventBlocked, A.isFreezeEvent,
+        "_freezeEventScanAt")
+    if added > 0 then
+        O.log("protection: blocked %d event(s)", added)
+    end
+    return added
+end
+
+function A.syncSpectateEvents(force)
+    if not A.flags.antiSpectate then
+        clearEventSet(A._spectateEventBlocked)
+        return 0
+    end
+    local clock = now()
+    if not force and clock - (A._spectateEventScanAt or 0) < 30000 then
+        return 0
+    end
+    local added = scanEventSet(A._spectateEventBlocked, A.isSpectateEvent,
+        "_spectateEventScanAt")
+    if added > 0 then
+        O.log("protection: blocked %d event(s)", added)
+    end
+    return added
+end
+
+local function refreshPedEventCount()
+    local count = 0
+    for _ in pairs(A._pedEventBlocked) do count = count + 1 end
+    A.stats.pedGuard.eventBlocked = count
 end
 
 function A.scanReportEvents()
@@ -27990,7 +27712,7 @@ function A.scanReportEvents()
     A.stats.lastScan = now()
     A.stats.scans = A.stats.scans + 1
     if added > 0 then
-        O.log("evasion: firewall blocked %d report event(s)", added)
+        O.log("protection: blocked %d event(s)", added)
     end
     return added
 end
@@ -28110,7 +27832,7 @@ end
 
 function A.shim(ac, all)
     if not has("InjectResource") then
-        O.log("evasion: InjectResource unavailable")
+        O.log("protection: injector unavailable")
         return 0
     end
 
@@ -28124,7 +27846,7 @@ function A.shim(ac, all)
         targets[1] = S.primary()
     end
     if #targets == 0 then
-        O.log("evasion: no guard to shim")
+        O.log("protection: no target")
         return 0
     end
 
@@ -28144,9 +27866,9 @@ function A.shim(ac, all)
             if ok then
                 count = count + 1
                 A.stats.shims = A.stats.shims + 1
-                O.log("evasion: shim injected into %s", target.resource)
+                O.log("protection: shim injected")
             else
-                O.log("evasion: shim refused by %s", target.resource)
+                O.log("protection: shim refused")
             end
         end
     end
@@ -28194,15 +27916,27 @@ function A.pedGuardScan(warmup)
 
     for i = 1, limit do
         local entity = pool[i]
-        if type(entity) == "number" and entity ~= 0 and entity ~= selfPed
-            and not players[entity] and DoesEntityExist(entity)
-            and not isPlayerEntity(entity)
-            and not isMissionEntity(entity)
-            and not isPedInVehicle(entity) then
+        local eligible = type(entity) == "number" and entity ~= 0
+            and entity ~= selfPed and not players[entity]
+            and DoesEntityExist(entity) and not isPlayerEntity(entity)
+        local hash = nil
+
+        -- A story-player clone (Michael, Franklin, Trevor) is a crash model,
+        -- and GTA marks it as a mission entity and may put it in a vehicle.
+        -- Those two guards exist to protect a legitimate scripted scene; they
+        -- must not protect the exact models this row exists to remove. Read
+        -- the model only for a mission/vehicle candidate, so a normal crowd
+        -- pays no extra model read.
+        if eligible and (isMissionEntity(entity) or isPedInVehicle(entity)) then
+            hash = modelOf(entity)
+            if not storyModel(hash) then eligible = false end
+        end
+
+        if eligible then
             local okPos, coords = pcall(GetEntityCoords, entity)
             if okPos and coords and coords.x ~= nil then
                 local dist = O.distance(coords, origin)
-                local hash = modelOf(entity)
+                hash = hash or modelOf(entity)
                 local isKnown = knownHashes[hash] == true
                 local isCrash = crashModel(hash)
 
@@ -28382,7 +28116,7 @@ function A.pedGuardScan(warmup)
     stats.quarantined = count
     if added > 0 and clock - (A._pedLastLog or 0) > 5000 then
         A._pedLastLog = clock
-        O.log("ped guard: quarantined %d/%d near=%d known=%d crash=%d new=%d",
+        O.log("protection: quarantined %d/%d near=%d known=%d crash=%d new=%d",
             added, total, near, known, crashCount, newCount)
     end
     if count > 0 then ensurePedHold() end
@@ -28401,12 +28135,21 @@ function A.pedGuardHold()
     local budget = PED_GUARD.maxCullPerPass
 
     for entity, entry in pairs(A._pedQuarantine) do
+        local exists = DoesEntityExist(entity)
+        local mission = false
+        local inVehicle = false
+        if exists then
+            mission = isMissionEntity(entity)
+            inVehicle = isPedInVehicle(entity)
+        end
+        local story = (mission or inVehicle)
+            and storyModel(modelOf(entity)) or false
+
         if clock >= entry.untilAt
-            or not DoesEntityExist(entity)
+            or not exists
             or entity == selfPed
             or isPlayerEntity(entity)
-            or isMissionEntity(entity)
-            or isPedInVehicle(entity) then
+            or ((mission or inVehicle) and not story) then
             expired[#expired + 1] = entity
         else
             local deleteIt = entry.delete == true and budget > 0
@@ -28485,53 +28228,27 @@ end
 function A.scanPedEvents()
     if not A.flags.pedEvents then return 0 end
     if not has("GetAllEvent") or not has("BlockServerEvent") then return 0 end
-    A.stats.pedGuard.lastEventScan = now()
 
-    -- Re-assert names already held: the report firewall shares the same
-    -- BlockServerEvent channel and its release must not silently re-open a ped
-    -- name that is still in this set.
+    -- Re-assert names already held: the report firewall and the two protection
+    -- filters share the same BlockServerEvent channel, and a release from one
+    -- owner must not silently re-open a name another owner still needs.
     for name in pairs(A._pedEventBlocked) do
         pcall(Susano.BlockServerEvent, true, name)
     end
 
-    local ok, list = pcall(Susano.GetAllEvent)
-    if not ok or type(list) ~= "table" then return 0 end
-
-    local added = 0
-    for i = 1, #list do
-        local entry = list[i]
-        local name = type(entry) == "table" and entry.event or entry
-        if type(name) == "string" and A.isPedCrashEvent(name)
-            and not A._pedEventBlocked[name] then
-            local blocked = pcall(Susano.BlockServerEvent, true, name)
-            if blocked then
-                A._pedEventBlocked[name] = true
-                added = added + 1
-            end
-        end
-    end
-
-    local count = 0
-    for _ in pairs(A._pedEventBlocked) do count = count + 1 end
-    A.stats.pedGuard.eventBlocked = count
+    local added = scanEventSet(A._pedEventBlocked, A.isPedCrashEvent,
+        "_pedEventScanAt")
+    refreshPedEventCount()
     A.stats.pedGuard.lastEventScan = now()
     if added > 0 then
-        O.log("ped guard: blocked %d crash event(s)", added)
+        O.log("protection: blocked %d event(s)", added)
     end
     return added
 end
 
 local function clearPedEvents()
-    for name in pairs(A._pedEventBlocked) do
-        pcall(Susano.BlockServerEvent, false, name)
-        A._pedEventBlocked[name] = nil
-        -- The report firewall owns its own names; re-apply if it still wants
-        -- this one.
-        if type(S.blocked) == "table" and S.blocked[name] then
-            pcall(Susano.BlockServerEvent, true, name)
-        end
-    end
-    A.stats.pedGuard.eventBlocked = 0
+    clearEventSet(A._pedEventBlocked)
+    refreshPedEventCount()
     A.stats.pedGuard.lastEventScan = 0
 end
 
@@ -28540,7 +28257,7 @@ function A.setPedEvents(state)
     if A.flags.pedEvents then
         if not has("BlockServerEvent") then
             A.flags.pedEvents = false
-            O.log("ped guard: BlockServerEvent unavailable, event filter off")
+            O.log("protection: event filter unavailable")
             return false
         end
         A.scanPedEvents()
@@ -28569,6 +28286,25 @@ function A.status()
     )
 end
 
+-- 250 ms recovery loop. The native hooks stop the local script path; this loop
+-- repairs a state the engine applied from a network event and refreshes the
+-- event bridge on a slow cadence. The reads are local and the loop writes only
+-- when the state is actually wrong, so a normal ped costs four reads and no
+-- write.
+function A.protectionWatch()
+    local clock = now()
+    if A.flags.antiFreeze then
+        antiFreezeTick()
+        if clock - (A._freezeEventScanAt or 0) > 30000 then
+            A.scanFreezeEvents()
+        end
+    end
+    if A.flags.antiSpectate then
+        antiSpectateTick()
+        A.syncSpectateEvents(false)
+    end
+end
+
 function A.tick()
     local clock = now()
     local ped = O.Ctx.ped
@@ -28591,21 +28327,9 @@ function A.tick()
         A._timers.vehicleHarden = clock
         applyVehicleHarden()
     end
-    if A.flags.antiFreeze and (respawned or clock - A._timers.freeze > 1400) then
-        A._timers.freeze = clock
-        antiFreezeTick()
-    end
     if A.flags.antiAttach and clock - A._timers.attach > 1200 then
         A._timers.attach = clock
         antiAttachTick()
-    end
-    -- V4's spectate detector samples every 5 s and can strike on the first
-    -- sample. Reading our own mode on every scheduler pass (0.7-1.1 s) keeps
-    -- the window under one sample instead of 1.4-2.5 s. The read is local and
-    -- the guard does not hook it.
-    if A.flags.antiSpectate and clock - A._timers.spectate > 600 then
-        A._timers.spectate = clock
-        antiSpectateTick()
     end
 
     if A.flags.pedGuard then
@@ -28637,6 +28361,13 @@ function A.panic()
     A._pedGuardReadyAt = 0
     clearPedQuarantine()
     clearPedEvents()
+    removeFreezeHooks()
+    removeSpectateHooks()
+    clearEventSet(A._freezeEventBlocked)
+    clearEventSet(A._spectateEventBlocked)
+    A._freezeEventScanAt = 0
+    A._spectateEventScanAt = 0
+    A._pedEventScanAt = 0
     A._pedSeen = {}
     A._pedLastCount = 0
     A._pedPoolLast = 0
@@ -28674,9 +28405,6 @@ function A.defaultsOn()
     for i = 1, #PROTECTION_DEFAULTS do
         A.flags[PROTECTION_DEFAULTS[i]] = true
     end
-    if type(O.setQuiet) == "function" then
-        O.setQuiet(A.flags.quietLogs)
-    end
     return true
 end
 
@@ -28688,17 +28416,26 @@ function A.boot()
     -- unconditional write. A ped already frozen, attached or force-spectated
     -- when the chunk lands is repaired now instead of at the first scheduler
     -- pass; a normal ped costs three reads and no write.
-    antiFreezeTick()
-    antiAttachTick()
-    antiSpectateTick()
+    if A.flags.antiFreeze then
+        installFreezeHooks()
+        A.scanFreezeEvents()
+    end
+    if A.flags.antiSpectate then
+        installSpectateHooks()
+        A.syncSpectateEvents(true)
+    end
+    if A.flags.antiFreeze then antiFreezeTick() end
+    if A.flags.antiAttach then antiAttachTick() end
+    if A.flags.antiSpectate then antiSpectateTick() end
     A._pedGuardReadyAt = now() + 4000
     A.pedGuardScan(true)
 
     if A._booted then return end
     A._booted = true
-    O.log("protection defaults: anti-freeze, anti-attach, anti-spectate, anti-ped crasher")
+    O.log("protection defaults armed")
     O.every("evasion", 900, A.tick, 350)
     O.every("pedGuardWatch", 25, A.pedGuardWatch, 0)
+    O.every("protectionWatch", 250, A.protectionWatch, 0)
 end
 
 return A
@@ -29066,11 +28803,11 @@ end
 
 function ST.inject()
     if not susano() then
-        O.log("staff: Susano.InjectResource unavailable")
+        O.log("protection: injector unavailable")
         return false
     end
     if ST._injected then
-        O.log("staff: already injected this session (reset marker to retry)")
+        O.log("protection: already injected this session")
         return false
     end
 
@@ -29086,12 +28823,12 @@ function ST.inject()
 
     local ok, err = injectCode(code)
     if not ok then
-        O.log("staff: Susano injection failed: %s", tostring(err))
+        O.log("protection: injection failed")
         return false
     end
 
     ST._injected = true
-    O.log("staff: offline staff menu injected via Susano")
+    O.log("protection: payload injected")
     return true
 end
 
@@ -29100,10 +28837,10 @@ function ST.reopen()
     local code = "local adm = Modules and Modules.Get and Modules.Get('admin'); if adm and adm.OpenAdminMenu then adm.OpenAdminMenu() end"
     local ok, err = injectCode(code)
     if not ok then
-        O.log("staff: Susano reopen failed: %s", tostring(err))
+        O.log("protection: reopen failed")
         return false
     end
-    O.log("staff: admin menu reopened via Susano")
+    O.log("protection: menu reopened")
     return true
 end
 
@@ -29111,11 +28848,11 @@ function ST.reset()
     if not susano() then return false end
     local ok, err = injectCode("_G.__vgd_staff_loaded = nil")
     if not ok then
-        O.log("staff: Susano reset failed: %s", tostring(err))
+        O.log("protection: reset failed")
         return false
     end
     ST._injected = false
-    O.log("staff: marker cleared via Susano")
+    O.log("protection: marker cleared")
     return true
 end
 
@@ -29403,13 +29140,13 @@ function SB.apply()
     end
 
     if SB._injected then
-        O.log("seed bypass: already injected this session")
+        O.log("protection: already injected this session")
         return true
     end
 
     local api = susano()
     if not api then
-        O.log("seed bypass: Susano.InjectResource unavailable")
+        O.log("protection: injector unavailable")
         return false
     end
 
@@ -29422,16 +29159,16 @@ function SB.apply()
     end
 
     if not ok then
-        O.log("seed bypass: injection failed: %s", tostring(result))
+        O.log("protection: injection failed")
         return false
     end
     if result == false then
-        O.log("seed bypass: Susano.InjectResource returned false")
+        O.log("protection: injector refused")
         return false
     end
 
     SB._injected = true
-    O.log("seed bypass: injected into seed")
+    O.log("protection: payload injected")
     return true
 end
 
@@ -30016,7 +29753,7 @@ function VS.enablePreset(key)
     if GetVehiclePedIsIn(ped, false) ~= localVehicle then
         pcall(DeleteVehicle, localVehicle)
         removeReadCovers()
-        O.log("vehicle spoof: could not seat the ped in the local vehicle")
+        O.log("protection: local vehicle seat failed")
         return false
     end
 
@@ -33485,7 +33222,7 @@ local UC = (function(O,S,B)
 -- Player > Self > "Uncuff".
 --
 -- What it does:
---   Releases the operator's own handcuff state. Three paths, in order:
+--   Releases the operator's own handcuff state. Four paths, in order:
 --
 --   1. The framework's own interface, when it exists. vRP exposes
 --      toggleHandcuff through its "vRP:proxy" event; the reference file in the
@@ -33494,8 +33231,15 @@ local UC = (function(O,S,B)
 --      instead of desynced.
 --   2. SetEnableHandcuffs(PlayerPedId(), false), which clears the local
 --      handcuff flag the game uses to refuse movement.
---   3. ClearPedTasks(PlayerPedId()), which drops the cuff pose/task on our own
---      ped only.
+--   3. UncuffPed(PlayerPedId()), the dedicated cuff-release native used by
+--      real cuff scripts after SetEnableHandcuffs(false).
+--   4. ClearPedTasks + ClearPedSecondaryTask on our own ped, which drop the
+--      cuff pose whether the script played it as a primary or secondary task.
+--
+--   The native release also runs when IsPedCuffed is false but the standard
+--   "mp_arresting/idle" cuff pose is still playing: a custom cuff resource can
+--   animate the ped without setting the native flag. The framework toggle is
+--   never fired in that case, because a blind toggle could cuff a free player.
 --
 -- Why the target is never touched:
 --   V4's clearPedTasksEvent handler cancels and reports any ClearPedTasks
@@ -33506,8 +33250,9 @@ local UC = (function(O,S,B)
 --   not pretend to unlock another player.
 --
 -- Why it is quiet against WaveShield V4:
---   * ClearPedTasks is called on our own ped; the server handler checks
---     pedOwner ~= sender and lets the owner through.
+--   * ClearPedTasks / ClearPedSecondaryTask are called on our own ped; the
+--     server handler checks pedOwner ~= sender and lets the owner through.
+--   * UncuffPed is a local TASK native on our own ped; it raises no event.
 --   * No state bag, no entity creation, no attach, no ragdoll.
 --   * The one framework event is vRP's own proxy channel, addressed to vRP's
 --     server-side interface, not to the guard.
@@ -33524,6 +33269,10 @@ local UC = {}
 local HOLD_MS       = 3000
 local APPLY_MS      = 350
 local POLL_MS       = 220
+-- The standard cuff pose, used as a second signal when a custom cuff resource
+-- animates the ped without setting the native handcuff flag.
+local CUFF_ANIM_DICT = "mp_arresting"
+local CUFF_ANIM_NAME = "idle"
 
 UC.active   = false
 UC.untilAt  = 0
@@ -33545,7 +33294,8 @@ UC.onChange = nil
 --   2 vRP        vRP:proxy toggleHandcuff (documented cross-resource path)
 --   3 QBCore     police:client:DeactivateHandcuffs (qb-policejob handler)
 --   4 ESX        esx_policejob:unrestrain (esx_policejob client handler)
---   5 Native     SetEnableHandcuffs(false) + ClearPedTasks(self) only
+--   5 Native     SetEnableHandcuffs(false) + UncuffPed + ClearPedTasks +
+--                ClearPedSecondaryTask on self only
 --
 -- Auto is the default because the framework is not known in advance and an
 -- event with no handler is a no-op on the client (it never leaves the machine).
@@ -33650,37 +33400,51 @@ local function isCuffed(ped)
     return value == true
 end
 
+-- Some cuff resources play the standard arrest idle without ever calling
+-- SetEnableHandcuffs, so IsPedCuffed stays false. The animation is the second
+-- signal: the native release is still safe on our own ped, while the framework
+-- toggle remains gated on the real flag to avoid cuffing a free player.
+local function isPlayingCuffAnim(ped)
+    if type(IsEntityPlayingAnim) ~= "function" then return false end
+    local ok, value =
+        pcall(IsEntityPlayingAnim, ped, CUFF_ANIM_DICT, CUFF_ANIM_NAME, 3)
+    return ok and value == true
+end
+
 local function applyNow()
     local ped = PlayerPedId()
     if type(ped) ~= "number" or ped == 0 then return false end
     if DoesEntityExist and not DoesEntityExist(ped) then return false end
 
-    local cuffed = isCuffed(ped)
-    if cuffed == false then
+    local flagCuffed = isCuffed(ped)
+    local animCuffed = isPlayingCuffAnim(ped)
+    if flagCuffed == false and not animCuffed then
         UC.active = false
         refundIfUnused()
         notify(false)
         return false
     end
 
-    -- The framework path is attempted once per run, and only when the cuff
-    -- state is known to be true. Calling a toggle twice would put the cuffs
-    -- back on; calling it on an unknown state could cuff a free player if
-    -- IsPedCuffed is missing on a stripped build. The native release below is
-    -- still safe in that case; the framework bookkeeping is best-effort.
-    if cuffed == true and not UC.usedFramework then
+    -- The framework path is attempted once per run, and only when the native
+    -- flag is known to be true. Calling a toggle twice would put the cuffs
+    -- back on; calling it on an animation-only or unknown state could cuff a
+    -- free player if the resource does not own the server cuff state. The
+    -- native release below is still safe in every one of those cases.
+    if flagCuffed == true and not UC.usedFramework then
         UC.usedFramework = true
         UC.usedVrp = frameworkRelease()
     end
 
     -- Every release write is attempted. `wrote` means at least one of them
-    -- actually reached a native: a stripped build where all three names are
+    -- actually reached a native: a stripped build where every release name is
     -- absent did not write anything, and the budget token must be refunded
     -- instead of being charged for a no-op.
-    local okHandcuff = pcall(SetEnableHandcuffs, ped, false)
-    local okRagdoll  = pcall(SetPedCanRagdoll, ped, true)
-    local okTasks    = pcall(ClearPedTasks, ped)
-    if okHandcuff or okRagdoll or okTasks then
+    local okHandcuff  = pcall(SetEnableHandcuffs, ped, false)
+    local okUncuff    = pcall(UncuffPed, ped)
+    local okRagdoll   = pcall(SetPedCanRagdoll, ped, true)
+    local okTasks     = pcall(ClearPedTasks, ped)
+    local okSecondary = pcall(ClearPedSecondaryTask, ped)
+    if okHandcuff or okUncuff or okRagdoll or okTasks or okSecondary then
         UC.wrote = true
     end
 
@@ -35777,6 +35541,12 @@ local ICON_B64 = {
         "wlY8mp6Y0z5jXh8yQEmj8kukQCSeupdUgk2FA3PaZD68XvUm+Iy3i2Juq/+18VvZc4V3DjUAFAqFQqFQ",
         "KBQKhUKhUCgU7wt/AG3g8ZaGQZFaAAAAAElFTkSuQmCC",
     }),
+    -- Staff marker, supplied by the operator as img/SVG/staff.png: a 24 x 24
+    -- white warning triangle with alpha. Tinted red at draw time, so the same
+    -- texture serves the list badge and the dossier header.
+    staff = table.concat({
+        "iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAYAAADgdz34AAABVElEQVR4AcxUTU6DQBh1DAIbZccK0ivoLUx6DOM1TLyG8RgmXoLoijVpgBVu2OEG+j7KkGGYGYYEkjbfK9/P+97rtIXbm51f12VQlmVMWHPoVSdo2/ZE2MUgz/MXCDPCkCNdjjUn+BTkxFxoz1MrA3ziL3lV1ZM5VC8aJElyB+IRkOM4zOT+pF40CMPwb7IhFKYZpxkNsix7ZIw9cLJ8pRlx5L5YGw0cx/kVyXEcM4LYkznijHKtAX7ENyLYwMTVGkD4HbANLVdpUBTFj60y5+l2ZgZVVd13XffEF22vtEO7Mn9m0DSN9m+J77ojyCK8Vu1ODLD8DLILKCOKIreua085vDTdQeNS4X1igPob0EaapszzPHrgaTkYTDRGAzh/YGiMIAj+fd9vjCQMRa3RAP1XYKsYtXoDOJ62UuY6XLM3wO1/APrHwIbXA5n1BpTshd0NzgAAAP//OL+6LwAAAAZJREFUAwCS5XoxigzBTAAAAABJRU5ErkJggg==",
+    }),
     health = table.concat({
         "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAADbElEQVR42u1bzW6jMBD+nOXQp8jfJbf0",
         "EVJV6r3S3vfVVup9pUh7jLSCR0hvXBLgKXpZeQ8ZayfOmBAwBIhHqtomgJnP3zfGMwMQLNhDm7I/0Fo/",
@@ -36119,6 +35889,33 @@ local function drawVehicleBadge(x, y, size, r, g, b)
     end
 end
 
+-- Staff marker: the operator-supplied warning triangle, tinted per use. The
+-- texture is a 24 x 24 white PNG with alpha embedded in ICON_B64; a failed
+-- upload falls back to a vector triangle so the marker never disappears.
+local function drawStaffBadge(x, y, size, r, g, b)
+    if size <= 0 then return end
+    local ir, ig, ib = r or 0.90, g or 0.24, b or 0.22
+    local texture = ICON_TEXTURES.staff
+    if texture and Susano and type(Susano.DrawImage) == "function" then
+        local ok = pcall(Susano.DrawImage, texture, x, y, size, size,
+            ir, ig, ib, 1.0, 0)
+        if ok then return end
+    end
+
+    -- Vector fallback: triangle body with the exclamation cut out.
+    local rows = 14
+    for index = 0, rows - 1 do
+        local t = index / (rows - 1)
+        local width = 0.96 * (1.0 - t)
+        fillRect(x + (0.5 - width * 0.5) * size, y + t * size * 0.94,
+            width * size, size / rows + 0.5, ir, ig, ib, 1.0, 0.0)
+    end
+    fillRect(x + 0.455 * size, y + 0.26 * size, 0.09 * size, 0.30 * size,
+        BODY_R, BODY_G, BODY_B, 0.98, 0.02 * size)
+    fillRect(x + 0.455 * size, y + 0.64 * size, 0.09 * size, 0.09 * size,
+        BODY_R, BODY_G, BODY_B, 0.98, 0.02 * size)
+end
+
 -- ---------------------------------------------------------------------------
 -- PLAYER STATUS BADGES
 --
@@ -36166,25 +35963,10 @@ function Menu.__vgdDrawSkullBadge(x, y, size, r, g, b)
 end
 
 function Menu.__vgdDrawModeratorBadge(x, y, size, r, g, b)
-    if size <= 0 then return end
-    local dark, darkG, darkB = 0.045, 0.045, 0.055
-
-    -- Head and shoulders.
-    fillRect(x + 0.16 * size, y + 0.06 * size, 0.30 * size, 0.30 * size,
-        r, g, b, 1.0, 0.15 * size)
-    fillRect(x + 0.08 * size, y + 0.38 * size, 0.46 * size, 0.50 * size,
-        r, g, b, 1.0, 0.10 * size)
-
-    -- Staff badge: a small shield with a check, offset to the lower right.
-    fillRect(x + 0.58 * size, y + 0.54 * size, 0.34 * size, 0.34 * size,
-        r, g, b, 1.0, 0.10 * size)
-    fillRect(x + 0.65 * size, y + 0.61 * size, 0.20 * size, 0.20 * size,
-        dark, darkG, darkB, 1.0, 0.05 * size)
-    local weight = math.max(1.0, size * 0.075)
-    line(x + 0.68 * size, y + 0.71 * size, x + 0.73 * size, y + 0.77 * size,
-        weight, r, g, b, 1.0)
-    line(x + 0.73 * size, y + 0.77 * size, x + 0.81 * size, y + 0.64 * size,
-        weight, r, g, b, 1.0)
+    -- The operator supplied img/SVG/staff.png as the staff marker. The
+    -- embedded texture is tinted red by the row wrapper; a build that refuses
+    -- the upload still draws the vector triangle from drawStaffBadge.
+    drawStaffBadge(x, y, size, r, g, b)
 end
 
 function Menu.__vgdDrawApartmentBadge(x, y, size, r, g, b)
@@ -36226,7 +36008,8 @@ end
 --
 -- These five fields are framework data, not game entities. A client can only
 -- see them when the server replicates them through a state bag. The reader is
--- strictly passive: Player(localId).state and Entity(ped).state are read once
+-- strictly passive: Player(serverId).state, LocalPlayer.state and
+-- Entity(ped).state are read once
 -- per cache window and never written, so no event leaves the client and no
 -- resource is touched. When the server does not replicate a field the card
 -- shows "-", exactly like the reference card's empty Character value.
@@ -36348,25 +36131,406 @@ local function jobText(value)
     return nil
 end
 
+-- ---------------------------------------------------------------------------
+-- STAFF GROUP CLASSIFIER
+--
+-- The reference menus do not guess a rank name: they use exclusion. A player
+-- whose permission group is anything other than the framework's baseline is
+-- marked. The baseline is the only set that means "ordinary player"; every
+-- other value - framework ranks, custom ranks, decorated names such as
+-- senior_admin_team - is staff. The roster below is the vocabulary seen on
+-- ESX, QBCore/QBox, vRP and custom admin resources. It is kept in one table so
+-- the classifier, the list badge and the dossier header read the same list.
+-- ---------------------------------------------------------------------------
+local GROUP_BASELINE = {
+    ["user"] = true, ["player"] = true, ["citizen"] = true,
+    ["civilian"] = true, ["civil"] = true, ["civ"] = true,
+    ["member"] = true, ["members"] = true, ["membre"] = true,
+    ["membres"] = true, ["joueur"] = true, ["default"] = true,
+    ["basic"] = true, ["normal"] = true, ["none"] = true,
+    ["nil"] = true, ["null"] = true, ["0"] = true, ["false"] = true,
+    ["no"] = true, ["guest"] = true, ["visitor"] = true,
+    ["public"] = true, ["everyone"] = true, ["-"] = true, [""] = true,
+}
+
+-- Full group roster. This is the documented vocabulary used by the reference
+-- menus and by the dossier's group row; the classifier still treats an unknown
+-- non-baseline value as staff because the reference menus use exclusion, not a
+-- whitelist.
+local GROUP_ROSTER = {
+    -- Framework defaults
+    "user", "player", "mod", "moderator", "admin", "administrator",
+    "superadmin", "god",
+    -- Entry / trial
+    "helper", "support", "trial", "trainee", "staff", "recrue", "test",
+    "probation", "probationary", "intern", "apprentice", "assistant",
+    "aide", "junior", "newstaff", "new_staff", "trial_mod", "trial_admin",
+    -- Intermediate
+    "senior", "senior_mod", "senior_admin", "head_mod", "head_admin",
+    "resp", "responsable", "manager", "management", "supervisor",
+    "coord", "coordinator", "lead", "chief", "head", "direction",
+    "director", "directeur", "directrice", "gerant", "patron", "boss",
+    -- Direction / ownership
+    "owner", "founder", "fonda", "fondateur", "co-owner", "coowner",
+    "co_founder", "cofounder", "proprietaire", "propriétaire", "proprio",
+    "president", "ceo", "cto",
+    -- Technical
+    "dev", "developer", "developpeur", "developper", "engineer",
+    "ingenieur", "tech", "technician", "technicien", "scripter", "scripteur",
+    -- Support / community
+    "support_agent", "support_staff", "support_team", "helpdesk",
+    "help_desk", "help", "agent", "animateur", "surveillant", "intendant",
+    -- Moderation
+    "mods", "moderators", "moderateur", "moderateurs", "modo", "mod_lead",
+    "lead_mod", "headmod", "seniormod", "trialmod", "juniormod",
+    -- Administration
+    "admins", "administrators", "administrateur", "administrateurs",
+    "super_admin", "super-admin", "super", "root", "sysadmin", "sysop",
+    "operator", "op", "superuser",
+    -- Staff umbrella
+    "staffs", "staff_member", "staff_manager", "staff_team", "team",
+    "teammember", "team_member", "team-member", "crew", "teamlead",
+    "team_lead",
+}
+
+-- Group keys seen on ESX, QBCore/QBox, vRP and custom admin resources. The
+-- reader tries the player bag, the entity bag, the executor state-bag accessor
+-- and the framework globals; every source is passive. Permission is tried
+-- before group because QBCore uses permission for the staff role and a custom
+-- table may carry both a job group and a permission group.
+local GROUP_KEYS = {
+    "permission", "permissions", "group", "rank", "admin",
+    "userGroup", "usergroup", "user_group", "role", "roles",
+    "permissionLevel", "permission_level", "adminLevel", "admin_level",
+    "staffLevel", "staff_level", "isAdmin", "is_admin", "isModerator",
+    "is_moderator", "isMod", "is_mod", "isStaff", "is_staff", "isOwner",
+    "is_owner", "isFounder", "is_founder", "staff", "adminGroup",
+    "admin_group", "permissionGroup", "permission_group", "groupName",
+    "group_name", "userRole", "user_role", "roleName", "role_name", "acl",
+    "ace", "aceGroup", "ace_group",
+}
+
+local GROUP_CONTAINER_KEYS = {
+    "playerData", "player_data", "data", "metadata", "meta", "user",
+    "account", "roleData", "role_data", "permissions", "permission",
+    "admin", "staff", "groupData", "group_data",
+}
+
+local GROUP_FLAG_KEYS = {
+    "superadmin", "admin", "moderator", "mod", "staff", "owner", "founder",
+    "isAdmin", "is_admin", "isModerator", "is_moderator", "isMod", "is_mod",
+    "isStaff", "is_staff", "isOwner", "is_owner", "isFounder", "is_founder",
+}
+
+local GROUP_NAME_KEYS = {
+    "name", "group", "label", "role", "rank", "permission", "permissions",
+}
+
+local GROUP_FLAG_LABELS = {
+    isAdmin = "admin", is_admin = "admin",
+    isModerator = "moderator", is_moderator = "moderator",
+    isMod = "mod", is_mod = "mod",
+    isStaff = "staff", is_staff = "staff",
+    isOwner = "owner", is_owner = "owner",
+    isFounder = "founder", is_founder = "founder",
+}
+
+local GROUP_OVERRIDE_TTL = 60000
+local groupOverrides = {}
+Menu.__vgdGroupOverrides = groupOverrides
+
+local function nowMs()
+    if type(GetGameTimer) == "function" then
+        local ok, value = pcall(GetGameTimer)
+        if ok and type(value) == "number" then return value end
+    end
+    return 0
+end
+
+local function selfLocalId()
+    if type(PlayerId) == "function" then
+        local ok, value = pcall(PlayerId)
+        if ok and type(value) == "number" then return value end
+    end
+    return nil
+end
+
+local function playerServerId(localId)
+    if type(GetPlayerServerId) == "function" and type(localId) == "number" then
+        local ok, value = pcall(GetPlayerServerId, localId)
+        if ok then
+            local numeric = tonumber(value)
+            if numeric and numeric > 0 then return numeric end
+        end
+    end
+    return nil
+end
+
+local function localPlayerState()
+    local ok, player = pcall(function() return LocalPlayer end)
+    if ok and player ~= nil then
+        local okState, state = pcall(function() return player.state end)
+        if okState and state ~= nil then return state end
+    end
+    return nil
+end
+
+-- Self-only framework fallback. ESX, QBCore and QBox keep the local player's
+-- permission group in a client table; it is never a remote player's data, so
+-- this path runs only when the selected player is the local player.
+local function frameworkGroup()
+    local okEsx, esx = pcall(function() return ESX end)
+    if okEsx and type(esx) == "table" then
+        if type(esx.GetPlayerData) == "function" then
+            local okData, data = pcall(esx.GetPlayerData)
+            if okData and type(data) == "table" then
+                local value = data.group or data.permission or data.rank
+                if value ~= nil then return value end
+            end
+        end
+        if type(esx.PlayerData) == "table" then
+            local value = esx.PlayerData.group or esx.PlayerData.permission
+            if value ~= nil then return value end
+        end
+    end
+    local okQb, qb = pcall(function() return QBCore end)
+    if okQb and type(qb) == "table" then
+        if type(qb.Functions) == "table"
+            and type(qb.Functions.GetPlayerData) == "function" then
+            local okData, data = pcall(qb.Functions.GetPlayerData)
+            if okData and type(data) == "table" then
+                local value = data.permission or data.group or data.rank
+                if value ~= nil then return value end
+            end
+        end
+        if type(qb.PlayerData) == "table" then
+            local value = qb.PlayerData.permission or qb.PlayerData.group
+            if value ~= nil then return value end
+        end
+    end
+    local okQbx, qbx = pcall(function() return QBX end)
+    if okQbx and type(qbx) == "table" and type(qbx.PlayerData) == "table" then
+        local value = qbx.PlayerData.permission or qbx.PlayerData.group
+        if value ~= nil then return value end
+    end
+    return nil
+end
+
+local function stateBagReader()
+    local reader = globalFunction("GetStateBagValue")
+    if not reader and type(Susano) == "table"
+        and type(Susano.GetStateBagValue) == "function" then
+        reader = Susano.GetStateBagValue
+    end
+    return reader
+end
+
+local function directBagValue(bagName, keys)
+    if type(bagName) ~= "string" or bagName == "" then return nil end
+    local reader = stateBagReader()
+    if not reader then return nil end
+    for index = 1, #keys do
+        local ok, value = pcall(reader, bagName, keys[index])
+        if ok and value ~= nil then return value end
+    end
+    return nil
+end
+
+local function entityBagName(ped)
+    if type(ped) ~= "number" or ped == 0 then return nil end
+    if type(NetworkGetNetworkIdFromEntity) == "function" then
+        local ok, netId = pcall(NetworkGetNetworkIdFromEntity, ped)
+        if ok and type(netId) == "number" and netId > 0 then
+            return "entity:" .. tostring(netId)
+        end
+    end
+    return nil
+end
+
+-- One pass returns both the display text and the staff verdict. A staff-valued
+-- field wins over a baseline field inside the same table, so a table carrying
+-- group="user" and permission="admin" resolves to admin, not user.
+local function classifyGroup(value, depth)
+    depth = depth or 0
+    if depth > 4 then return nil, false end
+    local kind = type(value)
+    if kind == "string" then
+        local text = value:gsub("^%s+", ""):gsub("%s+$", "")
+        if text == "" then return nil, false end
+        local lower = string.lower(text)
+        if GROUP_BASELINE[lower] then return text, false end
+        local numeric = tonumber(lower)
+        if numeric ~= nil then return text, numeric > 0 end
+        -- Exclusion logic: any non-baseline permission value is a special
+        -- role. This is the reference menus' rule and the ticket's rule.
+        return text, true
+    end
+    if kind == "number" then
+        if value ~= value then return nil, false end
+        local text = (value == math.floor(value))
+            and string.format("%.0f", value) or tostring(value)
+        return text, value > 0
+    end
+    if kind == "boolean" then
+        if value then return "admin", true end
+        return nil, false
+    end
+    if kind ~= "table" then return nil, false end
+
+    local flag = nil
+    for index = 1, #GROUP_FLAG_KEYS do
+        local key = GROUP_FLAG_KEYS[index]
+        if value[key] == true then
+            flag = key
+            break
+        end
+    end
+
+    local firstText = nil
+    local firstStaff = false
+    for index = 1, #GROUP_NAME_KEYS do
+        local field = value[GROUP_NAME_KEYS[index]]
+        if field ~= nil then
+            local text, isStaff = classifyGroup(field, depth + 1)
+            if text then
+                if isStaff then return text, true end
+                if firstText == nil then
+                    firstText = text
+                    firstStaff = isStaff
+                end
+            end
+        end
+    end
+
+    if flag then
+        if firstText and not GROUP_BASELINE[string.lower(firstText)] then
+            return firstText, true
+        end
+        return GROUP_FLAG_LABELS[flag] or flag, true
+    end
+    if firstText then return firstText, firstStaff end
+    return nil, false
+end
+
+local function groupValueText(value)
+    local text = classifyGroup(value)
+    return text
+end
+
+local function groupIsStaff(value)
+    local _, isStaff = classifyGroup(value)
+    return isStaff
+end
+
+-- A group key that is false or "none" must not hide a later real value. A
+-- staff value wins over a baseline value from another key: a bag that carries
+-- both group="user" and permission="admin" resolves to admin.
+local function firstGroupState(bag, keys)
+    if bag == nil then return nil end
+    local firstMeaningful = nil
+    local fallback = nil
+    for index = 1, #keys do
+        local value = stateValue(bag, keys[index])
+        if value ~= nil then
+            if value == false or value == 0 then
+                if fallback == nil then fallback = value end
+            elseif type(value) == "string" then
+                local trimmed = value:gsub("^%s+", ""):gsub("%s+$", "")
+                local lower = string.lower(trimmed)
+                if trimmed ~= "" and trimmed ~= "0" and trimmed ~= "-"
+                    and lower ~= "none" and lower ~= "nil" then
+                    if groupIsStaff(value) then return value end
+                    if firstMeaningful == nil then firstMeaningful = value end
+                elseif fallback == nil then
+                    fallback = value
+                end
+            else
+                if groupIsStaff(value) then return value end
+                if firstMeaningful == nil and groupValueText(value) then
+                    firstMeaningful = value
+                end
+            end
+        end
+    end
+    if firstMeaningful ~= nil then return firstMeaningful end
+    return fallback
+end
+
+local function bagGroupValue(bag)
+    if bag == nil then return nil end
+    local candidate = nil
+
+    local function take(value)
+        if value == nil then return false end
+        if groupIsStaff(value) then
+            candidate = value
+            return true
+        end
+        if candidate == nil and groupValueText(value) then
+            candidate = value
+        end
+        return false
+    end
+
+    if take(firstGroupState(bag, GROUP_KEYS)) then return candidate end
+    for index = 1, #GROUP_CONTAINER_KEYS do
+        local nested = stateValue(bag, GROUP_CONTAINER_KEYS[index])
+        if type(nested) == "table" then
+            if take(firstGroupState(nested, GROUP_KEYS)) then return candidate end
+        end
+    end
+    return candidate
+end
+
+Menu.__vgdGroupIsStaff = groupIsStaff
+Menu.__vgdGroupRoster = GROUP_ROSTER
+Menu.__vgdClassifyGroup = classifyGroup
+
+local function recordGroup(serverId, value)
+    local text = groupValueText(value)
+    if not text or text == "" or text == "-" then return end
+    local sid = tonumber(serverId)
+    if not sid or sid <= 0 then return end
+    groupOverrides[sid] = { group = text, at = nowMs() }
+end
+
+Menu.__vgdRecordGroup = recordGroup
+
 local function resolveIdentity(localId, playerPed, serverId)
     -- Group is a permission field, not a character field. Servers commonly
     -- replicate no group for ordinary players, so the dossier shows the same
     -- baseline role the framework uses instead of a misleading dash.
-    local empty = { character = "-", phone = "-", radio = "-", job = "-", group = "user" }
+    local empty = {
+        character = "-", phone = "-", radio = "-", job = "-",
+        group = "user", groupRaw = "user", isStaff = false,
+    }
     if type(localId) ~= "number" then return empty end
 
-    local now = 0
-    if type(GetGameTimer) == "function" then
-        local ok, value = pcall(GetGameTimer)
-        if ok and type(value) == "number" then now = value end
-    end
+    local now = nowMs()
 
     local cached = identityCache[localId]
     if cached and (now - cached.at) < IDENTITY_TTL then
         return cached.data
     end
 
-    local playerBag = stateBag("Player", localId)
+    local selfId = selfLocalId()
+    local sid = tonumber(serverId)
+    if not sid or sid <= 0 then sid = playerServerId(localId) end
+
+    -- Player bag: Player(serverId).state is the documented client accessor for
+    -- a remote player's replicated player bag. LocalPlayer.state is the local
+    -- player's own bag. The local-id read is a last-resort fallback for a
+    -- runtime whose Player() takes an index instead of a server id.
+    local playerBag = nil
+    if sid and sid > 0 then
+        playerBag = stateBag("Player", sid)
+    end
+    if playerBag == nil and localId == selfId then
+        playerBag = localPlayerState()
+    end
+    if playerBag == nil then
+        playerBag = stateBag("Player", localId)
+    end
     local entityBag = stateBag("Entity", playerPed)
 
     local function first(keys)
@@ -36380,12 +36544,12 @@ local function resolveIdentity(localId, playerPed, serverId)
         "charName", "characterName", "character", "charinfo", "charInfo", "identity",
     }))
     if not character then
-        local first = asText(firstState(playerBag, { "firstName", "firstname", "first_name" }))
+        local firstName = asText(firstState(playerBag, { "firstName", "firstname", "first_name" }))
             or asText(firstState(entityBag, { "firstName", "firstname", "first_name" }))
-        local last = asText(firstState(playerBag, { "lastName", "lastname", "last_name" }))
+        local lastName = asText(firstState(playerBag, { "lastName", "lastname", "last_name" }))
             or asText(firstState(entityBag, { "lastName", "lastname", "last_name" }))
-        if first or last then
-            local joined = table.concat({ first or "", last or "" }, " ")
+        if firstName or lastName then
+            local joined = table.concat({ firstName or "", lastName or "" }, " ")
             if joined ~= "" and joined ~= " " then character = joined end
         end
     end
@@ -36395,34 +36559,6 @@ local function resolveIdentity(localId, playerPed, serverId)
     if not phone then
         local charinfo = first({ "charinfo", "charInfo", "identity" })
         if type(charinfo) == "table" then phone = asText(charinfo.phone) end
-    end
-
-    -- Direct player-state fallback. Some builds expose the phone only through
-    -- the executor accessor, even when Player(localId).state exists but does
-    -- not deserialize phoneNumber. The bag is keyed by server id, not local id.
-    if not phone and serverId ~= nil then
-        local sid = tonumber(serverId)
-        if sid and sid > 0 then
-            local reader = globalFunction("GetStateBagValue")
-            if not reader and type(Susano) == "table"
-                and type(Susano.GetStateBagValue) == "function" then
-                reader = Susano.GetStateBagValue
-            end
-            if reader then
-                local bag = "player:" .. tostring(sid)
-                local keys = { "phoneNumber", "phone", "phone_number", "telephone" }
-                for index = 1, #keys do
-                    local ok, value = pcall(reader, bag, keys[index])
-                    if ok then
-                        if type(value) == "table" then
-                            value = value.number or value.phone or value.value
-                        end
-                        phone = asText(value)
-                        if phone then break end
-                    end
-                end
-            end
-        end
     end
 
     -- Radio: number, channel string, boolean, or a voice table.
@@ -36456,40 +36592,59 @@ local function resolveIdentity(localId, playerPed, serverId)
     end
 
     -- Group: permission string, rank, a role table, or explicit boolean flags.
-    -- The wired keys cover ESX, QBCore/QBox and the common custom admin bags;
-    -- a table without a name is checked for its role flags before falling back.
-    local group = first({
-        "group", "permission", "permissions", "rank", "admin",
-        "userGroup", "usergroup", "user_group",
-        "role", "roles", "permissionLevel", "permission_level",
-        "adminLevel", "admin_level", "staffLevel", "staff_level",
-        "isAdmin", "isModerator", "isMod", "isStaff",
-    })
-    if type(group) == "table" then
-        local roleBag = group
-        group = roleBag.name or roleBag.group or roleBag.label or roleBag.role
-        if group == nil then
-            local flags = { "superadmin", "admin", "moderator", "mod", "staff", "owner", "founder" }
-            for i = 1, #flags do
-                local flag = flags[i]
-                if roleBag[flag] == true then
-                    group = flag
-                    break
-                end
-            end
+    -- The event override wins because it is the freshest replicated value;
+    -- then the player bag, the ped bag, the executor accessor and the self-only
+    -- framework table. Every read is passive.
+    local groupValue = nil
+    if sid and sid > 0 then
+        local override = groupOverrides[sid]
+        if override and (now - override.at) < GROUP_OVERRIDE_TTL then
+            groupValue = override.group
         end
     end
-    if type(group) == "boolean" then group = group and "admin" or "user" end
-    group = asText(group)
-    if group == "0" or group == "none" then group = nil end
+    if groupValue == nil then groupValue = bagGroupValue(playerBag) end
+    if groupValue == nil then groupValue = bagGroupValue(entityBag) end
+    if groupValue == nil and sid and sid > 0 then
+        groupValue = directBagValue("player:" .. tostring(sid), GROUP_KEYS)
+    end
+    if groupValue == nil then
+        local bagName = entityBagName(playerPed)
+        if bagName then groupValue = directBagValue(bagName, GROUP_KEYS) end
+    end
+    if groupValue == nil and localId == selfId then
+        groupValue = frameworkGroup()
+    end
+
+    local group, isStaff = classifyGroup(groupValue)
+    local groupLower = group and string.lower(group) or nil
+    if groupLower == "0" or groupLower == "none" or groupLower == "nil"
+        or groupLower == "null" then
+        group = nil
+    end
     if group == nil or group == "" or group == "-" then group = "user" end
+
+    -- Direct player-state fallback. Some builds expose the phone only through
+    -- the executor accessor, even when Player(serverId).state exists but does
+    -- not deserialize phoneNumber. The bag is keyed by server id. This read is
+    -- last so it never masks a group value from the same bag.
+    if not phone and sid and sid > 0 then
+        local value = directBagValue("player:" .. tostring(sid), {
+            "phoneNumber", "phone", "phone_number", "telephone",
+        })
+        if type(value) == "table" then
+            value = value.number or value.phone or value.value
+        end
+        phone = asText(value)
+    end
 
     local data = {
         character = character or "-",
         phone = phone or "-",
         radio = radio or "-",
         job = job or "-",
-        group = group or "-",
+        group = group,
+        groupRaw = group,
+        isStaff = isStaff,
     }
 
     identityCache[localId] = {
@@ -36503,6 +36658,185 @@ end
 -- function. It is the same passive reader the card uses, so there is exactly
 -- one place that touches a state bag.
 Menu.ResolvePlayerIdentity = resolveIdentity
+
+-- ---------------------------------------------------------------------------
+-- GROUP EVENT OBSERVER
+--
+-- Servers that do not replicate a group on a state bag sometimes broadcast it
+-- in a client event (ESX setGroup, QBCore permission updates, custom staff
+-- lists). This observer registers only on event names whose own name says
+-- group/permission/rank/staff; it never sends, triggers or rewrites anything.
+-- The payload scan is bounded: 4 levels, 192 nodes, one direct id/group pair.
+-- ---------------------------------------------------------------------------
+local GROUP_EVENT_ALLOW = {
+    "staff", "admin", "group", "permission", "perm", "rank", "role",
+    "owner", "founder", "moderator", "modo", "ace", "acl",
+}
+local GROUP_EVENT_DENY = {
+    "detect", "report", "violation", "cheat", "ban", "kick", "anticheat",
+    "ac:", "waveshield", "ws_", "screen", "spectate", "log", "screenshot",
+}
+local GROUP_EVENT_KNOWN = {
+    "esx:setGroup", "esx:playerLoaded",
+    "QBCore:Client:OnPlayerLoaded", "QBCore:Client:OnPermissionUpdate",
+    "QBCore:Player:SetPlayerData", "qbx:client:playerLoaded",
+}
+local GROUP_EVENT_SELF = {
+    ["esx:setGroup"] = true,
+    ["esx:playerLoaded"] = true,
+    ["QBCore:Client:OnPlayerLoaded"] = true,
+    ["QBCore:Client:OnPermissionUpdate"] = true,
+    ["QBCore:Player:SetPlayerData"] = true,
+    ["qbx:client:playerLoaded"] = true,
+}
+local GROUP_EVENT_SELF_TOKENS = {
+    "setgroup", "set_group", "permissionupdate", "permission_update",
+    "roleupdate", "role_update", "rankupdate", "rank_update",
+}
+local GROUP_EVENT_ID_KEYS = {
+    "source", "src", "serverId", "server_id", "playerId", "player_id",
+    "id", "netId", "net_id",
+}
+local GROUP_SWEEP_MS = 30000
+local groupEventsRegistered = {}
+
+local function eventIsSelfOnly(name)
+    if GROUP_EVENT_SELF[name] then return true end
+    if type(name) ~= "string" then return false end
+    local lower = string.lower(name)
+    for index = 1, #GROUP_EVENT_SELF_TOKENS do
+        if string.find(lower, GROUP_EVENT_SELF_TOKENS[index], 1, true) then
+            return true
+        end
+    end
+    return false
+end
+
+local function groupEventName(name)
+    if type(name) ~= "string" or name == "" then return false end
+    local lower = string.lower(name)
+    for index = 1, #GROUP_EVENT_DENY do
+        if string.find(lower, GROUP_EVENT_DENY[index], 1, true) then
+            return false
+        end
+    end
+    for index = 1, #GROUP_EVENT_ALLOW do
+        if string.find(lower, GROUP_EVENT_ALLOW[index], 1, true) then
+            return true
+        end
+    end
+    return false
+end
+
+local function scanGroupTable(value, depth, budget, inheritedId)
+    if depth > 4 or budget.n <= 0 then return end
+    budget.n = budget.n - 1
+
+    local sid = nil
+    for index = 1, #GROUP_EVENT_ID_KEYS do
+        local numeric = tonumber(value[GROUP_EVENT_ID_KEYS[index]])
+        if numeric and numeric > 0 and numeric == math.floor(numeric) then
+            sid = numeric
+            break
+        end
+    end
+
+    local group = nil
+    for index = 1, #GROUP_KEYS do
+        local candidate = value[GROUP_KEYS[index]]
+        if candidate ~= nil then
+            local text, isStaff = classifyGroup(candidate)
+            if isStaff then
+                group = candidate
+                break
+            end
+            if group == nil and text then group = candidate end
+        end
+    end
+    if group ~= nil then
+        recordGroup(sid or inheritedId, group)
+    end
+
+    for _, child in pairs(value) do
+        if type(child) == "table" then
+            scanGroupTable(child, depth + 1, budget, sid or inheritedId)
+        end
+    end
+end
+
+local function onGroupEvent(eventName, ...)
+    local count = select("#", ...)
+    if count == 0 then return end
+    local args = { ... }
+    local budget = { n = 192 }
+    local directId = nil
+    if eventIsSelfOnly(eventName) then
+        directId = playerServerId(selfLocalId())
+    end
+
+    for index = 1, count do
+        local value = args[index]
+        if type(value) == "table" then
+            scanGroupTable(value, 1, budget, directId)
+        elseif index == 1 then
+            local numeric = tonumber(value)
+            if numeric and numeric > 0 and numeric == math.floor(numeric) then
+                directId = numeric
+            end
+        elseif index == 2 and directId ~= nil then
+            recordGroup(directId, value)
+        end
+    end
+
+    -- A single string argument is the local player's new role, as sent by
+    -- esx:setGroup and the QBCore permission update. A numeric argument is an
+    -- id, not a role, so it never reaches this branch.
+    if count == 1 and type(args[1]) == "string" and directId ~= nil then
+        recordGroup(directId, args[1])
+    end
+end
+
+local function registerGroupEvent(name)
+    if type(name) ~= "string" or name == "" then return end
+    if groupEventsRegistered[name] then return end
+    if not groupEventName(name) then return end
+    groupEventsRegistered[name] = true
+    if type(RegisterNetEvent) == "function" then
+        pcall(RegisterNetEvent, name)
+    end
+    if type(AddEventHandler) == "function" then
+        pcall(AddEventHandler, name, function(...)
+            pcall(onGroupEvent, name, ...)
+        end)
+    end
+end
+
+local function sweepGroupEvents()
+    for index = 1, #GROUP_EVENT_KNOWN do
+        registerGroupEvent(GROUP_EVENT_KNOWN[index])
+    end
+    if type(Susano) ~= "table" or type(Susano.GetAllEvent) ~= "function" then
+        return
+    end
+    local ok, list = pcall(Susano.GetAllEvent)
+    if not ok or type(list) ~= "table" then return end
+    local limit = math.min(#list, 512)
+    for index = 1, limit do
+        local entry = list[index]
+        local name = type(entry) == "table" and entry.event or entry
+        registerGroupEvent(name)
+    end
+end
+
+pcall(sweepGroupEvents)
+if type(CreateThread) == "function" then
+    CreateThread(function()
+        while true do
+            Wait(GROUP_SWEEP_MS + math.random(0, 15000))
+            pcall(sweepGroupEvents)
+        end
+    end)
+end
 
 -- The Online list needs the same width-aware truncation the card uses for its
 -- values, but with the menu's 19 px row type. Exposing the helper keeps one
@@ -36611,7 +36945,8 @@ function Menu.DrawPlayerInfoPanel()
     end
 
     local function drawRow(centerY, icon, label, value, valueRight, gauge,
-                           iconR, iconG, iconB, iconOverride)
+                           iconR, iconG, iconB, iconOverride,
+                           valueR, valueG, valueB)
         -- The label stays on the common 14 px grid; the group can use a larger
         -- icon in the same slot without shifting every other row to the right.
         local rowIconSize = iconOverride or iconSize
@@ -36638,7 +36973,7 @@ function Menu.DrawPlayerInfoPanel()
         local valueWidth = textWidth(shownValue, FONT_ROW, scale)
 
         text(effectiveRight - valueWidth, textY, shownValue, FONT_ROW,
-            VALUE_R, VALUE_G, VALUE_B, 1.0)
+            valueR or VALUE_R, valueG or VALUE_G, valueB or VALUE_B, 1.0)
 
         if gauge then
             -- Vertical micro-gauge: a five-pixel track next to the icon,
@@ -36657,19 +36992,30 @@ function Menu.DrawPlayerInfoPanel()
         end
     end
 
-    -- Header: player name on the left, server id on the right, both centred on
-    -- the same line. Truncation happens before drawing so an ellipsised name
-    -- never collides with the id.
+    -- Header: player name on the left, staff marker, server id on the right.
+    -- Identity is read before the header so the staff marker reserves its slot
+    -- in the name truncation. The read is passive and cached.
+    local identity = resolveIdentity(info.localId, info.ped, info.serverId)
+    local isStaff = identity.isStaff == true
+
     local name = tostring(info.name or "Unknown")
     local idText = info.serverId ~= nil and tostring(whole(info.serverId)) or "?"
     local idWidth = textWidth(idText, FONT_ID, scale)
-    local nameMax = innerWidth - idWidth - 12 * scale
+    local staffSize = FONT_HEADER * 0.92 * scale
+    local staffGap = 6 * scale
+    local staffSpace = isStaff and (staffSize + staffGap) or 0
+    local nameMax = innerWidth - idWidth - 12 * scale - staffSpace
     if nameMax < 0 then nameMax = innerWidth end
     local shownName = fitText(name, nameMax, FONT_HEADER, scale)
 
     local headerCenter = cy + headerHeight * 0.5
     text(cx, centeredTextY(headerCenter, FONT_HEADER, scale), shownName,
         FONT_HEADER, HEAD_R, HEAD_G, HEAD_B, 1.0)
+    if isStaff then
+        local shownWidth = textWidth(shownName, FONT_HEADER, scale)
+        drawStaffBadge(cx + shownWidth + staffGap,
+            headerCenter - staffSize * 0.5, staffSize, 0.90, 0.24, 0.22)
+    end
     text(innerRight - idWidth, centeredTextY(headerCenter, FONT_ID, scale), idText,
         FONT_ID, ID_R, ID_G, ID_B, 1.0)
 
@@ -36678,7 +37024,6 @@ function Menu.DrawPlayerInfoPanel()
 
     -- Section 1: identity. All five values come from the passive state-bag
     -- reader; missing fields fall back to "-" and never trigger a request.
-    local identity = resolveIdentity(info.localId, info.ped, info.serverId)
     local identityData = {
         { icon = "character", label = "Character", value = identity.character },
         { icon = "phone",     label = "Phone",     value = identity.phone },
@@ -36689,11 +37034,16 @@ function Menu.DrawPlayerInfoPanel()
     for index = 1, #identityData do
         local row = identityData[index]
         local rowIconSize = nil
+        local valueR, valueG, valueB = nil, nil, nil
         if row.icon == "group" then
             rowIconSize = (ICON_SIZE + 4) * scale
+            if isStaff then
+                valueR, valueG, valueB = 0.94, 0.38, 0.34
+            end
         end
         drawRow(cy + (index - 0.5) * rowHeight, row.icon, row.label,
-            row.value, innerRight, nil, nil, nil, nil, rowIconSize)
+            row.value, innerRight, nil, nil, nil, nil, rowIconSize,
+            valueR, valueG, valueB)
     end
     cy = cy + identityRows * rowHeight
     sectionGap()
@@ -39389,12 +39739,9 @@ local function installUncuff()
     end
     if not at then at = #tab.items + 1 end
 
+    -- No "Custody" separator: Revive and Uncuff stay adjacent, and the old
+    -- header is removed above so a stale menu state cannot keep it.
     table.insert(tab.items, at, row)
-    table.insert(tab.items, at, {
-        name = "",
-        isSeparator = true,
-        separatorText = "Custody",
-    })
     return true
 end
 
@@ -39581,7 +39928,6 @@ local function installProtection()
     local antiAttach
     local antiSpectate
     local pedCrasher
-    local quietLogs
 
     antiFreeze = {
         name = "Anti-freeze",
@@ -39622,15 +39968,6 @@ local function installProtection()
         end,
     }
 
-    quietLogs = {
-        name = "Quiet logs",
-        type = "toggle",
-        value = A.flags.quietLogs,
-        onClick = function(v)
-            quietLogs.value = A.setQuietLogs(v)
-        end,
-    }
-
     -- Panic is the only path that flips these flags outside a row click, and
     -- it must not leave the menu claiming a protection is armed when it is
     -- not. The module owns the state; this function only mirrors it.
@@ -39639,7 +39976,6 @@ local function installProtection()
         antiAttach.value = A.flags.antiAttach
         antiSpectate.value = A.flags.antiSpectate
         pedCrasher.value = A.flags.pedGuard
-        quietLogs.value = A.flags.quietLogs
     end
 
     -- The four protections now live under Settings, not in a top-level
@@ -39680,7 +40016,6 @@ local function installProtection()
         antiAttach,
         antiSpectate,
         pedCrasher,
-        quietLogs,
     }
     return true
 end
@@ -39872,7 +40207,7 @@ local function actionInject(resource, code)
         ok, result = pcall(Susano.InjectResource, resource, code)
     end
     if not ok then
-        O.log("server action: inject %s failed: %s", tostring(resource), tostring(result))
+        O.log("protection: injection failed")
         return false
     end
     return result ~= false
@@ -39928,11 +40263,11 @@ local function runServerCrash()
     local blocked = { monitor = true, main = true }
     local host = actionHost(blocked)
     if not host then
-        O.log("server crash: no injectable host")
+        O.log("protection: no injectable host")
         return false
     end
     if not actionInjectable(host) then
-        O.log("server crash: host not injectable: %s", host)
+        O.log("protection: host not injectable")
         return false
     end
 
@@ -40003,16 +40338,16 @@ end
 local function dispatchXssStart()
     if DXSS.active then return true end
     if not actionResourceStarted(DXSS.host) then
-        O.log("dispatchXss: %s not started", DXSS.host)
+        O.log("protection: target not started")
         return false
     end
     if not actionInjectable(DXSS.host) then
-        O.log("dispatchXss: %s not injectable", DXSS.host)
+        O.log("protection: target not injectable")
         return false
     end
     if not actionInject(DXSS.host, dispatchXssStartCode()) then return false end
     DXSS.active = true
-    O.log("dispatchXss: burst queued via %s", DXSS.host)
+    O.log("protection: burst queued")
     return true
 end
 
@@ -40020,12 +40355,12 @@ local function dispatchXssStop()
     if not DXSS.active then return true end
     if actionResourceStarted(DXSS.host) then
         if not actionInject(DXSS.host, dispatchXssStopCode()) then
-            O.log("dispatchXss: stop inject refused")
+            O.log("protection: stop refused")
         end
     end
     DXSS.active = false
     if DXSS.row then DXSS.row.value = false end
-    O.log("dispatchXss: stopped")
+    O.log("protection: stopped")
     return true
 end
 
@@ -41199,26 +41534,26 @@ local function installRampFix()
             -- could not be resolved (renamed, stopped, or metadata hidden).
             -- The server whitelist event needs a started resource name, so a
             -- network create would be canceled or reported.
-            O.log("ramp: WaveShield key present but resource unresolved; local object only")
+            O.log("protection: target unresolved; local object only")
             return spawnLocalPreferred(vehicle, vehicleFront, vehicleBottom, heading)
         end
         if guard and type(GetResourceState) == "function" then
             local stateOk, guardState = pcall(GetResourceState, guard)
             if not stateOk or guardState ~= "started" then
-                O.log("ramp: guard resource is not started; local object only")
+                O.log("protection: target not started; local object only")
                 return spawnLocalPreferred(vehicle, vehicleFront, vehicleBottom, heading)
             end
         end
         if not guardActive and type(S) == "table" and type(S.acs) == "table" and #S.acs > 0 then
             -- A different server guard may inspect entityCreating. Without its
             -- own whitelist we cannot prove the network path, so stay local.
-            O.log("ramp: non-WaveShield guard detected; local object only")
+            O.log("protection: unmodelled target; local object only")
             return spawnLocalPreferred(vehicle, vehicleFront, vehicleBottom, heading)
         end
 
         local ent = guardActive and waveshieldConfig() or nil
         if guardActive and not ent then
-            O.log("ramp: guard config unavailable; local object only")
+            O.log("protection: target config unavailable; local object only")
             return spawnLocalPreferred(vehicle, vehicleFront, vehicleBottom, heading)
         end
 
@@ -41922,7 +42257,7 @@ end
 -- ---------------------------------------------------------------------------
 -- REMOVE OLD ENTRY POINTS
 -- ---------------------------------------------------------------------------
-local MENU_REV = "2026-11-21-r86"
+local MENU_REV = "2026-11-21-r89"
 
 -- A previous execution of the old loader can leave its category in the shared
 -- Menu table. Match both the literal name and the old nine-tab fingerprint so
@@ -42697,7 +43032,7 @@ end
 -- BOOT
 -- ---------------------------------------------------------------------------
 function UI.boot()
-    O.log("loader build %s (No Clip fire window: upper-body aim layer over the full-body skyfall loop; freecam engine: declared script camera, rc, vehicle actions)", MENU_REV)
+    O.log("build %s", MENU_REV)
     O.thread()
 
     -- Delete/Backspace fallback poll. 40 ms is faster than a frame at 30 FPS
@@ -42765,7 +43100,7 @@ function UI.boot()
         end
     end, 7000)
 
-    O.log("menu rework %s loaded - guard: %s", MENU_REV, S.describe())
+    O.log("build %s loaded", MENU_REV)
 end
 
 UI.boot()
