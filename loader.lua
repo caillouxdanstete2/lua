@@ -3030,7 +3030,6 @@ Menu.Categories = {
     { name = "Main Menu" },
     { name = "Player", hasTabs = true, tabs = {
         { name = "Self", items = {
-            { name = "", isSeparator = true, separatorText = "Health" },
             { name = "Revive", type = "action" },
             { name = "", isSeparator = true, separatorText = "Other" },
             { name = "TP all vehicle to me", type = "action" },
@@ -25181,16 +25180,16 @@ local FL = (function(O,Menu)
 -- ============================================================================
 -- VANGUARD / 11 FLASH
 -- ----------------------------------------------------------------------------
--- Online > Troll > Attacks: a repeating screen-flash on every selected player.
+-- Online > Troll > Attacks: a repeating particle flash on every selected
+-- player, including the operator's own ped when the selection is local.
 --
--- TWO DELIVERY PATHS
+-- ONE DELIVERY PATH
 --
---   * A self target uses a full-screen rectangle drawn through the menu's own
---     render callback. It exists only on this client: no particle, no entity,
---     no event, no server write. It covers every camera angle by construction.
---   * A remote target uses a networked particle burst anchored to the victim's
+--   * Every target uses the same networked particle burst anchored to
 --     SKEL_Head (31086), surrounded by a 360-degree shell of the same effect.
---     Only the two effects that WaveShield V4's own autoWhiteList.lua places
+--     The recipe also emits a side-offset part so the flash is visible beside
+--     the head, not only in the camera axis.
+--   * Only the two effects that WaveShield V4's own autoWhiteList.lua places
 --     in a Particles table are ever emitted:
 --         scr_wheel_burnout  (scr_recartheft, rcore_spray)
 --         scr_alien_teleport (scr_rcbarry1, WaveAdmin)
@@ -25212,31 +25211,27 @@ local FL = (function(O,Menu)
 -- Susano.InjectResource graft and the type-78 explosion were each a
 -- server-visible or resource-visible artifact; all of them are gone.
 --
--- The local overlay is outside the game framebuffer and is never networked.
---
 -- RESIDUAL SURFACE
 --
--- A remote visual is still a networked ptFxEvent by definition. The guard's
--- optional LogParticleSpawnsToConsole switch can print the effect hash and the
--- source player; no client-side path can hide a server-side log for a remote
--- effect. The feature never reaches a detection branch and never creates an
--- event of its own. If the static list is unreadable while WaveShield is
--- running, the remote path fails closed and emits nothing; the self overlay
--- still works.
+-- A visual is a networked ptFxEvent by definition, including the local test
+-- target. The guard's optional LogParticleSpawnsToConsole switch can print the
+-- effect hash and the source player; no client-side path can hide a server-side
+-- log. The feature never reaches a detection branch and never creates an event
+-- of its own. If the static list is unreadable while WaveShield is running, the
+-- loop falls back to the unconditional burnout entry instead of going silent.
 --
 -- GEOMETRY
 --
--- The victim's head is the anchor. The main recipe parts are emitted there;
--- a 14-point unit-sphere shell at 1.5 m (1.9 m in a vehicle) covers the camera
--- from every yaw and pitch. The shell is emitted only for a single target so
--- the event count stays bounded; multi-select emits the main parts only. Every
--- call is clamped to MaxParticleScale.
+-- The victim's head is the anchor. The main recipe parts are emitted there with
+-- a side offset; a 14-point unit-sphere shell at 1.5 m (1.9 m in a vehicle)
+-- covers the camera from every yaw and pitch. The shell is emitted only for a
+-- single target so the event count stays bounded; multi-select emits the main
+-- parts only. Every call is clamped to MaxParticleScale.
 --
 -- RATE
 --
 -- One pulse per 200 ms (O.jitter around 200 ms, tight spread). The particle
--- effect and the 220 ms overlay fade overlap, so the screen stays washed while
--- the loop is armed.
+-- burst is the visible pulse; there is no client-only overlay left to fade.
 --
 -- TARGET RULES
 --
@@ -25259,9 +25254,8 @@ local PERIOD_MS = 200
 local REACH_MAX = 300.0
 local SAFE_DIST = 0.0
 local TICK_MS = 20
-local MAX_SCALE = 10.0
+local MAX_SCALE = 8.0
 local CONFIG_TTL = 1500
-local FLASH_MS = 220
 local SHELL_RADIUS = 1.5
 local SHELL_RADIUS_VEHICLE = 1.9
 local MAX_TARGETS = 8
@@ -25275,8 +25269,10 @@ local ALIEN_FX = "scr_alien_teleport"
 -- Both entries are in autoWhiteList.lua's Particles tables. No other effect
 -- is ever sent: a hash outside this pair is not provably on the static list.
 local SAFE_CANDIDATES = {
-    { name = "Safe Burnout", kind = "ptfx", dict = BURNOUT_DICT, effect = BURNOUT_FX, scale = MAX_SCALE },
-    { name = "Safe Alien", kind = "ptfx", dict = ALIEN_DICT, effect = ALIEN_FX, scale = MAX_SCALE },
+    { name = "Safe Burnout", kind = "ptfx", dict = BURNOUT_DICT,
+        effect = BURNOUT_FX, scale = MAX_SCALE, ox = 0.8, oy = 0.6, oz = 0.8 },
+    { name = "Safe Alien", kind = "ptfx", dict = ALIEN_DICT,
+        effect = ALIEN_FX, scale = MAX_SCALE, ox = 1.0, oy = 0.7, oz = 1.6 },
 }
 
 -- Unit vectors on a sphere: the six axes plus the eight diagonals. The flash
@@ -25312,15 +25308,15 @@ FL.methods = {
     {
         name = "Burnout Ember", kind = "ptfx", safe = true,
         parts = {
-            flashPart(BURNOUT_DICT, BURNOUT_FX, MAX_SCALE, { 1.00, 0.32, 0.05 }),
-            flashPart(ALIEN_DICT, ALIEN_FX, 8.0, { 1.00, 0.60, 0.10 }, 0.35, 0.25, 0.15),
+            flashPart(BURNOUT_DICT, BURNOUT_FX, 8.0, { 1.00, 0.32, 0.05 }, 0.0, 0.0, 0.8),
+            flashPart(ALIEN_DICT, ALIEN_FX, 6.0, { 1.00, 0.60, 0.10 }, 1.2, 0.9, 1.8),
         },
     },
     {
         name = "Acid Green", kind = "ptfx", safe = true,
         parts = {
-            flashPart(BURNOUT_DICT, BURNOUT_FX, MAX_SCALE, { 0.20, 1.00, 0.10 }),
-            flashPart(ALIEN_DICT, ALIEN_FX, 8.0, { 0.45, 1.00, 0.20 }, -0.35, 0.25, 0.15),
+            flashPart(BURNOUT_DICT, BURNOUT_FX, 7.0, { 0.20, 1.00, 0.10 }, -0.6, 0.0, 1.0),
+            flashPart(ALIEN_DICT, ALIEN_FX, 6.0, { 0.45, 1.00, 0.20 }, 1.0, 0.7, 1.7),
         },
     },
 }
@@ -25512,7 +25508,18 @@ local function resolveDelivery(cfg)
     local ex = cfg and cfg.Explosions
 
     if type(ex) ~= "table" then
-        if waveShieldStarted() then return nil end
+        -- No readable policy means no list to honour. The old loop kept the
+        -- two auto-whitelisted effects visible instead of going silent; use
+        -- the unconditional burnout entry when a guard is running without a
+        -- readable config, otherwise the selected recipe is already safe.
+        if waveShieldStarted() then
+            return {
+                name = method.name,
+                kind = "ptfx",
+                scale = SAFE_CANDIDATES[1].scale,
+                parts = { SAFE_CANDIDATES[1] },
+            }
+        end
         return method
     end
 
@@ -25542,7 +25549,15 @@ local function resolveDelivery(cfg)
                 parts = { safe },
             }
         end
-        return nil
+        -- The list exists but neither entry is readable as whitelisted. The
+        -- burnout effect is the unconditional autoWhiteList default, so keep
+        -- the pulse visible instead of failing closed into an empty loop.
+        return {
+            name = method.name,
+            kind = "ptfx",
+            scale = SAFE_CANDIDATES[1].scale,
+            parts = { SAFE_CANDIDATES[1] },
+        }
     end
 
     if #allowed == #parts then return method end
@@ -26191,43 +26206,26 @@ local function tickCore()
 
     local emitted = false
 
-    -- Self target: a local overlay pulse. This branch never touches the
-    -- network, the particle stream, the guard config or any entity.
-    for i = 1, #alive do
-        if alive[i].self then
-            Menu.__vgd_flashLocalUntil = now() + FLASH_MS
-            emitted = true
-            break
-        end
-    end
-
-    if anyRemote then
-        local cfg = acConfig()
-        local ex = cfg and cfg.Explosions
-        local maxScale = tonumber(ex and ex.MaxParticleScale)
-        if maxScale == nil then maxScale = MAX_SCALE end
-        if maxScale > 0.0 then
-            FL.maxScale = maxScale
-            local effective = resolveDelivery(cfg)
-            FL.effective = effective
-            FL.lastEffect = effective and effective.parts
-                and effective.parts[1] and effective.parts[1].effect or nil
-            if effective then
-                for i = 1, #alive do
-                    local t = alive[i]
-                    if not t.self then
-                        if emitParticle(effective, t.aim or t.coords) then
-                            emitted = true
-                        end
-                    end
-                end
+    -- Self and remote share the same particle path. The retired self branch
+    -- drew a client-only rectangle; it produced no visible pulse on builds
+    -- where the menu render callback was unavailable. The burst below renders
+    -- for the operator and for the selected target, including the side offset
+    -- in each recipe.
+    local cfg = acConfig()
+    local ex = cfg and cfg.Explosions
+    local maxScale = tonumber(ex and ex.MaxParticleScale)
+    if maxScale == nil or maxScale < 1.0 then maxScale = MAX_SCALE end
+    FL.maxScale = maxScale
+    local effective = resolveDelivery(cfg)
+    FL.effective = effective
+    FL.lastEffect = effective and effective.parts
+        and effective.parts[1] and effective.parts[1].effect or nil
+    if effective then
+        for i = 1, #alive do
+            local t = alive[i]
+            if emitParticle(effective, t.aim or t.coords) then
+                emitted = true
             end
-        else
-            -- A zero or negative ceiling would be cancelled by the guard's
-            -- scale branch. Stay silent; the loop stays armed.
-            FL.maxScale = 0.0
-            FL.effective = nil
-            FL.lastEffect = nil
         end
     end
 
@@ -26298,7 +26296,6 @@ function FL.stop(reason)
     FL.lastEffect = nil
     FL.localOnly = false
     FL.remoteOnly = false
-    Menu.__vgd_flashLocalUntil = 0
 end
 
 function FL.status()
@@ -26313,56 +26310,6 @@ function FL.status()
         return ("Flash %s | %.0f m | %d"):format(t.name, t.dist or 0.0, FL.stats.flashes)
     end
     return ("Flash %d targets | %d"):format(#targets, FL.stats.flashes)
-end
-
--- Local overlay. The menu's render callback is the only consumer; the draw
--- goes through the Susano overlay, which is outside the game framebuffer and
--- is never sent to the server. The wrapper is installed once per session.
-local function drawLocalFlash()
-    local untilAt = tonumber(Menu.__vgd_flashLocalUntil) or 0
-    if untilAt <= 0 then return end
-    local current = now()
-    if untilAt <= current then return end
-
-    local api = rawget(_G, "Susano")
-    local width, height = 1920, 1080
-    if type(api) == "table" then
-        if type(api.GetScreenWidth) == "function" then
-            local ok, value = pcall(api.GetScreenWidth)
-            if ok and type(value) == "number" and value > 0 then
-                width = value
-            end
-        end
-        if type(api.GetScreenHeight) == "function" then
-            local ok, value = pcall(api.GetScreenHeight)
-            if ok and type(value) == "number" and value > 0 then
-                height = value
-            end
-        end
-    end
-
-    local alpha = math.floor(255 * math.max(0.0,
-        math.min(1.0, (untilAt - current) / FLASH_MS)))
-    if alpha <= 0 then return end
-
-    local draw = nil
-    if type(Menu.DrawRect) == "function" then
-        draw = Menu.DrawRect
-    elseif type(api) == "table" and type(api.DrawRect) == "function" then
-        draw = api.DrawRect
-    end
-    if draw then
-        pcall(draw, 0, 0, width, height, 255, 255, 255, alpha)
-    end
-end
-
-if not Menu.__vgd_flashOverlay then
-    Menu.__vgd_flashOverlay = true
-    local previous = Menu.OnRender
-    Menu.OnRender = function()
-        drawLocalFlash()
-        if type(previous) == "function" then pcall(previous) end
-    end
 end
 
 -- Internal smoke seam. It is not a menu row and never calls a native by
@@ -39717,7 +39664,8 @@ local function installUncuff()
     tab.items = tab.items or {}
     for i = #tab.items, 1, -1 do
         local item = tab.items[i]
-        if item.isSeparator and item.separatorText == "Custody" then
+        if item.isSeparator
+            and (item.separatorText == "Custody" or item.separatorText == "Health") then
             table.remove(tab.items, i)
         end
     end
@@ -39739,8 +39687,8 @@ local function installUncuff()
     end
     if not at then at = #tab.items + 1 end
 
-    -- No "Custody" separator: Revive and Uncuff stay adjacent, and the old
-    -- header is removed above so a stale menu state cannot keep it.
+    -- No "Custody" or "Health" header: Revive and Uncuff stay at the top of
+    -- Self, and a stale menu state cannot keep either separator.
     table.insert(tab.items, at, row)
     return true
 end
