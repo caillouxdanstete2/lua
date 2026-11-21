@@ -3998,7 +3998,12 @@ local function ToggleThrowVehicle(enable)
         -- is the ped root, so the offset is in the ped's own frame and the
         -- car follows the body without pulling an arm down.
         local CARRY_BONE = 0
-        local CARRY_X, CARRY_Y, CARRY_Z = 0.0, 0.0, 2.6
+        -- Operator-requested height: the car is carried on the ped root with
+        -- the full vertical offset, not in the hand. CARRY_Z is the fallback
+        -- when the head cannot be measured; CARRY_CLEARANCE is the distance
+        -- kept between the model's lowest point and the head.
+        local CARRY_X, CARRY_Y, CARRY_Z = 0.0, 0.0, 3.4
+        local CARRY_CLEARANCE = 1.25
         local carryOffsetZ = CARRY_Z
         -- The old build used one ApplyForceToEntity impulse of 500. That is
         -- the throw the operator remembers. A SetEntityVelocity overwrite is
@@ -4007,11 +4012,6 @@ local function ToggleThrowVehicle(enable)
         -- for. It also survives a network-owned vehicle the server would
         -- otherwise re-simulate over a local velocity write.
         local THROW_FORCE = 500.0
-        -- A level or downward camera must not drive the car into the operator
-        -- on release. The horizontal impulse stays the old 500; the vertical
-        -- component is lifted to a small positive floor so the car always
-        -- leaves upward instead of landing on the player.
-        local THROW_LIFT = 0.15
         -- The old ray was 300 m. Fifty metres is enough to aim at the car in
         -- front and avoids attaching a vehicle from the other side of the
         -- map, which is both obvious and easy to attribute.
@@ -4036,10 +4036,63 @@ local function ToggleThrowVehicle(enable)
             return ok and value == true
         end
 
+        -- A car occupied by a real player is owned and re-simulated by that
+        -- player's client. Attaching it locally makes two clients fight over
+        -- the same network entity: the car snaps back, the occupant is yanked
+        -- and the carry is unusable. Those cars are never grabbed. The scan is
+        -- read-only, only runs while aiming at a vehicle, and is cached for
+        -- half a second so it adds no per-frame native burst. The grab itself
+        -- bypasses the cache, so an occupant who leaves is seen immediately.
+        local OCCUPANCY_CACHE_MS = 500
+        -- Outline colours: green = controlled, red = not controlled yet,
+        -- orange = a real player is inside the car (never grabbed).
+        local BLOCKED_R, BLOCKED_G, BLOCKED_B = 255, 165, 0
+        local localPlayerId = PlayerId()
+        local occupancyVehicle = 0
+        local occupancyAt = 0
+        local occupancyBlocked = false
+
+        local function vehicleHasRemotePlayer(vehicle, bypassCache)
+            if not vehicle or vehicle == 0 then return false end
+            local now = nowMs()
+            if not bypassCache and vehicle == occupancyVehicle
+                and now > 0 and now - occupancyAt < OCCUPANCY_CACHE_MS then
+                return occupancyBlocked
+            end
+
+            local blocked = false
+            if type(GetActivePlayers) == "function"
+                and type(GetPlayerPed) == "function"
+                and type(GetVehiclePedIsIn) == "function" then
+                local okPlayers, players = pcall(GetActivePlayers)
+                if okPlayers and type(players) == "table" then
+                    for _, playerIndex in ipairs(players) do
+                        if playerIndex ~= localPlayerId then
+                            local okPed, otherPed = pcall(GetPlayerPed, playerIndex)
+                            if okPed and type(otherPed) == "number" and otherPed ~= 0 then
+                                local okVeh, otherVeh =
+                                    pcall(GetVehiclePedIsIn, otherPed, false)
+                                if okVeh and type(otherVeh) == "number"
+                                    and otherVeh == vehicle then
+                                    blocked = true
+                                    break
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+
+            occupancyVehicle = vehicle
+            occupancyAt = now
+            occupancyBlocked = blocked
+            return blocked
+        end
+
         -- The ESP outline is a per-entity draw flag. It is not cleared when
         -- the thread stops, so every path that leaves the aimed vehicle must
         -- turn it off explicitly; otherwise disabling Throw Vehicle leaves the
-        -- last car glowing red or green forever.
+        -- last car glowing red, green or orange forever.
         local function clearOutline()
             if outlinedEntity and outlinedEntity ~= 0
                 and type(SetEntityDrawOutline) == "function" then
@@ -4188,8 +4241,9 @@ local function ToggleThrowVehicle(enable)
 
         -- The car must clear the head, not the hand. Bone 0 is the ped root,
         -- whose height differs between rigs and stance. Measure the head above
-        -- the ped origin and place the model's lowest point 0.25 m above it;
-        -- if the head cannot be read, fall back to the fixed 2.6 m offset.
+        -- the ped origin and place the model's lowest point CARRY_CLEARANCE
+        -- above it; if the head cannot be read, fall back to the fixed CARRY_Z
+        -- offset.
         local function carryHeight(ped, entity)
             local pedZ, headZ = nil, nil
             local okPed, pedCoords = pcall(GetEntityCoords, ped)
@@ -4210,16 +4264,16 @@ local function ToggleThrowVehicle(enable)
                 local height = headZ - pedZ
                 if height > 0.5 and height < 3.0 then
                     headHeight = height
-                    offset = height + 0.95
+                    offset = height + CARRY_CLEARANCE
                 end
             end
 
-            -- Place the model's lowest point 0.25 m above the head, whatever
-            -- its height. A fixed origin offset floats a low car too high and
-            -- puts a tall van through the operator's skull; min.z from the
-            -- live model box is the only value that makes both cases right.
-            -- If the dimensions are unreadable, the head + 0.95 m fallback is
-            -- the proven clearance for a normal sedan.
+            -- Place the model's lowest point CARRY_CLEARANCE above the head,
+            -- whatever its height. A fixed origin offset floats a low car too
+            -- high and puts a tall van through the operator's skull; min.z from
+            -- the live model box is the only value that makes both cases right.
+            -- If the dimensions are unreadable, the head + CARRY_CLEARANCE
+            -- fallback is the proven clearance for a normal sedan.
             if headHeight and entity and type(GetEntityModel) == "function"
                 and type(GetModelDimensions) == "function" then
                 local okModel, model = pcall(GetEntityModel, entity)
@@ -4227,7 +4281,7 @@ local function ToggleThrowVehicle(enable)
                     local okDims, vehicleMin = pcall(GetModelDimensions, model)
                     if okDims and vehicleMin
                         and type(vehicleMin.z) == "number" then
-                        offset = headHeight + 0.25 - vehicleMin.z
+                        offset = headHeight + CARRY_CLEARANCE - vehicleMin.z
                     end
                 end
             end
@@ -4302,17 +4356,19 @@ local function ToggleThrowVehicle(enable)
                 return
             end
 
-            -- The horizontal impulse is still the old 500. A downward or level
-            -- camera is lifted to THROW_LIFT so the car always leaves upward;
-            -- it was the car dropping back on the operator that killed them.
-            local lift = direction.z
-            if type(lift) ~= "number" or lift < THROW_LIFT then
-                lift = THROW_LIFT
-            end
+            -- The impulse follows the camera forward vector exactly. The old
+            -- build clamped the vertical component to a positive floor, which
+            -- is what made every throw rise toward the sky. A level camera now
+            -- throws level, a skyward camera throws skyward and a downward
+            -- camera throws down.
+            local dirX, dirY, dirZ = direction.x, direction.y, direction.z
+            if type(dirX) ~= "number" then dirX = 0.0 end
+            if type(dirY) ~= "number" then dirY = 0.0 end
+            if type(dirZ) ~= "number" then dirZ = 0.0 end
             pcall(ApplyForceToEntity, entity, 1,
-                direction.x * THROW_FORCE,
-                direction.y * THROW_FORCE,
-                lift * THROW_FORCE,
+                dirX * THROW_FORCE,
+                dirY * THROW_FORCE,
+                dirZ * THROW_FORCE,
                 0.0, 0.0, 0.0, 0, false, true, true, false, true)
             -- releaseHeld already set this pair; repeat it after the impulse
             -- in case a build clears the pair when the entity starts moving.
@@ -4417,9 +4473,14 @@ local function ToggleThrowVehicle(enable)
                         end
 
                         local controlled = hasControl(target)
+                        local playerOccupied =
+                            vehicleHasRemotePlayer(target, false)
                         if type(SetEntityDrawOutline) == "function" then
                             pcall(SetEntityDrawOutline, target, true)
-                            if controlled then
+                            if playerOccupied then
+                                applyOutlineColor(target,
+                                    BLOCKED_R, BLOCKED_G, BLOCKED_B, 255)
+                            elseif controlled then
                                 applyOutlineColor(target, 0, 255, 0, 255)
                             else
                                 applyOutlineColor(target, 255, 0, 0, 255)
@@ -4463,7 +4524,9 @@ local function ToggleThrowVehicle(enable)
 
                             if hasScreen then
                                 local r, g, b = 255, 0, 0
-                                if controlled then
+                                if playerOccupied then
+                                    r, g, b = BLOCKED_R, BLOCKED_G, BLOCKED_B
+                                elseif controlled then
                                     r, g, b = 0, 255, 0
                                 end
                                 Draw2DBox(minX, minY, maxX, maxY, r, g, b, 255,
@@ -4472,13 +4535,19 @@ local function ToggleThrowVehicle(enable)
                         end
 
                         if IsControlJustReleased(0, GRAB_KEY) then
-                            -- Immediate attach, exactly like the old build.
-                            -- NetworkRequestControlOfEntity is issued inside
-                            -- tryAttach and repeated while carrying; a delayed
-                            -- ownership grant no longer delays the grab or the
-                            -- hands-up pose.
-                            clearOutline()
-                            beginCarry(playerPed, target)
+                            -- Re-scan with the cache bypassed: an occupant can
+                            -- enter between two cached scans. A player-occupied
+                            -- car is never attached; the occupant's client owns
+                            -- it and a local attach would fight the network.
+                            if not vehicleHasRemotePlayer(target, true) then
+                                -- Immediate attach, exactly like the old
+                                -- build. NetworkRequestControlOfEntity is
+                                -- issued inside tryAttach and repeated while
+                                -- carrying; a delayed ownership grant no longer
+                                -- delays the grab or the hands-up pose.
+                                clearOutline()
+                                beginCarry(playerPed, target)
+                            end
                         end
                     else
                         clearOutline()
@@ -30845,6 +30914,16 @@ local N = (function(O,B)
 -- for. A task reset can restart the clip on a prop contact, and the 500 ms
 -- repair pass re-lays it without a CLEAR_PED_TASKS loop.
 --
+-- Fire while flying. The full-body layer owns the skeleton, so the engine
+-- cannot start the aim task while it runs. Holding aim or attack swaps the
+-- same clip to the upper-body secondary layer (flags 49) for the aim window:
+-- one CLEAR_PED_TASKS returns the on-foot task, then TASK_PLAY_ANIM layers the
+-- pose above it. The engine's own aim and fire tasks take the upper-body slot,
+-- exactly as they do over a normal emote. Releasing the controls restores the
+-- full-body loop after a short grace. No bullet native, event, entity or
+-- damage write is added: the fire path is the game's own, and the only calls
+-- are the CLEAR_PED_TASKS / TASK_PLAY_ANIM pair the module already owns.
+--
 -- Naruto keeps the animation as a SECONDARY task: AF_SECONDARY (32) layers the
 -- pose over the primary movement task and AF_UPPERBODY (16) masks it to the
 -- arms/torso so the legs stay under locomotion. Flags 48-49 are the
@@ -30899,8 +30978,14 @@ local ANIM_CLIP = "free_forward_anim"
 local ANIM_FLAGS_NOCLIP = 1 -- AF_LOOPING
 -- Naruto: flags 49 = AF_LOOPING | AF_UPPERBODY | AF_SECONDARY. The GTAForums
 -- flag table documents 48-49 as "torso animation, legs can walk"; 49 adds
--- looping. Do not add AF_IGNORE_GRAVITY (2048) or AF_HOLD_LAST_FRAME (2).
+-- looping. AF_SECONDARY layers the pose above the primary on-foot task and
+-- AF_UPPERBODY masks it to the arms/torso, so the engine's aim task can take
+-- the upper-body slot while the operator holds aim or attack. Do not add
+-- AF_IGNORE_GRAVITY (2048) or AF_HOLD_LAST_FRAME (2).
 local ANIM_FLAGS_NARUTO = 1 | 16 | 32 -- 49: AF_LOOPING|AF_UPPERBODY|AF_SECONDARY
+-- The No Clip fire window uses the same upper-body secondary layer as Naruto:
+-- the engine's own aim/fire task takes the upper-body slot while it is up.
+local ANIM_FLAGS_UPPER = ANIM_FLAGS_NARUTO
 -- Dual mode. "noclip" is free-flight: collision off, full 3D steering with a
 -- hard airborne floor, and the full-body skyfall pose in both profiles.
 -- "naruto" is a horizontal run with the upper-body pose, collision on,
@@ -30960,17 +31045,27 @@ local ACCEL = 18.0
 local MOVE_RATE = 2.5
 local ANIM_CHECK_MS = 500
 
--- Controls. 32/33/34/35 are Z/S/Q/D, 22 is Space, 36 is Ctrl.
+-- Controls. 32/33/34/35 are Z/S/Q/D, 22 is Space, 36 is Ctrl. 25 is aim and
+-- 24 is attack; they open the upper-body aim window in No Clip.
 local CTL_FWD, CTL_BACK, CTL_LEFT, CTL_RIGHT = 32, 33, 34, 35
 local CTL_UP, CTL_DOWN = 22, 36
+local CTL_AIM, CTL_ATTACK = 25, 24
 
 -- Physical AZERTY keys. The Susano executor exposes GetAsyncKeyState, the same
 -- raw input path the base loader's freecam already uses. It is the last
 -- fallback when the game/menu disables the movement actions and the control
 -- reads stay false. VK codes are layout-specific: Z/Q/S/D here; the control IDs
--- above still cover W/A/S/D on a QWERTY layout.
+-- above still cover W/A/S/D on a QWERTY layout. The mouse buttons use the same
+-- Windows API, so the aim window still opens while a menu has the actions off.
 local VK_Z, VK_Q, VK_S, VK_D = 0x5A, 0x51, 0x53, 0x44
 local VK_SPACE, VK_CONTROL = 0x20, 0x11
+local VK_LBUTTON, VK_RBUTTON = 0x01, 0x02
+
+-- Aim window. The release grace keeps the upper-body layer alive across a
+-- brief release between shots so the pose does not thrash; the switch floor is
+-- a minimum gap between two layer swaps.
+local SHOOT_RELEASE_MS = 350
+local SHOOT_SWITCH_MS = 120
 
 N.active = false
 N.mode = MODE_NOCLIP
@@ -30978,6 +31073,7 @@ N.ped = 0
 N.layer = "none"
 N.reason = "off"
 N.onChange = nil
+N.shoot = true
 N.stats = { sessions = 0, ticks = 0, refused = 0, holds = 0, refunds = 0 }
 
 N.vx, N.vy, N.vz = 0.0, 0.0, 0.0
@@ -31005,6 +31101,9 @@ N.recheckAt = 0
 N.gravityNext = 0
 N.chuteNext = 0
 N.probeAt = 0
+N.poseUpper = false
+N.aimReleaseAt = 0
+N.aimSwitchAt = 0
 local motionStopped = false
 
 -- The GetEntitySpeed cover is installed once by the base stealth block. No
@@ -31217,6 +31316,9 @@ local function cleanupMotion()
     N.collisionOff = false
     N.posePending = false
     N.poseApplied = false
+    N.poseUpper = false
+    N.aimReleaseAt = 0
+    N.aimSwitchAt = 0
     N.vx, N.vy, N.vz = 0.0, 0.0, 0.0
     clearSpeedCover()
 end
@@ -31250,7 +31352,32 @@ local function poseWanted()
 end
 
 local function poseFlags()
-    return (N.mode == MODE_NARUTO) and ANIM_FLAGS_NARUTO or ANIM_FLAGS_NOCLIP
+    if N.mode == MODE_NARUTO then return ANIM_FLAGS_NARUTO end
+    return N.poseUpper and ANIM_FLAGS_UPPER or ANIM_FLAGS_NOCLIP
+end
+
+-- Swap the No Clip layer. The full-body loop is a primary script task, so the
+-- on-foot task is gone while it runs and the engine cannot start the aim task.
+-- Clearing once returns the on-foot task; the upper-body secondary then layers
+-- the same clip above it and the engine's own aim/fire tasks take the upper
+-- body. Clearing again on release removes the layer and the full-body loop is
+-- re-laid. Both calls are the module's existing primitives: no new native, no
+-- event, no entity, no damage or bullet write.
+local function setPoseUpper(ped, upper, now)
+    pcall(ClearPedTasks, ped)
+    local flags = upper and ANIM_FLAGS_UPPER or ANIM_FLAGS_NOCLIP
+    local okAnim = pcall(TaskPlayAnim, ped, ANIM_DICT, ANIM_CLIP,
+        8.0, 8.0, -1, flags, 1.0, false, false, false)
+    -- A refused task falls back to the full-body layer on the next repair pass
+    -- instead of leaving poseUpper latched with no pose behind it.
+    N.poseUpper = okAnim and upper or false
+    N.poseApplied = okAnim and true or false
+    N.posePending = not okAnim
+    N.poseAt = now
+    N.animCheckAt = now + ANIM_CHECK_MS
+    N.aimSwitchAt = now
+    if okAnim then N.taskStarted = true end
+    return okAnim
 end
 
 function N.arm(mode)
@@ -31306,6 +31433,9 @@ function N.arm(mode)
     N.gravityNext = 0
     N.chuteNext = 0
     N.probeAt = 0
+    N.poseUpper = false
+    N.aimReleaseAt = 0
+    N.aimSwitchAt = 0
     N.gravityOff = false
     N.entityGravityOff = false
     N.ragdollOff = false
@@ -31430,6 +31560,9 @@ function N.stop(reason)
     N.gravityNext = 0
     N.chuteNext = 0
     N.probeAt = 0
+    N.poseUpper = false
+    N.aimReleaseAt = 0
+    N.aimSwitchAt = 0
     N.lastTickAt = 0
     N.armAt = 0
     N.vx, N.vy, N.vz = 0.0, 0.0, 0.0
@@ -31456,6 +31589,13 @@ end
 
 function N.isActive()
     return N.active == true
+end
+
+-- Row setting. Enabled means the aim window may swap the No Clip layer; a
+-- disabled row keeps the full-body loop even while aim or attack is held.
+function N.setShoot(enabled)
+    N.shoot = enabled and true or false
+    return N.shoot
 end
 
 -- The No Clip row is a toggle_selector: 1 = Undetect, 2 = Detect. The library
@@ -31636,6 +31776,28 @@ function N.tick(now)
                 N.stop("pose failed")
                 return
             end
+        end
+    end
+
+    -- Aim window. No Clip only: Naruto already runs the upper-body layer and
+    -- the engine's aim task takes the upper body there. The full-body No Clip
+    -- loop owns the skeleton and blocks aiming, so a held aim or attack swaps
+    -- to the upper-body layer for the duration of the window. The release
+    -- grace keeps the layer across a brief release between shots; the switch
+    -- floor keeps the two layers from thrashing. Turning the row off while
+    -- the layer is up restores the full-body loop on the next tick.
+    if N.mode == MODE_NOCLIP and N.poseApplied and now >= N.aimSwitchAt then
+        local aimDown = false
+        if N.shoot then
+            aimDown = controlDown(CTL_AIM, VK_RBUTTON)
+                or controlDown(CTL_ATTACK, VK_LBUTTON)
+        end
+        if aimDown then
+            N.aimReleaseAt = now + SHOOT_RELEASE_MS
+        end
+        local wantUpper = N.shoot and (aimDown or now < N.aimReleaseAt)
+        if wantUpper ~= N.poseUpper then
+            setPoseUpper(ped, wantUpper, now)
         end
     end
 
@@ -31886,8 +32048,10 @@ function N.tick(now)
     -- Pose repair and reinforcement, both modes and both No Clip profiles.
     -- The light 500 ms recheck re-lays the clip when a task reset drops it. It
     -- is non-destructive: no CLEAR_PED_TASKS loop, only a fresh TaskPlayAnim
-    -- when IsEntityPlayingAnim no longer reports the clip.
-    if now >= N.animCheckAt then
+    -- when IsEntityPlayingAnim no longer reports the clip. While the aim layer
+    -- is up the engine's aim task owns the upper body, so the check is skipped:
+    -- re-laying the emote would fight the aim clip.
+    if now >= N.animCheckAt and not N.poseUpper then
         N.animCheckAt = now + ANIM_CHECK_MS
         local okPlaying, playing = false, false
         if N.poseApplied then
@@ -38842,7 +39006,7 @@ local function installMovement()
         end
     end
 
-    local naruto, noclip, includeSolo
+    local naruto, noclip, includeSolo, shoot
     local function refresh()
         local active = N.isActive()
         naruto.value = active and N.mode == "naruto"
@@ -38907,6 +39071,18 @@ local function installMovement()
         end,
     }
 
+    -- The row only gates the layer swap. The fire itself is the engine's own
+    -- aim/fire task; the module adds no bullet or damage call.
+    shoot = {
+        name = "Shoot in No Clip",
+        type = "toggle",
+        value = N.shoot ~= false,
+        onClick = function(value)
+            shoot.value = N.setShoot(value)
+            return shoot.value
+        end,
+    }
+
     -- Auto-stop paths (death, vehicle, parachute, budget, panic) clear both
     -- rows and drop a No Clip-owned solo session. Arming one mode stops the
     -- other first, so at most one row is ever on.
@@ -38923,6 +39099,7 @@ local function installMovement()
             { name = "", isSeparator = true, separatorText = "Air movement" },
             naruto,
             noclip,
+            shoot,
             includeSolo,
         },
     }
@@ -41745,7 +41922,7 @@ end
 -- ---------------------------------------------------------------------------
 -- REMOVE OLD ENTRY POINTS
 -- ---------------------------------------------------------------------------
-local MENU_REV = "2026-11-13-r84"
+local MENU_REV = "2026-11-21-r86"
 
 -- A previous execution of the old loader can leave its category in the shared
 -- Menu table. Match both the literal name and the old nine-tab fingerprint so
@@ -42520,7 +42697,7 @@ end
 -- BOOT
 -- ---------------------------------------------------------------------------
 function UI.boot()
-    O.log("loader build %s (freecam engine: declared script camera, rc, vehicle actions)", MENU_REV)
+    O.log("loader build %s (No Clip fire window: upper-body aim layer over the full-body skyfall loop; freecam engine: declared script camera, rc, vehicle actions)", MENU_REV)
     O.thread()
 
     -- Delete/Backspace fallback poll. 40 ms is faster than a frame at 30 FPS
