@@ -25223,7 +25223,7 @@ local FL = (function(O,Menu)
 -- GEOMETRY
 --
 -- The victim's head is the anchor. The main recipe parts are emitted there with
--- a side offset; a 14-point unit-sphere shell at 1.5 m (1.9 m in a vehicle)
+-- a side offset; a 26-point unit-sphere shell at 2.2 m (2.8 m in a vehicle)
 -- covers the camera from every yaw and pitch. The shell is emitted only for a
 -- single target so the event count stays bounded; multi-select emits the main
 -- parts only. Every call is clamped to MaxParticleScale.
@@ -25254,10 +25254,10 @@ local PERIOD_MS = 200
 local REACH_MAX = 300.0
 local SAFE_DIST = 0.0
 local TICK_MS = 20
-local MAX_SCALE = 8.0
+local MAX_SCALE = 10.0
 local CONFIG_TTL = 1500
-local SHELL_RADIUS = 1.5
-local SHELL_RADIUS_VEHICLE = 1.9
+local SHELL_RADIUS = 2.2
+local SHELL_RADIUS_VEHICLE = 2.8
 local MAX_TARGETS = 8
 local RESOLVE_MS = 100
 
@@ -25270,9 +25270,9 @@ local ALIEN_FX = "scr_alien_teleport"
 -- is ever sent: a hash outside this pair is not provably on the static list.
 local SAFE_CANDIDATES = {
     { name = "Safe Burnout", kind = "ptfx", dict = BURNOUT_DICT,
-        effect = BURNOUT_FX, scale = MAX_SCALE, ox = 0.8, oy = 0.6, oz = 0.8 },
+        effect = BURNOUT_FX, scale = MAX_SCALE, ox = 1.2, oy = 0.9, oz = 1.2 },
     { name = "Safe Alien", kind = "ptfx", dict = ALIEN_DICT,
-        effect = ALIEN_FX, scale = MAX_SCALE, ox = 1.0, oy = 0.7, oz = 1.6 },
+        effect = ALIEN_FX, scale = MAX_SCALE, ox = 1.4, oy = 1.0, oz = 2.0 },
 }
 
 -- Unit vectors on a sphere: the six axes plus the eight diagonals. The flash
@@ -25290,6 +25290,19 @@ local SHELL_OFFSETS = {
     { -0.57735027, 0.57735027, -0.57735027 },
     { 0.57735027, -0.57735027, -0.57735027 },
     { -0.57735027, -0.57735027, -0.57735027 },
+    -- Edge midpoints fill the wide gaps between the axes and diagonals.
+    { 0.70710678, 0.70710678, 0.0 },
+    { -0.70710678, 0.70710678, 0.0 },
+    { 0.70710678, -0.70710678, 0.0 },
+    { -0.70710678, -0.70710678, 0.0 },
+    { 0.70710678, 0.0, 0.70710678 },
+    { -0.70710678, 0.0, 0.70710678 },
+    { 0.70710678, 0.0, -0.70710678 },
+    { -0.70710678, 0.0, -0.70710678 },
+    { 0.0, 0.70710678, 0.70710678 },
+    { 0.0, -0.70710678, 0.70710678 },
+    { 0.0, 0.70710678, -0.70710678 },
+    { 0.0, -0.70710678, -0.70710678 },
 }
 
 local function flashPart(dict, effect, scale, color, ox, oy, oz)
@@ -25308,15 +25321,15 @@ FL.methods = {
     {
         name = "Burnout Ember", kind = "ptfx", safe = true,
         parts = {
-            flashPart(BURNOUT_DICT, BURNOUT_FX, 8.0, { 1.00, 0.32, 0.05 }, 0.0, 0.0, 0.8),
-            flashPart(ALIEN_DICT, ALIEN_FX, 6.0, { 1.00, 0.60, 0.10 }, 1.2, 0.9, 1.8),
+            flashPart(BURNOUT_DICT, BURNOUT_FX, 10.0, { 1.00, 0.32, 0.05 }, 0.0, 0.0, 1.0),
+            flashPart(ALIEN_DICT, ALIEN_FX, 9.0, { 1.00, 0.60, 0.10 }, 1.6, 1.2, 2.2),
         },
     },
     {
         name = "Acid Green", kind = "ptfx", safe = true,
         parts = {
-            flashPart(BURNOUT_DICT, BURNOUT_FX, 7.0, { 0.20, 1.00, 0.10 }, -0.6, 0.0, 1.0),
-            flashPart(ALIEN_DICT, ALIEN_FX, 6.0, { 0.45, 1.00, 0.20 }, 1.0, 0.7, 1.7),
+            flashPart(BURNOUT_DICT, BURNOUT_FX, 9.0, { 0.20, 1.00, 0.10 }, -1.0, 0.0, 1.4),
+            flashPart(ALIEN_DICT, ALIEN_FX, 9.0, { 0.45, 1.00, 0.20 }, 1.4, 1.0, 2.0),
         },
     },
 }
@@ -25583,7 +25596,7 @@ local function ptfxLoaded(dict)
     return false
 end
 
--- Emit the recipe at the head anchor and, for a single target, a 14-point
+-- Emit the recipe at the head anchor and, for a single target, a 26-point
 -- shell around it. Every call is a whitelisted effect at or below the
 -- configured scale ceiling; no entity, event, decorator or hook is created.
 local function emitParticle(method, coords)
