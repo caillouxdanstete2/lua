@@ -3967,15 +3967,6 @@ local function DeleteAllProps()
 end
 
 local throwVehicleActive = false
--- Throw preview speed model. APPLY_TYPE_IMPULSE (force type 1) with
--- bScaleByMass=true takes a velocity change per physics step, so the proven
--- 500 impulse is ~8.33 m/s on the retail 1/60 s step. The first real throw
--- measures the engine's actual delta and replaces this estimate (clamped),
--- so a build with a different step or time scale still previews correctly.
--- The value is executor-local; nothing is written to the entity or sent.
-local throwSpeedPerForce = 1.0 / 60.0
-local THROW_SPEED_PER_FORCE_MIN = 1.0 / 200.0
-local THROW_SPEED_PER_FORCE_MAX = 1.0 / 20.0
 local throwVehicleGeneration = 0
 local function ToggleThrowVehicle(enable)
     throwVehicleActive = enable
@@ -3985,6 +3976,18 @@ local function ToggleThrowVehicle(enable)
     throwVehicleGeneration = throwVehicleGeneration + 1
     local generation = throwVehicleGeneration
     if not enable then return end
+
+    -- Throw preview speed model. APPLY_TYPE_IMPULSE (force type 1) with
+    -- bScaleByMass=true takes a velocity change per physics step, so the proven
+    -- 500 impulse is ~8.33 m/s on the retail 1/60 s step. The first real throw
+    -- measures the engine's actual delta and replaces this estimate (clamped),
+    -- so a build with a different step or time scale still previews correctly.
+    -- The value is executor-local; nothing is written to the entity or sent.
+    -- Kept inside the toggle so the loader's main chunk stays under Lua's
+    -- 200-active-local ceiling; the thread below captures them as upvalues.
+    local throwSpeedPerForce = 1.0 / 60.0
+    local THROW_SPEED_PER_FORCE_MIN = 1.0 / 200.0
+    local THROW_SPEED_PER_FORCE_MAX = 1.0 / 20.0
 
     Citizen.CreateThread(function()
         local holdingEntity = false
