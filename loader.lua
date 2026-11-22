@@ -4023,25 +4023,18 @@ function Menu.ThrowPreview.stroke(x1, y1, x2, y2, r, g, b, a, th)
 end
 
 -- The reticle is the plain white plus the operator asked for: two strokes, no
--- gap, no ticks, no centre dot. A dark underlay one pixel longer and two
--- pixels thicker keeps it readable on sky, snow and white paint without
--- adding a single extra shape.
+-- gap, no ticks, no centre dot, no grey halo. Pure white at full opacity so
+-- it reads white on a dark street instead of a grey cross.
 function Menu.ThrowPreview.crosshair(screenW, screenH)
     local ui = math.max(1.0, screenH / 1080.0)
     local cx = math.floor(screenW * 0.5 + 0.5)
     local cy = math.floor(screenH * 0.5 + 0.5)
-    local arm = 7.0 * ui
-    local white = 2.0 * ui
-    local dark = white + 2.0
-    local over = 1.0
-    Menu.ThrowPreview.stroke(cx - arm - over, cy, cx + arm + over, cy,
-        0.0, 0.0, 0.0, 0.45, dark)
-    Menu.ThrowPreview.stroke(cx, cy - arm - over, cx, cy + arm + over,
-        0.0, 0.0, 0.0, 0.45, dark)
+    local arm = 8.0 * ui
+    local th = 2.2 * ui
     Menu.ThrowPreview.stroke(cx - arm, cy, cx + arm, cy,
-        1.0, 1.0, 1.0, 0.95, white)
+        1.0, 1.0, 1.0, 1.0, th)
     Menu.ThrowPreview.stroke(cx, cy - arm, cx, cy + arm,
-        1.0, 1.0, 1.0, 0.95, white)
+        1.0, 1.0, 1.0, 1.0, th)
 end
 
 -- The arc is a dashed guide, not a beam. Dashes are measured in screen space
@@ -4245,13 +4238,30 @@ local function ToggleThrowVehicle(enable)
     -- so a build with a different step or time scale still previews correctly.
     -- The estimate and the measurement live on Menu.ThrowPreview so a toggle
     -- does not reset them; nothing is written to the entity or sent.
-    local THROW_SPEED_PER_FORCE_MIN = 1.0 / 200.0
-    local THROW_SPEED_PER_FORCE_MAX = 1.0 / 20.0
+    local THROW_SPEED_PER_FORCE_MIN = 1.0 / 2000.0
+    local THROW_SPEED_PER_FORCE_MAX = 1.0 / 10.0
 
     Citizen.CreateThread(function()
         local holdingEntity = false
         local heldEntity = nil
         local outlinedEntity = nil
+        -- The outline is an entity flag, not a one-frame draw. Re-arming it
+        -- and its colour every frame queues a second outline pass on retail;
+        -- that pass renders as a doubled, thicker edge with z-fighting red
+        -- speckles along the model's inner seams. It is armed on target or
+        -- state change, then refreshed slowly in case a streaming or
+        -- ownership change drops the flag.
+        local outlinedState = nil
+        local outlinedAt = 0
+        local OUTLINE_REFRESH_MS = 500
+        -- The default outline shader is the 30 px gaussian pass; its mask
+        -- picks up the car's glass and trim seams, so the glow reads as a
+        -- second, speckled outline inside the silhouette. Shader 1 is the
+        -- 2 px firm pass: one clean edge. The selection is global to the
+        -- native, so it is set once and covers every outline the menu draws.
+        if type(SetEntityDrawOutlineShader) == "function" then
+            pcall(SetEntityDrawOutlineShader, 1)
+        end
         -- Control is requested, never awaited. The proven old build attached
         -- the aimed car on the same frame as the E release; a remote-owned car
         -- may take a few frames to hand ownership over, but the carry pose and
@@ -4275,6 +4285,11 @@ local function ToggleThrowVehicle(enable)
         local CARRY_X, CARRY_Y, CARRY_Z = 0.0, 0.0, 3.4
         local CARRY_CLEARANCE = 1.25
         local carryOffsetZ = CARRY_Z
+        -- Bottom of the carried model below its origin, read from the live
+        -- dimensions at grab time. The preview traces and draws from this
+        -- point, not from the chassis centre, so the marker lands where the
+        -- car's belly touches the road instead of half a metre too far.
+        local carryMinZ = -0.6
         -- The old build used one ApplyForceToEntity impulse of 500. That is
         -- the throw the operator remembers. A SetEntityVelocity overwrite is
         -- deliberately not used: an impulse is ordinary physics, while a
@@ -4389,6 +4404,7 @@ local function ToggleThrowVehicle(enable)
                 pcall(SetEntityDrawOutline, outlinedEntity, false)
             end
             outlinedEntity = nil
+            outlinedState = nil
         end
 
         local function applyOutlineColor(entity, r, g, b, a)
@@ -4443,6 +4459,7 @@ local function ToggleThrowVehicle(enable)
             lastAnimTaskAt = 0
             animCleared = false
             carryOffsetZ = CARRY_Z
+            carryMinZ = -0.6
             invalidatePreview()
             pcall(ClearPedTasks, ped)
         end
@@ -4540,28 +4557,36 @@ local function ToggleThrowVehicle(enable)
             return x, y, z
         end
 
-        -- One frame after a real throw the engine has integrated the impulse.
-        -- Subtracting the ped velocity captured at release isolates the impulse
-        -- itself; the direction test rejects a car that hit a wall on the first
-        -- frame, which would otherwise teach the preview a wrong speed.
+        -- A real throw is the only place the engine tells us what the impulse
+        -- actually does. The car's own post-detach velocity is the baseline
+        -- (the ped's velocity is not the car's), and the aligned component
+        -- isolates the impulse from gravity and from a lateral shove. The
+        -- first plausible frame wins; a missed frame retries for a few frames
+        -- instead of throwing the measurement away.
         local function updateThrowCalibration()
             if not pendingThrowMeasure then return end
             local pending = pendingThrowMeasure
-            pendingThrowMeasure = nil
             if type(DoesEntityExist) ~= "function"
                 or not DoesEntityExist(pending.entity) then
+                pendingThrowMeasure = nil
                 return
             end
+            pending.frames = pending.frames + 1
             local vx, vy, vz = readEntityVelocity(pending.entity)
             local dx = vx - pending.baseX
             local dy = vy - pending.baseY
             local dz = vz - pending.baseZ
             local speed = math.sqrt(dx * dx + dy * dy + dz * dz)
-            if speed < 0.5 or speed > 80.0 then return end
-            local dot = (dx * pending.dirX + dy * pending.dirY
-                + dz * pending.dirZ) / speed
-            if dot < 0.5 then return end
-            local measured = speed / THROW_FORCE
+            local aligned = dx * pending.dirX + dy * pending.dirY
+                + dz * pending.dirZ
+            local valid = speed >= 0.2 and aligned >= 0.15
+                and aligned / speed >= 0.6
+            if not valid then
+                if pending.frames >= 12 then pendingThrowMeasure = nil end
+                return
+            end
+            pendingThrowMeasure = nil
+            local measured = aligned / THROW_FORCE
             if measured < THROW_SPEED_PER_FORCE_MIN then
                 measured = THROW_SPEED_PER_FORCE_MIN
             elseif measured > THROW_SPEED_PER_FORCE_MAX then
@@ -4601,9 +4626,24 @@ local function ToggleThrowVehicle(enable)
                             or (ignoreExtra and ignoreExtra ~= 0
                                 and hitEntity == ignoreExtra)
                         if not ignored then
+                            -- The ray reports the exact surface point on this
+                            -- chord; turn it into the exact time along the
+                            -- parabola so the arc stops at the wall and the
+                            -- flight readout is not rounded to the step.
+                            local segX, segY, segZ = nx - px, ny - py, nz - pz
+                            local segLen = math.sqrt(segX * segX
+                                + segY * segY + segZ * segZ)
+                            local hitX, hitY, hitZ =
+                                coords.x - px, coords.y - py, coords.z - pz
+                            local hitLen = math.sqrt(hitX * hitX
+                                + hitY * hitY + hitZ * hitZ)
+                            local frac = 1.0
+                            if segLen > 0.001 then frac = hitLen / segLen end
+                            if frac < 0.0 then frac = 0.0
+                            elseif frac > 1.0 then frac = 1.0 end
                             return {
                                 x = coords.x, y = coords.y, z = coords.z,
-                                entity = hitEntity, t = nt,
+                                entity = hitEntity, t = t + step * frac,
                             }
                         end
                     end
@@ -4641,6 +4681,10 @@ local function ToggleThrowVehicle(enable)
             local vx = pedVX + direction.x * speed
             local vy = pedVY + direction.y * speed
             local vz = pedVZ + direction.z * speed
+            -- The flight is traced from the model's lowest point: ground
+            -- contact is the belly touching, not the chassis centre sinking
+            -- half a metre into the road.
+            local baseZ = carPos.z + carryMinZ
 
             local now = nowMs()
             local dx = carPos.x - Menu.ThrowPreview.tx
@@ -4661,7 +4705,7 @@ local function ToggleThrowVehicle(enable)
                     end
                 end
                 Menu.ThrowPreview.impact = traceImpact(
-                    carPos.x, carPos.y, carPos.z,
+                    carPos.x, carPos.y, baseZ,
                     vx, vy, vz, entity, ped, ignoreExtra)
                 Menu.ThrowPreview.valid = true
                 Menu.ThrowPreview.at = now
@@ -4688,7 +4732,7 @@ local function ToggleThrowVehicle(enable)
             Menu.ThrowPreview.visible = true
             Menu.ThrowPreview.now = now
             Menu.ThrowPreview.ox, Menu.ThrowPreview.oy, Menu.ThrowPreview.oz =
-                carPos.x, carPos.y, carPos.z
+                carPos.x, carPos.y, baseZ
             Menu.ThrowPreview.vx, Menu.ThrowPreview.vy, Menu.ThrowPreview.vz = vx, vy, vz
             Menu.ThrowPreview.flight = PREVIEW_FLIGHT_MAX
             if Menu.ThrowPreview.impact then
@@ -4741,6 +4785,11 @@ local function ToggleThrowVehicle(enable)
                     if okDims and vehicleMin
                         and type(vehicleMin.z) == "number" then
                         offset = headHeight + CARRY_CLEARANCE - vehicleMin.z
+                        -- Clamp to a plausible chassis box; a corrupt model
+                        -- box must not put the preview underground.
+                        if vehicleMin.z < -0.1 and vehicleMin.z > -3.0 then
+                            carryMinZ = vehicleMin.z
+                        end
                     end
                 end
             end
@@ -4787,6 +4836,7 @@ local function ToggleThrowVehicle(enable)
             animRequestedAt = 0
             lastAnimTaskAt = 0
             animCleared = false
+            carryMinZ = -0.6
             carryOffsetZ = carryHeight(ped, entity)
             invalidatePreview()
             -- Do not ClearPedTasks here. The first pose clears the aim task in
@@ -4812,13 +4862,18 @@ local function ToggleThrowVehicle(enable)
             -- next render frame must not draw the old path over the flying car.
             invalidatePreview()
 
-            local baseVX, baseVY, baseVZ = readEntityVelocity(ped)
             pcall(NetworkRequestControlOfEntity, entity)
             releaseHeld(entity, ped)
 
             if not throwVehicleActive or throwVehicleGeneration ~= generation then
                 return
             end
+
+            -- Baseline: the car's own velocity after detaching, before the
+            -- impulse. The ped's velocity is not the car's; the attach
+            -- constraint can hand a car residual motion the ped never has,
+            -- and subtracting the ped would fold that into the measurement.
+            local baseVX, baseVY, baseVZ = readEntityVelocity(entity)
 
             -- The impulse follows the camera forward vector exactly. The old
             -- build clamped the vertical component to a positive floor, which
@@ -4838,12 +4893,14 @@ local function ToggleThrowVehicle(enable)
             -- in case a build clears the pair when the entity starts moving.
             pcall(SetEntityNoCollisionEntity, entity, ped, false)
             pcall(ClearPedTasks, ped)
-            -- Consumed on the next loop frame, after the engine has integrated
-            -- the impulse. One measurement, one entity read, no thread.
+            -- Consumed on the next loop frames, after the engine has
+            -- integrated the impulse. A few frames of retries beat one read
+            -- that can land before the physics step.
             pendingThrowMeasure = {
                 entity = entity,
                 baseX = baseVX, baseY = baseVY, baseZ = baseVZ,
                 dirX = dirX, dirY = dirY, dirZ = dirZ,
+                frames = 0,
             }
         end
 
@@ -4936,28 +4993,38 @@ local function ToggleThrowVehicle(enable)
                     end
 
                     if target then
-                        -- Track the current entity so disabling the option can
-                        -- clear the persistent outline. The active highlight
-                        -- itself is re-applied every frame, exactly like the
-                        -- known-good build; setting it once makes it flicker.
+                        local controlled = hasControl(target)
+                        local playerOccupied =
+                            vehicleHasRemotePlayer(target, false)
+                        local state = "uncontrolled"
+                        if playerOccupied then
+                            state = "blocked"
+                        elseif controlled then
+                            state = "controlled"
+                        end
+                        -- Track the entity so disabling the option can clear
+                        -- the persistent flag, and arm on change instead of
+                        -- re-queueing the outline every single frame.
                         if outlinedEntity ~= target then
                             clearOutline()
                             outlinedEntity = target
                         end
-
-                        local controlled = hasControl(target)
-                        local playerOccupied =
-                            vehicleHasRemotePlayer(target, false)
-                        if type(SetEntityDrawOutline) == "function" then
+                        local now = nowMs()
+                        if type(SetEntityDrawOutline) == "function"
+                            and (outlinedState ~= state
+                                or (now > 0
+                                    and now - outlinedAt >= OUTLINE_REFRESH_MS)) then
                             pcall(SetEntityDrawOutline, target, true)
-                            if playerOccupied then
+                            if state == "blocked" then
                                 applyOutlineColor(target,
                                     BLOCKED_R, BLOCKED_G, BLOCKED_B, 255)
-                            elseif controlled then
+                            elseif state == "controlled" then
                                 applyOutlineColor(target, 0, 255, 0, 255)
                             else
                                 applyOutlineColor(target, 255, 0, 0, 255)
                             end
+                            outlinedState = state
+                            outlinedAt = now
                         end
 
                         if IsControlJustReleased(0, GRAB_KEY) then
@@ -18388,7 +18455,11 @@ CreateThread(function()
                     end
 
                     SetEntityDrawOutline(vehicle, true)
-                    SetEntityDrawOutlineColor(vehicle, 255, 255, 0, 255)
+                    -- The colour native is global (r,g,b,a). Passing the
+                    -- entity first shifted the channels and zeroed alpha,
+                    -- which the gaussian shader ignored but the firm shader
+                    -- honours; the highlight was never actually yellow.
+                    SetEntityDrawOutlineColor(255, 255, 0, 255)
                     lastHighlighted = vehicle
                 else
                     if lastHighlighted then
@@ -39063,11 +39134,15 @@ end)(O,S,B,Menu)
 -- rebuilds the horizontal velocity from the camera yaw and the live move
 -- controls (GET_CONTROL_NORMAL 30/31), keeps the current horizontal speed and
 -- vertical component, and writes it back only when the velocity is more than
--- 10 degrees away from the intended direction. WASD/left-stick therefore
--- stays under the operator's control while the model spins. The write is a
--- normal on-foot velocity capped at 13.6 m/s, below the reference guard's
--- 14 m/s ceiling. No camera write, no task, no event, no entity, no state bag,
--- no hook.
+-- 10 degrees away from the intended direction. The movement frame is the
+-- world yaw captured at arm (and refreshed after a suspension or ped change),
+-- not the live camera yaw: the gameplay camera can follow the forced heading,
+-- so a per-frame camera read would turn the run into a circle with the spin.
+-- WASD/left-stick therefore stays world-stable under the operator's control
+-- while the model spins. The write is a normal
+-- on-foot velocity capped at 13.6 m/s, below the reference guard's 14 m/s
+-- ceiling. No camera write, no task, no event, no entity, no state bag, no
+-- hook.
 --
 -- Suspension matrix: aim (IS_AIM_CAM_ACTIVE / IS_PLAYER_FREE_AIMING), vehicle,
 -- dead, ragdoll, falling, in air, parachute, cover, swimming, climbing,
@@ -39138,6 +39213,7 @@ local SP = (function(O, N)
         speed = SPEEDS[3],
         dir = 1.0,
         target = 0.0,
+        moveYaw = 0.0,
         gen = 0,
         resumeAt = 0,
         suspended = false,
@@ -39209,6 +39285,22 @@ local SP = (function(O, N)
         return heading
     end
 
+    -- The gameplay camera can follow the forced heading, so reading its yaw
+    -- every frame would rotate the run with the spin. Capture one world yaw
+    -- when the row is armed, or when the ped changes, and keep that movement
+    -- frame until the next arm. W/A/S/D then stay world-stable while the
+    -- heading spins.
+    local function captureMoveYaw(fallback)
+        local ok, cam = pcall(GetGameplayCamRot, 2)
+        if ok and cam and type(cam.z) == "number"
+            and cam.z == cam.z and cam.z ~= math.huge and cam.z ~= -math.huge then
+            SP.moveYaw = cam.z
+        else
+            SP.moveYaw = fallback or SP.target
+        end
+        return SP.moveYaw
+    end
+
     -- Reads only. The aim checks are the two natives the reference guard's
     -- camera detector depends on; the module never writes the camera.
     local function suspendedNow(ped)
@@ -39254,10 +39346,10 @@ local SP = (function(O, N)
         return v
     end
 
-    -- The locomotion task steers the run toward the current facing. Rebuild
-    -- the horizontal velocity from the camera yaw and the live move controls
-    -- so the operator's WASD/left-stick direction survives the spin. Reads
-    -- only; the single write is a normal on-foot velocity.
+    -- The locomotion task steers the run toward the current facing, and the
+    -- camera may follow that facing. The movement frame is therefore the yaw
+    -- captured at arm, not the live camera yaw; only the control axes are read
+    -- per frame. Reads only; the single write is a normal on-foot velocity.
     local function intendedMove()
         local okX, ix = pcall(GetControlNormal, 0, 30)
         local okY, iy = pcall(GetControlNormal, 0, 31)
@@ -39265,10 +39357,8 @@ local SP = (function(O, N)
         ix, iy = tonumber(ix) or 0.0, tonumber(iy) or 0.0
         if ix ~= ix or iy ~= iy then return nil end
         if math.sqrt(ix * ix + iy * iy) < MOVE_EPS then return nil end
-        local okCam, cam = pcall(GetGameplayCamRot, 2)
-        if not okCam or not cam or type(cam.z) ~= "number" then return nil end
-        if cam.z ~= cam.z or cam.z == math.huge or cam.z == -math.huge then return nil end
-        local yaw = math.rad(cam.z)
+        if SP.moveYaw ~= SP.moveYaw then return nil end
+        local yaw = math.rad(SP.moveYaw)
         local fx, fy = -math.sin(yaw), math.cos(yaw)
         local rx, ry = math.cos(yaw), math.sin(yaw)
         local dx = fx * iy + rx * ix
@@ -39366,6 +39456,7 @@ local SP = (function(O, N)
             SP.ped = 0
             return false
         end
+        captureMoveYaw(SP.target)
 
         startThread()
         if not SP.active then return false end
@@ -39386,6 +39477,7 @@ local SP = (function(O, N)
         SP.lagLogged = false
         SP.moveLogged = false
         SP.moveFailLogged = false
+        SP.moveYaw = 0.0
         SP.ped = 0
 
         if wasActive then
@@ -39414,6 +39506,7 @@ local SP = (function(O, N)
             lag = SP.stats.lag,
             moves = SP.stats.moves,
             moveFails = SP.stats.moveFails,
+            moveYaw = SP.moveYaw,
         }
     end
 
@@ -39453,6 +39546,7 @@ local SP = (function(O, N)
                 SP.stop("no heading")
                 return
             end
+            captureMoveYaw(SP.target)
         end
 
         local why = suspendedNow(ped)
@@ -39478,6 +39572,7 @@ local SP = (function(O, N)
                 SP.stop("no heading")
                 return
             end
+            captureMoveYaw(SP.target)
         end
 
         local dt = (now - SP.lastAt) / 1000.0
@@ -43097,7 +43192,7 @@ end
 -- ---------------------------------------------------------------------------
 -- REMOVE OLD ENTRY POINTS
 -- ---------------------------------------------------------------------------
-local MENU_REV = "2026-11-22-r95"
+local MENU_REV = "2026-11-22-r96"
 
 -- A previous execution of the old loader can leave its category in the shared
 -- Menu table. Match both the literal name and the old nine-tab fingerprint so
