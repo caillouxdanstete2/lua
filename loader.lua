@@ -4075,10 +4075,12 @@ end
 -- The arc is a dashed guide through the car's centre. The sample state is the
 -- belly path, so the impact ring sits exactly where the chassis touches; the
 -- drawn line is lifted by the model's belly offset so it tracks the car the
--- operator sees instead of hanging half a metre under it. Bounced segments
--- (after a wall or the ground) are drawn dimmer: the first line is the throw,
--- the rest is where the car goes next. Dashes are measured in screen space so
--- the rhythm is identical near and far instead of clumping at the horizon.
+-- operator sees instead of hanging half a metre under it. The throw is green;
+-- the path after a bounce is warning orange, so the operator reads at a glance
+-- where the car stops bouncing. Strokes are thick on purpose: the guide must
+-- read over bright sand and sea, not disappear into them. Dashes are measured
+-- in screen space so the rhythm is identical near and far instead of clumping
+-- at the horizon.
 function Menu.ThrowPreview.arc(screenW, screenH, s, ui)
     local segments = s.segments
     if not segments or #segments == 0 then return end
@@ -4089,7 +4091,11 @@ function Menu.ThrowPreview.arc(screenW, screenH, s, ui)
     for index = 1, #segments do
         local segment = segments[index]
         local fade = 1.0
-        if index == 2 then fade = 0.62 elseif index > 2 then fade = 0.38 end
+        local r, g, b = 0.40, 1.0, 0.62
+        if index > 1 then
+            r, g, b = 1.0, 0.55, 0.15
+            if index == 2 then fade = 0.85 else fade = 0.6 end
+        end
         local dur = segment.dur
         local drag = segment.drag or s.drag or 0.0
         local t = 0.0
@@ -4124,10 +4130,9 @@ function Menu.ThrowPreview.arc(screenW, screenH, s, ui)
                                 prevY + dy * walked * inv,
                                 prevX + dx * (walked + chunk) * inv,
                                 prevY + dy * (walked + chunk) * inv,
-                                0.40, 1.0, 0.62,
-                                (0.36 + 0.38 * f) * fade,
-                                (1.3 + 0.7 * f) * ui
-                                    * (index == 1 and 1.0 or 0.9))
+                                r, g, b,
+                                (0.42 + 0.34 * f) * fade,
+                                (2.2 + 0.9 * f) * ui)
                         end
                         walked = walked + chunk
                         dashLeft = dashLeft - chunk
@@ -4700,35 +4705,12 @@ local function ToggleThrowVehicle(enable)
                     end
                 end
             end
-            if not impact then
-                -- No landing inside the window: a velocity fit on the clean
-                -- middle of the path. The gravity term is removed from the
-                -- slope, so a level throw measures a level velocity instead of
-                -- its fall, and a downward throw still measures its impulse.
-                local last = samples[#samples].t
-                local n, st, stt = 0, 0.0, 0.0
-                local sx, sy, sz = 0.0, 0.0, 0.0
-                local stx, sty, stz = 0.0, 0.0, 0.0
-                for i = 1, #samples do
-                    local s = samples[i]
-                    if s.t >= 0.06 then
-                        n = n + 1
-                        st = st + s.t
-                        stt = stt + s.t * s.t
-                        sx = sx + s.x
-                        sy = sy + s.y
-                        sz = sz + s.z
-                        stx = stx + s.t * s.x
-                        sty = sty + s.t * s.y
-                        stz = stz + s.t * s.z
-                    end
-                end
-                local den = n * stt - st * st
-                if n < 4 or last < 0.16 or den <= 1e-6 then return end
-                vx = (n * stx - st * sx) / den
-                vy = (n * sty - st * sy) / den
-                vz = (n * stz - st * sz) / den + g * (st / n)
-            end
+            -- Only a real landing teaches the model. A throw that never
+            -- touches a surface inside the window (water, sky, off a cliff)
+            -- has no wall-clock truth to close against: any velocity fitted to
+            -- it is a deceleration curve, not the impulse, and it would drag
+            -- the whole preview down with it.
+            if not impact then return end
             local dvx = vx - pending.baseX
             local dvy = vy - pending.baseY
             local dvz = vz - pending.baseZ
@@ -39574,9 +39556,21 @@ local SP = (function(O, N)
         return type(v) == "number" and v == v and v ~= math.huge and v ~= -math.huge
     end
 
+    local function readXYZ(coords)
+        return coords.x, coords.y, coords.z
+    end
+
+    -- CfxLua returns vector3 as its own metatype on current builds, and some
+    -- executors hand back a userdata wrapper. A plain table check rejects both
+    -- and kills the first tick, which is indistinguishable from the row failing
+    -- to arm. Accept every shape that exposes finite x/y/z.
     local function validCoords(coords)
-        return type(coords) == "table"
-            and finite(coords.x) and finite(coords.y) and finite(coords.z)
+        local kind = type(coords)
+        if kind ~= "table" and kind ~= "userdata" and kind ~= "vector3" then
+            return false
+        end
+        local ok, x, y, z = pcall(readXYZ, coords)
+        return ok and finite(x) and finite(y) and finite(z)
     end
 
     local function distanceSq(a, b)
@@ -39588,17 +39582,25 @@ local SP = (function(O, N)
     -- the row usable on a build where only Citizen.InvokeNative is present.
     -- The named path is preferred because its hash is resolved by the executor;
     -- NET_HASH is the verified build-323 fallback, not the primary lookup.
+    local function runtime()
+        local citizen = rawget(_G, "Citizen")
+        if type(citizen) ~= "table" then citizen = rawget(_G, "citizen") end
+        return citizen
+    end
+
     local function netAvailable()
-        return type(NetworkOverrideCoordsAndHeading) == "function"
-            or (type(Citizen) == "table" and type(Citizen.InvokeNative) == "function")
+        if type(NetworkOverrideCoordsAndHeading) == "function" then return true end
+        local citizen = runtime()
+        return type(citizen) == "table" and type(citizen.InvokeNative) == "function"
     end
 
     local function overrideNet(ped, x, y, z, heading)
         if type(NetworkOverrideCoordsAndHeading) == "function" then
             return NetworkOverrideCoordsAndHeading(ped, x, y, z, heading)
         end
-        if type(Citizen) == "table" and type(Citizen.InvokeNative) == "function" then
-            return Citizen.InvokeNative(NET_HASH, ped, x, y, z, heading)
+        local citizen = runtime()
+        if type(citizen) == "table" and type(citizen.InvokeNative) == "function" then
+            return citizen.InvokeNative(NET_HASH, ped, x, y, z, heading)
         end
         error("network override unavailable")
     end
@@ -39773,10 +39775,15 @@ local SP = (function(O, N)
     local function startThread()
         local gen = SP.gen
         local build = O.build
-        local create = (type(Citizen) == "table" and type(Citizen.CreateThread) == "function")
-            and Citizen.CreateThread or nil
-        local wait = (type(Citizen) == "table" and type(Citizen.Wait) == "function")
-            and Citizen.Wait or nil
+        local citizen = runtime()
+        local create = rawget(_G, "CreateThread")
+        local wait = rawget(_G, "Wait")
+        if type(create) ~= "function" then
+            create = citizen and citizen.CreateThread or nil
+        end
+        if type(wait) ~= "function" then
+            wait = citizen and citizen.Wait or nil
+        end
         if not create or not wait then
             O.log("spin: no thread")
             SP.stop("no thread")
@@ -39808,10 +39815,20 @@ local SP = (function(O, N)
             return false
         end
 
-        local ped = (O.Ctx and O.Ctx.ped) or PlayerPedId()
-        if not ped or ped == 0 then return false end
-        if not DoesEntityExist(ped) then return false end
-        if IsPedDeadOrDying(ped, true) then return false end
+        local ped = (O.Ctx and O.Ctx.ped) or 0
+        if not ped or ped == 0 then ped = PlayerPedId() end
+        if not ped or ped == 0 then
+            O.log("spin: no ped")
+            return false
+        end
+        if not DoesEntityExist(ped) then
+            O.log("spin: ped gone")
+            return false
+        end
+        if IsPedDeadOrDying(ped, true) then
+            O.log("spin: ped dead")
+            return false
+        end
 
         setProfile(rowSelected())
         SP.ped = ped
@@ -39908,7 +39925,8 @@ local SP = (function(O, N)
         if not SP.active then return end
 
         local now = O.now()
-        local ped = (O.Ctx and O.Ctx.ped) or PlayerPedId()
+        local ped = (O.Ctx and O.Ctx.ped) or 0
+        if not ped or ped == 0 then ped = PlayerPedId() end
         if not ped or ped == 0 then
             SP.stop("ped lost")
             return
@@ -43567,7 +43585,7 @@ end
 -- ---------------------------------------------------------------------------
 -- REMOVE OLD ENTRY POINTS
 -- ---------------------------------------------------------------------------
-local MENU_REV = "2026-11-22-r101"
+local MENU_REV = "2026-11-22-r102"
 
 -- A previous execution of the old loader can leave its category in the shared
 -- Menu table. Match both the literal name and the old nine-tab fingerprint so
