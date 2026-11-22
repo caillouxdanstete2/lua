@@ -39455,6 +39455,10 @@ end)(O,S,B,Menu)
 -- The network override leaves both local systems untouched, so first-person,
 -- third-person, sprint, strafe and reverse all behave exactly like vanilla.
 --
+-- Coords are accepted as a plain table, a vector3 metatype, or a userdata
+-- wrapper, because CfxLua has returned all three across builds. Rejecting a
+-- non-table here used to kill the first tick and leave the row looking dead.
+--
 -- Local safety: before the override, the module reads the local coords and
 -- heading; after it, it reads both again. If the native is observed changing
 -- either one, the module restores the captured local state once, logs
@@ -39467,11 +39471,13 @@ end)(O,S,B,Menu)
 -- supported because the local camera is never touched. Speed is deliberately
 -- not a suspension input: running must keep spinning.
 --
--- Cadence: one Citizen thread per arm, Wait(0), dt from GetGameTimer. A
--- generation token makes stop/panic/re-arm idempotent: the old thread exits on
--- its next wake-up and cannot write after the row is off. The scheduler's
--- O.every path is not used because a 16-24 ms pump is not frame-locked; the
--- network heading needs the same cadence as the game.
+-- Cadence: one runtime thread per arm, Wait(0), dt from GetGameTimer. The
+-- global CreateThread/Wait pair is preferred and Citizen.CreateThread/Wait is
+-- the fallback, because the executor may expose either surface. A generation
+-- token makes stop/panic/re-arm idempotent: the old thread exits on its next
+-- wake-up and cannot write after the row is off. The scheduler's O.every path
+-- is not used because a 16-24 ms pump is not frame-locked; the network heading
+-- needs the same cadence as the game.
 --
 -- Speed profiles: 720 / 900 / 1080 deg/s. The fastest profile is 3 rev/s and
 -- stays below the 1200 deg/s snap threshold used by public client anticheats
@@ -39536,7 +39542,7 @@ local SP = (function(O, N)
         localTouched = false,
         localMoved = false,
         onChange = nil,
-        stats = { calls = 0, suspends = 0, resumes = 0, netFails = 0, netClears = 0, netMoves = 0 },
+        stats = { calls = 0, suspends = 0, resumes = 0, netFails = 0, netClears = 0, netMoves = 0, waits = 0 },
     }
 
     local function wrap360(a)
@@ -39656,9 +39662,30 @@ local SP = (function(O, N)
         return SP.speed
     end
 
-    local function anchor(ped)
+    local function headingOf(ped)
         local ok, heading = pcall(GetEntityHeading, ped)
-        if not ok or not finite(heading) then return nil end
+        if ok and finite(heading) then return heading end
+        if type(GetEntityRotation) == "function" then
+            local okR, rot = pcall(GetEntityRotation, ped, 2)
+            if okR and rot and finite(rot.z) then return rot.z end
+        end
+        return nil
+    end
+
+    local function localPed()
+        local ped = (O.Ctx and O.Ctx.ped) or 0
+        if ped == 0 then ped = PlayerPedId() end
+        if (not ped or ped == 0) and type(GetPlayerPed) == "function"
+            and type(PlayerId) == "function" then
+            local ok, fallback = pcall(GetPlayerPed, PlayerId())
+            if ok then ped = fallback end
+        end
+        return ped or 0
+    end
+
+    local function anchor(ped)
+        local heading = headingOf(ped)
+        if not heading then return nil end
         SP.target = wrap360(heading)
         return heading
     end
@@ -39669,8 +39696,8 @@ local SP = (function(O, N)
     local function clearNetwork(ped)
         if not ped or ped == 0 then return false end
         local okC, coords = pcall(GetEntityCoords, ped, true)
-        local okH, heading = pcall(GetEntityHeading, ped)
-        if not okC or not validCoords(coords) or not okH or not finite(heading) then
+        local heading = headingOf(ped)
+        if not okC or not validCoords(coords) or not heading then
             return false
         end
         local ok = pcall(overrideNet,
@@ -39690,10 +39717,10 @@ local SP = (function(O, N)
     -- leaving the camera, position or locomotion in a broken state.
     local function writeNetwork(ped)
         local okC, coords = pcall(GetEntityCoords, ped, true)
-        if not okC or not validCoords(coords) then return false end
+        if not okC or not validCoords(coords) then return false, "coords" end
 
-        local okB, before = pcall(GetEntityHeading, ped)
-        if not okB or not finite(before) then return false end
+        local before = headingOf(ped)
+        if not before then return false, "heading" end
 
         local ok = pcall(overrideNet,
             ped, coords.x, coords.y, coords.z, SP.target)
@@ -39703,7 +39730,7 @@ local SP = (function(O, N)
                 SP.netFailLogged = true
                 O.log("spin: net override unavailable")
             end
-            return false
+            return false, "native"
         end
 
         local okCA, afterCoords = pcall(GetEntityCoords, ped, true)
@@ -39717,18 +39744,18 @@ local SP = (function(O, N)
                 SP.localLogged = true
                 O.log("spin: net local moved")
             end
-            return false
+            return false, "local"
         end
 
-        local okA, after = pcall(GetEntityHeading, ped)
-        if okA and finite(after) and math.abs(delta(after, before)) > LOCAL_TOUCH_DEG then
+        local after = headingOf(ped)
+        if after and math.abs(delta(after, before)) > LOCAL_TOUCH_DEG then
             pcall(SetEntityHeading, ped, before)
             SP.localTouched = true
             if not SP.localLogged then
                 SP.localLogged = true
                 O.log("spin: net local touched")
             end
-            return false
+            return false, "local"
         end
 
         SP.stats.calls = SP.stats.calls + 1
@@ -39815,8 +39842,7 @@ local SP = (function(O, N)
             return false
         end
 
-        local ped = (O.Ctx and O.Ctx.ped) or 0
-        if not ped or ped == 0 then ped = PlayerPedId() end
+        local ped = localPed()
         if not ped or ped == 0 then
             O.log("spin: no ped")
             return false
@@ -39850,6 +39876,7 @@ local SP = (function(O, N)
         SP.stats.netFails = 0
         SP.stats.netClears = 0
         SP.stats.netMoves = 0
+        SP.stats.waits = 0
 
         if not anchor(ped) then
             SP.active = false
@@ -39915,6 +39942,7 @@ local SP = (function(O, N)
             netFails = SP.stats.netFails,
             netClears = SP.stats.netClears,
             netMoves = SP.stats.netMoves,
+            waits = SP.stats.waits,
             target = SP.target,
             localTouched = SP.localTouched,
             localMoved = SP.localMoved,
@@ -39925,8 +39953,7 @@ local SP = (function(O, N)
         if not SP.active then return end
 
         local now = O.now()
-        local ped = (O.Ctx and O.Ctx.ped) or 0
-        if not ped or ped == 0 then ped = PlayerPedId() end
+        local ped = localPed()
         if not ped or ped == 0 then
             SP.stop("ped lost")
             return
@@ -40005,10 +40032,21 @@ local SP = (function(O, N)
         local step = SP.speed * dt * (1.0 + (O.rnd() - 0.5) * SPEED_JITTER * 2.0)
         SP.target = wrap360(SP.target + SP.dir * step)
 
-        if not writeNetwork(ped) then
-            SP.stop("net write")
+        local okWrite, why = writeNetwork(ped)
+        if not okWrite then
+            -- A ped that just spawned or just streamed in can return nil coords
+            -- for a frame or two. Retrying for a short window turns a transient
+            -- read failure into a normal start instead of a row that arms and
+            -- immediately flips off. A native or local-transform failure is
+            -- not transient and still stops on the first tick.
+            if why == "coords" or why == "heading" then
+                SP.stats.waits = SP.stats.waits + 1
+                if SP.stats.waits <= 30 then return end
+            end
+            SP.stop(why == "native" and "net write" or (why or "net write"))
             return
         end
+        SP.stats.waits = 0
     end
 
     -- Test seam: lets the local harness drive one pass without starting the
