@@ -3967,6 +3967,15 @@ local function DeleteAllProps()
 end
 
 local throwVehicleActive = false
+-- Throw preview speed model. APPLY_TYPE_IMPULSE (force type 1) with
+-- bScaleByMass=true takes a velocity change per physics step, so the proven
+-- 500 impulse is ~8.33 m/s on the retail 1/60 s step. The first real throw
+-- measures the engine's actual delta and replaces this estimate (clamped),
+-- so a build with a different step or time scale still previews correctly.
+-- The value is executor-local; nothing is written to the entity or sent.
+local throwSpeedPerForce = 1.0 / 60.0
+local THROW_SPEED_PER_FORCE_MIN = 1.0 / 200.0
+local THROW_SPEED_PER_FORCE_MAX = 1.0 / 20.0
 local throwVehicleGeneration = 0
 local function ToggleThrowVehicle(enable)
     throwVehicleActive = enable
@@ -4015,6 +4024,34 @@ local function ToggleThrowVehicle(enable)
         -- front and avoids attaching a vehicle from the other side of the
         -- map, which is both obvious and easy to attribute.
         local MAX_GRAB_DISTANCE = 50.0
+
+        -- Throw preview. Local overlay work only: the arc is the same ballistic
+        -- path the impulse produces (v0 = force * speed/force, gravity 9.81),
+        -- the impact is the first shape-test hit along that path, and the
+        -- carried car is the ignored entity so the probe cannot hit the thing
+        -- being previewed. No entity, event, global or network write is made.
+        local PREVIEW_FLIGHT_MAX = 2.6
+        local PREVIEW_RAY_STEP = 0.1
+        local PREVIEW_DOT_STEP = 0.06
+        local PREVIEW_RECOMPUTE_MS = 200
+        local PREVIEW_TURN_DOT = 0.995
+        local PREVIEW_MOVE_SQ = 0.1225
+        local PREVIEW_GRAVITY = 9.81
+        local PREVIEW_PULSE_MS = 1100
+        local PREVIEW_PULSE_TAIL = 0.045
+        local previewValid = false
+        local previewAt = 0
+        local previewOriginX, previewOriginY, previewOriginZ = 0.0, 0.0, 0.0
+        local previewDirX, previewDirY, previewDirZ = 0.0, 0.0, 1.0
+        local previewImpact = nil
+        local pendingThrowMeasure = nil
+
+        -- A new carry never reuses the impact of the previous car, and a
+        -- reset (dead car, stop, disable) never leaves a cached ring behind.
+        local function invalidatePreview()
+            previewValid = false
+            previewImpact = nil
+        end
 
         local animReady = false
         local animRequestedAt = 0
@@ -4152,6 +4189,7 @@ local function ToggleThrowVehicle(enable)
             lastAnimTaskAt = 0
             animCleared = false
             carryOffsetZ = CARRY_Z
+            invalidatePreview()
             pcall(ClearPedTasks, ped)
         end
 
@@ -4236,6 +4274,352 @@ local function ToggleThrowVehicle(enable)
             local adjustedRotation = vector3((math.pi / 180) * rotation.x, (math.pi / 180) * rotation.y, (math.pi / 180) * rotation.z)
             local direction = vector3(-math.sin(adjustedRotation.z) * math.abs(math.cos(adjustedRotation.x)), math.cos(adjustedRotation.z) * math.abs(math.cos(adjustedRotation.x)), math.sin(adjustedRotation.x))
             return direction
+        end
+
+        local function readEntityVelocity(entity)
+            if type(GetEntityVelocity) ~= "function" then return 0.0, 0.0, 0.0 end
+            local ok, vel = pcall(GetEntityVelocity, entity)
+            if not ok or not vel then return 0.0, 0.0, 0.0 end
+            local x = type(vel.x) == "number" and vel.x or 0.0
+            local y = type(vel.y) == "number" and vel.y or 0.0
+            local z = type(vel.z) == "number" and vel.z or 0.0
+            return x, y, z
+        end
+
+        -- One frame after a real throw the engine has integrated the impulse.
+        -- Subtracting the ped velocity captured at release isolates the impulse
+        -- itself; the direction test rejects a car that hit a wall on the first
+        -- frame, which would otherwise teach the preview a wrong speed.
+        local function updateThrowCalibration()
+            if not pendingThrowMeasure then return end
+            local pending = pendingThrowMeasure
+            pendingThrowMeasure = nil
+            if type(DoesEntityExist) ~= "function"
+                or not DoesEntityExist(pending.entity) then
+                return
+            end
+            local vx, vy, vz = readEntityVelocity(pending.entity)
+            local dx = vx - pending.baseX
+            local dy = vy - pending.baseY
+            local dz = vz - pending.baseZ
+            local speed = math.sqrt(dx * dx + dy * dy + dz * dz)
+            if speed < 0.5 or speed > 80.0 then return end
+            local dot = (dx * pending.dirX + dy * pending.dirY
+                + dz * pending.dirZ) / speed
+            if dot < 0.5 then return end
+            local measured = speed / THROW_FORCE
+            if measured < THROW_SPEED_PER_FORCE_MIN then
+                measured = THROW_SPEED_PER_FORCE_MIN
+            elseif measured > THROW_SPEED_PER_FORCE_MAX then
+                measured = THROW_SPEED_PER_FORCE_MAX
+            end
+            throwSpeedPerForce = measured
+        end
+
+        local function projectPoint(x, y, z, screenW, screenH)
+            if type(Susano) == "table"
+                and type(Susano.WorldToScreen) == "function" then
+                local ok, visible, sx, sy =
+                    pcall(Susano.WorldToScreen, x, y, z)
+                if ok and visible and type(sx) == "number"
+                    and type(sy) == "number" then
+                    return true, sx, sy
+                end
+                return false, 0.0, 0.0
+            end
+            if type(GetScreenCoordFromWorldCoord) == "function" then
+                local ok, onScreen, nx, ny =
+                    pcall(GetScreenCoordFromWorldCoord, x, y, z)
+                if ok and onScreen and type(nx) == "number"
+                    and type(ny) == "number" then
+                    return true, nx * screenW, ny * screenH
+                end
+            end
+            return false, 0.0, 0.0
+        end
+
+        local function strokeOverlay(x1, y1, x2, y2, r, g, b, a, th, shadow)
+            if type(Susano) ~= "table"
+                or type(Susano.DrawLine) ~= "function" then
+                return
+            end
+            if shadow then
+                pcall(Susano.DrawLine, x1 + 1.0, y1 + 1.0, x2 + 1.0, y2 + 1.0,
+                    0.0, 0.0, 0.0, a * 0.6, th + 1.0)
+            end
+            pcall(Susano.DrawLine, x1, y1, x2, y2, r, g, b, a, th)
+        end
+
+        local function drawCrosshair(screenW, screenH, hasImpact, hot)
+            local ui = math.max(1.0, screenH / 1080.0)
+            local cx, cy = screenW * 0.5, screenH * 0.5
+            local gap, len, th = 7.0 * ui, 10.0 * ui, 2.0 * ui
+            -- White: no impact on the path (the throw clears the horizon).
+            -- Green: the preview found a real impact. Orange: that impact is
+            -- close enough to hit the operator.
+            local r, g, b = 1.0, 1.0, 1.0
+            if hot then
+                r, g, b = 1.0, 0.72, 0.15
+            elseif hasImpact then
+                r, g, b = 0.40, 1.0, 0.62
+            end
+            strokeOverlay(cx - gap - len, cy, cx - gap, cy,
+                r, g, b, 0.95, th, true)
+            strokeOverlay(cx + gap, cy, cx + gap + len, cy,
+                r, g, b, 0.95, th, true)
+            strokeOverlay(cx, cy - gap - len, cx, cy - gap,
+                r, g, b, 0.95, th, true)
+            strokeOverlay(cx, cy + gap, cx, cy + gap + len,
+                r, g, b, 0.95, th, true)
+            if type(Susano) == "table"
+                and type(Susano.DrawRectFilled) == "function" then
+                pcall(Susano.DrawRectFilled, cx - 1.5 * ui, cy - 1.5 * ui,
+                    3.0 * ui, 3.0 * ui, r, g, b, 1.0, 0.0)
+            end
+        end
+
+        local function drawImpact(screenW, screenH, point, hot)
+            local ok, sx, sy =
+                projectPoint(point.x, point.y, point.z, screenW, screenH)
+            if not ok then return end
+            local ui = math.max(1.0, screenH / 1080.0)
+            local radius = 11.0 * ui
+            local r, g, b = 0.40, 1.0, 0.62
+            if hot then r, g, b = 1.0, 0.72, 0.15 end
+            if type(Susano) == "table"
+                and type(Susano.DrawCircle) == "function" then
+                pcall(Susano.DrawCircle, sx, sy, radius, false,
+                    r, g, b, 0.95, 2.0 * ui, 24)
+                pcall(Susano.DrawCircle, sx, sy, radius * 0.42, false,
+                    r, g, b, 0.55, 1.5 * ui, 16)
+            else
+                local segments = 16
+                local prevX, prevY = nil, nil
+                for i = 0, segments do
+                    local angle = (i / segments) * math.pi * 2.0
+                    local px = sx + math.cos(angle) * radius
+                    local py = sy + math.sin(angle) * radius
+                    if prevX then
+                        strokeOverlay(prevX, prevY, px, py,
+                            r, g, b, 0.9, 1.5 * ui, false)
+                    end
+                    prevX, prevY = px, py
+                end
+            end
+            local tick = radius + 5.0 * ui
+            local tickLen = 6.0 * ui
+            strokeOverlay(sx - tick, sy, sx - tick - tickLen, sy,
+                r, g, b, 0.9, 2.0 * ui, true)
+            strokeOverlay(sx + tick, sy, sx + tick + tickLen, sy,
+                r, g, b, 0.9, 2.0 * ui, true)
+            strokeOverlay(sx, sy - tick, sx, sy - tick - tickLen,
+                r, g, b, 0.9, 2.0 * ui, true)
+            strokeOverlay(sx, sy + tick, sx, sy + tick + tickLen,
+                r, g, b, 0.9, 2.0 * ui, true)
+            -- Distance from the operator and time of flight: the distance is
+            -- what the throw covers, the time is when the car arrives. The
+            -- label is clamped so an impact near the bottom edge keeps its
+            -- readout on screen.
+            local label = string.format("%.0f m  %.1f s",
+                point.dist or 0.0, point.t or 0.0)
+            local labelY = math.min(sy + radius + 6.0 * ui,
+                screenH - 24.0 * ui)
+            if type(Susano) == "table" then
+                if type(Susano.DrawTextCentered) == "function" then
+                    pcall(Susano.DrawTextCentered, sx,
+                        labelY, label, 15.0 * ui,
+                        r, g, b, 0.95)
+                elseif type(Susano.DrawText) == "function" then
+                    local width = 0.0
+                    if type(Susano.GetTextWidth) == "function" then
+                        local okw, value = pcall(Susano.GetTextWidth,
+                            label, 15.0 * ui)
+                        if okw and type(value) == "number" then
+                            width = value
+                        end
+                    end
+                    pcall(Susano.DrawText, sx - width * 0.5,
+                        labelY, label, 15.0 * ui,
+                        r, g, b, 0.95)
+                end
+            end
+        end
+
+        local function traceImpact(p0x, p0y, p0z, vx, vy, vz,
+            ignoreEntity, ped, ignoreExtra)
+            if type(StartShapeTestRay) ~= "function"
+                or type(GetShapeTestResult) ~= "function" then
+                return nil
+            end
+            local px, py, pz = p0x, p0y, p0z
+            local t = 0.0
+            while t < PREVIEW_FLIGHT_MAX do
+                local step = PREVIEW_RAY_STEP
+                if t + step > PREVIEW_FLIGHT_MAX then
+                    step = PREVIEW_FLIGHT_MAX - t
+                end
+                if step <= 0.0 then break end
+                local nt = t + step
+                local nx = p0x + vx * nt
+                local ny = p0y + vy * nt
+                local nz = p0z + vz * nt
+                    - 0.5 * PREVIEW_GRAVITY * nt * nt
+                local okRay, handle = pcall(StartShapeTestRay,
+                    px, py, pz, nx, ny, nz, -1, ignoreEntity, 0)
+                if okRay and type(handle) == "number" then
+                    local okRes, _, hit, coords, _, hitEntity =
+                        pcall(GetShapeTestResult, handle)
+                    if okRes and hit == 1 and coords
+                        and type(coords.x) == "number" then
+                        local ignored = hitEntity == ignoreEntity
+                            or hitEntity == ped
+                            or (ignoreExtra and ignoreExtra ~= 0
+                                and hitEntity == ignoreExtra)
+                        if not ignored then
+                            return {
+                                x = coords.x, y = coords.y, z = coords.z,
+                                entity = hitEntity, t = nt,
+                            }
+                        end
+                    end
+                end
+                px, py, pz = nx, ny, nz
+                t = nt
+                if pz < p0z - 250.0 then break end
+            end
+            return nil
+        end
+
+        local function renderThrowPreview(ped, entity, screenW, screenH)
+            if type(Susano) ~= "table"
+                or type(Susano.DrawLine) ~= "function" then
+                return
+            end
+            if type(GetEntityCoords) ~= "function"
+                or type(GetGameplayCamRot) ~= "function" then
+                return
+            end
+            local okPos, carPos = pcall(GetEntityCoords, entity)
+            if not okPos or not carPos
+                or type(carPos.x) ~= "number" then
+                return
+            end
+            local okRot, camRot = pcall(GetGameplayCamRot, 2)
+            if not okRot or not camRot then return end
+            local direction = RotationToDirection(camRot)
+            local pedVX, pedVY, pedVZ = readEntityVelocity(ped)
+            local speed = THROW_FORCE * throwSpeedPerForce
+            local vx = pedVX + direction.x * speed
+            local vy = pedVY + direction.y * speed
+            local vz = pedVZ + direction.z * speed
+
+            local now = nowMs()
+            local dx = carPos.x - previewOriginX
+            local dy = carPos.y - previewOriginY
+            local dz = carPos.z - previewOriginZ
+            local moved = dx * dx + dy * dy + dz * dz > PREVIEW_MOVE_SQ
+            local turned = (direction.x * previewDirX
+                + direction.y * previewDirY
+                + direction.z * previewDirZ) < PREVIEW_TURN_DOT
+            local timedOut = now ~= 0
+                and now - previewAt >= PREVIEW_RECOMPUTE_MS
+            if not previewValid or moved or turned or timedOut then
+                local ignoreExtra = 0
+                if type(GetVehiclePedIsIn) == "function" then
+                    local okVeh, value = pcall(GetVehiclePedIsIn, ped, false)
+                    if okVeh and type(value) == "number" then
+                        ignoreExtra = value
+                    end
+                end
+                previewImpact = traceImpact(carPos.x, carPos.y, carPos.z,
+                    vx, vy, vz, entity, ped, ignoreExtra)
+                previewValid = true
+                previewAt = now
+                previewOriginX, previewOriginY, previewOriginZ =
+                    carPos.x, carPos.y, carPos.z
+                previewDirX, previewDirY, previewDirZ =
+                    direction.x, direction.y, direction.z
+            end
+
+            local flight = PREVIEW_FLIGHT_MAX
+            if previewImpact then
+                flight = math.max(0.0, previewImpact.t)
+            end
+
+            local ui = math.max(1.0, screenH / 1080.0)
+            local t = 0.0
+            local prevOk, prevX, prevY = false, 0.0, 0.0
+            while t <= flight + 0.0001 do
+                local x = carPos.x + vx * t
+                local y = carPos.y + vy * t
+                local z = carPos.z + vz * t
+                    - 0.5 * PREVIEW_GRAVITY * t * t
+                local ok, sx, sy =
+                    projectPoint(x, y, z, screenW, screenH)
+                if ok then
+                    if prevOk then
+                        local fade = 0.9
+                            - 0.62 * (t / PREVIEW_FLIGHT_MAX)
+                        strokeOverlay(prevX, prevY, sx, sy,
+                            0.40, 1.0, 0.62, fade, 2.0 * ui, false)
+                    end
+                    prevOk, prevX, prevY = true, sx, sy
+                else
+                    prevOk = false
+                end
+                t = t + PREVIEW_DOT_STEP
+            end
+
+            local hot = false
+            if previewImpact then
+                local okPed, pedPos = pcall(GetEntityCoords, ped)
+                local dist = 0.0
+                if okPed and pedPos and type(pedPos.x) == "number" then
+                    local ix = previewImpact.x - pedPos.x
+                    local iy = previewImpact.y - pedPos.y
+                    local iz = previewImpact.z - pedPos.z
+                    dist = math.sqrt(ix * ix + iy * iy + iz * iz)
+                    hot = dist < 4.0
+                end
+                previewImpact.dist = dist
+                drawImpact(screenW, screenH, previewImpact, hot)
+            end
+
+            -- A travelling comet makes the throw direction legible at a
+            -- glance: the arc shows the path, the comet shows which way along
+            -- it the car will travel. The phase is driven by the game timer,
+            -- not a frame counter, so the speed is stable at any frame rate;
+            -- without a timer the comet parks mid-arc. Drawn after the impact
+            -- ring so the ring stays the first circle of the frame.
+            if type(Susano) == "table"
+                and type(Susano.DrawCircle) == "function" then
+                local phase = 0.42
+                if now > 0 then
+                    phase = (now % PREVIEW_PULSE_MS) / PREVIEW_PULSE_MS
+                end
+                local pulseT = phase * flight
+                local pr, pg, pb = 0.62, 1.0, 0.78
+                if hot then pr, pg, pb = 1.0, 0.82, 0.30 end
+                for i = 0, 2 do
+                    local tt = pulseT - i * PREVIEW_PULSE_TAIL
+                    if tt >= 0.0 and tt <= flight then
+                        local px = carPos.x + vx * tt
+                        local py = carPos.y + vy * tt
+                        local pz = carPos.z + vz * tt
+                            - 0.5 * PREVIEW_GRAVITY * tt * tt
+                        local okPulse, psx, psy =
+                            projectPoint(px, py, pz, screenW, screenH)
+                        if okPulse then
+                            pcall(Susano.DrawCircle, psx, psy,
+                                (3.2 - i * 0.9) * ui, true,
+                                pr, pg, pb, 0.95 - i * 0.35,
+                                1.0 * ui, 12)
+                        end
+                    end
+                end
+            end
+
+            drawCrosshair(screenW, screenH, previewImpact ~= nil, hot)
         end
 
         -- The car must clear the head, not the hand. Bone 0 is the ped root,
@@ -4328,6 +4712,7 @@ local function ToggleThrowVehicle(enable)
             lastAnimTaskAt = 0
             animCleared = false
             carryOffsetZ = carryHeight(ped, entity)
+            invalidatePreview()
             -- Do not ClearPedTasks here. The first pose clears the aim task in
             -- startCarryAnim, on the frame the clip is actually ready, so the
             -- attach and the animation are not competing for the same slot.
@@ -4348,6 +4733,7 @@ local function ToggleThrowVehicle(enable)
                 return
             end
 
+            local baseVX, baseVY, baseVZ = readEntityVelocity(ped)
             pcall(NetworkRequestControlOfEntity, entity)
             releaseHeld(entity, ped)
 
@@ -4373,6 +4759,13 @@ local function ToggleThrowVehicle(enable)
             -- in case a build clears the pair when the entity starts moving.
             pcall(SetEntityNoCollisionEntity, entity, ped, false)
             pcall(ClearPedTasks, ped)
+            -- Consumed on the next loop frame, after the engine has integrated
+            -- the impulse. One measurement, one entity read, no thread.
+            pendingThrowMeasure = {
+                entity = entity,
+                baseX = baseVX, baseY = baseVY, baseZ = baseVZ,
+                dirX = dirX, dirY = dirY, dirZ = dirZ,
+            }
         end
 
         while throwVehicleActive and throwVehicleGeneration == generation do
@@ -4383,6 +4776,7 @@ local function ToggleThrowVehicle(enable)
             if not throwVehicleActive or throwVehicleGeneration ~= generation then
                 break
             end
+            updateThrowCalibration()
             local playerPed = PlayerPedId()
             local screenW, screenH = GetScreenSize()
 
@@ -4420,6 +4814,8 @@ local function ToggleThrowVehicle(enable)
                         and not IsEntityAttached(heldEntity) then
                         tryAttach(playerPed, heldEntity)
                     end
+
+                    renderThrowPreview(playerPed, heldEntity, screenW, screenH)
 
                     if IsControlJustReleased(0, GRAB_KEY) then
                         local camRot = GetGameplayCamRot(2)
@@ -4560,6 +4956,7 @@ local function ToggleThrowVehicle(enable)
         holdingEntity = false
         heldEntity = nil
         nextControlRequestAt = 0
+        invalidatePreview()
         pcall(ClearPedTasks, PlayerPedId())
     end)
 end
@@ -18725,8 +19122,6 @@ local CFG = {
     boneLabels = { "Back", "Head", "Right hand" },
     boneIds    = { back = 24818, head = 31086, hand = 57005 },
 
-    targetModes = { "self", "player", "all" },
-
     -- Event names that must never reach the Lua dispatcher. Patterns are
     -- matched on the lowercased name by GetAllEvent().
     blockPatterns = {
@@ -18755,8 +19150,6 @@ local C = {
 
 local S = {
     -- props
-    targetMode   = 2,   -- self / player / all
-    includeSelf  = false,
     attachTarget = true,
     attachBone   = 1,   -- 1 = back, 2 = head, 3 = right hand
 
@@ -18791,7 +19184,10 @@ local PROP_LIST = {
 }
 
 local Spawned = {}
-local MAX_SPAWNED = 20
+-- A Player List multi-selection can legitimately exceed the old single-target
+-- budget. The distance sweep below still reclaims anything left behind, so
+-- this is a burst allowance, not an unbounded object count.
+local MAX_SPAWNED = 64
 local SPAWN_COOLDOWN = 350
 local lastSpawnAt = 0
 
@@ -19469,120 +19865,127 @@ local function ClearProps()
 end
 
 --------------------------------------------------------------------------------
--- PLAYERS
+-- TARGET SELECTION
 --------------------------------------------------------------------------------
 
-local Players = { list = {}, index = 1 }
+-- Online > Player List owns the selection. Props no longer keep a second
+-- player list: every action reads the same server-id set the list writes.
+local function SelectedServerIds()
+    local ids, seen = {}, {}
 
-local function RefreshPlayers()
-    local list = {}
+    local function push(value)
+        local serverId = tonumber(value)
+        if serverId and not seen[serverId] then
+            seen[serverId] = true
+            ids[#ids + 1] = serverId
+        end
+    end
 
-    if type(GetActivePlayers) == "function" then
-        local ok, active = pcall(GetActivePlayers)
-        if ok and type(active) == "table" then
-            local localPlayer = PlayerId()
-            local myCoords = nil
-            local okMyPed, myPed = pcall(GetPlayerPed, localPlayer)
-            if okMyPed and myPed and myPed ~= 0 then
-                local okCoords, coords = pcall(GetEntityCoords, myPed, true)
-                if okCoords then myCoords = coords end
+    if type(Menu) == "table" and type(Menu.SelectedPlayers) == "table" then
+        for i = 1, #Menu.SelectedPlayers do
+            push(Menu.SelectedPlayers[i])
+        end
+    end
+
+    -- Compatibility with the older single-target path: a loader that only
+    -- writes Menu.SelectedPlayer still drives the props.
+    if #ids == 0 and type(Menu) == "table" then
+        push(Menu.SelectedPlayer)
+    end
+
+    return ids
+end
+
+-- Resolve every selected server id to a streamed ped. `missing` counts the
+-- selected ids that are gone or outside streaming range, so the caller can
+-- say so instead of silently skipping them.
+local function ResolveSelectedTargets()
+    local ids = SelectedServerIds()
+    local targets, missing = {}, 0
+    if #ids == 0 then return targets, missing end
+
+    local localPed = PlayerPedId()
+    local myServerId = tonumber(GetPlayerServerId(PlayerId())) or -1
+
+    for i = 1, #ids do
+        local serverId = ids[i]
+        local ped, name = nil, nil
+
+        if serverId == myServerId then
+            if localPed and localPed ~= 0 and DoesEntityExist(localPed) then
+                ped = localPed
+                local okName, value = pcall(GetPlayerName, PlayerId())
+                name = (okName and type(value) == "string" and #value > 0)
+                    and value or "you"
             end
-
-            for i = 1, #active do
-                local player = active[i]
-                if player ~= localPlayer then
-                    local okPed, ped = pcall(GetPlayerPed, player)
-                    if okPed and ped and ped ~= 0 and DoesEntityExist(ped) then
-                        local okName, name = pcall(GetPlayerName, player)
-                        local okId, serverId = pcall(GetPlayerServerId, player)
-                        local distance = 1.0e9
-                        if myCoords then
-                            local okCoords, pedCoords = pcall(GetEntityCoords, ped, true)
-                            if okCoords and pedCoords then
-                                distance = #(pedCoords - myCoords)
-                            end
+        else
+            local okPlayer, player = pcall(GetPlayerFromServerId, serverId)
+            if okPlayer and type(player) == "number" and player >= 0 then
+                if player == PlayerId() then
+                    -- A server-id read can fail independently of the player
+                    -- index; treat the resolved local index as self anyway.
+                    if localPed and localPed ~= 0 and DoesEntityExist(localPed) then
+                        ped = localPed
+                        local okName, value = pcall(GetPlayerName, PlayerId())
+                        name = (okName and type(value) == "string" and #value > 0)
+                            and value or "you"
+                    end
+                else
+                    local okPed, value = pcall(GetPlayerPed, player)
+                    if okPed and type(value) == "number" and value ~= 0
+                        and value ~= localPed and DoesEntityExist(value) then
+                        ped = value
+                        local okName, playerName = pcall(GetPlayerName, player)
+                        if okName and type(playerName) == "string" and #playerName > 0 then
+                            name = playerName
+                        else
+                            name = "player " .. tostring(serverId)
                         end
-
-                        list[#list + 1] = {
-                            player = player,
-                            ped = ped,
-                            name = okName and tostring(name) or ("player " .. tostring(player)),
-                            serverId = okId and serverId or 0,
-                            distance = distance,
-                        }
                     end
                 end
             end
         end
+
+        if ped then
+            targets[#targets + 1] = {
+                serverId = serverId,
+                ped = ped,
+                name = name,
+                self = ped == localPed,
+            }
+        else
+            missing = missing + 1
+        end
     end
 
-    table.sort(list, function(a, b)
-        return (a.distance or 1.0e9) < (b.distance or 1.0e9)
-    end)
-
-    Players.list = list
-    Players.index = 1
-    return #list
+    return targets, missing
 end
 
-local function SelectedEntry()
-    local entry = Players.list[Players.index]
-    if not entry then return nil end
-
-    local okPed, ped = pcall(GetPlayerPed, entry.player)
-    if okPed and ped and ped ~= 0 and DoesEntityExist(ped) then
-        entry.ped = ped
-        return entry
+local function NotifyNoSelection(missing)
+    if missing and missing > 0 then
+        Notify("Selected player(s) are out of range", C.blue)
+    else
+        Notify("Select a player in Online > Player List", C.blue)
     end
-
-    return nil
 end
 
--- Spawns in three modes: self, the selected player, or everyone in the
--- player list (capped so the network does not get flooded).
+-- One prop per selected player. The Player List self row is a normal target:
+-- the local ped goes through the same spawner, which handles attachment.
 local function SpawnOnTargets(entry)
-    local mode = CFG.targetModes[S.targetMode] or "self"
+    local targets, missing = ResolveSelectedTargets()
 
-    if mode == "self" then
-        SpawnProp(entry)
+    if #targets == 0 then
+        NotifyNoSelection(missing)
         return
     end
 
-    if mode == "player" then
-        RefreshPlayers()
-        local target = SelectedEntry()
-        if not target then
-            Notify("No player in scope - spawned on you", C.blue)
-            SpawnProp(entry)
-            return
-        end
+    for i = 1, #targets do
+        local target = targets[i]
         SpawnProp(entry, entry.extra, target.ped, target.name, S.attachTarget)
-        return
     end
 
-    local count = RefreshPlayers()
-
-    -- All is remote-only by default. Include me opts the local ped into the
-    -- same pass; the remote cap stays six so the local prop is an extra, not a
-    -- replacement for one of the six remote targets.
-    if S.includeSelf then
-        SpawnProp(entry)
-    end
-
-    if count == 0 then
-        if not S.includeSelf then
-            Notify("No player in scope", C.blue)
-        end
-        return
-    end
-
-    local limit = math.min(count, 6)
-    for i = 1, limit do
-        local target = Players.list[i]
-        local okPed, ped = pcall(GetPlayerPed, target.player)
-        if okPed and ped and ped ~= 0 and DoesEntityExist(ped) then
-            SpawnProp(entry, entry.extra, ped, target.name, S.attachTarget)
-        end
+    if missing > 0 then
+        Notify(("%d selected player(s) are out of range"):format(missing), C.grey)
     end
 end
 
@@ -19661,68 +20064,46 @@ local function Action(name, handler)
     return { name = name, type = "action", onClick = Guard(handler) }
 end
 
-local function Selector(name, options, selected, handler)
-    return { name = name, type = "selector", options = options, selected = selected, onClick = Guard(handler) }
-end
+-- Live status row for the Props tab. The target itself is chosen in
+-- Online > Player List; this row only reports what the actions will use.
+local selectionStatus = {
+    name = "Selection: none",
+}
 
--- Display labels stay capitalised; CFG.targetModes keeps the lowercase keys
--- the spawner compares against. The selector index is the shared state.
-local targetModeItem = Selector("Target", { "Self", "Player", "All" }, S.targetMode, function(index)
-    S.targetMode = index
-end)
+local function SelectionStatusText()
+    local ids = SelectedServerIds()
+    if #ids == 0 then return "Selection: none" end
 
-local playerItem
-
-playerItem = Selector("Player", { "none" }, 1, function(index)
-    Players.index = index
-end)
-
-local includeMeItem = Toggle("Include me", S.includeSelf, function(value)
-    S.includeSelf = value
-end)
-
-local boneItem = Selector("Attach point", CFG.boneLabels, S.attachBone, function(index)
-    S.attachBone = index
-end)
-
--- LEFT / RIGHT on a selector do not fire onClick; read the live index on use.
-local function SyncSelectors()
-    S.targetMode = math.max(1, math.min(#CFG.targetModes, targetModeItem.selected or 1))
-
-    if boneItem and boneItem.selected then
-        S.attachBone = math.max(1, math.min(#CFG.boneOrder, boneItem.selected))
-    end
-end
-
-local function PlayerItemSync()
-    if playerItem and playerItem.selected then
-        local count = math.max(1, #(playerItem.options or {}))
-        Players.index = math.max(1, math.min(count, playerItem.selected))
-    end
-end
-
-local function RefreshPlayerItem()
-    local count = RefreshPlayers()
-    local labels = {}
-
-    for i = 1, count do
-        local entry = Players.list[i]
-        local shortName = tostring(entry.name)
-        if #shortName > 14 then shortName = shortName:sub(1, 14) end
-        labels[i] = ("%s [%s]"):format(shortName, tostring(entry.serverId))
+    local targets = ResolveSelectedTargets()
+    local text
+    if #targets == 1 then
+        local target = targets[1]
+        local label = target.self and "you" or tostring(target.name)
+        local missing = #ids - 1
+        if missing > 0 then
+            text = ("Selection: %s (+%d)"):format(label, missing)
+        else
+            text = ("Selection: %s"):format(label)
+        end
+    elseif #targets > 1 then
+        if #targets == #ids then
+            text = ("Selection: %d players"):format(#targets)
+        else
+            text = ("Selection: %d/%d in range"):format(#targets, #ids)
+        end
+    else
+        text = ("Selection: 0/%d in range"):format(#ids)
     end
 
-    if #labels == 0 then labels[1] = "none" end
-    playerItem.options = labels
-    playerItem.selected = 1
-    PlayerItemSync()
-    return count
+    -- The menu library owns the width-aware, UTF-8-safe ellipsis. At boot the
+    -- helper is not installed yet and the status is the short "none" string.
+    if type(Menu) == "table" and type(Menu.FitRowLabel) == "function" then
+        return Menu.FitRowLabel(text, 250)
+    end
+    return text
 end
 
 local function SpawnPropOnTargets(entry)
-    SyncSelectors()
-    PlayerItemSync()
-
     if not SpawnGate() then
         Notify("Spawning too fast - throttled", C.grey)
         return
@@ -19735,49 +20116,25 @@ end
 -- PROP EFFECTS
 --------------------------------------------------------------------------------
 
--- Same three targeting modes as the spawner, but without spawning anything on
--- the local ped when a remote target is selected.
+-- Same selection as the prop spawner. Effects are applied to every selected
+-- player; missing targets are reported once, after the pass.
 local function EachTarget(fn)
-    SyncSelectors()
-    PlayerItemSync()
+    local targets, missing = ResolveSelectedTargets()
 
-    local mode = CFG.targetModes[S.targetMode] or "self"
-
-    if mode == "self" then
-        fn(PlayerPedId(), nil)
+    if #targets == 0 then
+        NotifyNoSelection(missing)
         return
     end
 
-    RefreshPlayers()
-
-    if mode == "player" then
-        local target = SelectedEntry()
-        if not target then
-            fn(PlayerPedId(), nil)
-            return
-        end
-        fn(target.ped, target.name)
-        return
+    for i = 1, #targets do
+        local target = targets[i]
+        local name = nil
+        if not target.self then name = target.name end
+        fn(target.ped, name)
     end
 
-    if S.includeSelf then
-        fn(PlayerPedId(), nil)
-    end
-
-    if #Players.list == 0 then
-        return
-    end
-
-    -- Effects are heavier than a single prop: cap the blast radius. The local
-    -- ped is the optional extra and does not consume one of the three remote
-    -- slots.
-    local limit = math.min(#Players.list, 3)
-    for i = 1, limit do
-        local target = Players.list[i]
-        local okPed, ped = pcall(GetPlayerPed, target.player)
-        if okPed and ped and ped ~= 0 and DoesEntityExist(ped) then
-            fn(ped, target.name)
-        end
+    if missing > 0 then
+        Notify(("%d selected player(s) are out of range"):format(missing), C.grey)
     end
 end
 
@@ -20031,16 +20388,25 @@ local function SpawnClone()
         return
     end
 
-    SyncSelectors()
-    PlayerItemSync()
-
-    -- "self" clones you; every other mode clones the selected player.
-    local target
-    if (CFG.targetModes[S.targetMode] or "self") ~= "self" then
-        target = SelectedEntry()
+    -- The clone follows the primary Player List selection; the first resolved
+    -- target is the fallback when the primary is out of range.
+    local targets, missing = ResolveSelectedTargets()
+    if #targets == 0 then
+        NotifyNoSelection(missing)
+        return
     end
 
-    local ped = target and target.ped or PlayerPedId()
+    local primary = type(Menu) == "table" and tonumber(Menu.SelectedPlayer) or nil
+    local target = nil
+    for i = 1, #targets do
+        if primary and targets[i].serverId == primary then
+            target = targets[i]
+            break
+        end
+    end
+    if not target then target = targets[1] end
+
+    local ped = target.ped
 
     if not DoesEntityExist(ped) then
         Notify("No target", C.red)
@@ -20124,21 +20490,10 @@ local effectActions = {
 
 local function BuildPlayerItems()
     local items = {
-        Sep("Target"),
-        targetModeItem,
+        Sep("Target: Online > Player List"),
+        selectionStatus,
+        Sep("Spawn on target"),
     }
-
-    -- The Player selector only has meaning in Player mode. In All mode the
-    -- optional Include me row decides whether the local ped is part of the
-    -- blast. Self mode needs neither row.
-    local modeKey = CFG.targetModes[targetModeItem.selected or S.targetMode or 1] or "self"
-    if modeKey == "player" then
-        items[#items + 1] = playerItem
-    elseif modeKey == "all" then
-        items[#items + 1] = includeMeItem
-    end
-
-    items[#items + 1] = Sep("Spawn on target")
 
     for i = 1, #propActions do items[#items + 1] = propActions[i] end
     for i = 1, #effectActions do items[#items + 1] = effectActions[i] end
@@ -20166,7 +20521,6 @@ local seedItem = Toggle("Seed (legacy)", S.hooks, function(state)
     if state then
         InstallNativeHooks()
         ApplyEventShield(true)
-        RefreshPlayerItem()
         Notify(("Seed loaded - %d hooks, %d event(s)"):format(
             HookStats.installed, BlockedCount()), C.green)
     else
@@ -20232,50 +20586,6 @@ else
     })
 end
 
-local function PropsTabIsOpen()
-    if type(Menu.OpenedCategory) ~= "number" then return false end
-    local category = Menu.Categories[Menu.OpenedCategory]
-    if not category or not category.tabs then return false end
-    return category.tabs[Menu.CurrentTab] == propHost
-end
-
-local function SyncPropsLayout()
-    local currentTabOpen = PropsTabIsOpen()
-    local currentItem = currentTabOpen and playerItems[Menu.CurrentItem] or nil
-    local desired = BuildPlayerItems()
-
-    for i = #playerItems, 1, -1 do playerItems[i] = nil end
-    for i = 1, #desired do playerItems[i] = desired[i] end
-
-    if currentTabOpen then
-        local nextIndex = nil
-        if currentItem then
-            for i = 1, #desired do
-                if desired[i] == currentItem then nextIndex = i break end
-            end
-        end
-        if not nextIndex and currentItem == playerItem then nextIndex = 2 end
-        if not nextIndex then nextIndex = 2 end
-        if nextIndex > #playerItems then nextIndex = 1 end
-        Menu.CurrentItem = nextIndex
-        Menu.ItemScrollOffset = math.max(0, nextIndex - 1)
-    end
-end
-
-Menu.__vgdSyncPropsLayout = SyncPropsLayout
-
-local propsMode = targetModeItem.selected or S.targetMode or 1
-Citizen.CreateThread(function()
-    while true do
-        local mode = targetModeItem.selected or S.targetMode or 1
-        if mode ~= propsMode then
-            propsMode = mode
-            SyncPropsLayout()
-        end
-        Citizen.Wait(100)
-    end
-end)
-
 if not AttachSeed(seedItem) then
     Log("WARN", "Bypass tab not found - standalone entry created")
     table.insert(Menu.Categories, {
@@ -20328,11 +20638,14 @@ Citizen.CreateThread(function()
     end
 end)
 
+-- The Props status row is the only thing that polls the selection: the prop
+-- actions themselves resolve it at click time, so a stale row cannot change
+-- where a prop lands.
 Citizen.CreateThread(function()
-    Citizen.Wait(3000)
+    Citizen.Wait(1000)
     while true do
-        RefreshPlayerItem()
-        Citizen.Wait(3000)
+        selectionStatus.name = SelectionStatusText()
+        Citizen.Wait(1000)
     end
 end)
 
@@ -20381,7 +20694,7 @@ end)
 --------------------------------------------------------------------------------
 
 -- Nothing is armed until the Seed entry is clicked in Exploit > Bypass.
-RefreshPlayerItem()
+selectionStatus.name = SelectionStatusText()
 
 Log("INFO", "loaded - props + effects, seed entry in Bypass, keys untouched")
 Log("INFO", "seed=%s", tostring(S.hooks))
@@ -38688,10 +39001,429 @@ return FP
 
 end)(O,S,B,Menu)
 
+-- PART: 29_spinbot.lua
+-- ============================================================================
+-- VANGUARD / 29 SPINBOT
+-- ----------------------------------------------------------------------------
+-- One row in Player > Movement. The effect is the engine turning the ped, not
+-- a per-frame entity heading write. The primary path is SET_PED_DESIRED_HEADING
+-- (0xAA5A7ECE2AA8FE70), the native the game itself uses to steer a ped toward a
+-- facing. The engine owns the turn rate and the replication; this module only
+-- advances the desired heading on a jittered 160 ms cadence and caps the lead
+-- so a slow engine turn cannot make the target run away.
+--
+-- Why not SET_ENTITY_HEADING: writing the entity heading every frame is the
+-- signature every public spinbot shares (onyx.lua: SetEntityHeading(ped,
+-- heading + 15.0) each frame). It bypasses the turn animation and produces a
+-- constant angular velocity that is trivial to fingerprint. This module never
+-- calls SET_ENTITY_HEADING or SET_ENTITY_ROTATION.
+--
+-- Why not the camera: WaveShield V4's aimbot detector (weapons/aimbot.lua)
+-- flags a camera yaw change with no mouse input while aiming. The camera is
+-- never touched here; the module suspends instead. SET_GAMEPLAY_CAM_RELATIVE_
+-- HEADING is documented as always 0 in the aiming camera, so it cannot be used
+-- to spin while aiming anyway.
+--
+-- Suspension matrix: aim (IS_AIM_CAM_ACTIVE / IS_PLAYER_FREE_AIMING), vehicle,
+-- dead, ragdoll, falling, in air, parachute, and No Clip/Naruto active. The row
+-- stays on while suspended; the module resumes after a 150 ms grace so an aim
+-- flick cannot produce a spin call inside the aim window.
+--
+-- Fallback ladder: desired heading -> TASK_ACHIEVE_HEADING -> TASK_TURN_PED_TO_
+-- FACE_COORD -> stop("no effect"). Each path is probed once for 700 ms with a
+-- stationary ped; if the heading does not move, the next path is used. The row
+-- turns itself off if none of the three engine paths work on the build.
+--
+-- Cadence bound: O.every jitters the 160 ms tick to roughly 125-195 ms, and the
+-- 60 degree lead cap bounds the heading change per sample. The worst case is
+-- 60 degrees in 125 ms, about 480 deg/s, below the 1200 deg/s snap threshold
+-- used by public client anticheats (SDR aimbot_detection.lua). The fastest
+-- profile is 360 deg/s. This is a design bound, not a claim that every AC is
+-- blind; the replicated heading is still visible.
+--
+-- Natives verified in natives.json:
+--   PLAYER_PED_ID                0xD80958FC74E988A6 () -> Ped
+--   DOES_ENTITY_EXIST            0x7239B21A38F536BA (Entity) -> BOOL
+--   GET_ENTITY_HEADING           0xE83D4F9BA2A38914 (Entity) -> float
+--   SET_PED_DESIRED_HEADING      0xAA5A7ECE2AA8FE70 (Ped, float) -> void
+--   TASK_ACHIEVE_HEADING         0x93B93A37987F1F3D (Ped, float, int) -> void
+--   TASK_TURN_PED_TO_FACE_COORD  0x1DDA930A0AC38571 (Ped, float, float, float, int) -> void
+--   IS_AIM_CAM_ACTIVE            0x68EDDA28A5976D07 () -> BOOL
+--   IS_PLAYER_FREE_AIMING        0x2E397FD2ECD37C87 (Player) -> BOOL
+--   IS_PED_DEAD_OR_DYING         0x3317DEDB88C95038 (Ped, BOOL) -> BOOL
+--   IS_PED_FALLING               0xFB92A102F1C4DFA3 (Ped) -> BOOL
+--   IS_ENTITY_IN_AIR             0x886E37EC497200B6 (Entity) -> BOOL
+--   GET_PED_PARACHUTE_STATE      0x79CFD9827CC979B6 (Ped) -> int
+--   GET_ENTITY_COORDS            0x3FEF770D40960D5A (Entity, BOOL) -> Vector3
+--
+-- Vehicle, ragdoll and speed are read from O.Ctx, which the core samples every
+-- 50 ms; the module does not duplicate those natives.
+--
+-- Detection surface that remains: the heading is replicated, so a server-side
+-- rotation heuristic or a human report can still see a spin. The reference
+-- guard (WaveShield V4/latest) has no heading, rotation, spin, angular,
+-- antiaim or desync check. The residual risk is the replicated orientation
+-- itself, which is the feature.
+-- ============================================================================
+local SP = (function(O, N)
+    local SPEEDS = { 120.0, 240.0, 360.0 }
+    local TICK_MS = 160
+    local LEAD_CAP = 60.0
+    local PROBE_MS = 700
+    local TASK_MS = 400
+    local TASK_REFRESH_MS = 300
+    local RESUME_MS = 150
+    local MOVE_EPS = 0.5
+    local HEADING_EPS = 2.0
+
+    local SP = {
+        active = false,
+        ped = 0,
+        selected = 1,
+        speed = SPEEDS[1],
+        dir = 1.0,
+        target = 0.0,
+        mode = "desired",
+        probed = false,
+        probeAt = 0,
+        probeHeading = 0.0,
+        taskUntil = 0,
+        resumeAt = 0,
+        suspended = false,
+        lastAt = 0,
+        onChange = nil,
+        stats = { calls = 0, suspends = 0, resumes = 0, switches = 0, lastDelta = 0.0 },
+    }
+
+    local function wrap360(a)
+        a = a % 360.0
+        if a < 0.0 then a = a + 360.0 end
+        return a
+    end
+
+    -- Shortest signed angle from b to a, in (-180, 180].
+    local function delta(a, b)
+        local d = (a - b + 180.0) % 360.0
+        if d < 0.0 then d = d + 360.0 end
+        return d - 180.0
+    end
+
+    -- The library changes toggle_selector.selected on Left/Right without firing
+    -- onClick, so the profile is read live on every tick. A missing row (early
+    -- load, menu rebuild) falls back to the last selected profile.
+    local function rowSelected()
+        local row = type(Menu) == "table" and type(Menu.FindItem) == "function"
+            and Menu.FindItem("Player", "Movement", "Spinbot") or nil
+        if not row then
+            for _, category in ipairs(type(Menu) == "table" and Menu.Categories or {}) do
+                if category.name == "Player" then
+                    for _, tab in ipairs(category.tabs or {}) do
+                        if tab.name == "Movement" then
+                            for _, item in ipairs(tab.items or {}) do
+                                if item.name == "Spinbot" then
+                                    row = item
+                                    break
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+        local selected = row and tonumber(row.selected) or SP.selected
+        if not selected or selected < 1 or selected > #SPEEDS then selected = 1 end
+        return selected
+    end
+
+    function SP.profileIndex()
+        return rowSelected()
+    end
+
+    local function setProfile(index)
+        if index < 1 or index > #SPEEDS then index = 1 end
+        SP.selected = index
+        SP.speed = SPEEDS[index]
+        return SP.speed
+    end
+
+    local function anchor(ped)
+        local ok, heading = pcall(GetEntityHeading, ped)
+        if not ok or type(heading) ~= "number" then return nil end
+        SP.target = wrap360(heading)
+        SP.probeHeading = SP.target
+        SP.probeAt = O.now() + PROBE_MS
+        SP.probed = false
+        return heading
+    end
+
+    local function facePoint(ped, heading)
+        local coords = (O.Ctx and O.Ctx.coords) or GetEntityCoords(ped)
+        local rad = math.rad(heading)
+        return coords.x - math.sin(rad) * 3.0,
+            coords.y + math.cos(rad) * 3.0,
+            coords.z
+    end
+
+    local function applyDesired(ped)
+        local ok = pcall(SetPedDesiredHeading, ped, SP.target)
+        if not ok then return false end
+        SP.stats.calls = SP.stats.calls + 1
+        return true
+    end
+
+    local function applyTask(ped)
+        if SP.mode == "coord" then
+            local x, y, z = facePoint(ped, SP.target)
+            local ok = pcall(TaskTurnPedToFaceCoord, ped, x, y, z, TASK_MS)
+            if not ok then return false end
+        else
+            local ok = pcall(TaskAchieveHeading, ped, SP.target, TASK_MS)
+            if not ok then return false end
+        end
+        SP.stats.calls = SP.stats.calls + 1
+        SP.taskUntil = O.now() + TASK_REFRESH_MS
+        return true
+    end
+
+    local function switchMode(mode, heading)
+        if SP.mode == mode then return end
+        SP.mode = mode
+        SP.probed = false
+        -- The probe compares the real heading, not the advanced target. Using
+        -- the target here would make an inert engine look like it moved.
+        SP.probeHeading = heading or SP.probeHeading
+        SP.probeAt = O.now() + PROBE_MS
+        SP.taskUntil = 0
+        SP.stats.switches = SP.stats.switches + 1
+        O.log("spin: engine %s", mode)
+    end
+
+    -- Reads only. The aim checks are the two natives the reference guard's
+    -- camera detector depends on; the module never writes the camera.
+    local function suspendedNow(ped)
+        if N and type(N.isActive) == "function" and N.isActive() then return "noclip" end
+        if O.Ctx and O.Ctx.inVehicle then return "vehicle" end
+        local okAim, aiming = pcall(IsAimCamActive)
+        if okAim and aiming then return "aim" end
+        local player = (O.Ctx and O.Ctx.player) or PlayerId()
+        local okFree, free = pcall(IsPlayerFreeAiming, player)
+        if okFree and free then return "aim" end
+        if O.Ctx and O.Ctx.ragdoll then return "ragdoll" end
+        if O.Ctx and O.Ctx.height and O.Ctx.height > 1.0 then
+            local okFall, falling = pcall(IsPedFalling, ped)
+            if okFall and falling then return "fall" end
+            local okAir, air = pcall(IsEntityInAir, ped)
+            if okAir and air then return "air" end
+            local okChute, chute = pcall(GetPedParachuteState, ped)
+            if okChute and type(chute) == "number" and chute > 0 then return "parachute" end
+        end
+        return nil
+    end
+
+    function SP.arm()
+        local ped = (O.Ctx and O.Ctx.ped) or PlayerPedId()
+        if not ped or ped == 0 then return false end
+        if not DoesEntityExist(ped) then return false end
+        if IsPedDeadOrDying(ped, true) then return false end
+
+        setProfile(rowSelected())
+        SP.ped = ped
+        SP.active = true
+        SP.dir = (O.rnd() < 0.5) and 1.0 or -1.0
+        SP.mode = "desired"
+        SP.probed = false
+        SP.taskUntil = 0
+        SP.resumeAt = 0
+        SP.suspended = false
+        SP.lastAt = O.now()
+        SP.stats.calls = 0
+        SP.stats.suspends = 0
+        SP.stats.resumes = 0
+        SP.stats.switches = 0
+        SP.stats.lastDelta = 0.0
+
+        if not anchor(ped) then
+            SP.active = false
+            SP.ped = 0
+            return false
+        end
+
+        O.log("spin: armed %d deg/s", math.floor(SP.speed + 0.5))
+        if SP.onChange then pcall(SP.onChange, true) end
+        return true
+    end
+
+    function SP.stop(reason)
+        local wasActive = SP.active
+        local ped = SP.ped
+        SP.active = false
+        SP.suspended = false
+        SP.resumeAt = 0
+        SP.taskUntil = 0
+        SP.mode = "desired"
+        SP.probed = false
+        SP.lastAt = 0
+        SP.ped = 0
+
+        -- Re-anchor the engine to the current facing. In task mode the task
+        -- still owns the turn for at most TASK_MS; ClearPedTasks is never
+        -- called because it would cancel the operator's own animation.
+        if wasActive and ped and ped ~= 0 and DoesEntityExist(ped) then
+            local ok, heading = pcall(GetEntityHeading, ped)
+            if ok and type(heading) == "number" then
+                pcall(SetPedDesiredHeading, ped, heading)
+            end
+        end
+
+        if wasActive then
+            if SP.onChange then pcall(SP.onChange, false) end
+            O.log("spin: off (%s)", tostring(reason or "off"))
+        end
+        return wasActive
+    end
+
+    function SP.disable()
+        return SP.stop("panic")
+    end
+
+    function SP.isActive()
+        return SP.active == true
+    end
+
+    function SP.tick()
+        if not SP.active then return end
+
+        local now = O.now()
+        local ped = (O.Ctx and O.Ctx.ped) or PlayerPedId()
+        if not ped or ped == 0 then
+            SP.stop("ped lost")
+            return
+        end
+
+        -- O.Ctx is sampled by the core before every task, so the cached death
+        -- flag is authoritative in the live loader. The native is only the
+        -- fallback for a harness without a context table.
+        local dead
+        if O.Ctx and type(O.Ctx.dead) == "boolean" then
+            dead = O.Ctx.dead
+        else
+            dead = IsPedDeadOrDying(ped, true)
+        end
+        if dead then
+            SP.stop("death")
+            return
+        end
+
+        if ped ~= SP.ped then
+            if not DoesEntityExist(ped) then
+                SP.stop("ped lost")
+                return
+            end
+            SP.ped = ped
+            SP.mode = "desired"
+            SP.probed = false
+            SP.taskUntil = 0
+            SP.suspended = false
+            SP.resumeAt = 0
+            if not anchor(ped) then
+                SP.stop("no heading")
+                return
+            end
+        end
+
+        local why = suspendedNow(ped)
+        if why then
+            if not SP.suspended then
+                SP.suspended = true
+                SP.stats.suspends = SP.stats.suspends + 1
+                SP.resumeAt = 0
+            end
+            return
+        end
+        if SP.suspended then
+            if SP.resumeAt == 0 then
+                SP.resumeAt = now + RESUME_MS
+                return
+            end
+            if now < SP.resumeAt then return end
+            SP.suspended = false
+            SP.resumeAt = 0
+            SP.stats.resumes = SP.stats.resumes + 1
+            SP.lastAt = now
+            if not anchor(ped) then
+                SP.stop("no heading")
+                return
+            end
+        end
+
+        local dt = (now - SP.lastAt) / 1000.0
+        if dt <= 0.0 or dt > 1.0 then dt = TICK_MS / 1000.0 end
+        SP.lastAt = now
+
+        local selected = rowSelected()
+        if selected ~= SP.selected then setProfile(selected) end
+
+        -- The 8 % modulation keeps the angular velocity from being a constant
+        -- the server can fingerprint; the engine's own turn smoothing hides it.
+        local step = SP.speed * dt * (0.92 + O.rnd() * 0.16)
+        SP.target = wrap360(SP.target + SP.dir * step)
+
+        local okH, heading = pcall(GetEntityHeading, ped)
+        if not okH or type(heading) ~= "number" then
+            SP.stop("no heading")
+            return
+        end
+
+        local lead = delta(SP.target, heading)
+        if lead > LEAD_CAP then
+            SP.target = wrap360(heading + LEAD_CAP)
+        elseif lead < -LEAD_CAP then
+            SP.target = wrap360(heading - LEAD_CAP)
+        end
+        SP.stats.lastDelta = delta(SP.target, heading)
+
+        if SP.mode == "desired" then
+            if not applyDesired(ped) then switchMode("task", heading) end
+        elseif now >= SP.taskUntil then
+            if not applyTask(ped) then
+                if SP.mode == "task" then
+                    switchMode("coord", heading)
+                else
+                    SP.stop("no engine path")
+                    return
+                end
+            end
+        end
+
+        if not SP.probed and now >= SP.probeAt then
+            -- A moving ped changes heading on its own; the probe is only valid
+            -- when the engine is the only thing that can move the facing.
+            if O.Ctx and O.Ctx.speed and O.Ctx.speed > MOVE_EPS then
+                SP.probeAt = now + 300
+            else
+                local moved = math.abs(delta(heading, SP.probeHeading))
+                if moved >= HEADING_EPS then
+                    SP.probed = true
+                elseif SP.mode == "desired" then
+                    switchMode("task", heading)
+                elseif SP.mode == "task" then
+                    switchMode("coord", heading)
+                else
+                    SP.stop("no effect")
+                    return
+                end
+            end
+        end
+    end
+
+    O.every("spinbot", TICK_MS, SP.tick, O.int(0, TICK_MS))
+    return SP
+end)(O, N)
+
 -- ---------------------------------------------------------------------------
 -- PART: 07_menu.lua
 -- ---------------------------------------------------------------------------
-local U = (function(O,S,E,D,F,V,M,SN,C,G,FL,A,ST,SB,VS,K,N,L,VC,CU,UC,FA,TP,FP,Menu)
+local U = (function(O,S,E,D,F,V,M,SN,C,G,FL,A,ST,SB,VS,K,N,L,VC,CU,UC,FA,TP,FP,SP,Menu)
 -- ============================================================================
 -- VANGUARD / 07 MENU
 -- ----------------------------------------------------------------------------
@@ -38730,6 +39462,7 @@ local UI = {}
 -- ---------------------------------------------------------------------------
 function UI.panic()
     N.disable()
+    SP.disable()
     L.disable()
     VC.disable()
     CU.disable()
@@ -39309,6 +40042,10 @@ local function installMovement()
     local noclipSelected = previousNoClip and tonumber(previousNoClip.selected) or 1
     if noclipSelected < 1 or noclipSelected > 2 then noclipSelected = 1 end
 
+    local previousSpin = findItem("Player", "Movement", "Spinbot")
+    local spinSelected = previousSpin and tonumber(previousSpin.selected) or SP.profileIndex()
+    if not spinSelected or spinSelected < 1 or spinSelected > 3 then spinSelected = 1 end
+
     category.tabs = category.tabs or {}
     for i = #category.tabs, 1, -1 do
         if category.tabs[i].name == "Movement" then
@@ -39316,7 +40053,7 @@ local function installMovement()
         end
     end
 
-    local naruto, noclip, includeSolo, shoot
+    local naruto, noclip, includeSolo, shoot, spin
     local function refresh()
         local active = N.isActive()
         naruto.value = active and N.mode == "naruto"
@@ -39393,14 +40130,40 @@ local function installMovement()
         end,
     }
 
-    -- Auto-stop paths (death, vehicle, parachute, budget, panic) clear both
-    -- rows and drop a No Clip-owned solo session. Arming one mode stops the
-    -- other first, so at most one row is ever on.
+    -- Spinbot is a separate group: it is not an air movement mode. The row is a
+    -- toggle_selector so the operator can change the speed with Left/Right
+    -- without disarming; the module reads the selected profile live.
+    spin = {
+        name = "Spinbot",
+        type = "toggle_selector",
+        value = SP.isActive(),
+        options = { "Slow", "Med", "Fast" },
+        selected = spinSelected,
+        onClick = function(value)
+            local active
+            if value then
+                active = SP.arm()
+            else
+                SP.stop("operator")
+                active = false
+            end
+            spin.value = active
+            return active
+        end,
+    }
+
+    -- N's auto-stop paths (death, vehicle, parachute, budget, panic) clear the
+    -- Naruto/No Clip rows and drop a No Clip-owned solo session. Arming one N
+    -- mode stops the other first; Spinbot has its own lifecycle.
     N.onChange = function(active)
         if not active then
             SoloSession.noclip(false)
         end
         refresh()
+    end
+
+    SP.onChange = function(active)
+        if spin then spin.value = active end
     end
 
     category.tabs[#category.tabs + 1] = {
@@ -39411,6 +40174,8 @@ local function installMovement()
             noclip,
             shoot,
             includeSolo,
+            { name = "", isSeparator = true, separatorText = "Anti-aim" },
+            spin,
         },
     }
     return true
@@ -42218,7 +42983,7 @@ end
 -- ---------------------------------------------------------------------------
 -- REMOVE OLD ENTRY POINTS
 -- ---------------------------------------------------------------------------
-local MENU_REV = "2026-11-21-r89"
+local MENU_REV = "2026-11-22-r92"
 
 -- A previous execution of the old loader can leave its category in the shared
 -- Menu table. Match both the literal name and the old nine-tab fingerprint so
@@ -43069,7 +43834,7 @@ UI.boot()
 return UI
 
 
-end)(O,S,E,D,F,V,M,SN,C,G,FL,A,ST,SB,VS,K,N,L,VC,CU,UC,FA,TP,FP,Menu)
+end)(O,S,E,D,F,V,M,SN,C,G,FL,A,ST,SB,VS,K,N,L,VC,CU,UC,FA,TP,FP,SP,Menu)
 
 
 end)()
