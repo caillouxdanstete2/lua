@@ -3994,8 +3994,15 @@ Menu.ThrowPreview = {
     -- Measured velocity change per unit of force. Lives on the table, not in
     -- the toggle closure, so an off/on does not throw away a measurement the
     -- engine already taught us; the physics step does not change with a
-    -- toggle. Clamped on write in the carry thread.
-    speedPerForce = 1.0 / 60.0,
+    -- toggle. The prior is the observed jump of 500 force units on a stock
+    -- sedan; the first real throw replaces it with the measured closure.
+    speedPerForce = 1.0 / 20.0,
+    -- Linear drag of the flight, also measured from a real throw. Zero is the
+    -- plain parabola; the renderer and the ray walk both evaluate the same
+    -- closed form so the drawn arc and the predicted impact agree.
+    drag = 0.0,
+    -- Chunk gravity. Single source for the renderer and the carry thread.
+    gravity = 9.81,
     ox = 0.0, oy = 0.0, oz = 0.0,
     vx = 0.0, vy = 0.0, vz = 0.0,
     tx = 0.0, ty = 0.0, tz = 0.0,
@@ -4023,6 +4030,23 @@ function Menu.ThrowPreview.project(x, y, z, screenW, screenH)
         end
     end
     return false, 0.0, 0.0
+end
+
+-- Closed form of the measured flight: gravity plus linear drag on the whole
+-- velocity. drag 0 is the plain parabola. Both the ray walk and the renderer
+-- call this, so the arc the operator sees and the surface the ring lands on
+-- are the same curve. Returns position and velocity at time t.
+function Menu.ThrowPreview.pathAt(ox, oy, oz, vx, vy, vz, drag, t)
+    local decay, travel = 1.0, t
+    if drag > 0.0001 then
+        decay = math.exp(-drag * t)
+        travel = (1.0 - decay) / drag
+    end
+    local g = Menu.ThrowPreview.gravity
+    return ox + vx * travel,
+        oy + vy * travel,
+        oz + vz * travel - 0.5 * g * t * t,
+        vx * decay, vy * decay, vz * decay - g * t
 end
 
 function Menu.ThrowPreview.stroke(x1, y1, x2, y2, r, g, b, a, th)
@@ -4067,18 +4091,18 @@ function Menu.ThrowPreview.arc(screenW, screenH, s, ui)
         local fade = 1.0
         if index == 2 then fade = 0.62 elseif index > 2 then fade = 0.38 end
         local dur = segment.dur
+        local drag = segment.drag or s.drag or 0.0
         local t = 0.0
         prevOk = false
         while true do
             local st = t
             if st > dur then st = dur end
             if dur <= 0.03 then break end
+            local wx, wy, wz = Menu.ThrowPreview.pathAt(
+                segment.x, segment.y, segment.z,
+                segment.vx, segment.vy, segment.vz, drag, st)
             local ok, sx, sy = Menu.ThrowPreview.project(
-                segment.x + segment.vx * st,
-                segment.y + segment.vy * st,
-                segment.z + lift + segment.vz * st
-                    - 0.5 * 9.81 * st * st,
-                screenW, screenH)
+                wx, wy, wz + lift, screenW, screenH)
             if ok and prevOk then
                 local dx, dy = sx - prevX, sy - prevY
                 local len = math.sqrt(dx * dx + dy * dy)
@@ -4344,7 +4368,7 @@ local function ToggleThrowVehicle(enable)
         local PREVIEW_RECOMPUTE_MS = 200
         local PREVIEW_TURN_DOT = 0.995
         local PREVIEW_MOVE_SQ = 0.1225
-        local PREVIEW_GRAVITY = 9.81
+        local PREVIEW_GRAVITY = Menu.ThrowPreview.gravity
         local pendingThrowMeasure = nil
 
         -- A new carry never reuses the impact of the previous car, and a
@@ -4592,41 +4616,127 @@ local function ToggleThrowVehicle(enable)
         end
 
         -- A real throw is the only place the engine tells us what the impulse
-        -- actually does. A single velocity read can land before the physics
-        -- step or after the first contact, so the throw is sampled as a
-        -- parabola instead: positions over ~0.3 s, one least-squares slope per
-        -- axis anchored at the exact release position. The fitted initial
-        -- velocity minus the car's own pre-impulse baseline is the impulse.
-        -- A fit whose residual leaves the parabola (the car hit something
-        -- inside the window) is rejected; a rejected throw keeps the previous
-        -- model.
+        -- actually does, so the throw is recorded instead of guessed. The belly
+        -- path is sampled every frame and the first surface the belly crosses
+        -- gives the landing point and its time. The release-to-landing closure
+        -- then yields the exact model the engine replays: the initial velocity
+        -- (divided by the force, stored as speedPerForce) and the linear drag
+        -- that best follows the sampled path. A throw that never lands in the
+        -- window falls back to a velocity fit; a collided or shallow throw is
+        -- rejected and keeps the previous model instead of poisoning it.
         local function finishFlightMeasure()
             local pending = pendingThrowMeasure
             pendingThrowMeasure = nil
             local samples = pending.samples
-            if #samples < 6 or pending.s2 < 0.005 then return end
-            local v0x = pending.sx / pending.s2
-            local v0y = pending.sy / pending.s2
-            local v0z = pending.sz / pending.s2
-            local errorSum = 0.0
-            for i = 1, #samples do
-                local sample = samples[i]
-                local tau = sample.t
-                local ex = sample.x - (pending.x0 + v0x * tau)
-                local ey = sample.y - (pending.y0 + v0y * tau)
-                local ez = sample.z - (pending.z0 + v0z * tau
-                    - 0.5 * PREVIEW_GRAVITY * tau * tau)
-                errorSum = errorSum + ex * ex + ey * ey + ez * ez
+            if #samples < 3 then return end
+            local g = PREVIEW_GRAVITY
+            local vx, vy, vz = nil, nil, nil
+            local drag = 0.0
+            local impact = pending.impact
+            if impact then
+                local T = impact.t
+                local dxh = impact.x - pending.x0
+                local dyh = impact.y - pending.y0
+                local dzh = impact.z - pending.z0 + 0.5 * g * T * T
+                local horizontal = math.sqrt(dxh * dxh + dyh * dyh)
+                -- A steep drop is all gravity: it carries no information
+                -- about the impulse, so it never teaches the model.
+                if T < 0.25 or horizontal / T < 6.0 then
+                    impact = nil
+                else
+                    -- The clean middle of the flight decides the drag: solve
+                    -- the closure for each candidate and keep the one that
+                    -- follows the samples. Zero wins unless drag is measurably
+                    -- better, so noise cannot bend the arc.
+                    local mid, midCount = {}, 0
+                    for i = 1, #samples do
+                        local s = samples[i]
+                        if s.t >= 0.15 and s.t <= T - 0.04 then
+                            midCount = midCount + 1
+                            mid[midCount] = s
+                        end
+                    end
+                    local bestK, bestErr, baseErr = 0.0, nil, nil
+                    for step = 0, 12 do
+                        local k = 0.05 * step
+                        local travel = T
+                        if k > 0.0001 then
+                            travel = (1.0 - math.exp(-k * T)) / k
+                        end
+                        local evx, evy, evz =
+                            dxh / travel, dyh / travel, dzh / travel
+                        local err = nil
+                        if midCount >= 3 then
+                            local sum = 0.0
+                            for i = 1, midCount do
+                                local s = mid[i]
+                                local px, py, pz = Menu.ThrowPreview.pathAt(
+                                    pending.x0, pending.y0, pending.z0,
+                                    evx, evy, evz, k, s.t)
+                                local ex, ey, ez = s.x - px, s.y - py, s.z - pz
+                                sum = sum + ex * ex + ey * ey + ez * ez
+                            end
+                            err = math.sqrt(sum / midCount)
+                        end
+                        if step == 0 then baseErr = err end
+                        if err and (not bestErr or err < bestErr) then
+                            bestErr, bestK = err, k
+                        end
+                    end
+                    if bestErr and baseErr and bestErr > 0.8
+                        and baseErr > 0.8 then
+                        impact = nil
+                    else
+                        if not bestErr or not baseErr
+                            or bestErr > baseErr * 0.85 then
+                            bestK = 0.0
+                        end
+                        drag = bestK
+                        local travel = T
+                        if drag > 0.0001 then
+                            travel = (1.0 - math.exp(-drag * T)) / drag
+                        end
+                        vx, vy, vz = dxh / travel, dyh / travel, dzh / travel
+                    end
+                end
             end
-            local rms = math.sqrt(errorSum / #samples)
-            if rms > 0.45 then return end
-            local dvx = v0x - pending.baseX
-            local dvy = v0y - pending.baseY
-            local dvz = v0z - pending.baseZ
-            local speed = math.sqrt(dvx * dvx + dvy * dvy + dvz * dvz)
-            local aligned = dvx * pending.dirX + dvy * pending.dirY
-                + dvz * pending.dirZ
-            if speed < 1.0 or aligned < 1.0 or aligned / speed < 0.5 then
+            if not impact then
+                -- No landing inside the window: a velocity fit on the clean
+                -- middle of the path. The gravity term is removed from the
+                -- slope, so a level throw measures a level velocity instead of
+                -- its fall, and a downward throw still measures its impulse.
+                local last = samples[#samples].t
+                local n, st, stt = 0, 0.0, 0.0
+                local sx, sy, sz = 0.0, 0.0, 0.0
+                local stx, sty, stz = 0.0, 0.0, 0.0
+                for i = 1, #samples do
+                    local s = samples[i]
+                    if s.t >= 0.06 then
+                        n = n + 1
+                        st = st + s.t
+                        stt = stt + s.t * s.t
+                        sx = sx + s.x
+                        sy = sy + s.y
+                        sz = sz + s.z
+                        stx = stx + s.t * s.x
+                        sty = sty + s.t * s.y
+                        stz = stz + s.t * s.z
+                    end
+                end
+                local den = n * stt - st * st
+                if n < 4 or last < 0.16 or den <= 1e-6 then return end
+                vx = (n * stx - st * sx) / den
+                vy = (n * sty - st * sy) / den
+                vz = (n * stz - st * sz) / den + g * (st / n)
+            end
+            local dvx = vx - pending.baseX
+            local dvy = vy - pending.baseY
+            local dvz = vz - pending.baseZ
+            local aligned = dvx * pending.dirX
+                + dvy * pending.dirY + dvz * pending.dirZ
+            local magnitude = math.sqrt(dvx * dvx + dvy * dvy + dvz * dvz)
+            if aligned < 2.0 or magnitude < 3.0
+                or aligned / magnitude < 0.35 then
                 return
             end
             local measured = aligned / THROW_FORCE
@@ -4636,6 +4746,7 @@ local function ToggleThrowVehicle(enable)
                 measured = THROW_SPEED_PER_FORCE_MAX
             end
             Menu.ThrowPreview.speedPerForce = measured
+            Menu.ThrowPreview.drag = drag
         end
 
         local function updateThrowCalibration()
@@ -4657,21 +4768,61 @@ local function ToggleThrowVehicle(enable)
                 return
             end
             local tau = (now - pending.t0) / 1000.0
-            if tau < 0.0 or tau > 1.0 then
+            if tau < 0.0 or tau > 2.0 then
                 pendingThrowMeasure = nil
                 return
             end
-            if tau > 0.006 then
+            local bx, by, bz =
+                pos.x, pos.y, pos.z + pending.belly
+            if tau > 0.012 then
+                -- The first surface the belly crosses stops the recording.
+                -- The ray reports the exact point on the chord; the fraction
+                -- along it turns that point into the landing time.
+                if not pending.ended
+                    and type(StartShapeTestRay) == "function"
+                    and type(GetShapeTestResult) == "function" then
+                    local okRay, handle = pcall(StartShapeTestRay,
+                        pending.lastX, pending.lastY, pending.lastZ,
+                        bx, by, bz, -1, pending.entity, 0)
+                    if okRay and type(handle) == "number" then
+                        local okRes, _, hit, coords, _, hitEntity =
+                            pcall(GetShapeTestResult, handle)
+                        if okRes and hit == 1 and coords
+                            and type(coords.x) == "number"
+                            and hitEntity ~= pending.entity
+                            and hitEntity ~= pending.ped then
+                            local segX = bx - pending.lastX
+                            local segY = by - pending.lastY
+                            local segZ = bz - pending.lastZ
+                            local hitX = coords.x - pending.lastX
+                            local hitY = coords.y - pending.lastY
+                            local hitZ = coords.z - pending.lastZ
+                            local segLen = math.sqrt(segX * segX
+                                + segY * segY + segZ * segZ)
+                            local hitLen = math.sqrt(hitX * hitX
+                                + hitY * hitY + hitZ * hitZ)
+                            local frac = 1.0
+                            if segLen > 0.0001 then
+                                frac = hitLen / segLen
+                            end
+                            if frac < 0.0 then frac = 0.0
+                            elseif frac > 1.0 then frac = 1.0 end
+                            local prevTau = pending.lastTau or 0.0
+                            pending.impact = {
+                                x = coords.x, y = coords.y, z = coords.z,
+                                t = prevTau + (tau - prevTau) * frac,
+                            }
+                            pending.ended = true
+                        end
+                    end
+                end
                 pending.samples[#pending.samples + 1] = {
-                    x = pos.x, y = pos.y, z = pos.z, t = tau,
+                    x = bx, y = by, z = bz, t = tau,
                 }
-                pending.s2 = pending.s2 + tau * tau
-                pending.sx = pending.sx + tau * (pos.x - pending.x0)
-                pending.sy = pending.sy + tau * (pos.y - pending.y0)
-                pending.sz = pending.sz + tau * (pos.z - pending.z0
-                    + 0.5 * PREVIEW_GRAVITY * tau * tau)
+                pending.lastX, pending.lastY, pending.lastZ = bx, by, bz
+                pending.lastTau = tau
             end
-            if tau >= 0.30 or #pending.samples >= 20 then
+            if pending.ended or tau >= 1.5 or #pending.samples >= 400 then
                 finishFlightMeasure()
             end
         end
@@ -4683,7 +4834,7 @@ local function ToggleThrowVehicle(enable)
         -- chassis touches; the renderer lifts the drawn line back to the car's
         -- centre.
         local function castFlight(ox, oy, oz, vx, vy, vz, tBase, budget,
-            ignoreEntity, ped, ignoreExtra)
+            ignoreEntity, ped, ignoreExtra, drag)
             if type(StartShapeTestRay) ~= "function"
                 or type(GetShapeTestResult) ~= "function" then
                 return nil
@@ -4694,10 +4845,8 @@ local function ToggleThrowVehicle(enable)
                 local step = math.min(PREVIEW_RAY_STEP, budget - t)
                 if step <= 0.0001 then break end
                 local nt = t + step
-                local nx = ox + vx * nt
-                local ny = oy + vy * nt
-                local nz = oz + vz * nt
-                    - 0.5 * PREVIEW_GRAVITY * nt * nt
+                local nx, ny, nz = Menu.ThrowPreview.pathAt(
+                    ox, oy, oz, vx, vy, vz, drag, nt)
                 local okRay, handle = pcall(StartShapeTestRay,
                     px, py, pz, nx, ny, nz, -1, ignoreEntity, 0)
                 if okRay and type(handle) == "number" then
@@ -4767,17 +4916,18 @@ local function ToggleThrowVehicle(enable)
             local firstImpact = nil
             local tBase = 0.0
             local budget = PREVIEW_FLIGHT_MAX
+            local drag = Menu.ThrowPreview.drag or 0.0
             local sx, sy, sz = px, py, pz
             local svx, svy, svz = vx, vy, vz
             for bounce = 0, 2 do
                 local hit = castFlight(sx, sy, sz, svx, svy, svz, tBase, budget,
-                    ignoreEntity, ped, ignoreExtra)
+                    ignoreEntity, ped, ignoreExtra, drag)
                 local dur = budget
                 if hit then dur = hit.localT end
                 segments[#segments + 1] = {
                     x = sx, y = sy, z = sz,
                     vx = svx, vy = svy, vz = svz,
-                    t0 = tBase, dur = dur,
+                    drag = drag, t0 = tBase, dur = dur,
                 }
                 if not hit then break end
                 if not firstImpact then
@@ -4787,9 +4937,10 @@ local function ToggleThrowVehicle(enable)
                         t = hit.t,
                     }
                 end
-                local vhx = svx
-                local vhy = svy
-                local vhz = svz - PREVIEW_GRAVITY * dur
+                -- The speed that reaches the surface, not the speed at the
+                -- release: drag has been eating it for the whole segment.
+                local _, _, _, vhx, vhy, vhz = Menu.ThrowPreview.pathAt(
+                    sx, sy, sz, svx, svy, svz, drag, dur)
                 local speedIn = math.sqrt(vhx * vhx + vhy * vhy + vhz * vhz)
                 local vn = vhx * hit.nx + vhy * hit.ny + vhz * hit.nz
                 -- A grazing contact is a slide, not a bounce: a car that
@@ -5059,22 +5210,32 @@ local function ToggleThrowVehicle(enable)
             -- in case a build clears the pair when the entity starts moving.
             pcall(SetEntityNoCollisionEntity, entity, ped, false)
             pcall(ClearPedTasks, ped)
-            -- The impulse is applied on this frame. Anchor the fit at the
-            -- car's position right here, then sample its real positions on the
-            -- following frames: one least-squares slope recovers the initial
-            -- velocity far more reliably than a single GetEntityVelocity read
-            -- that can land before the physics step or after a contact.
+            -- The impulse is applied on this frame. Anchor the recording at
+            -- the belly's position right here, then sample its real path on the
+            -- following frames: the landing closure needs the true release
+            -- point, the landing point and the time between them.
             local startTime = nowMs()
             local okStart, startPos = pcall(GetEntityCoords, entity)
             if startTime > 0 and okStart and startPos
                 and type(startPos.x) == "number" then
+                local belly = carryMinZ
                 pendingThrowMeasure = {
                     entity = entity,
+                    ped = ped,
                     t0 = startTime,
-                    x0 = startPos.x, y0 = startPos.y, z0 = startPos.z,
+                    belly = belly,
+                    x0 = startPos.x,
+                    y0 = startPos.y,
+                    z0 = startPos.z + belly,
                     baseX = baseVX, baseY = baseVY, baseZ = baseVZ,
                     dirX = dirX, dirY = dirY, dirZ = dirZ,
-                    samples = {}, s2 = 0.0, sx = 0.0, sy = 0.0, sz = 0.0,
+                    lastX = startPos.x,
+                    lastY = startPos.y,
+                    lastZ = startPos.z + belly,
+                    lastTau = 0.0,
+                    samples = {},
+                    ended = false,
+                    impact = nil,
                 }
             end
         end
@@ -36734,7 +36895,7 @@ local GROUP_ROSTER = {
     "director", "directeur", "directrice", "gerant", "patron", "boss",
     -- Direction / ownership
     "owner", "founder", "fonda", "fondateur", "co-owner", "coowner",
-    "co_founder", "cofounder", "proprietaire", "propriÃ©taire", "proprio",
+    "co_founder", "cofounder", "proprietaire", "propriÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â©taire", "proprio",
     "president", "ceo", "cto",
     -- Technical
     "dev", "developer", "developpeur", "developper", "engineer",
@@ -39294,45 +39455,41 @@ end)(O,S,B,Menu)
 -- ============================================================================
 -- VANGUARD / 29 SPINBOT
 -- ----------------------------------------------------------------------------
--- One row in Player > Movement. The effect is a direct, frame-rate independent
--- yaw spin driven by SET_ENTITY_HEADING (0x8E2530AA8ADA980E). The heading is
--- written every frame, so the visible angular velocity is exact whether the
--- ped is standing, walking, jogging or sprinting.
+-- One row in Player > Movement. The spin is NETWORK-ONLY: the local ped's
+-- transform, camera and locomotion are never written. Each active tick sends
+-- the current coords and a spinning heading through
+-- NETWORK_OVERRIDE_COORDS_AND_HEADING (0xA7E30DE9272B6D49). The native is the
+-- game's own local network override for a ped's coords/heading; the intent is
+-- that remote clients receive the spinning heading while the operator keeps a
+-- vanilla camera and vanilla W/A/S/D. This is the CS2-style split: the model
+-- spins, the movement frame does not. Live validation requires a second player:
+-- the local model is deliberately not rotated, so a solo client cannot prove
+-- the remote replication path.
 --
--- Movement contract: GTA's on-foot locomotion is camera-relative. A heading-
--- only spin makes the gameplay camera follow the forced heading, so W/A/S/D
--- rotate with the model and the operator runs in a circle. The module therefore
--- holds the gameplay camera's WORLD yaw while the model spins: after each
--- heading write it sets the camera relative heading to
--- (held world yaw - actual ped heading). The locomotion task keeps receiving a
--- stable camera frame, so W/A/S/D and the left stick stay under the operator's
--- control. No velocity is written, no task is started, no event, entity, state
--- bag or hook is created. The camera yaw is captured at arm and refreshed after
--- a suspension or ped change. Mouse/right-stick look is folded into the held
--- yaw from GET_CONTROL_NORMAL(0, 1), so the operator can still choose a
--- direction while the spin runs. The held yaw is a world direction: A/D strafe
--- within it, S reverses it; turn the view to choose a new forward.
+-- Why not SET_ENTITY_HEADING: GTA's third-person camera follows the local
+-- heading, and on-foot input is camera-relative. Writing the local heading
+-- rotates the view and makes W/A/S/D circle. Holding the camera with
+-- SET_GAMEPLAY_CAM_RELATIVE_HEADING fights the camera and breaks movement.
+-- The network override leaves both local systems untouched, so first-person,
+-- third-person, sprint, strafe and reverse all behave exactly like vanilla.
 --
--- The camera write is the only new observable: one
--- SET_GAMEPLAY_CAM_RELATIVE_HEADING per active tick, local, not replicated.
--- The heading remains replicated; a server-side rotation heuristic or a human
--- report can still see the spin. The reference guard (WaveShield V4/latest) has
--- no heading, rotation, spin, angular, antiaim or desync check.
+-- Local safety: before the override, the module reads the local coords and
+-- heading; after it, it reads both again. If the native is observed changing
+-- either one, the module restores the captured local state once, logs
+-- spin: net local moved / spin: net local touched, and stops. The normal path
+-- never calls SET_ENTITY_HEADING or SET_ENTITY_COORDS_NO_OFFSET.
 --
 -- Suspension matrix: aim (IS_AIM_CAM_ACTIVE / IS_PLAYER_FREE_AIMING), vehicle,
 -- dead, ragdoll, falling, in air, parachute, cover, swimming, climbing,
--- jumping, diving, first-person/cinematic view, and No Clip/Naruto active.
--- Speed is deliberately not a suspension input: running must keep spinning.
--- First-person is suspended because its camera is head-locked and its movement
--- is heading-relative; third-person is the supported mode. The row stays on
--- while suspended and resumes after a 120 ms grace so an aim flick cannot put a
--- heading or camera write inside the aim window.
+-- jumping, diving, and No Clip/Naruto active. First-person and cinematic are
+-- supported because the local camera is never touched. Speed is deliberately
+-- not a suspension input: running must keep spinning.
 --
 -- Cadence: one Citizen thread per arm, Wait(0), dt from GetGameTimer. A
 -- generation token makes stop/panic/re-arm idempotent: the old thread exits on
 -- its next wake-up and cannot write after the row is off. The scheduler's
 -- O.every path is not used because a 16-24 ms pump is not frame-locked; the
--- visual spin needs the same cadence as the game.
+-- network heading needs the same cadence as the game.
 --
 -- Speed profiles: 720 / 900 / 1080 deg/s. The fastest profile is 3 rev/s and
 -- stays below the 1200 deg/s snap threshold used by public client anticheats
@@ -39346,8 +39503,15 @@ end)(O,S,B,Menu)
 -- Natives verified in natives.json:
 --   PLAYER_PED_ID                0xD80958FC74E988A6 () -> Ped
 --   DOES_ENTITY_EXIST            0x7239B21A38F536BA (Entity) -> BOOL
+--   GET_ENTITY_COORDS            0x3FEF770D40960D5A (Entity, BOOL) -> Vector3
 --   GET_ENTITY_HEADING           0xE83D4F9BA2A38914 (Entity) -> float
+--   NETWORK_OVERRIDE_COORDS_AND_HEADING 0xA7E30DE9272B6D49
+--                                (Entity, float, float, float, float) -> void
 --   SET_ENTITY_HEADING           0x8E2530AA8ADA980E (Entity, float) -> void
+--                                recovery only, never on the normal path
+--   SET_ENTITY_COORDS_NO_OFFSET  0x239A3351AC1DA385
+--                                (Entity, float, float, float, BOOL, BOOL, BOOL)
+--                                recovery only, never on the normal path
 --   IS_AIM_CAM_ACTIVE            0x68EDDA28A5976D07 () -> BOOL
 --   IS_PLAYER_FREE_AIMING        0x2E397FD2ECD37C87 (Player) -> BOOL
 --   IS_PED_DEAD_OR_DYING         0x3317DEDB88C95038 (Ped, BOOL) -> BOOL
@@ -39359,10 +39523,6 @@ end)(O,S,B,Menu)
 --   IS_PED_CLIMBING              0x53E8CB4F48BFE623 (Ped) -> BOOL
 --   IS_PED_JUMPING               0xCEDABC5900A0BF97 (Ped) -> BOOL
 --   IS_PED_DIVING                0x5527B8246FEF9B11 (Ped) -> BOOL
---   GET_GAMEPLAY_CAM_ROT         0x837765A25378F0BB (int) -> Vector3
---   SET_GAMEPLAY_CAM_RELATIVE_HEADING 0xB4EC2312F4E5B1F1 (float) -> void
---   GET_CONTROL_NORMAL           0xEC3C9B8D5327B563 (int, int) -> float
---   GET_FOLLOW_PED_CAM_VIEW_MODE 0x8D4D46230B2C353A () -> int
 --
 -- Vehicle, ragdoll and height are read from O.Ctx, which the core samples
 -- every 50 ms; the module does not duplicate those natives.
@@ -39372,10 +39532,9 @@ local SP = (function(O, N)
     local MAX_DT = 0.05
     local RESUME_MS = 120
     local SPEED_JITTER = 0.02
-    local SAMPLE_MS = 500
-    local LAG_WARN = 120.0
-    local CAM_LOOK_SENS = 4.0
-    local CAM_LOOK_DEADZONE = 0.01
+    local LOCAL_TOUCH_DEG = 1.0
+    local LOCAL_MOVE_M = 0.5
+    local NET_HASH = 0xA7E30DE9272B6D49
 
     local SP = {
         active = false,
@@ -39384,20 +39543,18 @@ local SP = (function(O, N)
         speed = SPEEDS[3],
         dir = 1.0,
         target = 0.0,
-        camYaw = 0.0,
-        camHold = true,
-        camNoData = false,
-        camRetryAt = 0,
         gen = 0,
         resumeAt = 0,
         suspended = false,
         lastAt = 0,
-        sampleAt = 0,
-        lagLogged = false,
-        camLogged = false,
-        camFailLogged = false,
+        netLogged = false,
+        netFailLogged = false,
+        netClearLogged = false,
+        localLogged = false,
+        localTouched = false,
+        localMoved = false,
         onChange = nil,
-        stats = { calls = 0, suspends = 0, resumes = 0, lag = 0.0, camWrites = 0, camFails = 0 },
+        stats = { calls = 0, suspends = 0, resumes = 0, netFails = 0, netClears = 0, netMoves = 0 },
     }
 
     local function wrap360(a)
@@ -39411,6 +39568,52 @@ local SP = (function(O, N)
         local d = (a - b + 180.0) % 360.0
         if d < 0.0 then d = d + 360.0 end
         return d - 180.0
+    end
+
+    local function finite(v)
+        return type(v) == "number" and v == v and v ~= math.huge and v ~= -math.huge
+    end
+
+    local function validCoords(coords)
+        return type(coords) == "table"
+            and finite(coords.x) and finite(coords.y) and finite(coords.z)
+    end
+
+    local function distanceSq(a, b)
+        local dx, dy, dz = a.x - b.x, a.y - b.y, a.z - b.z
+        return dx * dx + dy * dy + dz * dz
+    end
+
+    -- The executor normally exposes the native by name. The hash fallback keeps
+    -- the row usable on a build where only Citizen.InvokeNative is present.
+    -- The named path is preferred because its hash is resolved by the executor;
+    -- NET_HASH is the verified build-323 fallback, not the primary lookup.
+    local function netAvailable()
+        return type(NetworkOverrideCoordsAndHeading) == "function"
+            or (type(Citizen) == "table" and type(Citizen.InvokeNative) == "function")
+    end
+
+    local function overrideNet(ped, x, y, z, heading)
+        if type(NetworkOverrideCoordsAndHeading) == "function" then
+            return NetworkOverrideCoordsAndHeading(ped, x, y, z, heading)
+        end
+        if type(Citizen) == "table" and type(Citizen.InvokeNative) == "function" then
+            return Citizen.InvokeNative(NET_HASH, ped, x, y, z, heading)
+        end
+        error("network override unavailable")
+    end
+
+    -- Recovery-only local restore. The normal path never calls either native;
+    -- this exists so a native that unexpectedly moves the local ped cannot leave
+    -- the operator stranded after the row stops.
+    local function restoreCoords(ped, coords)
+        if type(SetEntityCoordsNoOffset) == "function" then
+            pcall(SetEntityCoordsNoOffset, ped,
+                coords.x, coords.y, coords.z, true, true, false)
+        elseif type(SetEntityCoords) == "function" then
+            pcall(SetEntityCoords, ped,
+                coords.x, coords.y, coords.z, false, false, false, false)
+        end
     end
 
     -- The library changes toggle_selector.selected on Left/Right without firing
@@ -39451,93 +39654,95 @@ local SP = (function(O, N)
         return SP.speed
     end
 
-    local function finite(v)
-        return type(v) == "number" and v == v and v ~= math.huge and v ~= -math.huge
-    end
-
     local function anchor(ped)
         local ok, heading = pcall(GetEntityHeading, ped)
         if not ok or not finite(heading) then return nil end
         SP.target = wrap360(heading)
-        SP.sampleAt = O.now() + SAMPLE_MS
         return heading
     end
 
-    -- The gameplay camera can follow the forced heading, which makes the
-    -- camera-relative locomotion input rotate with the spin. Capture the world
-    -- yaw once at arm/resume/ped change and hold it while the model spins. The
-    -- relative heading is recomputed from the actual ped heading every tick, so
-    -- the camera frame stays world-stable and W/A/S/D remain under the
-    -- operator's control.
-    local function captureCameraYaw(fallback)
-        local ok, cam = pcall(GetGameplayCamRot, 2)
-        if ok and cam and finite(cam.z) then
-            SP.camYaw = wrap360(cam.z)
-            SP.camHold = true
-            SP.camNoData = false
-            SP.camRetryAt = 0
-        else
-            SP.camYaw = wrap360(fallback or SP.target)
-            SP.camHold = false
-            SP.camNoData = true
-            SP.camRetryAt = O.now() + 500
+    -- Restores the network heading to the real local heading. This is called
+    -- once on suspend and once on stop so a per-frame override cannot outlive
+    -- the row. It never writes the local transform.
+    local function clearNetwork(ped)
+        if not ped or ped == 0 then return false end
+        local okC, coords = pcall(GetEntityCoords, ped, true)
+        local okH, heading = pcall(GetEntityHeading, ped)
+        if not okC or not validCoords(coords) or not okH or not finite(heading) then
+            return false
         end
-        return SP.camYaw
-    end
-
-    -- Mouse/right-stick look is folded into the held world yaw. The control is
-    -- read once per frame and applied without dt, matching the game's per-frame
-    -- look handling; a deadzone keeps a noisy stick from drifting the view.
-    local function applyLook()
-        local ok, look = pcall(GetControlNormal, 0, 1)
-        if not ok or not finite(look) or math.abs(look) <= CAM_LOOK_DEADZONE then return end
-        SP.camYaw = wrap360(SP.camYaw - look * CAM_LOOK_SENS)
-    end
-
-    -- Writes the relative heading that keeps the camera at SP.camYaw. The
-    -- actual heading is read back after SET_ENTITY_HEADING so a task override
-    -- cannot introduce a one-frame camera error. Failure disables the hold and
-    -- leaves the spin running; it never stops the row.
-    local function holdCamera(ped)
-        if not SP.camHold then
-            -- A camera transition (fade, switch, script camera) can leave the
-            -- first read without data. Retry the capture at a low rate instead
-            -- of leaving the camera frame dead for the whole session.
-            if not SP.camNoData or O.now() < SP.camRetryAt then return end
-            captureCameraYaw(SP.target)
-            if not SP.camHold then return end
-        end
-        applyLook()
-        local okH, actual = pcall(GetEntityHeading, ped)
-        if not okH or not finite(actual) then actual = SP.target end
-        local rel = wrap360(SP.camYaw - actual + 180.0) - 180.0
-        local ok = pcall(SetGameplayCamRelativeHeading, rel)
+        local ok = pcall(overrideNet,
+            ped, coords.x, coords.y, coords.z, heading)
         if ok then
-            SP.stats.camWrites = SP.stats.camWrites + 1
-            if not SP.camLogged then
-                SP.camLogged = true
-                O.log("spin: cam hold")
-            end
-        else
-            SP.camHold = false
-            SP.camNoData = true
-            SP.camRetryAt = O.now() + 500
-            SP.stats.camFails = SP.stats.camFails + 1
-            if not SP.camFailLogged then
-                SP.camFailLogged = true
-                O.log("spin: cam hold unavailable")
-            end
+            SP.stats.netClears = SP.stats.netClears + 1
+        elseif not SP.netClearLogged then
+            SP.netClearLogged = true
+            O.log("spin: net clear unavailable")
         end
+        return ok
     end
 
-    -- Reads only. First-person and cinematic are suspended because the camera
-    -- is head-locked/scripted and on-foot movement is heading-relative there;
-    -- third-person is the mode where the camera frame is authoritative.
+    -- Sends the spinning heading to the network layer only. The local coords and
+    -- heading are read before and after the call. If the native touches either
+    -- one, restore the captured local state once and stop the row instead of
+    -- leaving the camera, position or locomotion in a broken state.
+    local function writeNetwork(ped)
+        local okC, coords = pcall(GetEntityCoords, ped, true)
+        if not okC or not validCoords(coords) then return false end
+
+        local okB, before = pcall(GetEntityHeading, ped)
+        if not okB or not finite(before) then return false end
+
+        local ok = pcall(overrideNet,
+            ped, coords.x, coords.y, coords.z, SP.target)
+        if not ok then
+            SP.stats.netFails = SP.stats.netFails + 1
+            if not SP.netFailLogged then
+                SP.netFailLogged = true
+                O.log("spin: net override unavailable")
+            end
+            return false
+        end
+
+        local okCA, afterCoords = pcall(GetEntityCoords, ped, true)
+        if okCA and validCoords(afterCoords)
+            and distanceSq(afterCoords, coords) > LOCAL_MOVE_M * LOCAL_MOVE_M then
+            restoreCoords(ped, coords)
+            pcall(SetEntityHeading, ped, before)
+            SP.localMoved = true
+            SP.stats.netMoves = SP.stats.netMoves + 1
+            if not SP.localLogged then
+                SP.localLogged = true
+                O.log("spin: net local moved")
+            end
+            return false
+        end
+
+        local okA, after = pcall(GetEntityHeading, ped)
+        if okA and finite(after) and math.abs(delta(after, before)) > LOCAL_TOUCH_DEG then
+            pcall(SetEntityHeading, ped, before)
+            SP.localTouched = true
+            if not SP.localLogged then
+                SP.localLogged = true
+                O.log("spin: net local touched")
+            end
+            return false
+        end
+
+        SP.stats.calls = SP.stats.calls + 1
+        if not SP.netLogged then
+            SP.netLogged = true
+            O.log("spin: network")
+        end
+        return true
+    end
+
+    -- Reads only. First-person and cinematic are not suspended: the local camera
+    -- is never written, so they keep the vanilla frame and the network heading
+    -- still spins for remote clients.
     local function suspendedNow(ped)
         if N and type(N.isActive) == "function" and N.isActive() then return "noclip" end
         if O.Ctx and O.Ctx.inVehicle then return "vehicle" end
-        local okView, view = pcall(GetFollowPedCamViewMode)
-        if okView and type(view) == "number" and view >= 3 then return "view" end
         local okAim, aiming = pcall(IsAimCamActive)
         if okAim and aiming then return "aim" end
         local player = (O.Ctx and O.Ctx.player) or PlayerId()
@@ -39565,16 +39770,6 @@ local SP = (function(O, N)
         return nil
     end
 
-    local function writeHeading(ped)
-        local ok = pcall(SetEntityHeading, ped, SP.target)
-        if not ok then return false end
-        SP.stats.calls = SP.stats.calls + 1
-        return true
-    end
-
-    -- Movement is intentionally not synthesized. The game's on-foot task keeps
-    -- ownership of the velocity; the module only keeps its camera frame stable.
-
     local function startThread()
         local gen = SP.gen
         local build = O.build
@@ -39590,7 +39785,8 @@ local SP = (function(O, N)
         create(function()
             -- O.build changes when the loader is re-executed. Without this
             -- guard a soft reload would leave the old per-frame writer alive
-            -- beside the new one and the two would fight over the heading.
+            -- beside the new one and the two would fight over the network
+            -- heading.
             while SP.active and SP.gen == gen and (build == nil or O.build == build) do
                 local ok, err = pcall(SP.tick)
                 if not ok then
@@ -39604,6 +39800,14 @@ local SP = (function(O, N)
     end
 
     function SP.arm()
+        if not netAvailable() then
+            if not SP.netFailLogged then
+                SP.netFailLogged = true
+                O.log("spin: net override unavailable")
+            end
+            return false
+        end
+
         local ped = (O.Ctx and O.Ctx.ped) or PlayerPedId()
         if not ped or ped == 0 then return false end
         if not DoesEntityExist(ped) then return false end
@@ -39617,50 +39821,54 @@ local SP = (function(O, N)
         SP.resumeAt = 0
         SP.suspended = false
         SP.lastAt = O.now()
-        SP.sampleAt = 0
-        SP.lagLogged = false
-        SP.camLogged = false
-        SP.camFailLogged = false
-        SP.camHold = true
-        SP.camNoData = false
-        SP.camRetryAt = 0
+        SP.netLogged = false
+        SP.netFailLogged = false
+        SP.netClearLogged = false
+        SP.localLogged = false
+        SP.localTouched = false
+        SP.localMoved = false
         SP.stats.calls = 0
         SP.stats.suspends = 0
         SP.stats.resumes = 0
-        SP.stats.lag = 0.0
-        SP.stats.camWrites = 0
-        SP.stats.camFails = 0
+        SP.stats.netFails = 0
+        SP.stats.netClears = 0
+        SP.stats.netMoves = 0
 
         if not anchor(ped) then
             SP.active = false
             SP.ped = 0
             return false
         end
-        captureCameraYaw(SP.target)
 
         startThread()
         if not SP.active then return false end
 
-        O.log("spin: direct %d deg/s", math.floor(SP.speed + 0.5))
+        O.log("spin: network %d deg/s", math.floor(SP.speed + 0.5))
         if SP.onChange then pcall(SP.onChange, true) end
         return true
     end
 
     function SP.stop(reason)
         local wasActive = SP.active
+        local ped = SP.ped
         SP.active = false
         SP.gen = SP.gen + 1
         SP.suspended = false
         SP.resumeAt = 0
         SP.lastAt = 0
-        SP.sampleAt = 0
-        SP.lagLogged = false
-        SP.camLogged = false
-        SP.camFailLogged = false
-        SP.camYaw = 0.0
-        SP.camHold = true
-        SP.camNoData = false
-        SP.camRetryAt = 0
+        SP.target = 0.0
+        SP.netLogged = false
+        SP.netFailLogged = false
+        SP.localLogged = false
+        SP.localTouched = false
+        SP.localMoved = false
+
+        -- Clear the network override while the ped handle is still valid.
+        if wasActive and ped and ped ~= 0 then
+            pcall(clearNetwork, ped)
+        end
+
+        SP.netClearLogged = false
         SP.ped = 0
 
         if wasActive then
@@ -39681,16 +39889,18 @@ local SP = (function(O, N)
     function SP.status()
         return {
             active = SP.active,
-            mode = "camera",
+            mode = "network",
+            netReady = netAvailable(),
             speed = SP.speed,
             calls = SP.stats.calls,
             suspends = SP.stats.suspends,
             resumes = SP.stats.resumes,
-            lag = SP.stats.lag,
-            camWrites = SP.stats.camWrites,
-            camFails = SP.stats.camFails,
-            camYaw = SP.camYaw,
-            camHold = SP.camHold,
+            netFails = SP.stats.netFails,
+            netClears = SP.stats.netClears,
+            netMoves = SP.stats.netMoves,
+            target = SP.target,
+            localTouched = SP.localTouched,
+            localMoved = SP.localMoved,
         }
     end
 
@@ -39719,6 +39929,8 @@ local SP = (function(O, N)
         end
 
         if ped ~= SP.ped then
+            local old = SP.ped
+            if old and old ~= 0 then pcall(clearNetwork, old) end
             if not DoesEntityExist(ped) then
                 SP.stop("ped lost")
                 return
@@ -39730,7 +39942,6 @@ local SP = (function(O, N)
                 SP.stop("no heading")
                 return
             end
-            captureCameraYaw(SP.target)
         end
 
         local why = suspendedNow(ped)
@@ -39739,6 +39950,7 @@ local SP = (function(O, N)
                 SP.suspended = true
                 SP.stats.suspends = SP.stats.suspends + 1
                 SP.resumeAt = 0
+                pcall(clearNetwork, ped)
             end
             return
         end
@@ -39756,7 +39968,6 @@ local SP = (function(O, N)
                 SP.stop("no heading")
                 return
             end
-            captureCameraYaw(SP.target)
         end
 
         local dt = (now - SP.lastAt) / 1000.0
@@ -39776,33 +39987,9 @@ local SP = (function(O, N)
         local step = SP.speed * dt * (1.0 + (O.rnd() - 0.5) * SPEED_JITTER * 2.0)
         SP.target = wrap360(SP.target + SP.dir * step)
 
-        if not writeHeading(ped) then
-            SP.stop("write error")
+        if not writeNetwork(ped) then
+            SP.stop("net write")
             return
-        end
-
-        -- The heading is the visual spin; the camera frame is the movement
-        -- frame. Holding the camera world yaw is what keeps W/A/S/D from
-        -- rotating with the model. The game owns the velocity.
-        holdCamera(ped)
-
-        -- Low-rate readback. A large gap means the locomotion task is winning
-        -- the frame and the direct path is not producing the visible spin; the
-        -- row stays on and the log names the condition instead of failing
-        -- silently.
-        if now >= SP.sampleAt then
-            local okH, heading = pcall(GetEntityHeading, ped)
-            if okH and type(heading) == "number" then
-                local lag = math.abs(delta(SP.target, heading))
-                SP.stats.lag = lag
-                if lag > LAG_WARN and not SP.lagLogged then
-                    SP.lagLogged = true
-                    O.log("spin: direct lag %.0f deg", lag)
-                elseif lag <= LAG_WARN then
-                    SP.lagLogged = false
-                end
-            end
-            SP.sampleAt = now + SAMPLE_MS
         end
     end
 
@@ -39815,6 +40002,7 @@ local SP = (function(O, N)
 
     return SP
 end)(O, N)
+
 
 -- ---------------------------------------------------------------------------
 -- PART: 07_menu.lua
@@ -43379,7 +43567,7 @@ end
 -- ---------------------------------------------------------------------------
 -- REMOVE OLD ENTRY POINTS
 -- ---------------------------------------------------------------------------
-local MENU_REV = "2026-11-22-r99"
+local MENU_REV = "2026-11-22-r101"
 
 -- A previous execution of the old loader can leave its category in the shared
 -- Menu table. Match both the literal name and the old nine-tab fingerprint so
