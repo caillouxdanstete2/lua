@@ -3967,8 +3967,9 @@ local function DeleteAllProps()
 end
 
 -- Throw Vehicle preview state. The carry thread only samples the path and
--- writes this table; the drawing runs from Menu.OnRender, inside the library's
--- own Susano.BeginFrame/SubmitFrame pair. Drawing from the carry thread itself
+-- writes this table; the drawing runs either from Menu.OnRender (when another
+-- module keeps the frame alive) or from the post-pass in Menu.Render after the
+-- library has reset its empty frame. Drawing from the carry thread itself
 -- appends to a build buffer that BeginFrame clears before SubmitFrame, so it
 -- never reaches the screen. Hosted on the existing Menu table: the base chunk
 -- already sits at Lua's 200-active-local ceiling, so a new local would fail
@@ -3979,6 +3980,11 @@ Menu.ThrowPreview = {
     flight = 2.6,
     hot = false,
     now = 0,
+    -- Measured velocity change per unit of force. Lives on the table, not in
+    -- the toggle closure, so an off/on does not throw away a measurement the
+    -- engine already taught us; the physics step does not change with a
+    -- toggle. Clamped on write in the carry thread.
+    speedPerForce = 1.0 / 60.0,
     ox = 0.0, oy = 0.0, oz = 0.0,
     vx = 0.0, vy = 0.0, vz = 0.0,
     tx = 0.0, ty = 0.0, tz = 0.0,
@@ -4008,62 +4014,114 @@ function Menu.ThrowPreview.project(x, y, z, screenW, screenH)
     return false, 0.0, 0.0
 end
 
-function Menu.ThrowPreview.stroke(x1, y1, x2, y2, r, g, b, a, th, shadow)
+function Menu.ThrowPreview.stroke(x1, y1, x2, y2, r, g, b, a, th)
     if type(Susano) ~= "table"
         or type(Susano.DrawLine) ~= "function" then
         return
     end
-    if shadow then
-        pcall(Susano.DrawLine, x1 + 1.0, y1 + 1.0, x2 + 1.0, y2 + 1.0,
-            0.0, 0.0, 0.0, a * 0.6, th + 1.0)
-    end
     pcall(Susano.DrawLine, x1, y1, x2, y2, r, g, b, a, th)
 end
 
-function Menu.ThrowPreview.crosshair(screenW, screenH, hasImpact, hot)
+-- The reticle is the plain white plus the operator asked for: two strokes, no
+-- gap, no ticks, no centre dot. A dark underlay one pixel longer and two
+-- pixels thicker keeps it readable on sky, snow and white paint without
+-- adding a single extra shape.
+function Menu.ThrowPreview.crosshair(screenW, screenH)
     local ui = math.max(1.0, screenH / 1080.0)
-    local cx, cy = screenW * 0.5, screenH * 0.5
-    local gap, len, th = 7.0 * ui, 10.0 * ui, 2.0 * ui
-    -- White: no impact on the path (the throw clears the horizon). Green: the
-    -- preview found a real impact. Orange: that impact is close enough to hit
-    -- the operator.
-    local r, g, b = 1.0, 1.0, 1.0
-    if hot then
-        r, g, b = 1.0, 0.72, 0.15
-    elseif hasImpact then
-        r, g, b = 0.40, 1.0, 0.62
-    end
-    Menu.ThrowPreview.stroke(cx - gap - len, cy, cx - gap, cy,
-        r, g, b, 0.95, th, true)
-    Menu.ThrowPreview.stroke(cx + gap, cy, cx + gap + len, cy,
-        r, g, b, 0.95, th, true)
-    Menu.ThrowPreview.stroke(cx, cy - gap - len, cx, cy - gap,
-        r, g, b, 0.95, th, true)
-    Menu.ThrowPreview.stroke(cx, cy + gap, cx, cy + gap + len,
-        r, g, b, 0.95, th, true)
-    if type(Susano) == "table"
-        and type(Susano.DrawRectFilled) == "function" then
-        pcall(Susano.DrawRectFilled, cx - 1.5 * ui, cy - 1.5 * ui,
-            3.0 * ui, 3.0 * ui, r, g, b, 1.0, 0.0)
+    local cx = math.floor(screenW * 0.5 + 0.5)
+    local cy = math.floor(screenH * 0.5 + 0.5)
+    local arm = 7.0 * ui
+    local white = 2.0 * ui
+    local dark = white + 2.0
+    local over = 1.0
+    Menu.ThrowPreview.stroke(cx - arm - over, cy, cx + arm + over, cy,
+        0.0, 0.0, 0.0, 0.45, dark)
+    Menu.ThrowPreview.stroke(cx, cy - arm - over, cx, cy + arm + over,
+        0.0, 0.0, 0.0, 0.45, dark)
+    Menu.ThrowPreview.stroke(cx - arm, cy, cx + arm, cy,
+        1.0, 1.0, 1.0, 0.95, white)
+    Menu.ThrowPreview.stroke(cx, cy - arm, cx, cy + arm,
+        1.0, 1.0, 1.0, 0.95, white)
+end
+
+-- The arc is a dashed guide, not a beam. Dashes are measured in screen space
+-- so the rhythm is identical near and far instead of clumping at the horizon,
+-- and the taper runs faint at the car to bright at the impact: the eye reads
+-- the destination, and the off-screen start reads as a guide that dissolves
+-- rather than a laser falling out of the sky.
+function Menu.ThrowPreview.arc(screenW, screenH, s, ui)
+    local flight = s.flight
+    local dashOn = true
+    local dashLeft = 9.0 * ui
+    local prevOk, prevX, prevY, prevT = false, 0.0, 0.0, 0.0
+    local t = 0.0
+    while true do
+        local st = t
+        if st > flight then st = flight end
+        local ok, sx, sy = Menu.ThrowPreview.project(
+            s.ox + s.vx * st,
+            s.oy + s.vy * st,
+            s.oz + s.vz * st - 0.5 * 9.81 * st * st,
+            screenW, screenH)
+        if ok and prevOk then
+            local dx, dy = sx - prevX, sy - prevY
+            local len = math.sqrt(dx * dx + dy * dy)
+            if len > 0.001 then
+                local inv = 1.0 / len
+                local walked = 0.0
+                while walked < len do
+                    local chunk = len - walked
+                    if chunk > dashLeft then chunk = dashLeft end
+                    if dashOn then
+                        local f = (prevT + (st - prevT) * walked * inv)
+                            / flight
+                        if f < 0.0 then f = 0.0 elseif f > 1.0 then f = 1.0 end
+                        Menu.ThrowPreview.stroke(
+                            prevX + dx * walked * inv,
+                            prevY + dy * walked * inv,
+                            prevX + dx * (walked + chunk) * inv,
+                            prevY + dy * (walked + chunk) * inv,
+                            0.40, 1.0, 0.62,
+                            0.36 + 0.38 * f, (1.3 + 0.7 * f) * ui)
+                    end
+                    walked = walked + chunk
+                    dashLeft = dashLeft - chunk
+                    if dashLeft <= 0.0001 then
+                        dashOn = not dashOn
+                        dashLeft = (dashOn and 9.0 or 8.0) * ui
+                    end
+                end
+            end
+        end
+        if ok then
+            prevOk, prevX, prevY, prevT = true, sx, sy, st
+        else
+            prevOk = false
+        end
+        if st >= flight then break end
+        t = t + 0.05
     end
 end
 
-function Menu.ThrowPreview.impactRing(screenW, screenH, point, hot)
+-- One ring, one centre dot, one compact readout. Green marks a real impact,
+-- orange an impact close enough to hit the operator; the reticle stays white
+-- so the crosshair never changes meaning under the operator's eyes.
+function Menu.ThrowPreview.impactMarker(screenW, screenH, point, hot)
     local ok, sx, sy =
         Menu.ThrowPreview.project(point.x, point.y, point.z, screenW, screenH)
     if not ok then return end
     local ui = math.max(1.0, screenH / 1080.0)
-    local radius = 11.0 * ui
+    local radius = 7.0 * ui
     local r, g, b = 0.40, 1.0, 0.62
     if hot then r, g, b = 1.0, 0.72, 0.15 end
     if type(Susano) == "table"
         and type(Susano.DrawCircle) == "function" then
         pcall(Susano.DrawCircle, sx, sy, radius, false,
-            r, g, b, 0.95, 2.0 * ui, 24)
-        pcall(Susano.DrawCircle, sx, sy, radius * 0.42, false,
-            r, g, b, 0.55, 1.5 * ui, 16)
+            r, g, b, 0.95, 1.6 * ui, 20)
+        pcall(Susano.DrawCircle, sx, sy, 1.5 * ui, true,
+            r, g, b, 0.95, 1.0 * ui, 8)
     else
-        local segments = 16
+        local segments = 12
         local prevX, prevY = nil, nil
         for i = 0, segments do
             local angle = (i / segments) * math.pi * 2.0
@@ -4071,45 +4129,40 @@ function Menu.ThrowPreview.impactRing(screenW, screenH, point, hot)
             local py = sy + math.sin(angle) * radius
             if prevX then
                 Menu.ThrowPreview.stroke(prevX, prevY, px, py,
-                    r, g, b, 0.9, 1.5 * ui, false)
+                    r, g, b, 0.9, 1.6 * ui)
             end
             prevX, prevY = px, py
         end
     end
-    local tick = radius + 5.0 * ui
-    local tickLen = 6.0 * ui
-    Menu.ThrowPreview.stroke(sx - tick, sy, sx - tick - tickLen, sy,
-        r, g, b, 0.9, 2.0 * ui, true)
-    Menu.ThrowPreview.stroke(sx + tick, sy, sx + tick + tickLen, sy,
-        r, g, b, 0.9, 2.0 * ui, true)
-    Menu.ThrowPreview.stroke(sx, sy - tick, sx, sy - tick - tickLen,
-        r, g, b, 0.9, 2.0 * ui, true)
-    Menu.ThrowPreview.stroke(sx, sy + tick, sx, sy + tick + tickLen,
-        r, g, b, 0.9, 2.0 * ui, true)
     -- Distance from the operator and time of flight: the distance is what the
     -- throw covers, the time is when the car arrives. The label is clamped so
     -- an impact near the bottom edge keeps its readout on screen.
-    local label = string.format("%.0f m  %.1f s",
+    local label = string.format("%.0f m \u{00B7} %.1f s",
         point.dist or 0.0, point.t or 0.0)
-    local labelY = math.min(sy + radius + 6.0 * ui,
-        screenH - 24.0 * ui)
-    if type(Susano) == "table" then
+    local labelY = math.min(sy + radius + 5.0 * ui, screenH - 20.0 * ui)
+    local drawn = false
+    if type(Susano) == "table"
+        and type(Susano.DrawTextOutlined) == "function"
+        and type(Susano.GetTextWidth) == "function" then
+        local okw, width = pcall(Susano.GetTextWidth, label, 14.0 * ui)
+        if okw and type(width) == "number" then
+            pcall(Susano.DrawTextOutlined, sx - width * 0.5, labelY, label,
+                14.0 * ui, 1.0, 1.0, 1.0, 0.92, 0.0, 0.0, 0.0, 0.85)
+            drawn = true
+        end
+    end
+    if not drawn and type(Susano) == "table" then
         if type(Susano.DrawTextCentered) == "function" then
-            pcall(Susano.DrawTextCentered, sx,
-                labelY, label, 15.0 * ui,
+            pcall(Susano.DrawTextCentered, sx, labelY, label, 14.0 * ui,
                 r, g, b, 0.95)
         elseif type(Susano.DrawText) == "function" then
             local width = 0.0
             if type(Susano.GetTextWidth) == "function" then
-                local okw, value = pcall(Susano.GetTextWidth,
-                    label, 15.0 * ui)
-                if okw and type(value) == "number" then
-                    width = value
-                end
+                local okw, value = pcall(Susano.GetTextWidth, label, 14.0 * ui)
+                if okw and type(value) == "number" then width = value end
             end
-            pcall(Susano.DrawText, sx - width * 0.5,
-                labelY, label, 15.0 * ui,
-                r, g, b, 0.95)
+            pcall(Susano.DrawText, sx - width * 0.5, labelY, label,
+                14.0 * ui, r, g, b, 0.95)
         end
     end
 end
@@ -4136,62 +4189,13 @@ function Menu.ThrowPreview.draw(screenW, screenH)
         return
     end
     local ui = math.max(1.0, screenH / 1080.0)
-    local gravity = 9.81
-    local t = 0.0
-    local prevOk, prevX, prevY = false, 0.0, 0.0
-    while t <= s.flight + 0.0001 do
-        local x = s.ox + s.vx * t
-        local y = s.oy + s.vy * t
-        local z = s.oz + s.vz * t - 0.5 * gravity * t * t
-        local ok, sx, sy = Menu.ThrowPreview.project(x, y, z, screenW, screenH)
-        if ok then
-            if prevOk then
-                local fade = 0.9 - 0.62 * (t / 2.6)
-                Menu.ThrowPreview.stroke(prevX, prevY, sx, sy,
-                    0.40, 1.0, 0.62, fade, 2.0 * ui, false)
-            end
-            prevOk, prevX, prevY = true, sx, sy
-        else
-            prevOk = false
-        end
-        t = t + 0.06
-    end
-
-    if s.impact then
-        Menu.ThrowPreview.impactRing(screenW, screenH, s.impact, s.hot)
-    end
-
-    -- A travelling comet makes the throw direction legible at a glance: the
-    -- arc shows the path, the comet shows which way along it the car travels.
-    -- The phase comes from the game timer, so the speed is stable at any frame
-    -- rate; without a timer the comet parks mid-arc. Drawn after the impact
-    -- ring so the ring stays the first circle of the frame.
-    if type(Susano.DrawCircle) == "function" then
-        local phase = 0.42
-        if s.now > 0 then
-            phase = (s.now % 1100) / 1100
-        end
-        local pulseT = phase * s.flight
-        local pr, pg, pb = 0.62, 1.0, 0.78
-        if s.hot then pr, pg, pb = 1.0, 0.82, 0.30 end
-        for i = 0, 2 do
-            local tt = pulseT - i * 0.045
-            if tt >= 0.0 and tt <= s.flight then
-                local px = s.ox + s.vx * tt
-                local py = s.oy + s.vy * tt
-                local pz = s.oz + s.vz * tt - 0.5 * gravity * tt * tt
-                local okPulse, psx, psy =
-                    Menu.ThrowPreview.project(px, py, pz, screenW, screenH)
-                if okPulse then
-                    pcall(Susano.DrawCircle, psx, psy,
-                        (3.2 - i * 0.9) * ui, true,
-                        pr, pg, pb, 0.95 - i * 0.35, 1.0 * ui, 12)
-                end
-            end
+    if s.flight > 0.0 then
+        Menu.ThrowPreview.arc(screenW, screenH, s, ui)
+        if s.impact then
+            Menu.ThrowPreview.impactMarker(screenW, screenH, s.impact, s.hot)
         end
     end
-
-    Menu.ThrowPreview.crosshair(screenW, screenH, s.impact ~= nil, s.hot)
+    Menu.ThrowPreview.crosshair(screenW, screenH)
 end
 
 -- The library resets the overlay frame while the menu is closed, which wipes
@@ -4199,10 +4203,10 @@ end
 -- draw over the game with the menu closed, so a second pass runs after the
 -- library's Render has finished and reset its empty frame:
 -- BeginFrame/draw/SubmitFrame then owns the frame. While the menu is open (or
--- fading) the preview is drawn from OnRender instead, because a second pass
--- would replace the menu frame with a preview-only one. When another module
--- keeps the frame alive (freecam sets Menu.PreventResetFrame), that module's
--- frame wins and the post-pass stays out of the way.
+-- fading) the preview stays hidden: it is an in-world guide, not menu
+-- decoration. When another module keeps the frame alive (freecam sets
+-- Menu.PreventResetFrame), OnRender draws the preview and this post-pass stays
+-- out of the way.
 Menu.__throwRenderPrev = Menu.Render
 if type(Menu.__throwRenderPrev) == "function" then
     Menu.Render = function()
@@ -4239,10 +4243,8 @@ local function ToggleThrowVehicle(enable)
     -- 500 impulse is ~8.33 m/s on the retail 1/60 s step. The first real throw
     -- measures the engine's actual delta and replaces this estimate (clamped),
     -- so a build with a different step or time scale still previews correctly.
-    -- The value is executor-local; nothing is written to the entity or sent.
-    -- Kept inside the toggle so the loader's main chunk stays under Lua's
-    -- 200-active-local ceiling; the thread below captures them as upvalues.
-    local throwSpeedPerForce = 1.0 / 60.0
+    -- The estimate and the measurement live on Menu.ThrowPreview so a toggle
+    -- does not reset them; nothing is written to the entity or sent.
     local THROW_SPEED_PER_FORCE_MIN = 1.0 / 200.0
     local THROW_SPEED_PER_FORCE_MAX = 1.0 / 20.0
 
@@ -4286,8 +4288,8 @@ local function ToggleThrowVehicle(enable)
         local MAX_GRAB_DISTANCE = 50.0
 
         -- Throw preview sampling. The carry thread only measures the path and
-        -- writes Menu.ThrowPreview; the drawing runs in Menu.OnRender (see
-        -- Menu.ThrowPreview.draw) inside the library's BeginFrame/SubmitFrame pair.
+        -- writes Menu.ThrowPreview; the drawing runs from the render callbacks
+        -- (see Menu.ThrowPreview.draw), never from this thread.
         -- No entity, event, global or network write is made.
         local PREVIEW_FLIGHT_MAX = 2.6
         local PREVIEW_RAY_STEP = 0.1
@@ -4565,7 +4567,7 @@ local function ToggleThrowVehicle(enable)
             elseif measured > THROW_SPEED_PER_FORCE_MAX then
                 measured = THROW_SPEED_PER_FORCE_MAX
             end
-            throwSpeedPerForce = measured
+            Menu.ThrowPreview.speedPerForce = measured
         end
 
         local function traceImpact(p0x, p0y, p0z, vx, vy, vz,
@@ -4635,7 +4637,7 @@ local function ToggleThrowVehicle(enable)
             end
             local direction = RotationToDirection(camRot)
             local pedVX, pedVY, pedVZ = readEntityVelocity(ped)
-            local speed = THROW_FORCE * throwSpeedPerForce
+            local speed = THROW_FORCE * Menu.ThrowPreview.speedPerForce
             local vx = pedVX + direction.x * speed
             local vy = pedVY + direction.y * speed
             local vz = pedVZ + direction.z * speed
@@ -5894,13 +5896,14 @@ end)
 Menu.OnRender = function()
     if not worldSettings then worldSettings = GetWorldSettings() end
     RenderWorldVisuals(worldSettings)
-    -- The throw preview must be drawn here when the frame survives: the menu
-    -- is open or fading, or another module (freecam) holds PreventResetFrame.
-    -- With the menu closed the library resets this frame below, so the
-    -- post-render pass in Menu.Render owns the drawing instead. A failed
-    -- preview disables itself instead of spamming the menu's render pass.
-    if Menu.Visible or (Menu.UiAnim and Menu.UiAnim > 0.0001)
-        or Menu.PreventResetFrame then
+    -- The preview is an in-world guide, not a menu decoration: while the menu
+    -- is open (or fading) it stays hidden. OnRender only carries it when
+    -- another module (freecam) keeps the submitted frame alive; otherwise the
+    -- library resets this frame while the menu is closed and the post-render
+    -- pass in Menu.Render owns the drawing. A failed preview disables itself
+    -- instead of spamming the menu's render pass for the rest of the carry.
+    if Menu.PreventResetFrame and not Menu.Visible
+        and not (Menu.UiAnim and Menu.UiAnim > 0.0001) then
         local previewW, previewH = GetScreenSize()
         local okPreview = pcall(Menu.ThrowPreview.draw, previewW, previewH)
         if not okPreview then Menu.ThrowPreview.visible = false end
@@ -39054,17 +39057,24 @@ end)(O,S,B,Menu)
 -- velocity is exact and the same whether the ped is standing, walking,
 -- jogging or sprinting.
 --
--- Movement contract: the module never writes velocity, the camera, tasks or
--- input. On-foot movement in GTA V is camera/input-relative; SET_ENTITY_HEADING
--- changes the facing only, so WASD/left-stick direction remains under the
--- operator's control while the model spins. No SetEntityVelocity, no
--- SetEntityRotation, no task, no event, no entity, no state bag, no hook.
+-- Movement contract: heading is the visual spin. The on-foot locomotion task
+-- steers the run toward the current facing, so a heading-only spin made the
+-- operator run wherever the model pointed. When the ped is moving, the module
+-- rebuilds the horizontal velocity from the camera yaw and the live move
+-- controls (GET_CONTROL_NORMAL 30/31), keeps the current horizontal speed and
+-- vertical component, and writes it back only when the velocity is more than
+-- 10 degrees away from the intended direction. WASD/left-stick therefore
+-- stays under the operator's control while the model spins. The write is a
+-- normal on-foot velocity capped at 13.6 m/s, below the reference guard's
+-- 14 m/s ceiling. No camera write, no task, no event, no entity, no state bag,
+-- no hook.
 --
 -- Suspension matrix: aim (IS_AIM_CAM_ACTIVE / IS_PLAYER_FREE_AIMING), vehicle,
--- dead, ragdoll, falling, in air, parachute, and No Clip/Naruto active. Speed
--- is deliberately not a suspension input: running must keep spinning. The row
--- stays on while suspended and resumes after a 120 ms grace so an aim flick
--- cannot put a heading write inside the aim window.
+-- dead, ragdoll, falling, in air, parachute, cover, swimming, climbing,
+-- jumping, diving, and No Clip/Naruto active. Speed is deliberately not a
+-- suspension input: running must keep spinning. The row stays on while
+-- suspended and resumes after a 120 ms grace so an aim flick cannot put a
+-- heading or velocity write inside the aim window.
 --
 -- Cadence: one Citizen thread per arm, Wait(0), dt from GetGameTimer. A
 -- generation token makes stop/panic/re-arm idempotent: the old thread exits on
@@ -39092,9 +39102,18 @@ end)(O,S,B,Menu)
 --   IS_PED_FALLING               0xFB92A102F1C4DFA3 (Ped) -> BOOL
 --   IS_ENTITY_IN_AIR             0x886E37EC497200B6 (Entity) -> BOOL
 --   GET_PED_PARACHUTE_STATE      0x79CFD9827CC979B6 (Ped) -> int
+--   IS_PED_IN_COVER              0x60DFD0691A170B88 (Ped, BOOL) -> BOOL
+--   IS_PED_SWIMMING              0x9DE327631295B4C2 (Ped) -> BOOL
+--   IS_PED_CLIMBING              0x53E8CB4F48BFE623 (Ped) -> BOOL
+--   IS_PED_JUMPING               0xCEDABC5900A0BF97 (Ped) -> BOOL
+--   IS_PED_DIVING                0x5527B8246FEF9B11 (Ped) -> BOOL
+--   GET_GAMEPLAY_CAM_ROT         0x837765A25378F0BB (int) -> Vector3
+--   GET_CONTROL_NORMAL           0xEC3C9B8D5327B563 (int, int) -> float
+--   GET_ENTITY_VELOCITY          0x4805D2B1D8CF94A9 (Entity) -> Vector3
+--   SET_ENTITY_VELOCITY          0x1C99BB7B6E96D16F (Entity, float, float, float) -> void
 --
--- Vehicle, ragdoll and speed are read from O.Ctx, which the core samples every
--- 50 ms; the module does not duplicate those natives.
+-- Vehicle, ragdoll and height are read from O.Ctx, which the core samples
+-- every 50 ms; the module does not duplicate those natives.
 -- ============================================================================
 local SP = (function(O, N)
     local SPEEDS = { 720.0, 900.0, 1080.0 }
@@ -39103,6 +39122,14 @@ local SP = (function(O, N)
     local SPEED_JITTER = 0.02
     local SAMPLE_MS = 500
     local LAG_WARN = 120.0
+    -- Movement guard thresholds. The cap stays below the 14 m/s on-foot
+    -- ceiling and the drift gate leaves an already-aligned velocity alone,
+    -- so the guard only adds a write when the spin has actually stolen the
+    -- run direction.
+    local MOVE_EPS = 0.2
+    local MOVE_MIN_SPEED = 0.25
+    local MOVE_DRIFT = 10.0
+    local MOVE_CAP = 13.6
 
     local SP = {
         active = false,
@@ -39117,8 +39144,10 @@ local SP = (function(O, N)
         lastAt = 0,
         sampleAt = 0,
         lagLogged = false,
+        moveLogged = false,
+        moveFailLogged = false,
         onChange = nil,
-        stats = { calls = 0, suspends = 0, resumes = 0, lag = 0.0 },
+        stats = { calls = 0, suspends = 0, resumes = 0, lag = 0.0, moves = 0, moveFails = 0 },
     }
 
     local function wrap360(a)
@@ -39190,6 +39219,16 @@ local SP = (function(O, N)
         local player = (O.Ctx and O.Ctx.player) or PlayerId()
         local okFree, free = pcall(IsPlayerFreeAiming, player)
         if okFree and free then return "aim" end
+        local okCover, cover = pcall(IsPedInCover, ped, false)
+        if okCover and cover then return "cover" end
+        local okSwim, swimming = pcall(IsPedSwimming, ped)
+        if okSwim and swimming then return "swim" end
+        local okClimb, climbing = pcall(IsPedClimbing, ped)
+        if okClimb and climbing then return "climb" end
+        local okJump, jumping = pcall(IsPedJumping, ped)
+        if okJump and jumping then return "jump" end
+        local okDive, diving = pcall(IsPedDiving, ped)
+        if okDive and diving then return "dive" end
         if O.Ctx and O.Ctx.ragdoll then return "ragdoll" end
         if O.Ctx and O.Ctx.height and O.Ctx.height > 1.0 then
             local okFall, falling = pcall(IsPedFalling, ped)
@@ -39207,6 +39246,66 @@ local SP = (function(O, N)
         if not ok then return false end
         SP.stats.calls = SP.stats.calls + 1
         return true
+    end
+
+    local function clamp(v, lo, hi)
+        if v < lo then return lo end
+        if v > hi then return hi end
+        return v
+    end
+
+    -- The locomotion task steers the run toward the current facing. Rebuild
+    -- the horizontal velocity from the camera yaw and the live move controls
+    -- so the operator's WASD/left-stick direction survives the spin. Reads
+    -- only; the single write is a normal on-foot velocity.
+    local function intendedMove()
+        local okX, ix = pcall(GetControlNormal, 0, 30)
+        local okY, iy = pcall(GetControlNormal, 0, 31)
+        if not okX or not okY then return nil end
+        ix, iy = tonumber(ix) or 0.0, tonumber(iy) or 0.0
+        if ix ~= ix or iy ~= iy then return nil end
+        if math.sqrt(ix * ix + iy * iy) < MOVE_EPS then return nil end
+        local okCam, cam = pcall(GetGameplayCamRot, 2)
+        if not okCam or not cam or type(cam.z) ~= "number" then return nil end
+        if cam.z ~= cam.z or cam.z == math.huge or cam.z == -math.huge then return nil end
+        local yaw = math.rad(cam.z)
+        local fx, fy = -math.sin(yaw), math.cos(yaw)
+        local rx, ry = math.cos(yaw), math.sin(yaw)
+        local dx = fx * iy + rx * ix
+        local dy = fy * iy + ry * ix
+        local len = math.sqrt(dx * dx + dy * dy)
+        if len ~= len or len < 0.0001 then return nil end
+        return dx / len, dy / len
+    end
+
+    local function stabilizeMovement(ped)
+        local dx, dy = intendedMove()
+        if not dx then return end
+        local okV, vel = pcall(GetEntityVelocity, ped)
+        if not okV or not vel or type(vel.x) ~= "number" or type(vel.y) ~= "number" then
+            return
+        end
+        local vx, vy = vel.x, vel.y
+        local vz = type(vel.z) == "number" and vel.z or 0.0
+        if vz ~= vz or vz == math.huge or vz == -math.huge then vz = 0.0 end
+        local hs = math.sqrt(vx * vx + vy * vy)
+        if hs ~= hs or hs == math.huge or hs < MOVE_MIN_SPEED then return end
+        local dot = clamp((vx * dx + vy * dy) / hs, -1.0, 1.0)
+        if math.deg(math.acos(dot)) <= MOVE_DRIFT then return end
+        local speed = math.min(hs, MOVE_CAP)
+        if pcall(SetEntityVelocity, ped, dx * speed, dy * speed, vz) then
+            SP.stats.moves = SP.stats.moves + 1
+            if not SP.moveLogged then
+                SP.moveLogged = true
+                O.log("spin: move guard")
+            end
+        else
+            SP.stats.moveFails = SP.stats.moveFails + 1
+            if not SP.moveFailLogged then
+                SP.moveFailLogged = true
+                O.log("spin: move unavailable")
+            end
+        end
     end
 
     local function startThread()
@@ -39253,10 +39352,14 @@ local SP = (function(O, N)
         SP.lastAt = O.now()
         SP.sampleAt = 0
         SP.lagLogged = false
+        SP.moveLogged = false
+        SP.moveFailLogged = false
         SP.stats.calls = 0
         SP.stats.suspends = 0
         SP.stats.resumes = 0
         SP.stats.lag = 0.0
+        SP.stats.moves = 0
+        SP.stats.moveFails = 0
 
         if not anchor(ped) then
             SP.active = false
@@ -39281,6 +39384,8 @@ local SP = (function(O, N)
         SP.lastAt = 0
         SP.sampleAt = 0
         SP.lagLogged = false
+        SP.moveLogged = false
+        SP.moveFailLogged = false
         SP.ped = 0
 
         if wasActive then
@@ -39307,6 +39412,8 @@ local SP = (function(O, N)
             suspends = SP.stats.suspends,
             resumes = SP.stats.resumes,
             lag = SP.stats.lag,
+            moves = SP.stats.moves,
+            moveFails = SP.stats.moveFails,
         }
     end
 
@@ -39395,10 +39502,12 @@ local SP = (function(O, N)
             return
         end
 
+        stabilizeMovement(ped)
+
         -- Low-rate readback. A large gap means the locomotion task is winning
         -- the frame and the direct path is not producing the visible spin; the
         -- row stays on and the log names the condition instead of failing
-        -- silently. The write itself is still the only effect.
+        -- silently.
         if now >= SP.sampleAt then
             local okH, heading = pcall(GetEntityHeading, ped)
             if okH and type(heading) == "number" then
@@ -40047,13 +40156,10 @@ local function installMovement()
     local noclipSelected = previousNoClip and tonumber(previousNoClip.selected) or 1
     if noclipSelected < 1 or noclipSelected > 2 then noclipSelected = 1 end
 
-    local previousSpin = findItem("Player", "Movement", "Spinbot")
-    local spinSelected = previousSpin and tonumber(previousSpin.selected) or SP.profileIndex()
-    -- v2 changes the profile scale from 120/240/360 to 720/900/1080. A row
-    -- saved by the old build carries no speedRev; migrate it to Fast once, then
-    -- preserve the operator's own choice on every later reload.
-    if not previousSpin or previousSpin.speedRev ~= 2 then spinSelected = 3 end
-    if not spinSelected or spinSelected < 1 or spinSelected > 3 then spinSelected = 3 end
+    -- The spin profile always starts on Fast (1080 deg/s). The operator can
+    -- move it to Slow/Med live with Left/Right; the module reads the row on
+    -- every tick. No saved row is allowed to bring the default back to Slow.
+    local spinSelected = 3
 
     category.tabs = category.tabs or {}
     for i = #category.tabs, 1, -1 do
@@ -40139,16 +40245,15 @@ local function installMovement()
         end,
     }
 
-    -- Spinbot is a separate group: it is not an air movement mode. The row is a
-    -- toggle_selector so the operator can change the speed with Left/Right
-    -- without disarming; the module reads the selected profile live.
+    -- The row is a toggle_selector so the operator can change the speed with
+    -- Left/Right without disarming; the module reads the selected profile live.
+    -- Fast is the default on every load.
     spin = {
         name = "Spinbot",
         type = "toggle_selector",
         value = SP.isActive(),
         options = { "Slow", "Med", "Fast" },
         selected = spinSelected,
-        speedRev = 2,
         onClick = function(value)
             local active
             if value then
@@ -40179,13 +40284,12 @@ local function installMovement()
     category.tabs[#category.tabs + 1] = {
         name = "Movement",
         items = {
-            { name = "", isSeparator = true, separatorText = "Air movement" },
+            { name = "", isSeparator = true, separatorText = "Exploit Movement" },
+            spin,
             naruto,
             noclip,
             shoot,
             includeSolo,
-            { name = "", isSeparator = true, separatorText = "Anti-aim" },
-            spin,
         },
     }
     return true
@@ -42993,7 +43097,7 @@ end
 -- ---------------------------------------------------------------------------
 -- REMOVE OLD ENTRY POINTS
 -- ---------------------------------------------------------------------------
-local MENU_REV = "2026-11-22-r94"
+local MENU_REV = "2026-11-22-r95"
 
 -- A previous execution of the old loader can leave its category in the shared
 -- Menu table. Match both the literal name and the old nine-tab fingerprint so
