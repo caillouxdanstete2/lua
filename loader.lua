@@ -40426,8 +40426,10 @@ local SP = (function(O, N)
     end
 
 
-    local WALK_SPEED = 6.5
-    local SPRINT_SPEED = 10.5
+    -- Same movement budget as Naruto Run (FWD_SPEED = 28.0). Sprint is not a
+    -- second, faster mode: the operator asked for parity with Naruto.
+    local WALK_SPEED = 28.0
+    local SPRINT_SPEED = 28.0
 
     local function moveSpeed(mag)
         local speed = WALK_SPEED
@@ -40463,7 +40465,7 @@ local SP = (function(O, N)
             return
         end
         local step = speed * (dt or (1.0 / 60.0))
-        if step > 0.4 then step = 0.4 end
+        if step > 0.6 then step = 0.6 end
         if step <= 0.0 then return end
         local ok = pcall(SetEntityCoordsNoOffset, ped,
             coords.x + dx * step, coords.y + dy * step, coords.z,
@@ -40484,7 +40486,7 @@ local SP = (function(O, N)
             return
         end
         local elapsed = now - SP.probeAt
-        if elapsed < 250 then return end
+        if elapsed < 150 then return end
         local ax = coords.x - (SP.probeX or coords.x)
         local ay = coords.y - (SP.probeY or coords.y)
         local dist = math.sqrt(ax * ax + ay * ay)
@@ -40588,10 +40590,11 @@ local SP = (function(O, N)
         if IsPedDeadOrDying(ped, true) then return false end
 
         setProfile(rowSelected())
-        -- Movement controls stay live while the operator is idle. They are
-        -- isolated only for the frames where the synthetic walk is active,
-        -- then restored, so the row does not take the normal controls away.
-        setControlsOff(false)
+        -- Isolate from the first frame. Leaving the native walk live at arm
+        -- lets the on-foot task consume a held direction in the spin heading
+        -- before the synthetic vector exists. The controls are restored on the
+        -- first idle frame and on every stop/suspension.
+        setControlsOff(true)
         SP.ped = ped
         SP.active = true
         SP.gen = SP.gen + 1
@@ -40632,6 +40635,13 @@ local SP = (function(O, N)
             return false
         end
         captureCameraYaw(SP.target)
+        -- One movement mode at a time. Naruto/No Clip own the same on-foot
+        -- locomotion and task slots; arming Spinbot disarms either mode before
+        -- the first heading or velocity write.
+        if N and type(N.isActive) == "function" and N.isActive()
+            and type(N.stop) == "function" then
+            pcall(N.stop, "spinbot")
+        end
 
         startThread()
         if not SP.active then return false end
@@ -41543,6 +41553,7 @@ local function installMovement()
         value = false,
         onClick = function(value)
             if value then
+                if SP.isActive() then SP.stop("naruto") end
                 local active = N.arm("naruto")
                 refresh()
                 return active
@@ -41579,6 +41590,7 @@ local function installMovement()
         selected = noclipSelected,
         onClick = function(value)
             if value then
+                if SP.isActive() then SP.stop("noclip") end
                 local active = N.arm("noclip")
                 if active and includeSolo.value then
                     SoloSession.noclip(true)
@@ -41619,6 +41631,7 @@ local function installMovement()
         onClick = function(value)
             local active
             if value then
+                if N.isActive() then N.stop("spinbot") end
                 active = SP.arm()
             else
                 SP.stop("operator")
@@ -41633,6 +41646,7 @@ local function installMovement()
     -- Naruto/No Clip rows and drop a No Clip-owned solo session. Arming one N
     -- mode stops the other first; Spinbot has its own lifecycle.
     N.onChange = function(active)
+        if active and SP.isActive() then SP.stop("air movement") end
         if not active then
             SoloSession.noclip(false)
         end
