@@ -40059,31 +40059,30 @@ end)(O,S,B,Menu)
 --
 -- Movement contract: the on-foot task derives its movement basis from the
 -- entity heading. A heading-only spin therefore makes W/A/S/D walk in the spin
--- direction and the operator runs in a circle, even with the camera held. The
--- module holds the gameplay camera's WORLD yaw AND writes the camera-relative
--- velocity itself while a movement control is held. The entity heading remains
--- the spin, so the model turns while the walk goes where the operator points
--- it. The camera relative heading is (held world yaw - actual ped heading).
--- The camera yaw is captured at arm and refreshed after a suspension or ped
--- change. Mouse/right-stick look is folded into the held yaw from
--- GET_CONTROL_NORMAL(0, 1), so the operator can still choose a direction while
--- the spin runs. The held yaw is a world direction: A/D strafe within it, S
--- reverses it; turn the view to choose a new forward.
+-- direction and the operator runs in a circle. The module writes the
+-- camera-relative velocity itself while a movement control is held. The entity
+-- heading remains the spin, so the model turns while the walk goes where the
+-- operator points it. The camera is READ ONLY: the live gameplay-camera yaw is
+-- sampled every tick, so the walk follows the view without a script camera, a
+-- relative-heading hold, or any other camera write. Control 31 is positive for
+-- backward on the live build, so it is flipped once before the world vector is
+-- built. A/D strafe, Z/W forward and S backward.
 --
 -- The desired-heading native stays on the spin too, so the task steering
 -- target matches the entity heading. The velocity write is what makes the
 -- movement independent of the spin. If the locomotion task wins the heading
 -- anyway (the readback stays static while the target advances), the module
--- disables movement controls 30/31 and reads them through
--- GET_DISABLED_CONTROL_NORMAL; the synthesized velocity is then the only
--- movement source. Controls are restored on stop and on every suspension.
+-- disables movement controls 30/31 while a synthetic walk is active, reads
+-- them through GET_DISABLED_CONTROL_NORMAL, and restores them as soon as the
+-- input is released or the row is suspended. The controls are re-asserted
+-- every active frame because the game can re-enable them between ticks.
 -- No task is started, no event, entity, state bag or hook is created.
 --
--- The camera write is the only new local observable: one
--- SET_GAMEPLAY_CAM_RELATIVE_HEADING per active tick, local, not replicated.
--- The heading remains replicated; a server-side rotation heuristic or a human
--- report can still see the spin. The reference guard (WaveShield V4/latest) has
--- no heading, rotation, spin, angular, antiaim or desync check.
+-- There is no new camera observable: no CREATE_CAM, no RENDER_SCRIPT_CAMS and
+-- no SET_GAMEPLAY_CAM_RELATIVE_HEADING. The heading remains replicated; a
+-- server-side rotation heuristic or a human report can still see the spin. The
+-- reference guard (WaveShield V4/latest) has no heading, rotation, spin,
+-- angular, antiaim or desync check.
 --
 -- Suspension matrix: aim (IS_AIM_CAM_ACTIVE / IS_PLAYER_FREE_AIMING), vehicle,
 -- dead, ragdoll, falling, in air, parachute, cover, swimming, climbing,
@@ -40092,7 +40091,7 @@ end)(O,S,B,Menu)
 -- First-person is suspended because its camera is head-locked and its movement
 -- is heading-relative; third-person is the supported mode. The row stays on
 -- while suspended and resumes after a 120 ms grace so an aim flick cannot put a
--- heading or camera write inside the aim window.
+-- heading write inside the aim window.
 --
 -- Cadence: one runtime thread per arm, Wait(0), dt from GetGameTimer. The
 -- global CreateThread/Wait pair is preferred and Citizen.CreateThread/Wait is
@@ -40131,7 +40130,6 @@ end)(O,S,B,Menu)
 --   IS_PED_JUMPING               0xCEDABC5900A0BF97 (Ped) -> BOOL
 --   IS_PED_DIVING                0x5527B8246FEF9B11 (Ped) -> BOOL
 --   GET_GAMEPLAY_CAM_ROT         0x837765A25378F0BB (int) -> Vector3
---   SET_GAMEPLAY_CAM_RELATIVE_HEADING 0xB4EC2312F4E5B1F1 (float) -> void
 --   GET_CONTROL_NORMAL           0xEC3C9B8D5327B563 (int, int) -> float
 --   GET_ENTITY_VELOCITY          0x4805D2B1D8CF94A9 (Entity) -> Vector3
 --   SET_ENTITY_VELOCITY          0x1C99BB7B6E96D16F (Entity, float, float, float) -> void
@@ -40163,8 +40161,6 @@ local SP = (function(O, N)
     local SPEED_JITTER = 0.02
     local SAMPLE_MS = 500
     local LAG_WARN = 120.0
-    local CAM_LOOK_SENS = 4.0
-    local CAM_LOOK_DEADZONE = 0.01
 
     local SP = {
         active = false,
@@ -40278,12 +40274,10 @@ local SP = (function(O, N)
         return heading
     end
 
-    -- The gameplay camera can follow the forced heading, which makes the
-    -- camera-relative locomotion input rotate with the spin. Capture the world
-    -- yaw once at arm/resume/ped change and hold it while the model spins. The
-    -- relative heading is recomputed from the actual ped heading every tick, so
-    -- the camera frame stays world-stable and W/A/S/D remain under the
-    -- operator's control.
+    -- The camera is read, never written. Movement is camera-relative, so the
+    -- basis follows the view the operator actually has; the game camera keeps
+    -- its own follow, look and collision behaviour. There is no script camera
+    -- and no relative-heading hold: nothing freezes the frame while moving.
     local function captureCameraYaw(fallback)
         local ok, cam = pcall(GetGameplayCamRot, 2)
         if ok and cam and finite(cam.z) then
@@ -40300,53 +40294,15 @@ local SP = (function(O, N)
         return SP.camYaw
     end
 
-    -- Mouse/right-stick look is folded into the held world yaw. The control is
-    -- read once per frame and applied without dt, matching the game's per-frame
-    -- look handling; a deadzone keeps a noisy stick from drifting the view.
-    local function applyLook()
-        local ok, look = pcall(GetControlNormal, 0, 1)
-        if not ok or not finite(look) or math.abs(look) <= CAM_LOOK_DEADZONE then return end
-        SP.camYaw = wrap360(SP.camYaw - look * CAM_LOOK_SENS)
-    end
-
-    -- Writes the relative heading that keeps the camera at SP.camYaw. The
-    -- reference is the ACTUAL ped heading, not the spin target. A target
-    -- reference rotates the camera around the player whenever the locomotion
-    -- task keeps the actual heading static -- the exact orbit in the video.
-    -- With the actual reference the camera world yaw stays held in that state;
-    -- when the ped is spinning the residual is at most one frame of offset,
-    -- not an accumulating orbit.
-    local function holdCamera()
-        if not SP.camHold then
-            -- A camera transition (fade, switch, script camera) can leave the
-            -- first read without data. Retry the capture at a low rate instead
-            -- of leaving the camera frame dead for the whole session.
-            if not SP.camNoData or O.now() < SP.camRetryAt then return end
-            captureCameraYaw(SP.target)
-            if not SP.camHold then return end
-        end
-        applyLook()
-        local actual
-        local okH, value = pcall(GetEntityHeading, SP.ped)
-        if okH and finite(value) then actual = wrap360(value) end
-        local reference = actual or SP.target
-        local rel = wrap360(SP.camYaw - reference + 180.0) - 180.0
-        local ok = pcall(SetGameplayCamRelativeHeading, rel)
-        if ok then
-            SP.stats.camWrites = SP.stats.camWrites + 1
-            if not SP.camLogged then
-                SP.camLogged = true
-                O.log("spin: cam hold")
-            end
-        else
-            SP.camHold = false
-            SP.camNoData = true
-            SP.camRetryAt = O.now() + 500
-            SP.stats.camFails = SP.stats.camFails + 1
-            if not SP.camFailLogged then
-                SP.camFailLogged = true
-                O.log("spin: cam hold unavailable")
-            end
+    -- Read the live camera yaw every tick. A held yaw is what made W/A/S/D
+    -- ignore the view; refreshing it here keeps the synthetic walk aligned with
+    -- the operator's camera without writing a single camera native.
+    local function syncCameraYaw()
+        local ok, cam = pcall(GetGameplayCamRot, 2)
+        if ok and cam and finite(cam.z) then
+            SP.camYaw = wrap360(cam.z)
+            SP.camHold = true
+            SP.camNoData = false
         end
     end
 
@@ -40470,11 +40426,14 @@ local SP = (function(O, N)
     end
 
 
+    local WALK_SPEED = 6.5
+    local SPRINT_SPEED = 10.5
+
     local function moveSpeed(mag)
-        local speed = 4.0
+        local speed = WALK_SPEED
         if type(IsControlPressed) == "function" then
             local ok, sprint = pcall(IsControlPressed, 0, 21)
-            if ok and sprint then speed = 6.5 end
+            if ok and sprint then speed = SPRINT_SPEED end
         end
         return speed * (mag or 1.0)
     end
@@ -40720,7 +40679,6 @@ local SP = (function(O, N)
                 pcall(SetPedDesiredHeading, ped, releaseHeading)
             end
             pcall(SetEntityHeading, ped, releaseHeading)
-            pcall(SetGameplayCamRelativeHeading, 0.0)
         end
 
         if wasActive then
@@ -40859,16 +40817,13 @@ local SP = (function(O, N)
         SP.target = wrap360(SP.target + SP.dir * step)
         SP.travel = (SP.travel or 0.0) + step
 
+        -- The heading is the visual spin; the camera is untouched. Refresh the
+        -- movement basis from the live view before writing the walk.
+        syncCameraYaw()
         if not writeHeading(ped, dt) then
             SP.stop("write error")
             return
         end
-
-        -- The heading is the visual spin; the camera frame is the movement
-        -- frame. The game camera is left normal: no script camera and no
-        -- frozen frame. The relative heading only keeps the movement basis
-        -- world-stable while the operator looks around.
-        holdCamera()
 
         -- Low-rate readback. A large gap means the locomotion task is winning
         -- the frame and the direct path is not producing the visible spin; the
