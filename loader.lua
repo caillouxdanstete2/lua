@@ -40168,9 +40168,10 @@ end)(O,S,B,Menu)
 -- sampled every tick, so the walk follows the view without a script camera, a
 -- relative-heading hold, or any other camera write. Control 31 is positive for
 -- backward on the live build, so it is flipped once before the world vector is
--- built. A/D strafe, Z/W forward and S backward. Space/Ctrl is a bounded
--- vertical fly (8 m/s); without it the live vertical velocity is preserved and
--- the position fallback integrates gravity instead of pinning Z.
+-- built. A/D strafe, Z/W forward and S backward. Space/Ctrl is a low bounded
+-- vertical fly (4 m/s). Outside fly a stateful vertical velocity accumulates
+-- real gravity; both the velocity and position paths write that state, so a
+-- descent is never pinned by a horizontal writer.
 --
 -- The desired-heading native stays on the spin too, so the task steering
 -- target matches the entity heading. The velocity write is what makes the
@@ -40411,11 +40412,12 @@ local SP = (function(O, N)
     end
 
     -- Vertical controls use the same Space/Ctrl pair as the air-movement
-    -- module. The speed is deliberately below Naruto's explicit vertical
-    -- budget so a local flight correction stays in the ordinary on-foot
-    -- envelope. Gravity is never replaced by a fixed Z; the position fallback
-    -- integrates the live vertical velocity instead.
-    local FLY_SPEED = 8.0
+    -- module. The fly speed is deliberately low so it reads as an ordinary
+    -- vertical correction, not a noclip burst. Gravity is stateful: a
+    -- descending ped keeps falling even when the horizontal writer owns the
+    -- frame, and the position fallback integrates the same vertical state.
+    -- The Z axis is never pinned.
+    local FLY_SPEED = 4.0
     local GRAVITY = 9.81
     local MAX_FALL = 20.0
 
@@ -40586,25 +40588,35 @@ local SP = (function(O, N)
         return 0.0
     end
 
-    -- Fly is a bounded vertical input; otherwise the live vertical velocity is
-    -- preserved. The position fallback cannot rely on the engine's gravity
-    -- because it writes coordinates directly, so it integrates gravity there.
+    -- Fly is a low bounded vertical input. Outside fly the module owns a
+    -- stateful vertical velocity: gravity accumulates every frame while the
+    -- ped is airborne, and the state is written through both the velocity and
+    -- the position fallback. That removes the "descending but height stays
+    -- pinned" case: a negative state is never discarded just because the
+    -- horizontal writer is active.
     local function verticalVelocity(ped, dt, positionMode)
         local up, down = flyInput()
         if up ~= down then
-            if down and not isAirborne(ped) then return 0.0 end
-            return up and FLY_SPEED or -FLY_SPEED
-        end
-        local vz = currentVertical(ped)
-        if positionMode then
-            if isAirborne(ped) then
-                vz = vz - GRAVITY * dt
-                if vz < -MAX_FALL then vz = -MAX_FALL end
-            elseif vz < 0.0 then
-                vz = 0.0
+            if down and not isAirborne(ped) then
+                SP.vz = 0.0
+                return 0.0
             end
+            SP.vz = up and FLY_SPEED or -FLY_SPEED
+            return SP.vz
         end
-        return vz
+        local live = currentVertical(ped)
+        local airborne = isAirborne(ped)
+        -- A real descent can briefly read as grounded on a ledge/slope edge.
+        -- Keep the negative vertical state in that case instead of pinning Z.
+        if not airborne and live < -0.5 then airborne = true end
+        if airborne then
+            local vz = (SP.vz or 0.0) - GRAVITY * dt
+            if vz < -MAX_FALL then vz = -MAX_FALL end
+            SP.vz = vz
+        else
+            SP.vz = 0.0
+        end
+        return SP.vz
     end
 
     local function applyVelocity(ped, dx, dy, speed, vz)
@@ -40780,6 +40792,7 @@ local SP = (function(O, N)
         SP.lastTickAt = O.now()
         SP.ticks = 0
         SP.travel = 0.0
+        SP.vz = 0.0
         SP.positionMove = false
         SP.probeAt = 0
         SP.moveFails = 0
@@ -40841,6 +40854,7 @@ local SP = (function(O, N)
         SP.camHold = true
         SP.camNoData = false
         SP.camRetryAt = 0
+        SP.vz = 0.0
         SP.positionMove = false
         SP.probeAt = 0
         SP.moveFails = 0
