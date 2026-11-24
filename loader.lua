@@ -4090,6 +4090,132 @@ function Menu.ThrowPreview.pathAt(ox, oy, oz, vx, vy, vz, drag, t, k2)
     return x, y, z, ux, uy, uz
 end
 
+-- Aim solve for the guide. The thrown car leaves along the game's camera
+-- vector (that is the throw and it is not touched here); the line, on the
+-- other hand, has to end exactly on the reticle, so the guide is solved: the
+-- launch elevation, at the measured transfer speed, whose flight passes
+-- through the surface point the camera ray found. Same integrator as the
+-- drawn path, so the line ends where it says it ends.
+--
+-- The no-drag closed form gives the starting angle and the flat-root
+-- topology; Newton refines it on the full model and the branch below it
+-- validates the solution. A lofted root falls through to an explicit scan for
+-- the first upward crossing, which also handles points only a steep angle can
+-- reach. Every probe stops integrating once it has covered the horizontal
+-- range, and a point past the speed's ballistic range returns nil at once:
+-- no line, not a fake one.
+function Menu.ThrowPreview.solveAim(px, py, pz, tx, ty, tz, speed, drag, k2)
+    if type(speed) ~= "number" or speed < 1.0 then return nil end
+    local dx, dy = tx - px, ty - py
+    local range = math.sqrt(dx * dx + dy * dy)
+    if range < 0.05 then return nil end
+    local ux, uy = dx / range, dy / range
+    local k1 = drag or 0.0
+    local k2v = k2 or 0.0
+    local g = Menu.ThrowPreview.gravity
+    local fall = math.max(0.0, pz - tz)
+    local bound = speed * (speed + math.sqrt(speed * speed + 2.0 * g * fall))
+        / g
+    if range > bound + 1.0 then return nil end
+    local function heightAt(theta)
+        local ch, sh = math.cos(theta), math.sin(theta)
+        local vx = ux * speed * ch
+        local vy = uy * speed * ch
+        local vz = speed * sh
+        local x, y, z = px, py, pz
+        local travel = 0.0
+        local t = 0.0
+        while t < 14.0 do
+            local nx, ny, nz, nvx, nvy, nvz =
+                Menu.ThrowPreview.stepFlight(
+                    x, y, z, vx, vy, vz, k1, k2v, 0.05)
+            local sx, sy = nx - x, ny - y
+            local seg = math.sqrt(sx * sx + sy * sy)
+            if travel + seg >= range then
+                local f = 1.0
+                if seg > 0.000001 then f = (range - travel) / seg end
+                return z + (nz - z) * f
+            end
+            travel = travel + seg
+            x, y, z = nx, ny, nz
+            vx, vy, vz = nvx, nvy, nvz
+            t = t + 0.05
+        end
+        return nil
+    end
+    local function fAt(theta)
+        local z = heightAt(theta)
+        if z == nil then return nil end
+        return z - tz
+    end
+    local dz = tz - pz
+    local kq = g * range * range / (2.0 * speed * speed)
+    local theta = 0.0
+    if kq > 0.000001 then
+        local disc = range * range - 4.0 * kq * (dz + kq)
+        if disc >= 0.0 then
+            local root = (range - math.sqrt(disc)) / (2.0 * kq)
+            if root == root then theta = math.atan(root) end
+        end
+    else
+        theta = math.atan(dz / range)
+    end
+    if theta < -1.45 then theta = -1.45
+    elseif theta > 1.45 then theta = 1.45 end
+    local f = fAt(theta)
+    for _ = 1, 8 do
+        if f == nil then break end
+        local f2 = fAt(theta + 0.0008)
+        if f2 == nil then break end
+        local slope = (f2 - f) / 0.0008
+        if math.abs(slope) < 0.0005 then break end
+        local step = f / slope
+        if step > 0.30 then step = 0.30
+        elseif step < -0.30 then step = -0.30 end
+        if math.abs(step) < 0.000001 then break end
+        theta = theta - step
+        if theta < -1.45 then theta = -1.45
+        elseif theta > 1.45 then theta = 1.45 end
+        f = fAt(theta)
+    end
+    local accepted = false
+    if f ~= nil and math.abs(f) < 0.03 then
+        local below = fAt(theta - 0.12)
+        if below ~= nil and below <= 0.005 then accepted = true end
+    end
+    if not accepted then
+        -- The first upward crossing while raising the elevation is the flat
+        -- branch: below it the flight falls short, above it the flight passes
+        -- over the point until the lofted branch comes back down.
+        local prevTheta, prevF = nil, nil
+        local probe = -1.45
+        while probe <= 1.45 do
+            local value = fAt(probe)
+            if value ~= nil then
+                if prevF ~= nil and prevF <= 0.0 and value >= 0.0 then
+                    local lo, hi = prevTheta, probe
+                    for _ = 1, 24 do
+                        local mid = 0.5 * (lo + hi)
+                        local midValue = fAt(mid)
+                        if midValue == nil then break end
+                        if midValue < 0.0 then lo = mid else hi = mid end
+                    end
+                    theta = 0.5 * (lo + hi)
+                    accepted = true
+                    break
+                end
+                prevTheta, prevF = probe, value
+            else
+                prevTheta, prevF = nil, nil
+            end
+            probe = probe + 0.04
+        end
+    end
+    if not accepted then return nil end
+    local ch, sh = math.cos(theta), math.sin(theta)
+    return ux * ch, uy * ch, sh
+end
+
 function Menu.ThrowPreview.stroke(x1, y1, x2, y2, r, g, b, a, th)
     if type(Susano) ~= "table"
         or type(Susano.DrawLine) ~= "function" then
@@ -5195,26 +5321,61 @@ local function ToggleThrowVehicle(enable)
                         ignoreExtra = value
                     end
                 end
-                -- The line is the shot: the live camera vector, the old 500
-                -- impulse at the measured transfer, nothing solved above the
-                -- reticle and nothing added below it.
+                -- The guide is solved for the line only: the camera ray finds
+                -- the surface under the reticle, the solve finds the elevation
+                -- at the measured transfer speed whose flight passes through
+                -- it, and the line is drawn on that shot. The throw itself
+                -- stays the raw camera vector. A point the measured speed
+                -- cannot reach draws no line at all.
                 local speed = THROW_FORCE * Menu.ThrowPreview.speedPerForce
-                -- The guide starts from the car's own live velocity, not the
-                -- ped's: the attach can hand the chassis a little residual
-                -- motion the ped never has, and a thrown car adds that to the
-                -- impulse. Reading the entity keeps the line and the flight
-                -- on the same start.
                 local baseVX, baseVY, baseVZ = readEntityVelocity(entity)
                 local vx = baseVX + direction.x * speed
                 local vy = baseVY + direction.y * speed
                 local vz = baseVZ + direction.z * speed
-                local segments, computed = buildPreviewPath(
-                    carPos.x, carPos.y, baseZ, vx, vy, vz, entity, ped,
-                    ignoreExtra)
-                -- A throw the model cannot close on a surface inside its
-                -- window has no line: a dangling or invented guide is worse
-                -- than no guide.
-                if not computed then segments = nil end
+                local aimTX, aimTY, aimTZ = nil, nil, nil
+                if type(GetGameplayCamCoord) == "function"
+                    and type(StartShapeTestRay) == "function"
+                    and type(GetShapeTestResult) == "function" then
+                    local okCam, camPos = pcall(GetGameplayCamCoord)
+                    if okCam and camPos and type(camPos.x) == "number" then
+                        local reach = 600.0
+                        local okRay, handle = pcall(StartShapeTestRay,
+                            camPos.x, camPos.y, camPos.z,
+                            camPos.x + direction.x * reach,
+                            camPos.y + direction.y * reach,
+                            camPos.z + direction.z * reach,
+                            -1, ped, 0)
+                        if okRay and type(handle) == "number" then
+                            local okRes, _, hit, coords, _, hitEntity =
+                                pcall(GetShapeTestResult, handle)
+                            if okRes and hit == 1 and coords
+                                and type(coords.x) == "number"
+                                and hitEntity ~= ped
+                                and hitEntity ~= entity
+                                and (ignoreExtra == 0
+                                    or hitEntity ~= ignoreExtra) then
+                                aimTX, aimTY, aimTZ =
+                                    coords.x, coords.y, coords.z
+                            end
+                        end
+                    end
+                end
+                local segments = nil
+                if aimTX ~= nil then
+                    local sx, sy, sz = Menu.ThrowPreview.solveAim(
+                        carPos.x, carPos.y, baseZ, aimTX, aimTY, aimTZ,
+                        speed, Menu.ThrowPreview.drag or 0.0,
+                        Menu.ThrowPreview.dragK2 or 0.0)
+                    if sx ~= nil then
+                        vx = baseVX + sx * speed
+                        vy = baseVY + sy * speed
+                        vz = baseVZ + sz * speed
+                        local built, computed = buildPreviewPath(
+                            carPos.x, carPos.y, baseZ, vx, vy, vz, entity,
+                            ped, ignoreExtra)
+                        if computed then segments = built end
+                    end
+                end
                 Menu.ThrowPreview.segments = segments
                 Menu.ThrowPreview.lift =
                     math.max(0.2, math.min(3.0, -carryMinZ))
@@ -26130,9 +26291,10 @@ local FL = (function(O,Menu)
 -- ONE DELIVERY PATH
 --
 --   * Every target uses the same networked particle burst anchored to
---     SKEL_Head (31086), surrounded by a 360-degree shell of the same effect.
---     The recipe also emits a side-offset part so the flash is visible beside
---     the head, not only in the camera axis.
+--     SKEL_Head (31086): the selected recipe parts, a six-axis halo at
+--     0.95 m, and an eight-point horizontal ring at 2.35 m (2.95 m in a
+--     vehicle). The recipe carries a side-offset part so the flash is
+--     visible beside the head, not only in the camera axis.
 --   * Only the two effects that WaveShield V4's own autoWhiteList.lua places
 --     in a Particles table are ever emitted:
 --         scr_wheel_burnout  (scr_recartheft, rcore_spray)
@@ -26166,19 +26328,30 @@ local FL = (function(O,Menu)
 --
 -- GEOMETRY
 --
--- The victim's head is the anchor. The main recipe parts are emitted there with
--- a side offset; a six-axis shell at 2.2 m (2.8 m in a vehicle) covers every
--- yaw and pitch with one point per direction. The shell is emitted only for a
--- single target; multi-select spends the same budget on the main parts. Every
--- call is clamped to both MaxParticleScale and the module's own 6.0 cap.
+-- The victim's head is the anchor. The recipe parts are emitted there with the
+-- recipe's side offset. A six-axis halo at 0.95 m plus an eight-point ring at
+-- 2.35 m (2.95 m in a vehicle) covers every yaw and pitch. The ring is rotated
+-- by 22.5 degrees on alternate pulses so a stationary target shimmers instead
+-- of showing the same eight points. The ring uses the second allowed effect
+-- when the whitelist keeps it, so the outer burst and the inner halo do not
+-- share one plume. Every call is clamped to both MaxParticleScale and the
+-- module's own 6.0 cap.
 --
 -- RATE AND BUDGET
 --
--- One pulse per 800 ms (O.jitter around 800 ms, tight spread) and a hard cap
--- of 8 particles per pulse across every target. The shell is the first thing
--- the budget trims, so a large selection cannot multiply the event count. The
--- old 200 ms / 26-point shell produced up to 140 large networked particles per
--- second and crashed the client; this path tops out at 10 per second.
+-- One pulse per 440 ms (O.jitter, 15 % spread; 440 is a multiple of the
+-- 20 ms scheduler tick, so the base cadence is not rounded up to 460), and
+-- 16 particles per pulse, shared across every target. A token bucket refills
+-- at 36 particles per second with a 20-particle burst allowance, so no
+-- scheduler value, jitter value, selection size or future tuning can push the
+-- module past that ceiling. With more than one target the recipe parts are
+-- emitted first, then the remaining budget is spent round-robin, so four
+-- targets each get a real burst instead of one target eating the plate. The
+-- retired 200 ms / 26-point shell produced up to 140 large networked
+-- particles per second and crashed the client; the previous plate was 8 per
+-- 800 ms (10/s); this path sits near 36/s, about a quarter of the crash value
+-- and 3.6x the previous plate. The bucket is the hard stop; the constants are
+-- the visual target.
 --
 -- TARGET RULES
 --
@@ -26197,18 +26370,26 @@ local FL = (function(O,Menu)
 
 local FL = {}
 
-local PERIOD_MS = 800
+local PERIOD_MS = 440
+local PERIOD_SPREAD = 0.15
 local REACH_MAX = 300.0
 local SAFE_DIST = 0.0
 local TICK_MS = 20
 local MAX_SCALE = 6.0
-local SHELL_SCALE = 5.0
-local MAX_PARTICLES_PER_PULSE = 8
+local SHELL_AXIS_SCALE = 5.2
+local SHELL_RING_SCALE = 4.4
+local MAX_PARTICLES_PER_PULSE = 16
+local TOKEN_CAPACITY = 20.0
+local TOKEN_REFILL_PER_SEC = 36.0
 local CONFIG_TTL = 1500
-local SHELL_RADIUS = 2.2
-local SHELL_RADIUS_VEHICLE = 2.8
+local SHELL_AXIS_RADIUS = 0.95
+local SHELL_RADIUS = 2.35
+local SHELL_RADIUS_VEHICLE = 2.95
 local MAX_TARGETS = 4
 local RESOLVE_MS = 100
+local RING_STEP = math.pi / 4.0
+local RING_PHASE = math.pi / 8.0
+local TWO_PI = math.pi * 2.0
 
 local BURNOUT_DICT = "scr_recartheft"
 local BURNOUT_FX = "scr_wheel_burnout"
@@ -26224,15 +26405,33 @@ local SAFE_CANDIDATES = {
         effect = ALIEN_FX, scale = MAX_SCALE, ox = 1.4, oy = 1.0, oz = 2.0 },
 }
 
--- The six axes cover every yaw and pitch with one point per direction. Six
--- points, not twenty-six: the shell must fit inside the per-pulse budget even
--- when the main recipe is already two parts. The flash is anchored at the
--- head, so the opposite points keep the effect visible from both sides.
-local SHELL_OFFSETS = {
+-- The six inner axes cover every yaw and pitch with one point per direction,
+-- close enough to the head to read as a single white-hot core. The eight-point
+-- ring is the wide lobe: two phases 22.5 degrees apart are alternated on
+-- successive pulses so a stationary target shimmers instead of flashing the
+-- same eight coordinates forever. Same count on every phase, so the budget is
+-- identical whatever the pulse parity.
+local SHELL_AXES = {
     { 1.0, 0.0, 0.0 }, { -1.0, 0.0, 0.0 },
     { 0.0, 1.0, 0.0 }, { 0.0, -1.0, 0.0 },
     { 0.0, 0.0, 1.0 }, { 0.0, 0.0, -1.0 },
 }
+
+local function buildRing(phase)
+    local ring = {}
+    for i = 0, 7 do
+        local angle = phase + i * RING_STEP
+        ring[i + 1] = { math.cos(angle), math.sin(angle), 0.0 }
+    end
+    return ring
+end
+
+local SHELL_RING_A = buildRing(0.0)
+local SHELL_RING_B = buildRing(RING_PHASE)
+
+-- Derived, never hardcoded: adding an axis or a ring point automatically moves
+-- the per-pulse plate and the round-robin cycle together.
+local SHELL_TOTAL = #SHELL_AXES + #SHELL_RING_A
 
 local function flashPart(dict, effect, scale, color, ox, oy, oz)
     return {
@@ -26275,9 +26474,12 @@ FL.lastEffect = nil
 FL.acCache = nil
 FL.acAt = 0
 FL.maxScale = MAX_SCALE
-FL.shellBudget = true
 FL.localOnly = false
-FL.stats = { flashes = 0, skips = 0, fails = 0 }
+FL.tokens = TOKEN_CAPACITY
+FL.tokenAt = 0
+FL.pulse = 0
+FL.lastBurst = 0
+FL.stats = { flashes = 0, skips = 0, fails = 0, particles = 0, throttled = 0 }
 
 local function now()
     return GetGameTimer()
@@ -26287,6 +26489,36 @@ local function log(fmt, ...)
     if type(O) == "table" and type(O.log) == "function" then
         O.log("flash: " .. fmt, ...)
     end
+end
+
+-- Hard rate governor. Every particle that actually starts costs one token;
+-- the bucket refills at TOKEN_REFILL_PER_SEC and never holds more than
+-- TOKEN_CAPACITY. The constants above choose the visual density; this bucket
+-- is the crash ceiling, and it holds even if a future edit lowers the period,
+-- raises the per-pulse budget or selects four targets. A clock that moves
+-- backwards (game restart, timer wrap) refills to capacity instead of
+-- crediting a negative interval.
+local function refillTokens()
+    local current = now()
+    local at = tonumber(FL.tokenAt) or 0
+    if at <= 0 or current < at then
+        FL.tokens = TOKEN_CAPACITY
+    else
+        local elapsed = (current - at) / 1000.0
+        if elapsed > 0.0 then
+            local tokens = (tonumber(FL.tokens) or 0.0)
+                + elapsed * TOKEN_REFILL_PER_SEC
+            if tokens > TOKEN_CAPACITY then tokens = TOKEN_CAPACITY end
+            FL.tokens = tokens
+        end
+    end
+    FL.tokenAt = current
+end
+
+local function spendTokens(count)
+    local tokens = (tonumber(FL.tokens) or 0.0) - (tonumber(count) or 0)
+    if tokens < 0.0 then tokens = 0.0 end
+    FL.tokens = tokens
 end
 
 local function decodeState(value)
@@ -26443,8 +26675,9 @@ end
 -- Pick the parts that are provably safe. The selected recipe is used when
 -- every part is on the static list; otherwise only its safe parts are kept. A
 -- recipe with no safe part falls back to one of the two auto-whitelisted
--- effects. When the guard is running and the list is unreadable, the function
--- returns nil and the loop stays silent rather than feeding a report.
+-- effects, and an unreadable list with a running guard falls back to the
+-- unconditional burnout entry so the pulse stays visible instead of going
+-- silent.
 local function resolveDelivery(cfg)
     local method = currentMethod()
     local ex = cfg and cfg.Explosions
@@ -26525,35 +26758,19 @@ local function ptfxLoaded(dict)
     return false
 end
 
--- Emit the recipe at the head anchor and, for a single target, a six-axis
--- shell around it. The caller passes the remaining per-pulse budget; every
--- call is a whitelisted effect at or below both the configured ceiling and
--- the module's own cap. No entity, event, decorator or hook is created.
-local function emitParticle(method, coords, budget)
-    local parts = method.parts
-    if type(parts) ~= "table" or #parts == 0 then parts = { method } end
-
-    local ceiling = tonumber(FL.maxScale) or MAX_SCALE
-    if ceiling <= 0.0 then return 0 end
-    local cap = math.min(ceiling, MAX_SCALE)
-    local limit = tonumber(budget) or MAX_PARTICLES_PER_PULSE
-    if limit > MAX_PARTICLES_PER_PULSE then limit = MAX_PARTICLES_PER_PULSE end
-    if limit < 0 then limit = 0 end
-
-    local hx = tonumber(coords.headX) or coords.x
-    local hy = tonumber(coords.headY) or coords.y
-    local hz = tonumber(coords.headZ) or coords.z
-    local boost = 1.0
-    if coords.vehicle == true then boost = 1.25
-    elseif coords.highSpeed == true then boost = 1.15 end
-
-    local sent = 0
-    local function startPart(part, x, y, z, scale, rx, ry, rz)
-        if not part or type(part.dict) ~= "string"
-            or type(part.effect) ~= "string" then
-            return false
-        end
-        pcall(UseParticleFxAssetNextCall, part.dict)
+-- Emit one particle at a whitelisted effect. The optional colour triple lets
+-- the shell shimmer around the recipe's base tint without touching the recipe
+-- part itself. The rotation is a visual parameter only; ptFxEvent does not
+-- inspect it. No entity, event, decorator or hook is created here.
+local function startPart(part, x, y, z, scale, rx, ry, rz, cr, cg, cb)
+    if not part or type(part.dict) ~= "string"
+        or type(part.effect) ~= "string" then
+        return false
+    end
+    pcall(UseParticleFxAssetNextCall, part.dict)
+    if cr ~= nil then
+        pcall(SetParticleFxNonLoopedColour, cr, cg, cb)
+    else
         local color = part.color
         if type(color) == "table" and #color >= 3 then
             pcall(SetParticleFxNonLoopedColour,
@@ -26561,61 +26778,126 @@ local function emitParticle(method, coords, budget)
                 tonumber(color[2]) or 1.0,
                 tonumber(color[3]) or 1.0)
         end
-        pcall(SetParticleFxNonLoopedAlpha, 1.0)
-        local ok, started = pcall(StartNetworkedParticleFxNonLoopedAtCoord,
-            part.effect, x, y, z,
-            rx or 0.0, ry or 0.0, rz or 0.0, scale,
-            false, false, false, false)
-        return ok and started ~= false
     end
+    pcall(SetParticleFxNonLoopedAlpha, 1.0)
+    local ok, started = pcall(StartNetworkedParticleFxNonLoopedAtCoord,
+        part.effect, x, y, z,
+        rx or 0.0, ry or 0.0, rz or 0.0, scale,
+        false, false, false, false)
+    return ok and started ~= false
+end
 
-    for i = 1, #parts do
+-- One burst context per target per pulse. It preloads both ptfx dictionaries
+-- once instead of once per particle, and resolves the head anchor, the scale
+-- ceiling and the vehicle/high-speed boost a single time. The outer ring uses
+-- the second allowed effect when the whitelist kept it; otherwise it reuses
+-- the first, so a filtered delivery stays on one known effect.
+local function makeBurst(method, coords)
+    local parts = method and method.parts
+    if type(parts) ~= "table" or #parts == 0 then parts = { method } end
+
+    local cap = tonumber(FL.maxScale) or MAX_SCALE
+    if cap > MAX_SCALE then cap = MAX_SCALE end
+    if cap < 0.01 then cap = 0.01 end
+
+    local boost = 1.0
+    if coords.vehicle == true then boost = 1.25
+    elseif coords.highSpeed == true then boost = 1.15 end
+
+    local axisPart = parts[1]
+    local ringPart = parts[2] or parts[1]
+    if axisPart then ptfxLoaded(axisPart.dict) end
+    if ringPart and ringPart ~= axisPart then ptfxLoaded(ringPart.dict) end
+
+    return {
+        parts = parts,
+        cap = cap,
+        boost = boost,
+        hx = tonumber(coords.headX) or coords.x,
+        hy = tonumber(coords.headY) or coords.y,
+        hz = tonumber(coords.headZ) or coords.z,
+        vehicle = coords.vehicle == true,
+        axisPart = axisPart,
+        ringPart = ringPart,
+    }
+end
+
+local function emitRecipeAt(burst, limit)
+    limit = tonumber(limit) or 0
+    if limit > MAX_PARTICLES_PER_PULSE then limit = MAX_PARTICLES_PER_PULSE end
+    local sent = 0
+    if limit <= 0 then return sent end
+
+    for i = 1, #burst.parts do
         if sent >= limit then break end
-        local part = parts[i]
+        local part = burst.parts[i]
         if part and type(part.dict) == "string"
             and type(part.effect) == "string" then
-            ptfxLoaded(part.dict)
-            local scale = tonumber(part.scale) or tonumber(method.scale) or cap
-            scale = scale * boost
-            if scale > cap then scale = cap end
+            local scale = tonumber(part.scale) or burst.cap
+            scale = scale * burst.boost
+            if scale > burst.cap then scale = burst.cap end
             if scale < 0.01 then scale = 0.01 end
-            local x = hx + (tonumber(part.ox) or 0.0)
-            local y = hy + (tonumber(part.oy) or 0.0)
-            local z = hz + (tonumber(part.oz) or 0.0)
+            local x = burst.hx + (tonumber(part.ox) or 0.0)
+            local y = burst.hy + (tonumber(part.oy) or 0.0)
+            local z = burst.hz + (tonumber(part.oz) or 0.0)
             if startPart(part, x, y, z, scale) then sent = sent + 1 end
         end
     end
 
-    if FL.shellBudget == true and sent > 0 and sent < limit then
-        -- Use the first allowed part (burnout when both are allowed) so the
-        -- shell never multiplies the heaviest effect. If the guard filtered
-        -- burnout out, the surviving part is the only safe choice.
-        local shellPart = parts[1]
-        if shellPart then
-            ptfxLoaded(shellPart.dict)
-            local radius = coords.vehicle == true
-                and SHELL_RADIUS_VEHICLE or SHELL_RADIUS
-            local shellScale = math.min(cap, SHELL_SCALE)
-            for i = 1, #SHELL_OFFSETS do
-                if sent >= limit then break end
-                local o = SHELL_OFFSETS[i]
-                local x = hx + o[1] * radius
-                local y = hy + o[2] * radius
-                local z = hz + o[3] * radius
-                -- Randomise the local orientation so the plume direction is
-                -- not identical at every point of the shell. The rotation
-                -- is a visual parameter only; ptFxEvent does not inspect it.
-                local rx = math.random() * 6.2831853
-                local ry = math.random() * 6.2831853
-                local rz = math.random() * 6.2831853
-                if startPart(shellPart, x, y, z, shellScale, rx, ry, rz) then
-                    sent = sent + 1
-                end
-            end
-        end
+    return sent
+end
+
+-- Emit one shell point at the requested logical index (1..SHELL_TOTAL). Each
+-- index maps to one axis or one ring point, so the round-robin caller can
+-- interleave multiple targets without ever emitting the same point twice in a
+-- row for the same target. Scale and radius are jittered inside a tight band:
+-- the flash reads as a living burst, never as a fixed eight-point diagram.
+local function emitShellAt(burst, limit, index)
+    if (tonumber(limit) or 0) <= 0 then return 0 end
+    index = tonumber(index) or 1
+    if index < 1 or index > SHELL_TOTAL then index = 1 end
+
+    local part, x, y, z, scale
+    if index <= 6 then
+        local axis = SHELL_AXES[index]
+        if not axis then return 0 end
+        part = burst.axisPart
+        local radius = SHELL_AXIS_RADIUS * (0.94 + math.random() * 0.12)
+        x = burst.hx + axis[1] * radius
+        y = burst.hy + axis[2] * radius
+        z = burst.hz + axis[3] * radius
+        scale = math.min(burst.cap, SHELL_AXIS_SCALE)
+    else
+        local ring = ((tonumber(FL.pulse) or 0) % 2 == 1)
+            and SHELL_RING_B or SHELL_RING_A
+        local point = ring[index - 6]
+        if not point then return 0 end
+        part = burst.ringPart
+        local radius = burst.vehicle and SHELL_RADIUS_VEHICLE or SHELL_RADIUS
+        radius = radius * (0.95 + math.random() * 0.10)
+        x = burst.hx + point[1] * radius
+        y = burst.hy + point[2] * radius
+        z = burst.hz + point[3] * radius
+        scale = math.min(burst.cap, SHELL_RING_SCALE)
     end
 
-    return sent
+    if not part then return 0 end
+    local rx = math.random() * TWO_PI
+    local ry = math.random() * TWO_PI
+    local rz = math.random() * TWO_PI
+    local color = part.color
+    if type(color) == "table" and #color >= 3 then
+        local factor = 0.85 + math.random() * 0.30
+        local cr = math.min(1.0, (tonumber(color[1]) or 1.0) * factor)
+        local cg = math.min(1.0, (tonumber(color[2]) or 1.0) * factor)
+        local cb = math.min(1.0, (tonumber(color[3]) or 1.0) * factor)
+        if startPart(part, x, y, z, scale, rx, ry, rz, cr, cg, cb) then
+            return 1
+        end
+        return 0
+    end
+    if startPart(part, x, y, z, scale, rx, ry, rz) then return 1 end
+    return 0
 end
 
 local function isDead(ped)
@@ -27139,7 +27421,6 @@ local function tickCore()
     FL.targets = alive
     FL.target = alive[1]
     FL.localOnly = not anyRemote
-    FL.shellBudget = (#alive == 1)
 
     if now() < FL.nextAt then return end
 
@@ -27149,6 +27430,7 @@ local function tickCore()
     end
 
     local emitted = false
+    local throttled = false
 
     -- Self and remote share the same particle path. The retired self branch
     -- drew a client-only rectangle; it produced no visible pulse on builds
@@ -27166,25 +27448,71 @@ local function tickCore()
     FL.lastEffect = effective and effective.parts
         and effective.parts[1] and effective.parts[1].effect or nil
     if effective then
+        -- The bucket is the crash ceiling. It is refilled at pulse time
+        -- rather than every scheduler tick, which is equivalent for a token
+        -- bucket and keeps the idle tick free of arithmetic.
+        refillTokens()
         local budget = MAX_PARTICLES_PER_PULSE
-        for i = 1, #alive do
-            if budget <= 0 then break end
-            local t = alive[i]
-            local used = emitParticle(effective, t.aim or t.coords, budget)
-            if used > 0 then
-                emitted = true
+        local available = math.floor((tonumber(FL.tokens) or 0.0) + 1e-6)
+        if available < budget then budget = available end
+        if budget < 1 then
+            throttled = true
+            FL.stats.throttled = (tonumber(FL.stats.throttled) or 0) + 1
+        else
+            -- One ring phase per pulse: A on even, B on odd. The shell point
+            -- sequence is shared by every target through a per-target cursor,
+            -- so a multi-select spends its budget evenly and each target
+            -- still gets points from a different part of the sphere.
+            FL.pulse = ((tonumber(FL.pulse) or 0) + 1) % 2
+            local bursts = {}
+            for i = 1, #alive do
+                bursts[i] = makeBurst(effective, alive[i].aim or alive[i].coords)
+            end
+
+            local sent = 0
+            for i = 1, #bursts do
+                if budget <= 0 then break end
+                local used = emitRecipeAt(bursts[i], budget)
                 budget = budget - used
+                sent = sent + used
+            end
+
+            local cursor = {}
+            for i = 1, #bursts do
+                cursor[i] = ((i - 1) * 3) % SHELL_TOTAL + 1
+            end
+            local progress = true
+            while budget > 0 and progress do
+                progress = false
+                for i = 1, #bursts do
+                    if budget <= 0 then break end
+                    local used = emitShellAt(bursts[i], budget, cursor[i])
+                    if used > 0 then
+                        budget = budget - used
+                        sent = sent + used
+                        cursor[i] = (cursor[i] % SHELL_TOTAL) + 1
+                        progress = true
+                    end
+                end
+            end
+
+            if sent > 0 then
+                spendTokens(sent)
+                FL.lastBurst = sent
+                FL.stats.particles = (tonumber(FL.stats.particles) or 0) + sent
+                emitted = true
             end
         end
     end
 
     if emitted then
         FL.stats.flashes = FL.stats.flashes + 1
-    else
+    elseif not throttled then
         FL.stats.fails = FL.stats.fails + 1
     end
 
-    local spread = (type(O) == "table" and type(O.jitter) == "function") and 0.25 or 0.0
+    local spread = (type(O) == "table" and type(O.jitter) == "function")
+        and PERIOD_SPREAD or 0.0
     local base = (type(O) == "table" and type(O.jitter) == "function")
         and O.jitter(PERIOD_MS, spread) or PERIOD_MS
     FL.nextAt = now() + base
@@ -27208,6 +27536,15 @@ function FL.start()
     FL.active = true
     FL.reason = nil
     FL.remoteOnly = hasRemoteSelection()
+    -- The bucket survives a stop/start pair. A rapid toggle cannot reset the
+    -- crash ceiling; only a genuinely idle bucket refills to capacity, and
+    -- refillTokens() caps it there.
+    if (tonumber(FL.tokenAt) or 0) <= 0 then
+        FL.tokens = TOKEN_CAPACITY
+        FL.tokenAt = now()
+    end
+    FL.pulse = 0
+    FL.lastBurst = 0
 
     local okTarget, targets = pcall(resolveTargets)
     if not okTarget then
@@ -27245,6 +27582,8 @@ function FL.stop(reason)
     FL.lastEffect = nil
     FL.localOnly = false
     FL.remoteOnly = false
+    FL.pulse = 0
+    FL.lastBurst = 0
 end
 
 function FL.status()
@@ -39772,6 +40111,7 @@ local SP = (function(O, N)
         airControlsOff = false,
         vz = 0.0,
         verticalAssist = false,
+        hover = false,
         lastZ = nil,
         vzProbeAt = 0,
         vzProbeZ = nil,
@@ -39976,6 +40316,7 @@ local SP = (function(O, N)
         setAirControlsOff(false)
         setGravityOff(false)
         SP.vz = 0.0
+        SP.hover = false
         SP.verticalAssist = false
         SP.lastZ = nil
         SP.vzProbeAt = 0
@@ -39992,6 +40333,58 @@ local SP = (function(O, N)
         end
         if O.Ctx and finite(O.Ctx.height) then return O.Ctx.height end
         return nil
+    end
+
+    local function groundZAt(x, y, z)
+        if type(GetGroundZFor_3dCoord) ~= "function" then return nil end
+        local ok, retval, groundZ = pcall(GetGroundZFor_3dCoord, x, y, z, true)
+        if ok and retval and finite(groundZ) then return groundZ end
+        return nil
+    end
+
+    local nearGround
+
+    -- Ground guard shared by the vertical writer and both translation paths.
+    -- The position fallback ignores collision by design, so a negative Z step
+    -- or a slope step can otherwise put the capsule under the map. The guard
+    -- lifts the target to the sampled ground + 5 cm and never writes upward
+    -- past the current Z.
+    local function clampGroundZ(ped, x, y, z, currentZ)
+        local groundZ = groundZAt(x, y, z)
+        if groundZ and z < groundZ + 0.05 then return groundZ + 0.05 end
+        if not groundZ and nearGround(ped, 0.05)
+            and currentZ and z < currentZ then
+            return currentZ
+        end
+        return z
+    end
+
+    nearGround = function(ped, margin)
+        local height = heightAboveGround(ped)
+        local okC, coords = pcall(GetEntityCoords, ped)
+        local groundZ = nil
+        if okC and coords and finite(coords.z) then
+            groundZ = groundZAt(coords.x, coords.y, coords.z)
+            if groundZ and coords.z <= groundZ + margin then return true end
+        end
+        if height and height <= margin then
+            -- Height 0 on a ledge edge is not ground. Explicit air/fall or a
+            -- sampled ground far below the body both veto the clamp.
+            if type(IsEntityInAir) == "function" then
+                local okAir, air = pcall(IsEntityInAir, ped)
+                if okAir and air == true then return false end
+            end
+            if type(IsPedFalling) == "function" then
+                local okFall, falling = pcall(IsPedFalling, ped)
+                if okFall and falling == true then return false end
+            end
+            if groundZ and coords and finite(coords.z)
+                and coords.z > groundZ + margin then
+                return false
+            end
+            return true
+        end
+        return false
     end
 
     -- Multiple sensors, ORed. The previous version returned early from the
@@ -40038,11 +40431,17 @@ local SP = (function(O, N)
         if O.Ctx and O.Ctx.inVehicle then return "vehicle" end
         local okView, view = pcall(GetFollowPedCamViewMode)
         if okView and type(view) == "number" and view >= 3 then return "view" end
-        local okAim, aiming = pcall(IsAimCamActive)
-        if okAim and aiming then return "aim" end
-        local player = (O.Ctx and O.Ctx.player) or PlayerId()
-        local okFree, free = pcall(IsPlayerFreeAiming, player)
-        if okFree and free then return "aim" end
+        -- Hover is the shooting state: a latched fly altitude must not be
+        -- torn down by the aim camera. Aim/free-aim only suspend when the
+        -- module is not hovering; while hovering the spin and the fixed Z
+        -- stay live so the operator can fire.
+        if not SP.hover then
+            local okAim, aiming = pcall(IsAimCamActive)
+            if okAim and aiming then return "aim" end
+            local player = (O.Ctx and O.Ctx.player) or PlayerId()
+            local okFree, free = pcall(IsPlayerFreeAiming, player)
+            if okFree and free then return "aim" end
+        end
         local okCover, cover = pcall(IsPedInCover, ped, false)
         if okCover and cover then return "cover" end
         local okSwim, swimming = pcall(IsPedSwimming, ped)
@@ -40187,19 +40586,34 @@ local SP = (function(O, N)
     end
 
     -- Fly target is the No Clip Undetect explicit vertical (12 m/s), ramped
-    -- at the same 18 m/s^2. Outside fly the state is integrated gravity. Ped
-    -- gravity is off while armed, so this state is authoritative on both the
-    -- velocity and position paths and cannot be cancelled by the engine.
+    -- at the same 18 m/s^2. Once fly has been used, the module latches hover:
+    -- releasing Space/Ctrl keeps the current altitude instead of re-entering
+    -- gravity. Ctrl descends, Space climbs, and releasing again holds the new
+    -- altitude. The latch is cleared by stop/suspend, where gravity is handed
+    -- back to the engine.
     local function verticalVelocity(ped, dt)
         local up, down = flyInput()
         if up ~= down then
+            SP.hover = true
             local target = up and FLY_SPEED or -FLY_SPEED
-            if down and not isAirborne(ped) then target = 0.0 end
+            if down and (not isAirborne(ped) or nearGround(ped, 0.15)) then
+                target = 0.0
+            end
             SP.vz = approach(SP.vz or 0.0, target, FLY_ACCEL * dt)
             return SP.vz
         end
+        if SP.hover then
+            SP.vz = 0.0
+            SP.verticalAssist = false
+            SP.vzProbeAt = 0
+            return 0.0
+        end
         if isAirborne(ped) then
-            SP.vz = math.max(-MAX_FALL, (SP.vz or 0.0) - GRAVITY * dt)
+            if (SP.vz or 0.0) < 0.0 and nearGround(ped, 0.15) then
+                SP.vz = 0.0
+            else
+                SP.vz = math.max(-MAX_FALL, (SP.vz or 0.0) - GRAVITY * dt)
+            end
         else
             SP.vz = 0.0
             SP.verticalAssist = false
@@ -40280,9 +40694,13 @@ local SP = (function(O, N)
             step, zStep = step * scale, zStep * scale
         end
         if step <= 0.0 and zStep == 0.0 then return end
+        local targetX, targetY = coords.x + dx * step, coords.y + dy * step
+        local targetZ = clampGroundZ(ped, targetX, targetY,
+            coords.z + zStep, coords.z)
+        zStep = targetZ - coords.z
+        if step <= 0.0 and zStep == 0.0 then return end
         local ok = pcall(SetEntityCoordsNoOffset, ped,
-            coords.x + dx * step, coords.y + dy * step, coords.z + zStep,
-            false, false, false)
+            targetX, targetY, targetZ, false, false, false)
         if ok then SP.stats.positionWrites = SP.stats.positionWrites + 1 end
     end
 
@@ -40295,8 +40713,12 @@ local SP = (function(O, N)
         local step = vz * (dt or (1.0 / 60.0))
         if step > 0.5 then step = 0.5 end
         if step < -0.5 then step = -0.5 end
+        local targetZ = clampGroundZ(ped, coords.x, coords.y,
+            coords.z + step, coords.z)
+        step = targetZ - coords.z
+        if math.abs(step) < 0.0001 then return end
         local ok = pcall(SetEntityCoordsNoOffset, ped,
-            coords.x, coords.y, coords.z + step, false, false, false)
+            coords.x, coords.y, targetZ, false, false, false)
         if ok then SP.stats.verticalWrites = SP.stats.verticalWrites + 1 end
     end
 
@@ -40452,6 +40874,7 @@ local SP = (function(O, N)
         SP.ticks = 0
         SP.travel = 0.0
         SP.vz = 0.0
+        SP.hover = false
         SP.verticalAssist = false
         SP.lastZ = nil
         SP.vzProbeAt = 0
@@ -40575,6 +40998,7 @@ local SP = (function(O, N)
             verticalWrites = SP.stats.verticalWrites,
             positionMove = SP.positionMove,
             verticalAssist = SP.verticalAssist,
+            hover = SP.hover,
             vz = SP.vz,
             gravityOff = SP.gravityOff,
             airControlsOff = SP.airControlsOff,
@@ -40639,6 +41063,13 @@ local SP = (function(O, N)
             captureCameraYaw(SP.target)
             engageAirState()
         end
+
+        -- Latch hover before the suspension pass. If the operator is already
+        -- aiming and presses Space/Ctrl, the aim-camera check must see hover
+        -- on the same tick; otherwise it would suspend and release gravity
+        -- before the fly controller ever runs.
+        local flyUp, flyDown = flyInput()
+        if flyUp ~= flyDown then SP.hover = true end
 
         local why = suspendedNow(ped)
         if why then
@@ -44360,7 +44791,7 @@ end
 -- ---------------------------------------------------------------------------
 -- REMOVE OLD ENTRY POINTS
 -- ---------------------------------------------------------------------------
-local MENU_REV = "2026-11-22-r109"
+local MENU_REV = "2026-11-24-r111"
 
 -- A previous execution of the old loader can leave its category in the shared
 -- Menu table. Match both the literal name and the old nine-tab fingerprint so
