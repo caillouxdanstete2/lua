@@ -4005,14 +4005,6 @@ Menu.ThrowPreview = {
     bounceKeep = 0.66,
     bounceEw = 0.34,
     bounceKeepW = 0.84,
-    -- The real flight, recorded after a throw and drawn in place of the
-    -- prediction: white to the first impact, orange after, fading out.
-    trailActive = false,
-    trailPts = nil,
-    trailN = 0,
-    trailImpact = nil,
-    trailStart = 0,
-    trailNow = 0,
     -- Chunk gravity. Single source for the renderer and the carry thread.
     gravity = 9.81,
     ox = 0.0, oy = 0.0, oz = 0.0,
@@ -4145,7 +4137,7 @@ function Menu.ThrowPreview.solveAim(px, py, pz, tx, ty, tz, speed, drag)
         local vx, vy, vz = ux * hs, uy * hs, speed * math.sin(elevation)
         local t = 0.0
         local prevZ, prevD = 0.0, 0.0
-        while t < 9.0 do
+        while t < 14.0 do
             local nx, ny, nz, nvx, nvy, nvz = Menu.ThrowPreview.stepFlight(
                 x, y, z, vx, vy, vz, k1, k2, 0.06)
             local d = math.sqrt(nx * nx + ny * ny)
@@ -4309,16 +4301,38 @@ function Menu.ThrowPreview.solveVelocity(px, py, pz, vx, vy, vz,
         end
         return rx, ry, rz
     end
-    local bestX, bestY, bestZ = nil, nil, nil
-    local bestCost = nil
-    for step = 0, 21 do
-        local T = 0.14 * 1.115 ^ step
-        if T > 2.8 then break end
+    -- The cost scan is the dragless closed form (free) and covers the whole
+    -- remaining flight of a long throw; the candidate times around the best
+    -- are then refined on the full model. A short 2.8 s window could not hit a
+    -- target behind a nine second flight without inventing a lob.
+    local bestT, bestCost = nil, nil
+    local candT, candCost = {}, {}
+    local count = 0
+    for step = 0, 25 do
+        local T = 0.15 * 1.16 ^ step
+        if T > 8.0 then break end
         local rx, ry, rz = requiredAt(T)
         local dx, dy, dz = rx - vx, ry - vy, rz - vz
         local cost = dx * dx + dy * dy + dz * dz
+        count = count + 1
+        candT[count], candCost[count] = T, cost
         if not bestCost or cost < bestCost then
-            bestX, bestY, bestZ, bestCost = rx, ry, rz, cost
+            bestT, bestCost = T, cost
+        end
+    end
+    if not bestT then return nil end
+    local bestX, bestY, bestZ, bestRefined = nil, nil, nil, nil
+    local window = bestT * 0.22 + 0.001
+    for i = 1, count do
+        local T = candT[i]
+        if math.abs(T - bestT) <= window then
+            local rx, ry, rz = requiredAt(T)
+            local dx, dy, dz = rx - vx, ry - vy, rz - vz
+            local cost = dx * dx + dy * dy + dz * dz
+            if not bestRefined or cost < bestRefined then
+                bestRefined = cost
+                bestX, bestY, bestZ = rx, ry, rz
+            end
         end
     end
     if not bestX then return nil end
@@ -4380,24 +4394,24 @@ function Menu.ThrowPreview.arc(screenW, screenH, s, ui)
         local pts, n = segment.pts, segment.n or 0
         local dur = segment.dur or 0.0
         if dur < 0.001 then dur = 0.001 end
-        local post = segment.post
-        local sampleStep = segment.sampleStep or 0.05
         if pts and n >= 2 then
             for i = 1, n do
-                local st = (i - 1) * sampleStep
+                -- Points carry their own time: the sampler is fine near the
+                -- car and coarser on the far leg, and the stroke width and
+                -- the fading lift still follow the true flight time.
+                local st = pts[4 * i - 3]
                 if st > dur then st = dur end
-                local wx = pts[3 * i - 2]
-                local wy = pts[3 * i - 1]
-                local wz = pts[3 * i]
+                local wx = pts[4 * i - 2]
+                local wy = pts[4 * i - 1]
+                local wz = pts[4 * i]
                 -- The throw leg leaves from the car's centre and lands on the
                 -- belly contact (the crosshair surface), so the drawn end sits
                 -- exactly on the reticle. Bounce legs run on the surface.
                 local localLift = 0.0
-                if index == 1 and not segment.flat then
+                if index == 1 then
                     localLift = lift * (1.0 - st / dur)
                 end
                 local r, g, b = baseR, baseG, baseB
-                if post and i >= post then r, g, b = 1.0, 0.55, 0.15 end
                 local ok, sx, sy = Menu.ThrowPreview.project(
                     wx, wy, wz + localLift, screenW, screenH)
                 if ok and prevOk then
@@ -4458,44 +4472,9 @@ function Menu.ThrowPreview.draw(screenW, screenH)
         s.visible = false
         s.valid = false
         s.segments = nil
-        s.trailActive = false
-        s.trailPts = nil
-        s.trailN = 0
         return
     end
     local ui = math.max(1.0, screenH / 1080.0)
-    -- The real trail: after a throw the overlay shows the path the car
-    -- actually flew, white to the first impact and orange after, instead of a
-    -- prediction. It fades out over five seconds and then releases the
-    -- overlay so the crosshair disappears with it.
-    if s.trailActive and s.trailPts and s.trailN >= 2 then
-        local age = 0.0
-        if timer > 0 and s.trailStart > 0 then
-            age = (timer - s.trailStart) / 1000.0
-        end
-        if age < 0.0 then age = 0.0 end
-        if age > 5.0 then
-            s.trailActive = false
-            s.trailPts = nil
-            s.trailN = 0
-        else
-            local fade = 0.85 * (1.0 - age / 5.0)
-            if fade < 0.2 then fade = 0.2 end
-            local span = age
-            if span < 0.5 then span = 0.5 end
-            Menu.ThrowPreview.arc(screenW, screenH, {
-                segments = { {
-                    pts = s.trailPts,
-                    n = s.trailN,
-                    dur = span,
-                    flat = true,
-                    post = s.trailImpact,
-                    alpha = fade,
-                    sampleStep = span / math.max(1, s.trailN - 1),
-                } },
-            }, ui)
-        end
-    end
     if s.segments and #s.segments > 0 then
         Menu.ThrowPreview.arc(screenW, screenH, s, ui)
     end
@@ -4620,7 +4599,7 @@ local function ToggleThrowVehicle(enable)
         -- writes Menu.ThrowPreview; the drawing runs from the render callbacks
         -- (see Menu.ThrowPreview.draw), never from this thread.
         -- No entity, event, global or network write is made.
-        local PREVIEW_FLIGHT_MAX = 4.2
+        local PREVIEW_FLIGHT_MAX = 9.0
         local PREVIEW_RAY_STEP = 0.1
         -- The guide must sit on the reticle every frame while aiming, so the
         -- rebuild triggers are tight: a half-degree turn or 40 ms re-solves
@@ -4637,10 +4616,6 @@ local function ToggleThrowVehicle(enable)
             Menu.ThrowPreview.visible = false
             Menu.ThrowPreview.valid = false
             Menu.ThrowPreview.segments = nil
-            Menu.ThrowPreview.trailActive = false
-            Menu.ThrowPreview.trailPts = nil
-            Menu.ThrowPreview.trailN = 0
-            Menu.ThrowPreview.trailImpact = nil
         end
 
         local animReady = false
@@ -5146,8 +5121,7 @@ local function ToggleThrowVehicle(enable)
         local GUIDE_FIRST_CAP = 26.0
         local GUIDE_SHOT_CAP = 8.0
         local GUIDE_TOTAL = 36.0
-        local GUIDE_WINDOW = 2.6
-        local TRAIL_MAX = 600
+        local GUIDE_WINDOW = 5.0
         local POST_MAX = 280
 
         local function updateThrowCalibration()
@@ -5175,34 +5149,6 @@ local function ToggleThrowVehicle(enable)
             end
             local bx, by, bz =
                 pos.x, pos.y, pos.z + pending.belly
-            -- The real flight trail. After a throw the overlay draws the path
-            -- the car actually flew: white to the first impact, orange after.
-            -- It is recorded here, from the car, so it is true by construction.
-            if Menu.ThrowPreview.trailActive and Menu.ThrowPreview.trailPts then
-                local pts = Menu.ThrowPreview.trailPts
-                local n = Menu.ThrowPreview.trailN
-                local lastX, lastY, lastZ = 0.0, 0.0, 0.0
-                if n > 0 then
-                    lastX = pts[3 * n - 2]
-                    lastY = pts[3 * n - 1]
-                    lastZ = pts[3 * n]
-                end
-                local dxT = bx - lastX
-                local dyT = by - lastY
-                local dzT = bz - lastZ
-                if n == 0 or dxT * dxT + dyT * dyT + dzT * dzT > 0.0009 then
-                    if n < TRAIL_MAX then
-                        n = n + 1
-                        pts[3 * n - 2], pts[3 * n - 1], pts[3 * n] = bx, by, bz
-                        Menu.ThrowPreview.trailN = n
-                    end
-                end
-                if pending.ended and not Menu.ThrowPreview.trailImpact then
-                    Menu.ThrowPreview.trailImpact = n
-                end
-                Menu.ThrowPreview.trailNow = now
-                Menu.ThrowPreview.now = now
-            end
             -- The real launch speed: the released velocity, read as soon as it
             -- carries motion. Reading the entity here instead of fitting the
             -- sampled path removes the one-frame impulse ramp from the
@@ -5430,7 +5376,7 @@ local function ToggleThrowVehicle(enable)
             ignoreEntity, ped, ignoreExtra)
             local segments = {}
             local tBase = 0.0
-            local bounceBudget = 2.2
+            local bounceBudget = 4.0
             local budget = PREVIEW_FLIGHT_MAX
             local k1 = Menu.ThrowPreview.drag or 0.0
             local k2 = Menu.ThrowPreview.dragK2 or 0.0
@@ -5445,10 +5391,14 @@ local function ToggleThrowVehicle(enable)
                 local dur = nil
                 local hitX, hitY, hitZ = nil, nil, nil
                 local hitNX, hitNY, hitNZ = nil, nil, nil
-                pts[1], pts[2], pts[3] = x, y, z
+                pts[1], pts[2], pts[3], pts[4] = 0.0, x, y, z
                 n = 1
                 while t < budget - 0.0001 do
+                    -- Fine sampling near the car, coarser on the far leg: the
+                    -- screen-space dashes hide the difference and the nested
+                    -- projection loop stays cheap on a nine second flight.
                     local step = 0.05
+                    if t >= 2.0 then step = 0.1 end
                     if step > budget - t then step = budget - t end
                     local nx, ny, nz, nvx, nvy, nvz =
                         Menu.ThrowPreview.stepFlight(
@@ -5461,10 +5411,11 @@ local function ToggleThrowVehicle(enable)
                         if fx ~= nil then
                             local hitTime = chordT
                                 + (sampleT - chordT) * frac
-                            while n > 1 and (n - 1) * 0.05 > hitTime do
+                            while n > 1 and pts[4 * n - 3] > hitTime do
                                 n = n - 1
                             end
-                            pts[3 * n + 1], pts[3 * n + 2], pts[3 * n + 3] =
+                            pts[4 * n + 1] = hitTime
+                            pts[4 * n + 2], pts[4 * n + 3], pts[4 * n + 4] =
                                 fx, fy, fz
                             n = n + 1
                             dur = hitTime
@@ -5477,7 +5428,8 @@ local function ToggleThrowVehicle(enable)
                     end
                     x, y, z, ux, uy, uz = nx, ny, nz, nvx, nvy, nvz
                     t = sampleT
-                    pts[3 * n + 1], pts[3 * n + 2], pts[3 * n + 3] = x, y, z
+                    pts[4 * n + 1] = t
+                    pts[4 * n + 2], pts[4 * n + 3], pts[4 * n + 4] = x, y, z
                     n = n + 1
                 end
                 if not dur then dur = budget end
@@ -5545,7 +5497,7 @@ local function ToggleThrowVehicle(enable)
             if not okCam or not camPos or type(camPos.x) ~= "number" then
                 return outX, outY, outZ
             end
-            local reach = 260.0
+            local reach = 420.0
             local tx = camPos.x + dx * reach
             local ty = camPos.y + dy * reach
             local tz = camPos.z + dz * reach
@@ -5856,21 +5808,6 @@ local function ToggleThrowVehicle(enable)
                     measured = false,
                     impact = nil,
                 }
-                -- The overlay switches from prediction to truth: the trail
-                -- starts at the belly position of the release frame and is
-                -- extended from the real car by the calibration tick.
-                Menu.ThrowPreview.trailPts = {
-                    startPos.x, startPos.y, startPos.z + belly,
-                }
-                Menu.ThrowPreview.trailN = 1
-                Menu.ThrowPreview.trailImpact = nil
-                Menu.ThrowPreview.trailStart = startTime
-                Menu.ThrowPreview.trailNow = startTime
-                Menu.ThrowPreview.trailActive = true
-                Menu.ThrowPreview.visible = true
-                Menu.ThrowPreview.now = startTime
-                Menu.ThrowPreview.segments = nil
-                Menu.ThrowPreview.valid = false
             end
         end
 
@@ -40372,84 +40309,6 @@ local SP = (function(O, N)
         SP.camYaw = wrap360(SP.camYaw - look * CAM_LOOK_SENS)
     end
 
-    local function destroyScriptCam()
-        local cam = SP.scriptCam
-        SP.scriptCam = 0
-        SP.scriptCamActive = false
-        if cam and cam ~= 0 then
-            pcall(SetCamActive, cam, false)
-            pcall(DestroyCam, cam, false)
-            pcall(RenderScriptCams, false, false, 0, true, true)
-        end
-    end
-
-    local function createScriptCam()
-        if SP.scriptCam ~= 0 then return true end
-        if type(CreateCam) ~= "function" then return false end
-        local ok, cam = pcall(CreateCam, "DEFAULT_SCRIPTED_CAMERA", true)
-        if not ok or not cam or cam == 0 then return false end
-        SP.scriptCam = cam
-        SP.scriptCamActive = false
-        local okFov, fov = pcall(GetGameplayCamFov)
-        if okFov and finite(fov) and fov > 1.0 then SP.camFov = fov end
-        local okRot, rot = pcall(GetGameplayCamRot, 2)
-        if okRot and rot and finite(rot.x) then
-            SP.camPitch = rot.x
-        end
-        return true
-    end
-
-    -- A scripted camera removes the game camera from the spin loop entirely:
-    -- its position follows the ped and its world rotation is the held yaw, so
-    -- the view cannot orbit while the model turns. The game camera is the
-    -- fallback when the executor refuses script cams.
-    local function updateScriptCam(ped)
-        local cam = SP.scriptCam
-        if cam == 0 then return false end
-        local okExist, exists = pcall(DoesCamExist, cam)
-        if not okExist or not exists then
-            SP.scriptCam = 0
-            SP.scriptCamActive = false
-            return false
-        end
-        local okC, coords = pcall(GetEntityCoords, ped)
-        if not okC or not coords or not finite(coords.x) or not finite(coords.y) or not finite(coords.z) then
-            destroyScriptCam()
-            return false
-        end
-        -- The script camera owns the view, so the game-camera hold path is not
-        -- running. Read look here as well or the camera and the movement frame
-        -- freeze at the arm yaw while the operator moves the mouse.
-        applyLook()
-        local rad = math.rad(SP.camYaw)
-        local fx, fy = -math.sin(rad), math.cos(rad)
-        local distance = 4.5
-        local height = 1.7
-        local cx = coords.x - fx * distance
-        local cy = coords.y - fy * distance
-        local cz = coords.z + height
-        local okPos = pcall(SetCamCoord, cam, cx, cy, cz)
-        local okRot = pcall(SetCamRot, cam, SP.camPitch or -10.0, 0.0, SP.camYaw, 2)
-        if not okPos or not okRot then
-            destroyScriptCam()
-            return false
-        end
-        if not SP.scriptCamActive then
-            local okFov = pcall(SetCamFov, cam, SP.camFov or 50.0)
-            local okActive = pcall(SetCamActive, cam, true)
-            local okRender = pcall(RenderScriptCams, true, false, 0, true, true)
-            if not okFov or not okActive or not okRender then
-                destroyScriptCam()
-                return false
-            end
-            SP.scriptCamActive = true
-            if not SP.scriptCamLogged then
-                SP.scriptCamLogged = true
-                O.log("spin: script camera")
-            end
-        end
-        return true
-    end
     -- Writes the relative heading that keeps the camera at SP.camYaw. The
     -- reference is the ACTUAL ped heading, not the spin target. A target
     -- reference rotates the camera around the player whenever the locomotion
@@ -40594,7 +40453,9 @@ local SP = (function(O, N)
 
     local function movementVector()
         local mx = readControl(30)
-        local my = readControl(31)
+        -- Control 31 reports positive for backward on the live build. The
+        -- world vector wants positive forward, so flip the axis once here.
+        local my = -readControl(31)
         if not finite(mx) or not finite(my) then return nil end
         local raw = math.sqrt(mx * mx + my * my)
         if raw <= 0.08 then return nil end
@@ -40708,6 +40569,9 @@ local SP = (function(O, N)
         else
             SP.probeAt = 0
             SP.moveFails = 0
+            -- No synthetic walk this frame: hand the normal controls back so
+            -- the operator is not locked out of the vanilla movement.
+            setControlsOff(false)
         end
         SP.stats.calls = SP.stats.calls + 1
         return true
@@ -40765,10 +40629,10 @@ local SP = (function(O, N)
         if IsPedDeadOrDying(ped, true) then return false end
 
         setProfile(rowSelected())
-        -- Movement controls are synthetic for the whole active lifetime. If
-        -- they are left live, the on-foot task can consume W/A/S/D for one
-        -- frame in the spin direction before the first disable write lands.
-        setControlsOff(true)
+        -- Movement controls stay live while the operator is idle. They are
+        -- isolated only for the frames where the synthetic walk is active,
+        -- then restored, so the row does not take the normal controls away.
+        setControlsOff(false)
         SP.ped = ped
         SP.active = true
         SP.gen = SP.gen + 1
@@ -40809,10 +40673,6 @@ local SP = (function(O, N)
             return false
         end
         captureCameraYaw(SP.target)
-        if not createScriptCam() and not SP.scriptCamFallbackLogged then
-            SP.scriptCamFallbackLogged = true
-            O.log("spin: script camera unavailable")
-        end
 
         startThread()
         if not SP.active then return false end
@@ -40824,7 +40684,6 @@ local SP = (function(O, N)
 
     function SP.stop(reason)
         setControlsOff(false)
-        destroyScriptCam()
         local wasActive = SP.active
         local ped = SP.ped
         local releaseYaw = SP.camYaw
@@ -40896,8 +40755,8 @@ local SP = (function(O, N)
             controlsOff = SP.controlsOff,
             camYaw = SP.camYaw,
             camHold = SP.camHold,
-            scriptCam = SP.scriptCam ~= 0,
-            camMode = SP.scriptCamActive and "script" or "game",
+            scriptCam = false,
+            camMode = "game",
             suspended = SP.suspended,
             why = SP.lastWhy,
             ticks = SP.ticks,
@@ -40950,7 +40809,6 @@ local SP = (function(O, N)
         local why = suspendedNow(ped)
         if why then
             setControlsOff(false)
-            destroyScriptCam()
             if not SP.suspended then
                 SP.suspended = true
                 SP.stats.suspends = SP.stats.suspends + 1
@@ -40981,7 +40839,6 @@ local SP = (function(O, N)
                 return
             end
             captureCameraYaw(SP.target)
-            createScriptCam()
         end
 
         local dt = (now - SP.lastAt) / 1000.0
@@ -41008,11 +40865,10 @@ local SP = (function(O, N)
         end
 
         -- The heading is the visual spin; the camera frame is the movement
-        -- frame. The script camera holds the world yaw when available; the
-        -- game-camera fallback holds it through the relative-heading write.
-        if not updateScriptCam(ped) then
-            holdCamera()
-        end
+        -- frame. The game camera is left normal: no script camera and no
+        -- frozen frame. The relative heading only keeps the movement basis
+        -- world-stable while the operator looks around.
+        holdCamera()
 
         -- Low-rate readback. A large gap means the locomotion task is winning
         -- the frame and the direct path is not producing the visible spin; the
