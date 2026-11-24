@@ -3994,8 +3994,8 @@ Menu.ThrowPreview = {
     speedPerForce = 1.0 / 20.0,
     -- Drag of the flight, fitted from real throws: dv/dt = -k1 v - k2 |v| v - g.
     -- The linear term is `drag`, the quadratic term is `dragK2`; both are fitted
-    -- against the flight and its landing, and the renderer, the aim solve and
-    -- the guidance integrator all step the same equation.
+    -- against the flight and its landing, and the preview sampler, the ray
+    -- sweep and the calibration all step the same equation.
     drag = 0.0,
     dragK2 = 0.0,
     -- Restitution and tangential retention of the first real surface, learned
@@ -4038,9 +4038,9 @@ end
 
 -- One RK4 step of the measured flight: a = -k1 v - k2 |v| v - g z. The
 -- acceleration depends only on the velocity, so the position is the RK4
--- average of the four stage velocities. Every consumer of the model (aim
--- solve, guidance, path sampler, calibration) steps this same integrator,
--- which is what makes the drawn arc and the solved shot the same curve.
+-- average of the four stage velocities. Every consumer of the model (preview,
+-- calibration, fit) steps this same integrator, so the drawn arc and the
+-- analysed flight are the same curve.
 function Menu.ThrowPreview.stepFlight(x, y, z, vx, vy, vz, k1, k2, h)
     local g = Menu.ThrowPreview.gravity
     local sp = math.sqrt(vx * vx + vy * vy + vz * vz)
@@ -4071,7 +4071,7 @@ end
 
 -- The measured flight at time t, from the launch state. Integrates the same
 -- RK4 step as everything else, so the calibration fit, the predicted arc and
--- the solved shot can never disagree. `k2` defaults to the fitted quadratic
+-- the recorded path can never disagree. `k2` defaults to the fitted quadratic
 -- drag; the legacy closure pass overrides it with 0 because its own model is
 -- the linear one.
 function Menu.ThrowPreview.pathAt(ox, oy, oz, vx, vy, vz, drag, t, k2)
@@ -4088,259 +4088,6 @@ function Menu.ThrowPreview.pathAt(ox, oy, oz, vx, vy, vz, drag, t, k2)
         remaining = remaining - step
     end
     return x, y, z, ux, uy, uz
-end
-
--- Ballistic solve for the aim assist: the launch elevation at the measured
--- speed that puts the flight through the point the reticle is on. Solved on
--- the same integrator the guide renders, so the white line ends exactly on
--- the white crosshair. The flat branch (the first crossing while raising the
--- elevation) is the one picked; nil means the point is out of range and the
--- throw keeps the camera vector.
---
--- Newton from the no-drag flat start converges in a few steps at every range
--- a car is thrown. The result is validated against the branch below it: a
--- solution on the lofted branch has the same sign above itself, and falls
--- through to an explicit scan that returns the first crossing instead.
---
--- The scan starts at -86 degrees on purpose: the car hangs above the head, so
--- a reticle point on the road a few metres ahead needs a launch steeper than
--- -57 degrees. Stopping the scan at -57 made every close ground aim fall
--- through to the camera vector, which then threw the car up and over the
--- street instead of onto the crosshair. When even -86 degrees passes above
--- the target (reticle almost directly under the car), the steepest launch is
--- returned: the car drops where the operator is looking.
-function Menu.ThrowPreview.solveAim(px, py, pz, tx, ty, tz, speed, drag)
-    if not speed or speed < 1.0 then return nil end
-    local dx, dy, dz = tx - px, ty - py, tz - pz
-    local horizontal = math.sqrt(dx * dx + dy * dy)
-    if horizontal < 1.0 then return nil end
-    local ux, uy = dx / horizontal, dy / horizontal
-    local k1 = drag or 0.0
-    local k2 = Menu.ThrowPreview.dragK2 or 0.0
-    local g = Menu.ThrowPreview.gravity
-    local steepest = -1.5
-    local function directionAt(elevation)
-        local c = math.cos(elevation)
-        return {
-            x = ux * c,
-            y = uy * c,
-            z = math.sin(elevation),
-        }
-    end
-    -- Signed height of the shot above the reticle point at the moment the
-    -- horizontal reach crosses the point's range. Positive = passes above.
-    local function errAt(elevation)
-        local c = math.cos(elevation)
-        local hs = speed * c
-        if hs < 0.05 then return nil end
-        local x, y, z = 0.0, 0.0, 0.0
-        local vx, vy, vz = ux * hs, uy * hs, speed * math.sin(elevation)
-        local t = 0.0
-        local prevZ, prevD = 0.0, 0.0
-        while t < 14.0 do
-            local nx, ny, nz, nvx, nvy, nvz = Menu.ThrowPreview.stepFlight(
-                x, y, z, vx, vy, vz, k1, k2, 0.06)
-            local d = math.sqrt(nx * nx + ny * ny)
-            if d >= horizontal then
-                local f = 1.0
-                if d > prevD + 0.0001 then
-                    f = (horizontal - prevD) / (d - prevD)
-                end
-                return prevZ + (nz - prevZ) * f - dz
-            end
-            prevZ, prevD = nz, d
-            x, y, z, vx, vy, vz = nx, ny, nz, nvx, nvy, nvz
-            t = t + 0.06
-        end
-        return nil
-    end
-    -- Flat start: no drag, the descending-arc launch through the point.
-    local t0 = horizontal / speed
-    local elevation = math.atan(dz + 0.5 * g * t0 * t0, horizontal)
-    for _ = 1, 3 do
-        local c = speed * math.cos(elevation)
-        if c < 0.05 then break end
-        t0 = horizontal / c
-        elevation = math.atan(dz + 0.5 * g * t0 * t0, horizontal)
-    end
-    if elevation < steepest then elevation = steepest end
-    if elevation > 1.0 then elevation = 1.0 end
-    local converged = false
-    for _ = 1, 14 do
-        local value = errAt(elevation)
-        if value == nil then break end
-        if math.abs(value) < 0.004 then
-            converged = true
-            break
-        end
-        local value2 = errAt(elevation + 0.002)
-        if value2 == nil then break end
-        local slope = (value2 - value) / 0.002
-        if math.abs(slope) < 0.05 then break end
-        local nextElevation = elevation - value / slope
-        if nextElevation < steepest then nextElevation = steepest end
-        if nextElevation > 1.0 then nextElevation = 1.0 end
-        if math.abs(nextElevation - elevation) < 0.00002 then
-            elevation = nextElevation
-            converged = true
-            break
-        end
-        elevation = nextElevation
-    end
-    if converged then
-        -- Flat-branch check: just below the found solution a flat shot must
-        -- land short (negative). A positive value means this root is on the
-        -- lofted branch and the first crossing is lower.
-        local below = nil
-        if elevation - 0.12 >= steepest then
-            below = errAt(elevation - 0.12)
-        end
-        if below == nil or below <= 0.0 then
-            return directionAt(elevation)
-        end
-    end
-    -- Fallback: explicit scan for the first crossing, then bisect.
-    local prevElevation, prevValue = nil, nil
-    local lastValue = nil
-    for step = 0, 62 do
-        local probe = steepest + 0.04 * step
-        local value = errAt(probe)
-        if value ~= nil then
-            if prevValue ~= nil and prevValue < 0.0 and value >= 0.0 then
-                local lo, hi = prevElevation, probe
-                for _ = 1, 20 do
-                    local mid = 0.5 * (lo + hi)
-                    local v = errAt(mid)
-                    if v == nil then
-                        hi = mid
-                    elseif v < 0.0 then
-                        lo = mid
-                    else
-                        hi = mid
-                    end
-                end
-                return directionAt(0.5 * (lo + hi))
-            end
-            prevElevation, prevValue = probe, value
-            lastValue = value
-        else
-            prevElevation, prevValue = nil, nil
-        end
-    end
-    if dz < 0.0 and lastValue ~= nil and lastValue > 0.0 then
-        return directionAt(steepest)
-    end
-    return nil
-end
-
--- Closest approach of the current flight to a point: where the shot passes
--- nearest the reticle point and how far off it is. This is the guidance gate:
--- while the miss is above tolerance the shot gets corrected, and once it is
--- inside tolerance no force is applied.
-function Menu.ThrowPreview.predictImpact(px, py, pz, vx, vy, vz,
-    tx, ty, tz, k1, k2, tMax)
-    k1 = k1 or 0.0
-    k2 = k2 or 0.0
-    tMax = tMax or 2.2
-    local x, y, z, ux, uy, uz = px, py, pz, vx, vy, vz
-    local d2a, d2b, d2c = nil, nil, nil
-    local tA, tB, tC = nil, nil, nil
-    local t = 0.0
-    while t <= tMax + 0.0001 do
-        local dx, dy, dz = x - tx, y - ty, z - tz
-        local d2 = dx * dx + dy * dy + dz * dz
-        d2a, d2b, d2c = d2b, d2c, d2
-        tA, tB, tC = tB, tC, t
-        -- A three-sample bracket around the lowest distance is refined as a
-        -- parabola, so the reported miss is the true closest approach instead
-        -- of the nearest 50 ms sample.
-        if d2a ~= nil and d2b ~= nil and d2c ~= nil
-            and d2b <= d2a and d2b <= d2c then
-            local denom = d2a - 2.0 * d2b + d2c
-            local offset = 0.0
-            local miss2 = d2b
-            if denom > 1e-9 then
-                local span = tC - tB
-                offset = 0.5 * (d2a - d2c) / denom * span
-                miss2 = d2b - (d2a - d2c) * (d2a - d2c) / (8.0 * denom)
-                if miss2 < 0.0 then miss2 = 0.0 end
-            end
-            return tB + offset, math.sqrt(miss2)
-        end
-        x, y, z, ux, uy, uz = Menu.ThrowPreview.stepFlight(
-            x, y, z, ux, uy, uz, k1, k2, 0.05)
-        t = t + 0.05
-    end
-    if d2c ~= nil then return tC, math.sqrt(d2c) end
-    return nil
-end
-
--- Minimum-impulse velocity that lands the car on the point. For a candidate
--- flight time T the required launch velocity is the one whose integrated path
--- reaches the target at T (Newton on the same model); the guidance picks the
--- T whose required velocity is closest to the current one. That is the
--- mathematically smallest correction that still hits the reticle, instead of
--- a fixed re-aim that cannot recover a wrong launch speed.
-function Menu.ThrowPreview.solveVelocity(px, py, pz, vx, vy, vz,
-    tx, ty, tz, k1, k2, vMax)
-    local g = Menu.ThrowPreview.gravity
-    k1 = k1 or 0.0
-    k2 = k2 or 0.0
-    local dragless = k1 < 0.0001 and k2 < 0.0001
-    local function requiredAt(T)
-        local rx = (tx - px) / T
-        local ry = (ty - py) / T
-        local rz = (tz - pz) / T + 0.5 * g * T
-        if dragless then return rx, ry, rz end
-        for _ = 1, 4 do
-            local sx, sy, sz = Menu.ThrowPreview.pathAt(
-                px, py, pz, rx, ry, rz, k1, T, k2)
-            rx = rx + (tx - sx) / T
-            ry = ry + (ty - sy) / T
-            rz = rz + (tz - sz) / T
-        end
-        return rx, ry, rz
-    end
-    -- The cost scan is the dragless closed form (free) and covers the whole
-    -- remaining flight of a long throw; the candidate times around the best
-    -- are then refined on the full model. A short 2.8 s window could not hit a
-    -- target behind a nine second flight without inventing a lob.
-    local bestT, bestCost = nil, nil
-    local candT, candCost = {}, {}
-    local count = 0
-    for step = 0, 25 do
-        local T = 0.15 * 1.16 ^ step
-        if T > 8.0 then break end
-        local rx, ry, rz = requiredAt(T)
-        local dx, dy, dz = rx - vx, ry - vy, rz - vz
-        local cost = dx * dx + dy * dy + dz * dz
-        count = count + 1
-        candT[count], candCost[count] = T, cost
-        if not bestCost or cost < bestCost then
-            bestT, bestCost = T, cost
-        end
-    end
-    if not bestT then return nil end
-    local bestX, bestY, bestZ, bestRefined = nil, nil, nil, nil
-    local window = bestT * 0.22 + 0.001
-    for i = 1, count do
-        local T = candT[i]
-        if math.abs(T - bestT) <= window then
-            local rx, ry, rz = requiredAt(T)
-            local dx, dy, dz = rx - vx, ry - vy, rz - vz
-            local cost = dx * dx + dy * dy + dz * dz
-            if not bestRefined or cost < bestRefined then
-                bestRefined = cost
-                bestX, bestY, bestZ = rx, ry, rz
-            end
-        end
-    end
-    if not bestX then return nil end
-    if vMax then
-        local speed2 = bestX * bestX + bestY * bestY + bestZ * bestZ
-        if speed2 > vMax * vMax then return nil end
-    end
-    return bestX, bestY, bestZ
 end
 
 function Menu.ThrowPreview.stroke(x1, y1, x2, y2, r, g, b, a, th)
@@ -4371,8 +4118,8 @@ end
 -- the reticle, because the reticle is where that line ends), warning orange
 -- after the first surface so the second and third legs read as the prediction
 -- past the impact instead of as spare strokes. Each segment carries the
--- points the model actually integrated, so the stroke follows the solved
--- curve and the last point of the white leg is the reticle point itself. The
+-- points the model actually integrated, so the stroke follows the real curve
+-- and the last point of the white leg is the predicted impact. The
 -- dash phase and the pen-down state carry across the segment joints, so a
 -- bounce never restarts the line. Strokes are thick on purpose: the guide
 -- must read over bright sand, sea and sky, not disappear into them. Dashes
@@ -4601,9 +4348,9 @@ local function ToggleThrowVehicle(enable)
         -- No entity, event, global or network write is made.
         local PREVIEW_FLIGHT_MAX = 9.0
         local PREVIEW_RAY_STEP = 0.1
-        -- The guide must sit on the reticle every frame while aiming, so the
-        -- rebuild triggers are tight: a half-degree turn or 40 ms re-solves
-        -- the aim and re-traces the path.
+        -- The preview must track the camera every frame while carrying, so
+        -- the rebuild triggers are tight: a half-degree turn or 40 ms
+        -- re-samples the path.
         local PREVIEW_RECOMPUTE_MS = 40
         local PREVIEW_TURN_DOT = 0.99996
         local PREVIEW_MOVE_SQ = 0.1225
@@ -5112,16 +4859,8 @@ local function ToggleThrowVehicle(enable)
             end
         end
 
-        -- Guidance constants. The first correction can cancel a large speed
-        -- error (a light car on a heavy car's prior); the following ones only
-        -- trim the residual of the model, so they stay small and sparse.
-        local GUIDE_TOL = 0.10
-        local GUIDE_MIN = 0.25
-        local GUIDE_STEP = 0.06
-        local GUIDE_FIRST_CAP = 26.0
-        local GUIDE_SHOT_CAP = 8.0
-        local GUIDE_TOTAL = 36.0
-        local GUIDE_WINDOW = 8.0
+        -- Caps the post-impact samples kept for the bounce fit: about 0.45 s
+        -- of flight at 16 ms frames, with headroom for jitter.
         local POST_MAX = 280
 
         local function updateThrowCalibration()
@@ -5155,7 +4894,7 @@ local function ToggleThrowVehicle(enable)
             -- carries motion. Reading the entity here instead of fitting the
             -- sampled path removes the one-frame impulse ramp from the
             -- measurement, which is the bias that used to shrink the model's
-            -- reach and throw the car past the reticle.
+            -- reach.
             if pending.v1 == nil and tau > 0.006 then
                 local vx, vy, vz = readEntityVelocity(pending.entity)
                 local dvx = vx - pending.baseX
@@ -5163,124 +4902,6 @@ local function ToggleThrowVehicle(enable)
                 local dvz = vz - pending.baseZ
                 if dvx * dvx + dvy * dvy + dvz * dvz >= 2.25 then
                     pending.v1 = { x = vx, y = vy, z = vz, t = tau }
-                end
-            end
-            -- Online drag identification for the current flight. The engine's
-            -- own deceleration between two measured velocities, gravity
-            -- removed, is a = -(k1 + k2|v|)v; two samples at different speeds
-            -- solve the pair. A long shot is then closed on the actual
-            -- deceleration of this car instead of another car's fit, which is
-            -- what keeps a 200 m throw from sailing high. Blended, clamped,
-            -- and only while the flight is airborne.
-            if pending.v1 ~= nil and not pending.ended
-                and tau - (pending.dragTAt or 0.0) >= 0.09 then
-                local vx, vy, vz = readEntityVelocity(pending.entity)
-                local prev = pending.dragLast
-                if prev ~= nil then
-                    local dt = tau - prev.t
-                    local sp1 = math.sqrt(prev.x * prev.x + prev.y * prev.y
-                        + prev.z * prev.z)
-                    local sp2 = math.sqrt(vx * vx + vy * vy + vz * vz)
-                    if dt > 0.02 and sp1 > 4.0 and sp2 > 4.0 then
-                        local ax = (vx - prev.x) / dt
-                        local ay = (vy - prev.y) / dt
-                        local az = (vz - prev.z) / dt + PREVIEW_GRAVITY
-                        local b1 = -(ax * prev.x + ay * prev.y
-                            + az * prev.z) / sp1
-                        local b2 = -(ax * vx + ay * vy + az * vz) / sp2
-                        local den = sp1 * sp2 * (sp2 - sp1)
-                        if math.abs(den) > 40.0 then
-                            local k1v = (b1 * sp2 * sp2 - b2 * sp1 * sp1)
-                                / den
-                            local k2v = (b2 * sp1 - b1 * sp2) / den
-                            if k1v == k1v and k2v == k2v then
-                                if k1v < 0.0 then k1v = 0.0
-                                elseif k1v > 0.8 then k1v = 0.8 end
-                                if k2v < 0.0 then k2v = 0.0
-                                elseif k2v > 0.04 then k2v = 0.04 end
-                                pending.k1 = 0.8 * (pending.k1 or k1v)
-                                    + 0.2 * k1v
-                                pending.k2 = 0.8 * (pending.k2 or k2v)
-                                    + 0.2 * k2v
-                            end
-                        end
-                    end
-                end
-                pending.dragLast = { x = vx, y = vy, z = vz, t = tau }
-                pending.dragTAt = tau
-            end
-            -- Mid-flight guidance. The first impulse is open loop: the model's
-            -- speed and drag against a real engine. While the flight is in the
-            -- air the actual velocity is measurable, so the remaining
-            -- trajectory is re-solved onto the reticle point every tick it has
-            -- drifted, and the smallest velocity change that closes the gap is
-            -- applied as one bounded impulse. First correction wide (a light
-            -- car on a heavy prior), the rest small trims; the loop stops as
-            -- soon as the predicted miss is inside tolerance, so a shot that is
-            -- already on the crosshair is never touched.
-            if pending.aimX ~= nil and pending.aimY ~= nil
-                and pending.aimZ ~= nil and not pending.ended then
-                local k1 = pending.k1
-                if k1 == nil then k1 = Menu.ThrowPreview.drag or 0.0 end
-                local k2 = pending.k2
-                if k2 == nil then k2 = Menu.ThrowPreview.dragK2 or 0.0 end
-                local vx, vy, vz = readEntityVelocity(pending.entity)
-                local sp = Menu.ThrowPreview.speedPerForce
-                local speed2 = vx * vx + vy * vy + vz * vz
-                if pending.guideAt == nil then
-                    pending.guideAt = -1.0
-                    pending.spent = 0.0
-                    pending.shots = 0
-                end
-                if sp and sp > 0.0001 and speed2 >= 9.0
-                    and tau <= GUIDE_WINDOW and pending.spent < GUIDE_TOTAL
-                    and tau - pending.guideAt >= GUIDE_STEP then
-                    local tHit, miss = Menu.ThrowPreview.predictImpact(
-                        bx, by, bz, vx, vy, vz,
-                        pending.aimX, pending.aimY, pending.aimZ, k1, k2, 9.0)
-                    if tHit ~= nil and miss ~= nil and tHit > 0.18
-                        and miss > GUIDE_TOL then
-                        local rvx, rvy, rvz =
-                            Menu.ThrowPreview.solveVelocity(
-                                bx, by, bz, vx, vy, vz,
-                                pending.aimX, pending.aimY, pending.aimZ,
-                                k1, k2, 60.0)
-                        if rvx ~= nil then
-                            local dvx = rvx - vx
-                            local dvy = rvy - vy
-                            local dvz = rvz - vz
-                            local mag = math.sqrt(dvx * dvx + dvy * dvy
-                                + dvz * dvz)
-                            local cap = GUIDE_TOTAL - pending.spent
-                            local perShot = GUIDE_SHOT_CAP
-                            if pending.shots == 0 then
-                                perShot = GUIDE_FIRST_CAP
-                            end
-                            if perShot > cap then perShot = cap end
-                            if mag >= GUIDE_MIN and perShot > 0.05 then
-                                local scale = 1.0
-                                if mag > perShot then
-                                    scale = perShot / mag
-                                end
-                                local inv = scale / sp
-                                pcall(ApplyForceToEntity, pending.entity, 1,
-                                    dvx * inv, dvy * inv, dvz * inv,
-                                    0.0, 0.0, 0.0, 0, false, true, true,
-                                    false, true)
-                                if pending.shots == 0 then
-                                    pending.v1eff = {
-                                        x = vx + dvx * scale,
-                                        y = vy + dvy * scale,
-                                        z = vz + dvz * scale,
-                                        t = tau,
-                                    }
-                                end
-                                pending.spent = pending.spent + mag * scale
-                                pending.shots = pending.shots + 1
-                                pending.guideAt = tau
-                            end
-                        end
-                    end
                 end
             end
             if tau > 0.012 then
@@ -5415,14 +5036,16 @@ local function ToggleThrowVehicle(enable)
 
         -- The whole preview path: the first flight, then up to five bounces.
         -- The flight is integrated once per segment and its points are stored,
-        -- so the renderer draws exactly the curve that was solved instead of
-        -- re-deriving it. A bounce reflects the impact velocity about the
+        -- so the renderer draws exactly the curve the sampler integrated
+        -- instead of re-deriving it. A bounce reflects the impact velocity
+        -- about the
         -- measured normal with the restitution and tangential retention
         -- learned from the last real throw: ground and wall keep separate
         -- pairs because a car drops dead on asphalt and rebounds off a wall.
         local function buildPreviewPath(px, py, pz, vx, vy, vz,
             ignoreEntity, ped, ignoreExtra)
             local segments = {}
+            local firstImpact = false
             local tBase = 0.0
             local bounceBudget = 4.0
             local budget = PREVIEW_FLIGHT_MAX
@@ -5469,6 +5092,7 @@ local function ToggleThrowVehicle(enable)
                             dur = hitTime
                             hitX, hitY, hitZ = fx, fy, fz
                             hitNX, hitNY, hitNZ = fnx, fny, fnz
+                            if bounce == 0 then firstImpact = true end
                             break
                         end
                         chordX, chordY, chordZ = nx, ny, nz
@@ -5520,105 +5144,16 @@ local function ToggleThrowVehicle(enable)
                 tBase = tBase + dur
                 budget = bounceBudget
             end
-            return segments
-        end
-
-        -- The throw is aimed, not only pointed: the camera ray finds the
-        -- surface under the reticle, the ballistic solve finds the launch
-        -- elevation that puts the car on it, and the impulse uses that
-        -- direction. The solved direction and the surface point are stored on
-        -- the preview state, so the throw can reuse the exact shot the line was
-        -- drawn with instead of firing a second ray a few milliseconds later.
-        local function resolveAimDirection(ped, entity, dx, dy, dz, carPos,
-            belly, ignoreExtra)
-            local outX, outY, outZ = dx, dy, dz
-            Menu.ThrowPreview.aimTValid = false
-            Menu.ThrowPreview.aimSpeed = nil
-            Menu.ThrowPreview.aimDirX, Menu.ThrowPreview.aimDirY,
-                Menu.ThrowPreview.aimDirZ = outX, outY, outZ
-            Menu.ThrowPreview.aimAt = nowMs()
-            if type(GetGameplayCamCoord) ~= "function"
-                or type(StartShapeTestRay) ~= "function"
-                or type(GetShapeTestResult) ~= "function" then
-                return outX, outY, outZ
-            end
-            local okCam, camPos = pcall(GetGameplayCamCoord)
-            if not okCam or not camPos or type(camPos.x) ~= "number" then
-                return outX, outY, outZ
-            end
-            local reach = 600.0
-            local tx = camPos.x + dx * reach
-            local ty = camPos.y + dy * reach
-            local tz = camPos.z + dz * reach
-            local onSurface = false
-            local okRay, handle = pcall(StartShapeTestRay,
-                camPos.x, camPos.y, camPos.z, tx, ty, tz, -1, ped, 0)
-            if okRay and type(handle) == "number" then
-                local okRes, _, hit, coords, _, hitEntity =
-                    pcall(GetShapeTestResult, handle)
-                if okRes and hit == 1 and coords
-                    and type(coords.x) == "number"
-                    and hitEntity ~= ped and hitEntity ~= entity
-                    and (not ignoreExtra or ignoreExtra == 0
-                        or hitEntity ~= ignoreExtra) then
-                    tx, ty, tz = coords.x, coords.y, coords.z
-                    onSurface = true
-                end
-            end
-            -- Only a real surface hit is a target. A missed ray leaves the far
-            -- point in the sky; solving against it could invent a target above
-            -- the car, which is exactly the skyward throw this must never do.
-            if onSurface then
-                local priorSpeed = THROW_FORCE * Menu.ThrowPreview.speedPerForce
-                Menu.ThrowPreview.aimTX = tx
-                Menu.ThrowPreview.aimTY = ty
-                Menu.ThrowPreview.aimTZ = tz
-                Menu.ThrowPreview.aimSpeed = priorSpeed
-                local solved = Menu.ThrowPreview.solveAim(
-                    carPos.x, carPos.y, carPos.z + belly, tx, ty, tz,
-                    priorSpeed, Menu.ThrowPreview.drag or 0.0)
-                if not solved then
-                    -- The point is past the prior's ballistic range. The
-                    -- minimum launch speed that reaches it is physical, not a
-                    -- cheat: the impulse is scaled to that speed and the line
-                    -- is solved at it, so a long throw still lands on the
-                    -- crosshair instead of sailing over it. Gravity-only
-                    -- estimate with escalating margins, because drag eats
-                    -- range and the double root is ill-conditioned.
-                    local hx, hy = tx - carPos.x, ty - carPos.y
-                    local drop = carPos.z + belly - tz
-                    local range = hx * hx + hy * hy
-                    local vMin = math.sqrt(PREVIEW_GRAVITY * (drop
-                        + math.sqrt(drop * drop + range)))
-                    local margins = { 1.03, 1.09, 1.16 }
-                    for i = 1, 3 do
-                        local speedTry = vMin * margins[i]
-                        if speedTry > priorSpeed and speedTry <= 55.0 then
-                            solved = Menu.ThrowPreview.solveAim(
-                                carPos.x, carPos.y, carPos.z + belly,
-                                tx, ty, tz, speedTry,
-                                Menu.ThrowPreview.drag or 0.0)
-                            if solved then
-                                Menu.ThrowPreview.aimSpeed = speedTry
-                                break
-                            end
-                        end
-                    end
-                end
-                Menu.ThrowPreview.aimTValid = true
-                if solved then
-                    outX, outY, outZ = solved.x, solved.y, solved.z
-                end
-            end
-            Menu.ThrowPreview.aimDirX, Menu.ThrowPreview.aimDirY,
-                Menu.ThrowPreview.aimDirZ = outX, outY, outZ
-            Menu.ThrowPreview.aimAt = nowMs()
-            return outX, outY, outZ
+            return segments, firstImpact
         end
 
         -- Samples the path for the render callback. Nothing is drawn here: the
         -- overlay must be submitted inside the library's frame, not from this
-        -- thread, or BeginFrame clears it before SubmitFrame.
+        -- thread, or BeginFrame clears it before SubmitFrame. The line models
+        -- the throw exactly as it will leave the hand: the live camera vector,
+        -- the old 500 impulse at the measured transfer, the learned drag. No
+        -- elevation is solved above the reticle and nothing steers the car in
+        -- flight: the reticle is the direction, the line is the shot.
         local function updateThrowPreview(ped, entity)
             if type(GetEntityCoords) ~= "function"
                 or type(GetGameplayCamRot) ~= "function" then
@@ -5660,28 +5195,27 @@ local function ToggleThrowVehicle(enable)
                         ignoreExtra = value
                     end
                 end
-                local aimX, aimY, aimZ = resolveAimDirection(ped, entity,
-                    direction.x, direction.y, direction.z, carPos, carryMinZ,
-                    ignoreExtra)
-                -- The solved speed, raised when the reticle is past the
-                -- prior's ballistic range: the guide must draw the shot the
-                -- throw will actually make, not the prior it cannot reach.
-                local speed = Menu.ThrowPreview.aimSpeed
-                if type(speed) ~= "number" or speed < 0.5 then
-                    speed = THROW_FORCE * Menu.ThrowPreview.speedPerForce
-                end
+                -- The line is the shot: the live camera vector, the old 500
+                -- impulse at the measured transfer, nothing solved above the
+                -- reticle and nothing added below it.
+                local speed = THROW_FORCE * Menu.ThrowPreview.speedPerForce
                 -- The guide starts from the car's own live velocity, not the
                 -- ped's: the attach can hand the chassis a little residual
                 -- motion the ped never has, and a thrown car adds that to the
                 -- impulse. Reading the entity keeps the line and the flight
                 -- on the same start.
                 local baseVX, baseVY, baseVZ = readEntityVelocity(entity)
-                local vx = baseVX + aimX * speed
-                local vy = baseVY + aimY * speed
-                local vz = baseVZ + aimZ * speed
-                Menu.ThrowPreview.segments = buildPreviewPath(
+                local vx = baseVX + direction.x * speed
+                local vy = baseVY + direction.y * speed
+                local vz = baseVZ + direction.z * speed
+                local segments, computed = buildPreviewPath(
                     carPos.x, carPos.y, baseZ, vx, vy, vz, entity, ped,
                     ignoreExtra)
+                -- A throw the model cannot close on a surface inside its
+                -- window has no line: a dangling or invented guide is worse
+                -- than no guide.
+                if not computed then segments = nil end
+                Menu.ThrowPreview.segments = segments
                 Menu.ThrowPreview.lift =
                     math.max(0.2, math.min(3.0, -carryMinZ))
                 Menu.ThrowPreview.valid = true
@@ -5842,26 +5376,10 @@ local function ToggleThrowVehicle(enable)
             if type(dirX) ~= "number" then dirX = 0.0 end
             if type(dirY) ~= "number" then dirY = 0.0 end
             if type(dirZ) ~= "number" then dirZ = 0.0 end
-            -- The impulse can be scaled up when the solve asked for a speed
-            -- past the prior: a long target needs a real launch speed, and the
-            -- line was drawn at exactly that speed. Never below the old 500,
-            -- and never past the physical ceiling the solve already enforces.
-            local impulse = THROW_FORCE
-            local aimSpeed = Menu.ThrowPreview.aimSpeed
-            if type(aimSpeed) == "number" and aimSpeed > 0.5
-                and nowMs() - (Menu.ThrowPreview.aimAt or 0) <= 80 then
-                local spNow = Menu.ThrowPreview.speedPerForce
-                if spNow and spNow > 0.0001 then
-                    impulse = aimSpeed / spNow
-                    if impulse < THROW_FORCE then impulse = THROW_FORCE end
-                    local ceiling = 60.0 / spNow
-                    if impulse > ceiling then impulse = ceiling end
-                end
-            end
             pcall(ApplyForceToEntity, entity, 1,
-                dirX * impulse,
-                dirY * impulse,
-                dirZ * impulse,
+                dirX * THROW_FORCE,
+                dirY * THROW_FORCE,
+                dirZ * THROW_FORCE,
                 0.0, 0.0, 0.0, 0, false, true, true, false, true)
             -- releaseHeld already set this pair; repeat it after the impulse
             -- in case a build clears the pair when the entity starts moving.
@@ -5873,17 +5391,6 @@ local function ToggleThrowVehicle(enable)
             -- point, the landing point and the time between them.
             local startTime = nowMs()
             local okStart, startPos = pcall(GetEntityCoords, entity)
-            -- The reticle point this shot was solved onto, when the preview
-            -- had one: the one-shot launch correction closes onto it.
-            local aimTX, aimTY, aimTZ = nil, nil, nil
-            local aimAge = nowMs() - (Menu.ThrowPreview.aimAt or 0)
-            if Menu.ThrowPreview.aimTValid and Menu.ThrowPreview.aimTX
-                and Menu.ThrowPreview.aimTY and Menu.ThrowPreview.aimTZ
-                and aimAge >= 0 and aimAge <= 80 then
-                aimTX = Menu.ThrowPreview.aimTX
-                aimTY = Menu.ThrowPreview.aimTY
-                aimTZ = Menu.ThrowPreview.aimTZ
-            end
             if startTime > 0 and okStart and startPos
                 and type(startPos.x) == "number" then
                 local belly = carryMinZ
@@ -5897,9 +5404,6 @@ local function ToggleThrowVehicle(enable)
                     z0 = startPos.z + belly,
                     baseX = baseVX, baseY = baseVY, baseZ = baseVZ,
                     dirX = dirX, dirY = dirY, dirZ = dirZ,
-                    aimX = aimTX, aimY = aimTY, aimZ = aimTZ,
-                    k1 = Menu.ThrowPreview.drag or 0.0,
-                    k2 = Menu.ThrowPreview.dragK2 or 0.0,
                     lastX = startPos.x,
                     lastY = startPos.y,
                     lastZ = startPos.z + belly,
@@ -5965,41 +5469,13 @@ local function ToggleThrowVehicle(enable)
                         local camRot = GetGameplayCamRot(2)
                         local direction = RotationToDirection(camRot)
                         local entity = heldEntity
-                        -- The impulse follows the exact solved shot the line
-                        -- was drawn with. The preview solved it this frame and
-                        -- stored the direction and the surface point; reusing
-                        -- them removes the second ray (and any chance the two
-                        -- solves disagree by a millisecond of camera motion).
-                        local aim = direction
-                        local aimAge = nowMs() - (Menu.ThrowPreview.aimAt or 0)
-                        if Menu.ThrowPreview.aimDirX ~= nil and aimAge >= 0
-                            and aimAge <= 80 then
-                            aim = {
-                                x = Menu.ThrowPreview.aimDirX,
-                                y = Menu.ThrowPreview.aimDirY,
-                                z = Menu.ThrowPreview.aimDirZ,
-                            }
-                        else
-                            local okPos, carPos = pcall(GetEntityCoords, entity)
-                            if okPos and carPos
-                                and type(carPos.x) == "number" then
-                                local ignoreExtra = 0
-                                if type(GetVehiclePedIsIn) == "function" then
-                                    local okVeh, value =
-                                        pcall(GetVehiclePedIsIn, playerPed, false)
-                                    if okVeh and type(value) == "number" then
-                                        ignoreExtra = value
-                                    end
-                                end
-                                local aimX, aimY, aimZ = resolveAimDirection(
-                                    playerPed, entity, direction.x, direction.y,
-                                    direction.z, carPos, carryMinZ, ignoreExtra)
-                                aim = { x = aimX, y = aimY, z = aimZ }
-                            end
-                        end
+                        -- The throw leaves along the camera vector read on
+                        -- this frame: exactly what the reticle points at, the
+                        -- same vector the line was drawn with. Nothing is
+                        -- re-solved and nothing is corrected in flight.
                         holdingEntity = false
                         heldEntity = nil
-                        throwHeld(entity, playerPed, aim)
+                        throwHeld(entity, playerPed, direction)
                     end
                 end
             else
@@ -40168,10 +39644,10 @@ end)(O,S,B,Menu)
 -- sampled every tick, so the walk follows the view without a script camera, a
 -- relative-heading hold, or any other camera write. Control 31 is positive for
 -- backward on the live build, so it is flipped once before the world vector is
--- built. A/D strafe, Z/W forward and S backward. Space/Ctrl is a low bounded
--- vertical fly (4 m/s). Outside fly a stateful vertical velocity accumulates
--- real gravity; both the velocity and position paths write that state, so a
--- descent is never pinned by a horizontal writer.
+-- built. A/D strafe, Z/W forward and S backward. Space/Ctrl is the No Clip
+-- Undetect vertical line (12 m/s, 18 m/s^2 ramp, 28 m/s total cap); ped gravity
+-- is disabled while armed and integrated manually, so a descent is never
+-- pinned by a horizontal writer. Collision stays on: flight, not pass-through.
 --
 -- The desired-heading native stays on the spin too, so the task steering
 -- target matches the entity heading. The velocity write is what makes the
@@ -40292,7 +39768,15 @@ local SP = (function(O, N)
         lastTickAt = 0,
         ticks = 0,
         onChange = nil,
-        stats = { calls = 0, moves = 0, positionWrites = 0, suspends = 0, resumes = 0, lag = 0.0, camWrites = 0, camFails = 0 },
+        gravityOff = false,
+        airControlsOff = false,
+        vz = 0.0,
+        verticalAssist = false,
+        lastZ = nil,
+        vzProbeAt = 0,
+        vzProbeZ = nil,
+        vzProbeWant = 0.0,
+        stats = { calls = 0, moves = 0, positionWrites = 0, verticalWrites = 0, suspends = 0, resumes = 0, lag = 0.0, camWrites = 0, camFails = 0 },
     }
 
     local function wrap360(a)
@@ -40411,37 +39895,139 @@ local SP = (function(O, N)
         end
     end
 
-    -- Vertical controls use the same Space/Ctrl pair as the air-movement
-    -- module. The fly speed is deliberately low so it reads as an ordinary
-    -- vertical correction, not a noclip burst. Gravity is stateful: a
-    -- descending ped keeps falling even when the horizontal writer owns the
-    -- frame, and the position fallback integrates the same vertical state.
-    -- The Z axis is never pinned.
-    local FLY_SPEED = 4.0
+    -- Vertical controls borrow the No Clip Undetect profile: explicit
+    -- vertical 12 m/s, 18 m/s^2 acceleration, 28 m/s total cap. The key
+    -- difference from the previous version is that ped gravity is disabled
+    -- while Spinbot is armed and gravity is integrated here. A velocity write
+    -- therefore cannot be cancelled by the engine's own gravity, which was
+    -- the source of both "fly does nothing" and "descending but altitude
+    -- stays pinned". Collision stays enabled: this is low-speed flight, not a
+    -- pass-through noclip.
+    local FLY_SPEED = 12.0
     local GRAVITY = 9.81
     local MAX_FALL = 20.0
+    local FLY_ACCEL = 18.0
+    local SPEED_CAP = 28.0
+    local VK_SPACE, VK_CONTROL = 0x20, 0x11
 
-    local function flyInput()
-        local up, down = false, false
-        if type(IsControlPressed) == "function" then
-            local okU, value = pcall(IsControlPressed, 0, 22)
-            up = okU and value == true
-            local okD, value2 = pcall(IsControlPressed, 0, 36)
-            down = okD and value2 == true
+    -- Read the action first, then the disabled-control value, then the raw
+    -- Susano key state. Space/Ctrl are disabled while Spinbot is armed so a
+    -- held fly key cannot open a parachute or start a jump task; the disabled
+    -- read is what keeps the same key available to the fly controller. This is
+    -- the input path the No Clip module already uses.
+    local function controlDown(control, vk)
+        local ok, value = pcall(IsControlPressed, 0, control)
+        if ok and (value == true or value == 1) then return true end
+        local okDisabled, disabled = pcall(IsDisabledControlPressed, 0, control)
+        if okDisabled and (disabled == true or disabled == 1) then return true end
+        local api = rawget(_G, "Susano")
+        if type(api) == "table" and type(api.GetAsyncKeyState) == "function" then
+            local okRaw, raw = pcall(api.GetAsyncKeyState, vk)
+            if okRaw and (raw == true or raw == 1) then return true end
         end
-        return up, down
+        return false
     end
 
-    local function isAirborne(ped)
+    local function flyInput()
+        return controlDown(22, VK_SPACE), controlDown(36, VK_CONTROL)
+    end
+
+    local function setGravityOff(off)
+        off = off and true or false
+        if SP.gravityOff == off then return true end
+        local ped = SP.ped
+        if not ped or ped == 0 or not DoesEntityExist(ped) then return false end
+        local ok = pcall(SetPedGravity, ped, not off)
+        if not ok then return false end
+        pcall(SetEntityHasGravity, ped, not off)
+        SP.gravityOff = off
+        return true
+    end
+
+    local function setAirControlsOff(off)
+        off = off and true or false
+        if SP.airControlsOff == off then return end
+        local fn = off and DisableControlAction or EnableControlAction
+        if type(fn) ~= "function" then return end
+        pcall(fn, 0, 22, true)
+        pcall(fn, 0, 36, true)
+        SP.airControlsOff = off
+    end
+
+    local function reassertAirControls()
+        if not SP.airControlsOff then return end
+        if type(DisableControlAction) ~= "function" then return end
+        pcall(DisableControlAction, 0, 22, true)
+        pcall(DisableControlAction, 0, 36, true)
+    end
+
+    local function engageAirState()
+        setAirControlsOff(true)
+        if not setGravityOff(true) then
+            -- The position assist is the backstop when a runtime refuses the
+            -- gravity flag: the velocity Z is then written but cannot be
+            -- trusted to survive the engine step.
+            SP.verticalAssist = true
+            O.log("spin: gravity flag refused; vertical assist")
+        end
+    end
+
+    local function releaseAirState()
+        setAirControlsOff(false)
+        setGravityOff(false)
+        SP.vz = 0.0
+        SP.verticalAssist = false
+        SP.lastZ = nil
+        SP.vzProbeAt = 0
+        SP.vzProbeZ = nil
+        SP.vzProbeWant = 0.0
+    end
+
+    local currentVertical
+
+    local function heightAboveGround(ped)
         if type(GetEntityHeightAboveGround) == "function" then
             local ok, height = pcall(GetEntityHeightAboveGround, ped)
-            if ok and finite(height) then return height > 0.05 end
+            if ok and finite(height) then return height end
         end
+        if O.Ctx and finite(O.Ctx.height) then return O.Ctx.height end
+        return nil
+    end
+
+    -- Multiple sensors, ORed. The previous version returned early from the
+    -- ground-height read, so a 0.0 height on a ledge edge discarded a real
+    -- IsEntityInAir/IsPedFalling/negative-velocity descent and the vertical
+    -- writer held altitude. A measured Z drop is the final proof.
+    local function isAirborne(ped)
+        local air = false
+        local height = heightAboveGround(ped)
+        if height and height > 0.05 then air = true end
         if type(IsEntityInAir) == "function" then
-            local ok, air = pcall(IsEntityInAir, ped)
-            if ok and type(air) == "boolean" then return air end
+            local ok, value = pcall(IsEntityInAir, ped)
+            if ok and value == true then air = true end
         end
-        return O.Ctx and finite(O.Ctx.height) and O.Ctx.height > 0.5 or false
+        if type(IsPedFalling) == "function" then
+            local ok, value = pcall(IsPedFalling, ped)
+            if ok and value == true then air = true end
+        end
+        if currentVertical(ped) < -0.5 then air = true end
+        local okC, coords = pcall(GetEntityCoords, ped)
+        if okC and coords and finite(coords.z) then
+            if SP.lastZ ~= nil and coords.z < SP.lastZ - 0.01 then air = true end
+            SP.lastZ = coords.z
+            -- Third sensor: the map ground Z. It catches the ledge/roof edge
+            -- where the height-above-ground native can report 0 while the
+            -- entity is already over empty space. Read only, never a write.
+            if not air and type(GetGroundZFor_3dCoord) == "function" then
+                local okG, retval, groundZ = pcall(GetGroundZFor_3dCoord,
+                    coords.x, coords.y, coords.z, true)
+                if okG and retval == true and finite(groundZ)
+                    and coords.z > groundZ + 0.1 then
+                    air = true
+                end
+            end
+        end
+        return air
     end
 
     -- Reads only. First-person and cinematic are suspended because the camera
@@ -40472,7 +40058,12 @@ local SP = (function(O, N)
         local okDive, diving = pcall(IsPedDiving, ped)
         if okDive and diving and not flying then return "dive" end
         if O.Ctx and O.Ctx.ragdoll then return "ragdoll" end
-        if not flying and O.Ctx and O.Ctx.height and O.Ctx.height > 1.0 then
+        -- While the module owns gravity, a descending body is the intended
+        -- state, not a reason to suspend and hand physics back. The old
+        -- fall/air suspension is what turned a real descent into a frozen
+        -- altitude whenever the cached height crossed the threshold.
+        if not flying and not SP.gravityOff and O.Ctx and O.Ctx.height
+            and O.Ctx.height > 1.0 then
             local okFall, falling = pcall(IsPedFalling, ped)
             if okFall and falling then return "fall" end
             local okAir, air = pcall(IsEntityInAir, ped)
@@ -40582,45 +40173,83 @@ local SP = (function(O, N)
         return speed * (mag or 1.0)
     end
 
-    local function currentVertical(ped)
+    currentVertical = function(ped)
         local okV, vel = pcall(GetEntityVelocity, ped)
         if okV and type(vel) == "table" and finite(vel.z) then return vel.z end
         return 0.0
     end
 
-    -- Fly is a low bounded vertical input. Outside fly the module owns a
-    -- stateful vertical velocity: gravity accumulates every frame while the
-    -- ped is airborne, and the state is written through both the velocity and
-    -- the position fallback. That removes the "descending but height stays
-    -- pinned" case: a negative state is never discarded just because the
-    -- horizontal writer is active.
-    local function verticalVelocity(ped, dt, positionMode)
+    local function approach(value, target, maxDelta)
+        if value < target then
+            return math.min(value + maxDelta, target)
+        end
+        return math.max(value - maxDelta, target)
+    end
+
+    -- Fly target is the No Clip Undetect explicit vertical (12 m/s), ramped
+    -- at the same 18 m/s^2. Outside fly the state is integrated gravity. Ped
+    -- gravity is off while armed, so this state is authoritative on both the
+    -- velocity and position paths and cannot be cancelled by the engine.
+    local function verticalVelocity(ped, dt)
         local up, down = flyInput()
         if up ~= down then
-            if down and not isAirborne(ped) then
-                SP.vz = 0.0
-                return 0.0
-            end
-            SP.vz = up and FLY_SPEED or -FLY_SPEED
+            local target = up and FLY_SPEED or -FLY_SPEED
+            if down and not isAirborne(ped) then target = 0.0 end
+            SP.vz = approach(SP.vz or 0.0, target, FLY_ACCEL * dt)
             return SP.vz
         end
-        local live = currentVertical(ped)
-        local airborne = isAirborne(ped)
-        -- A real descent can briefly read as grounded on a ledge/slope edge.
-        -- Keep the negative vertical state in that case instead of pinning Z.
-        if not airborne and live < -0.5 then airborne = true end
-        if airborne then
-            local vz = (SP.vz or 0.0) - GRAVITY * dt
-            if vz < -MAX_FALL then vz = -MAX_FALL end
-            SP.vz = vz
+        if isAirborne(ped) then
+            SP.vz = math.max(-MAX_FALL, (SP.vz or 0.0) - GRAVITY * dt)
         else
             SP.vz = 0.0
+            SP.verticalAssist = false
+            SP.vzProbeAt = 0
         end
         return SP.vz
     end
 
+    -- Read-only vertical probe. If the velocity write is being ignored by the
+    -- on-foot task, the measured Z does not move; latch the bounded position
+    -- assist. It is cleared on ground/stop, never per probe, so the path cannot
+    -- oscillate between "velocity ignored" and "assist off" every 150 ms.
+    local function probeVertical(ped)
+        if SP.positionMove or SP.verticalAssist then return end
+        local want = SP.vz or 0.0
+        if math.abs(want) < 0.75 then
+            SP.vzProbeAt = 0
+            SP.vzProbeZ = nil
+            SP.vzProbeWant = 0
+            return
+        end
+        local okC, coords = pcall(GetEntityCoords, ped)
+        if not okC or not coords or not finite(coords.z) then return end
+        local now = O.now()
+        if SP.vzProbeAt == 0 then
+            SP.vzProbeAt = now
+            SP.vzProbeZ = coords.z
+            SP.vzProbeWant = want
+            return
+        end
+        if now - SP.vzProbeAt < 150 then return end
+        local actual = coords.z - (SP.vzProbeZ or coords.z)
+        if math.abs(actual) < 0.02 then
+            SP.verticalAssist = true
+            O.log("spin: vertical assist")
+        end
+        SP.vzProbeAt = now
+        SP.vzProbeZ = coords.z
+        SP.vzProbeWant = want
+    end
+
     local function applyVelocity(ped, dx, dy, speed, vz)
-        local ok = pcall(SetEntityVelocity, ped, dx * speed, dy * speed, vz or 0.0)
+        local vx, vy = dx * speed, dy * speed
+        local z = vz or 0.0
+        local mag = math.sqrt(vx * vx + vy * vy + z * z)
+        if mag > SPEED_CAP and mag > 0.0 then
+            local scale = SPEED_CAP / mag
+            vx, vy, z = vx * scale, vy * scale, z * scale
+        end
+        local ok = pcall(SetEntityVelocity, ped, vx, vy, z)
         if ok then
             SP.stats.moves = SP.stats.moves + 1
             if not SP.moveLogged then
@@ -40640,14 +40269,35 @@ local SP = (function(O, N)
         if not okC or not coords or not finite(coords.x) or not finite(coords.y) or not finite(coords.z) then
             return
         end
-        local step = speed * (dt or (1.0 / 60.0))
+        local frame = dt or (1.0 / 60.0)
+        local step = speed * frame
         if step > 0.6 then step = 0.6 end
-        local zStep = (vz or 0.0) * (dt or (1.0 / 60.0))
+        local zStep = (vz or 0.0) * frame
+        local total = math.sqrt(step * step + zStep * zStep)
+        local maxStep = SPEED_CAP * frame
+        if total > maxStep and total > 0.0 then
+            local scale = maxStep / total
+            step, zStep = step * scale, zStep * scale
+        end
         if step <= 0.0 and zStep == 0.0 then return end
         local ok = pcall(SetEntityCoordsNoOffset, ped,
             coords.x + dx * step, coords.y + dy * step, coords.z + zStep,
             false, false, false)
         if ok then SP.stats.positionWrites = SP.stats.positionWrites + 1 end
+    end
+
+    -- Bounded Z-only position assist. It exists only after the read-only probe
+    -- proves the velocity Z is ignored; X/Y stay on the normal velocity path.
+    local function applyVerticalStep(ped, vz, dt)
+        if not vz or math.abs(vz) < 0.0001 then return end
+        local okC, coords = pcall(GetEntityCoords, ped)
+        if not okC or not coords or not finite(coords.z) then return end
+        local step = vz * (dt or (1.0 / 60.0))
+        if step > 0.5 then step = 0.5 end
+        if step < -0.5 then step = -0.5 end
+        local ok = pcall(SetEntityCoordsNoOffset, ped,
+            coords.x, coords.y, coords.z + step, false, false, false)
+        if ok then SP.stats.verticalWrites = SP.stats.verticalWrites + 1 end
     end
 
     local function probeMovement(ped, dx, dy, speed)
@@ -40690,6 +40340,7 @@ local SP = (function(O, N)
 
     local function writeHeading(ped, dt)
         reassertControls()
+        reassertAirControls()
         local dx, dy, mag = movementVector()
         if type(SetPedDesiredHeading) == "function" then
             pcall(SetPedDesiredHeading, ped, SP.target)
@@ -40698,13 +40349,21 @@ local SP = (function(O, N)
         if not ok then return false end
         local up, down = flyInput()
         local flying = up ~= down
-        if dx or flying then
+        local vz = verticalVelocity(ped, dt)
+        probeVertical(ped)
+        local activeVertical = math.abs(vz) > 0.0001
+        if dx or flying or activeVertical then
             local speed = dx and moveSpeed(mag) or 0.0
-            local vz = verticalVelocity(ped, dt, SP.positionMove)
+            if not dx then setControlsOff(false) end
             if SP.positionMove then
                 applyPositionStep(ped, dx or 0.0, dy or 0.0, speed, dt, vz)
             else
-                applyVelocity(ped, dx or 0.0, dy or 0.0, speed, vz)
+                -- When the vertical probe has proven the velocity Z is
+                -- ignored, zero that component and carry Z on the bounded
+                -- position assist. Horizontal velocity stays authoritative.
+                local writeVz = SP.verticalAssist and 0.0 or vz
+                applyVelocity(ped, dx or 0.0, dy or 0.0, speed, writeVz)
+                if SP.verticalAssist then applyVerticalStep(ped, vz, dt) end
                 if dx then probeMovement(ped, dx, dy, speed) end
             end
         else
@@ -40793,6 +40452,11 @@ local SP = (function(O, N)
         SP.ticks = 0
         SP.travel = 0.0
         SP.vz = 0.0
+        SP.verticalAssist = false
+        SP.lastZ = nil
+        SP.vzProbeAt = 0
+        SP.vzProbeZ = nil
+        SP.vzProbeWant = 0.0
         SP.positionMove = false
         SP.probeAt = 0
         SP.moveFails = 0
@@ -40803,6 +40467,7 @@ local SP = (function(O, N)
         SP.stats.calls = 0
         SP.stats.moves = 0
         SP.stats.positionWrites = 0
+        SP.stats.verticalWrites = 0
         SP.stats.suspends = 0
         SP.stats.resumes = 0
         SP.stats.lag = 0.0
@@ -40823,6 +40488,13 @@ local SP = (function(O, N)
             and type(N.stop) == "function" then
             pcall(N.stop, "spinbot")
         end
+        -- Same ownership No Clip takes: gravity is off while the feature is
+        -- armed, and Space/Ctrl are disabled so they cannot jump/parachute.
+        -- The fly controller reads the disabled control directly. Force the
+        -- state off so a ped that vanished mid-session cannot leave a stale
+        -- "already off" flag and skip the write on the new ped.
+        SP.gravityOff = false
+        engageAirState()
 
         startThread()
         if not SP.active then return false end
@@ -40834,9 +40506,13 @@ local SP = (function(O, N)
 
     function SP.stop(reason)
         setControlsOff(false)
+        releaseAirState()
         local wasActive = SP.active
         local ped = SP.ped
         local releaseYaw = SP.camYaw
+        if wasActive and ped and ped ~= 0 and DoesEntityExist(ped) then
+            pcall(SetEntityVelocity, ped, 0.0, 0.0, 0.0)
+        end
         SP.active = false
         SP.gen = SP.gen + 1
         SP.suspended = false
@@ -40896,7 +40572,12 @@ local SP = (function(O, N)
             calls = SP.stats.calls,
             moves = SP.stats.moves,
             positionWrites = SP.stats.positionWrites,
+            verticalWrites = SP.stats.verticalWrites,
             positionMove = SP.positionMove,
+            verticalAssist = SP.verticalAssist,
+            vz = SP.vz,
+            gravityOff = SP.gravityOff,
+            airControlsOff = SP.airControlsOff,
             suspends = SP.stats.suspends,
             resumes = SP.stats.resumes,
             lag = SP.stats.lag,
@@ -40946,7 +40627,9 @@ local SP = (function(O, N)
                 SP.stop("ped lost")
                 return
             end
+            releaseAirState()
             SP.ped = ped
+            SP.gravityOff = false
             SP.suspended = false
             SP.resumeAt = 0
             if not anchor(ped) then
@@ -40954,11 +40637,14 @@ local SP = (function(O, N)
                 return
             end
             captureCameraYaw(SP.target)
+            engageAirState()
         end
 
         local why = suspendedNow(ped)
         if why then
             setControlsOff(false)
+            releaseAirState()
+            pcall(SetEntityVelocity, ped, 0.0, 0.0, 0.0)
             if not SP.suspended then
                 SP.suspended = true
                 SP.stats.suspends = SP.stats.suspends + 1
@@ -40989,6 +40675,7 @@ local SP = (function(O, N)
                 return
             end
             captureCameraYaw(SP.target)
+            engageAirState()
         end
 
         local dt = (now - SP.lastAt) / 1000.0
@@ -41059,6 +40746,24 @@ local SP = (function(O, N)
     -- after 250 ms without a tick and the thread exits on its next wake-up.
     if type(O.every) == "function" then
         local build = O.build
+        -- The game can re-enable Space/Ctrl between ticks. Re-disable every
+        -- scheduler frame, exactly like the No Clip gate, while the disabled
+        -- read keeps the fly keys usable.
+        O.every("spin_air_controls", 0, function()
+            if not SP.active or not SP.airControlsOff then return end
+            if build ~= nil and O.build ~= build then return end
+            reassertAirControls()
+        end)
+        -- A task reset can restore ped/entity gravity. Reassert on a jittered
+        -- cadence while the session owns the vertical state.
+        O.every("spin_gravity", 250, function()
+            if not SP.active or not SP.gravityOff then return end
+            if build ~= nil and O.build ~= build then return end
+            local ped = SP.ped
+            if not ped or ped == 0 or not DoesEntityExist(ped) then return end
+            pcall(SetPedGravity, ped, false)
+            pcall(SetEntityHasGravity, ped, false)
+        end)
         O.every("spin_guard", 250, function()
             if not SP.active or SP.fallback then return end
             if build ~= nil and O.build ~= build then return end
@@ -44655,7 +44360,7 @@ end
 -- ---------------------------------------------------------------------------
 -- REMOVE OLD ENTRY POINTS
 -- ---------------------------------------------------------------------------
-local MENU_REV = "2026-11-22-r108"
+local MENU_REV = "2026-11-22-r109"
 
 -- A previous execution of the old loader can leave its category in the shared
 -- Menu table. Match both the literal name and the old nine-tab fingerprint so
