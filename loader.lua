@@ -1407,6 +1407,217 @@ do
 end
 
 -- ============================================
+-- PATCH: menu sound feedback
+-- ============================================
+-- Game-native frontend blips on the menu's own state transitions. The wrapper
+-- never reads a key to decide what happened: it snapshots the library state
+-- before and after the frame, so keyboard, mouse, controller and a
+-- programmatic jump all produce the same feedback. One-shots only (audio id
+-- -1) from the stock HUD soundset: no file, no event, no entity, no network.
+--
+-- The Settings > General > Menu Sounds row is the single source of truth for
+-- the switch. Its value is read directly, so a config restore that writes the
+-- value without calling onClick still silences the menu, and turning the
+-- switch off is itself the last audible blip.
+--
+-- Sound map, all HUD_FRONTEND_DEFAULT_SOUNDSET:
+--   open menu            SELECT
+--   close menu           BACK
+--   enter a category     SELECT
+--   back to the main page BACK
+--   switch tab           NAV_LEFT_RIGHT
+--   move through rows    NAV_UP_DOWN
+--   toggle on            TOGGLE_ON
+--   toggle off           CANCEL
+--   selector / slider    NAV_LEFT_RIGHT
+--   run an action        SELECT
+--
+-- Everything is one frame behind the input by construction: the library has
+-- already applied the change when the snapshot is compared, so the sound
+-- matches the state the operator can see. A 28 ms gate keeps a held key from
+-- turning the ticks into a machine gun while still sounding immediate.
+do
+    if type(Menu) == "table" and type(Menu.HandleInput) == "function"
+        and not Menu.__vgdSfx then
+        local SOUNDSET = "HUD_FRONTEND_DEFAULT_SOUNDSET"
+        local MIN_GAP_MS = 28
+
+        local lastPlayedAt = -1000
+        local prevVisible = Menu.Visible == true
+        local prevOpened = nil
+        local prevTab = nil
+        local prevItem = nil
+        local prevType = nil
+        local prevValue = nil
+        local prevSelected = nil
+        local enterHeld = false
+        local soundsItem = nil
+
+        local function nowMs()
+            if type(GetGameTimer) == "function" then
+                local ms = GetGameTimer()
+                if type(ms) == "number" then return ms end
+            end
+            return 0
+        end
+
+        local function play(name)
+            if type(PlaySoundFrontend) ~= "function" then return end
+            local now = nowMs()
+            if now - lastPlayedAt < MIN_GAP_MS then return end
+            lastPlayedAt = now
+            pcall(PlaySoundFrontend, -1, name, SOUNDSET, true)
+        end
+
+        -- Resolve the switch once: the item table is stable for the session.
+        -- A missing row (older build, stripped categories) means sound on.
+        local function soundsEnabled()
+            local item = soundsItem
+            if type(item) == "table" and item.name == "Menu Sounds" then
+                return item.value ~= false
+            end
+            local categories = Menu.Categories
+            if type(categories) ~= "table" then return true end
+            for i = 1, #categories do
+                local category = categories[i]
+                if category and category.name == "Settings"
+                    and type(category.tabs) == "table" then
+                    for j = 1, #category.tabs do
+                        local tab = category.tabs[j]
+                        if tab and tab.name == "General"
+                            and type(tab.items) == "table" then
+                            for k = 1, #tab.items do
+                                local candidate = tab.items[k]
+                                if candidate and candidate.name == "Menu Sounds" then
+                                    soundsItem = candidate
+                                    return candidate.value ~= false
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+            return true
+        end
+
+        local function selectedItem()
+            local index = Menu.OpenedCategory
+            if type(index) ~= "number" then return nil end
+            local categories = Menu.Categories
+            local category = type(categories) == "table" and categories[index] or nil
+            local tabs = category and category.tabs
+            local tabIndex = Menu.CurrentTab
+            local tab = type(tabs) == "table" and type(tabIndex) == "number"
+                and tabs[tabIndex] or nil
+            local items = tab and tab.items
+            local itemIndex = Menu.CurrentItem
+            if type(items) ~= "table" or type(itemIndex) ~= "number" then
+                return nil
+            end
+            return items[itemIndex]
+        end
+
+        -- States where a blip would fight the operator: loading card, key
+        -- capture, text input and the layout editor.
+        local function inputQuiet()
+            if Menu.IsLoading or not Menu.LoadingComplete then return true end
+            if Menu.InputOpen or Menu.SelectingKey or Menu.SelectingBind then
+                return true
+            end
+            if Menu.EditorMode then return true end
+            return false
+        end
+
+        -- Enter is the one action that leaves no state behind, so its edge is
+        -- read from the device. Held tracking turns the async "pressed" flag
+        -- into exactly one blip per physical press.
+        local function enterPressed()
+            if type(Susano) ~= "table"
+                or type(Susano.GetAsyncKeyState) ~= "function" then
+                return false
+            end
+            local ok, down, pressed = pcall(Susano.GetAsyncKeyState, 0x0D)
+            if not ok then return false end
+            down = down == true or down == 1
+            pressed = pressed == true or pressed == 1
+            local edge = (down or pressed) and not enterHeld
+            enterHeld = down
+            return edge
+        end
+
+        local baseHandleInput = Menu.HandleInput
+        Menu.HandleInput = function()
+            -- Read the switch before the library runs: the frame that flips
+            -- the row off must still be audible, the frames after it must not.
+            local allowed = soundsEnabled()
+            local result = baseHandleInput()
+            local enter = enterPressed()
+
+            local visible = Menu.Visible == true
+            if not visible then
+                if prevVisible and allowed and not inputQuiet() then
+                    play("BACK")
+                end
+                prevVisible = false
+                prevOpened, prevTab, prevItem = nil, nil, nil
+                prevType, prevValue, prevSelected = nil, nil, nil
+                return result
+            end
+
+            local opened = Menu.OpenedCategory
+            local tab = Menu.CurrentTab
+            local itemIndex = Menu.CurrentItem
+            local item = selectedItem()
+            local itemType = type(item) == "table" and item.type or nil
+            local value = itemType == "toggle" and item.value or nil
+            local selected = nil
+            if itemType == "selector" then
+                selected = item.selected
+            elseif itemType == "slider" then
+                selected = item.value
+            end
+
+            local quiet = inputQuiet() or not allowed
+
+            if not prevVisible then
+                if not quiet then play("SELECT") end
+            elseif quiet then
+                -- Silent frame; the snapshot below still advances so leaving
+                -- the quiet state does not replay a backlog of transitions.
+            elseif opened ~= prevOpened then
+                if opened == nil then play("BACK") else play("SELECT") end
+            elseif tab ~= prevTab then
+                play("NAV_LEFT_RIGHT")
+            elseif itemIndex ~= prevItem then
+                play("NAV_UP_DOWN")
+            elseif itemType ~= nil and itemType == prevType then
+                if itemType == "toggle" and value ~= prevValue then
+                    if value == true then play("TOGGLE_ON") else play("CANCEL") end
+                elseif (itemType == "selector" or itemType == "slider")
+                    and selected ~= prevSelected then
+                    play("NAV_LEFT_RIGHT")
+                elseif enter and itemType == "action" then
+                    play("SELECT")
+                end
+            elseif enter and itemType == "action" then
+                play("SELECT")
+            end
+
+            prevVisible = true
+            prevOpened = opened
+            prevTab = tab
+            prevItem = itemIndex
+            prevType = itemType
+            prevValue = value
+            prevSelected = selected
+            return result
+        end
+
+        Menu.__vgdSfx = true
+    end
+end
+
+-- ============================================
 -- PATCH: menu motion (runtime)
 -- ============================================
 -- Every moving value is advanced from a wrapper around the library's own
@@ -3389,7 +3600,9 @@ Menu.Categories = {
             { name = "", isSeparator = true, separatorText = "Design" },
             { name = "Menu Theme", type = "selector", options = {"White", "Cyan"}, selected = 1 },
             { name = "Flocon", type = "toggle", value = true },
-            { name = "Scroll Bar Position", type = "selector", options = {"Left", "Right"}, selected = 1 }
+            { name = "Scroll Bar Position", type = "selector", options = {"Left", "Right"}, selected = 1 },
+            { name = "", isSeparator = true, separatorText = "Feedback" },
+            { name = "Menu Sounds", type = "toggle", value = true }
         }}
     }}
 }
@@ -26285,73 +26498,65 @@ local FL = (function(O,Menu)
 -- ============================================================================
 -- VANGUARD / 11 FLASH
 -- ----------------------------------------------------------------------------
--- Online > Troll > Attacks: a repeating particle flash on every selected
--- player, including the operator's own ped when the selection is local.
+-- Online > Troll > Attacks: a repeating flashbang on every selected player.
 --
--- ONE DELIVERY PATH
+-- DELIVERY
 --
---   * Every target uses the same networked particle burst anchored to
---     SKEL_Head (31086): the selected recipe parts, a six-axis halo at
---     0.95 m, and an eight-point horizontal ring at 2.35 m (2.95 m in a
---     vehicle). The recipe carries a side-offset part so the flash is
---     visible beside the head, not only in the camera axis.
---   * Only the two effects that WaveShield V4's own autoWhiteList.lua places
---     in a Particles table are ever emitted:
---         scr_wheel_burnout  (scr_recartheft, rcore_spray)
---         scr_alien_teleport (scr_rcbarry1, WaveAdmin)
---     The hash is read from the replicated static whitelist and the scale is
---     clamped to MaxParticleScale. There is no dynamic request, no outbound
---     assetHash rewrite, no resource graft, no decorator, no hook and no
---     explosion in this module.
+--   * Flashbang 78 (default): one networked ADD_EXPLOSION type 78
+--     (EXP_TAG_FLASHGRENADE) at the victim's head, damageScale 0.0,
+--     isAudible false, isInvisible false, cameraShake 0.0. The same pulse
+--     also emits the whitelisted particle shell. On the operator's own ped
+--     the pulse additionally draws a full-screen white/red/yellow overlay and
+--     plays the DefaultFlash postfx, so a local test is a real whiteout.
+--   * Burnout Ember / Acid Green: particle-only recipes.
 --
--- WHY THIS IS THE UNDETECTABLE PATH
+-- WHY TYPE 78 IS ACCEPTED
 --
--- WaveShield V4 ptFxEvent.lua cancels a particle only when the hash is not in
--- WhiteListedParticles (static or AI branch), when it is attached to a
--- networked entity owned by another player, or when the scale exceeds
--- MaxParticleScale. The two effects above are present in the server's
--- generated list whenever their owning resource is started and
--- EnableParticlesWhiteList is on. Emitting them AtCoord with a scale at or
--- below the configured ceiling reaches no DetectPlayer branch. The old
--- dynamic path (__WaveShield:CreateParticle), the assetHash rewrite, the
--- Susano.InjectResource graft and the type-78 explosion were each a
--- server-visible or resource-visible artifact; all of them are gone.
+-- WaveShield V4 explosionEvent.lua returns at line 59 when damageScale <= 0,
+-- before the vehicleNetworkId check at line 60. A type-78 explosion with
+-- damageScale 0.0 therefore reaches no cancel or report branch in that
+-- handler. The module still reads CancelAllExplosions from the replicated
+-- policy: when that switch is on, the explosion layer is not sent and the
+-- pulse falls back to the particle shell. No entity, event, decorator, hook,
+-- graft or resource write is created by this module; AddExplosion is the only
+-- networked call.
 --
--- RESIDUAL SURFACE
+-- PARTICLES
 --
--- A visual is a networked ptFxEvent by definition, including the local test
--- target. The guard's optional LogParticleSpawnsToConsole switch can print the
--- effect hash and the source player; no client-side path can hide a server-side
--- log. The feature never reaches a detection branch and never creates an event
--- of its own. If the static list is unreadable while WaveShield is running, the
--- loop falls back to the unconditional burnout entry instead of going silent.
---
--- GEOMETRY
---
--- The victim's head is the anchor. The recipe parts are emitted there with the
--- recipe's side offset. A six-axis halo at 0.95 m plus an eight-point ring at
--- 2.35 m (2.95 m in a vehicle) covers every yaw and pitch. The ring is rotated
--- by 22.5 degrees on alternate pulses so a stationary target shimmers instead
--- of showing the same eight points. The ring uses the second allowed effect
--- when the whitelist keeps it, so the outer burst and the inner halo do not
--- share one plume. Every call is clamped to both MaxParticleScale and the
--- module's own 6.0 cap.
+--   * Only scr_wheel_burnout (scr_recartheft, rcore_spray) and
+--     scr_alien_teleport (scr_rcbarry1, WaveAdmin) are emitted, at or below
+--     MaxParticleScale. The hash is read from the replicated static list.
+--   * The recipe parts are emitted at the head; the red and yellow parts are
+--     co-located at the head and interleaved on the six-axis halo at 0.95 m
+--     and the eight-point ring at 2.35 m (2.95 m in a vehicle). The ring
+--     phase alternates 22.5 degrees per pulse. Both colours appear in the
+--     inner and outer shell.
 --
 -- RATE AND BUDGET
 --
--- One pulse per 440 ms (O.jitter, 15 % spread; 440 is a multiple of the
--- 20 ms scheduler tick, so the base cadence is not rounded up to 460), and
--- 16 particles per pulse, shared across every target. A token bucket refills
--- at 36 particles per second with a 20-particle burst allowance, so no
--- scheduler value, jitter value, selection size or future tuning can push the
--- module past that ceiling. With more than one target the recipe parts are
--- emitted first, then the remaining budget is spent round-robin, so four
--- targets each get a real burst instead of one target eating the plate. The
--- retired 200 ms / 26-point shell produced up to 140 large networked
--- particles per second and crashed the client; the previous plate was 8 per
--- 800 ms (10/s); this path sits near 36/s, about a quarter of the crash value
--- and 3.6x the previous plate. The bucket is the hard stop; the constants are
--- the visual target.
+--   * Flashbang pulse: 160 ms (O.jitter, 10 % spread; 160 is a multiple of
+--     the 20 ms tick, so the scheduler does not round it up). Particle-only
+--     pulse: 440 ms (O.jitter, 15 % spread; 440 is a multiple of the 20 ms
+--     tick).
+--   * Particles: hard token bucket at 36 particles/s, 20-particle reserve,
+--     shared across every target. At 160 ms the first pulse still emits 16;
+--     later pulses emit the available remainder.
+--   * Explosions: separate global token bucket at 12 explosions/s with a
+--     3-explosion reserve, plus a rotating start target so a multi-select
+--     shares the cap. A single target is pulsed at 6.25 explosions/s; the
+--     flashbang visual lasts longer than the gap, so the screen stays washed.
+--   * The retired 200 ms / 26-point shell produced up to 140 networked
+--     particles/s and crashed the client; this path stays at or below 36/s.
+--
+-- OVERLAY
+--
+--   * DrawRect is called from the same 20 ms scheduler tick, not from
+--     Menu.OnRender, so it does not depend on the menu render callback. Four
+--     layers: red-orange, yellow, a 0.94 central white core and a full-screen
+--     white wash. The overlay is armed only when the local ped is a target;
+--     a remote-only selection does not flash the operator.
+--   * AnimpostfxPlay("DefaultFlash", 0, false) is played on each self pulse
+--     and stopped on FL.stop().
 --
 -- TARGET RULES
 --
@@ -26362,16 +26567,26 @@ local FL = (function(O,Menu)
 --     remote selection exists.
 --   * When no remote ped is streamed, the loop stays armed and waits for it;
 --     it never substitutes the operator's own ped for an explicit remote
---     selection. The local ped is used only when no selection exists.
+--     selection.
 --   * Target death, disconnect, missing coords or range loss drops that target
 --     from the pulse; the loop stays armed and re-resolves the selection.
 --   * Panic stops it before anything else.
+--
+-- RESIDUAL SURFACE
+--
+-- A custom resource that logs raw explosion events independently of
+-- WaveShield can see the type-78 call; a server with CancelAllExplosions on
+-- will drop it. The server's optional particle log can print the effect hash
+-- and source. The target sees the flash and can report it. No client-side
+-- path can hide a server-side log.
 -- ============================================================================
 
 local FL = {}
 
 local PERIOD_MS = 440
 local PERIOD_SPREAD = 0.15
+local EXPLOSION_PERIOD_MS = 160
+local EXPLOSION_PERIOD_SPREAD = 0.10
 local REACH_MAX = 300.0
 local SAFE_DIST = 0.0
 local TICK_MS = 20
@@ -26381,6 +26596,14 @@ local SHELL_RING_SCALE = 4.4
 local MAX_PARTICLES_PER_PULSE = 16
 local TOKEN_CAPACITY = 20.0
 local TOKEN_REFILL_PER_SEC = 36.0
+local EXPLOSION_TOKEN_CAPACITY = 3.0
+local EXPLOSION_REFILL_PER_SEC = 12.0
+local FLASH_TYPE = 78
+local FLASH_DAMAGE_SCALE = 0.0
+local FLASH_Z_OFFSET = 0.5
+local OVERLAY_MS = 320
+local OVERLAY_CORE_SCALE = 0.94
+local POSTFX_NAME = "DefaultFlash"
 local CONFIG_TTL = 1500
 local SHELL_AXIS_RADIUS = 0.95
 local SHELL_RADIUS = 2.35
@@ -26447,17 +26670,24 @@ end
 
 FL.methods = {
     {
+        name = "Flashbang 78", kind = "explosion", safe = true,
+        parts = {
+            flashPart(BURNOUT_DICT, BURNOUT_FX, 6.0, { 1.00, 0.32, 0.05 }, 0.0, 0.0, 1.0),
+            flashPart(ALIEN_DICT, ALIEN_FX, 5.5, { 1.00, 0.60, 0.10 }, 0.0, 0.0, 1.0),
+        },
+    },
+    {
         name = "Burnout Ember", kind = "ptfx", safe = true,
         parts = {
             flashPart(BURNOUT_DICT, BURNOUT_FX, 6.0, { 1.00, 0.32, 0.05 }, 0.0, 0.0, 1.0),
-            flashPart(ALIEN_DICT, ALIEN_FX, 5.5, { 1.00, 0.60, 0.10 }, 1.6, 1.2, 2.2),
+            flashPart(ALIEN_DICT, ALIEN_FX, 5.5, { 1.00, 0.60, 0.10 }, 0.0, 0.0, 1.0),
         },
     },
     {
         name = "Acid Green", kind = "ptfx", safe = true,
         parts = {
-            flashPart(BURNOUT_DICT, BURNOUT_FX, 6.0, { 0.20, 1.00, 0.10 }, -1.0, 0.0, 1.4),
-            flashPart(ALIEN_DICT, ALIEN_FX, 5.5, { 0.45, 1.00, 0.20 }, 1.4, 1.0, 2.0),
+            flashPart(BURNOUT_DICT, BURNOUT_FX, 6.0, { 0.20, 1.00, 0.10 }, 0.0, 0.0, 1.0),
+            flashPart(ALIEN_DICT, ALIEN_FX, 5.5, { 0.45, 1.00, 0.20 }, 0.0, 0.0, 1.0),
         },
     },
 }
@@ -26477,9 +26707,16 @@ FL.maxScale = MAX_SCALE
 FL.localOnly = false
 FL.tokens = TOKEN_CAPACITY
 FL.tokenAt = 0
+FL.explosionTokens = EXPLOSION_TOKEN_CAPACITY
+FL.explosionTokenAt = 0
+FL.explosionBlocked = false
+FL.explosionCursor = 0
+FL.overlayAt = 0
+FL.postfxOn = false
 FL.pulse = 0
 FL.lastBurst = 0
-FL.stats = { flashes = 0, skips = 0, fails = 0, particles = 0, throttled = 0 }
+FL.stats = { flashes = 0, skips = 0, fails = 0, particles = 0,
+    throttled = 0, explosions = 0, explosionSkips = 0, overlays = 0 }
 
 local function now()
     return GetGameTimer()
@@ -26519,6 +26756,86 @@ local function spendTokens(count)
     local tokens = (tonumber(FL.tokens) or 0.0) - (tonumber(count) or 0)
     if tokens < 0.0 then tokens = 0.0 end
     FL.tokens = tokens
+end
+
+-- The explosion layer has its own ceiling. It is independent of the particle
+-- bucket because the two effects have different crash profiles: a type-78
+-- flashbang is a single engine explosion, not a swarm of networked particles.
+-- The bucket survives a stop/start pair exactly like the particle bucket.
+local function refillExplosionTokens()
+    local current = now()
+    local at = tonumber(FL.explosionTokenAt) or 0
+    if at <= 0 or current < at then
+        FL.explosionTokens = EXPLOSION_TOKEN_CAPACITY
+    else
+        local elapsed = (current - at) / 1000.0
+        if elapsed > 0.0 then
+            local tokens = (tonumber(FL.explosionTokens) or 0.0)
+                + elapsed * EXPLOSION_REFILL_PER_SEC
+            if tokens > EXPLOSION_TOKEN_CAPACITY then
+                tokens = EXPLOSION_TOKEN_CAPACITY
+            end
+            FL.explosionTokens = tokens
+        end
+    end
+    FL.explosionTokenAt = current
+end
+
+local function spendExplosionTokens(count)
+    local tokens = (tonumber(FL.explosionTokens) or 0.0)
+        - (tonumber(count) or 0)
+    if tokens < 0.0 then tokens = 0.0 end
+    FL.explosionTokens = tokens
+end
+
+-- Full-screen whiteout. DrawRect is a GTA native and is already used by the
+-- loader from a scheduler thread, so this path does not depend on
+-- Menu.OnRender. The overlay is drawn every 20 ms while FL.overlayAt is live;
+-- the 160 ms flashbang pulse re-arms it before the 320 ms fade completes, so
+-- a self target stays washed instead of seeing the road between pulses.
+local function drawOverlay()
+    local at = tonumber(FL.overlayAt) or 0
+    if at <= 0 then return end
+    local age = now() - at
+    if age < 0 or age > OVERLAY_MS then
+        FL.overlayAt = 0
+        return
+    end
+    local alpha = 1.0 - (age / OVERLAY_MS)
+    if alpha < 0.0 then alpha = 0.0 end
+    if alpha > 1.0 then alpha = 1.0 end
+    if type(DrawRect) ~= "function" then return end
+
+    local function layer(x, y, w, h, r, g, b, a)
+        pcall(DrawRect, x, y, w, h, r, g, b,
+            math.floor(math.max(0.0, math.min(1.0, a)) * 255.0))
+    end
+
+    -- The red and yellow tints share the white core's pulse: they are drawn
+    -- under the white wash, not on a separate cadence. The 0.94 core covers
+    -- the centre and the full-screen wash covers the edges.
+    layer(0.5, 0.5, 1.0, 1.0, 255, 72, 12, alpha * 0.55)
+    layer(0.5, 0.5, 1.0, 1.0, 255, 200, 48, alpha * 0.35)
+    layer(0.5, 0.5, OVERLAY_CORE_SCALE, OVERLAY_CORE_SCALE,
+        255, 255, 255, alpha * 0.98)
+    layer(0.5, 0.5, 1.0, 1.0, 255, 255, 255, alpha * 0.55)
+end
+
+local function triggerOverlay()
+    FL.overlayAt = now()
+    FL.stats.overlays = (tonumber(FL.stats.overlays) or 0) + 1
+    if type(AnimpostfxPlay) == "function" then
+        pcall(AnimpostfxPlay, POSTFX_NAME, 0, false)
+        FL.postfxOn = true
+    end
+end
+
+local function clearOverlay()
+    FL.overlayAt = 0
+    if FL.postfxOn and type(AnimpostfxStop) == "function" then
+        pcall(AnimpostfxStop, POSTFX_NAME)
+    end
+    FL.postfxOn = false
 end
 
 local function decodeState(value)
@@ -26681,6 +26998,57 @@ end
 local function resolveDelivery(cfg)
     local method = currentMethod()
     local ex = cfg and cfg.Explosions
+    FL.explosionBlocked = false
+
+    if method.kind == "explosion" then
+        if type(ex) == "table" and ex.CancelAllExplosions == true then
+            FL.explosionBlocked = true
+            local parts = method.parts or { method }
+            local allowed = {}
+            local guardActive = ex.EnableParticlesWhiteList == true
+                or ex.EnableParticlesAI == true
+            for i = 1, #parts do
+                local part = parts[i]
+                if part and type(part.effect) == "string"
+                    and (not guardActive or whitelisted(cfg, part.effect)
+                        or autoSafeEffect(part.effect, ex)) then
+                    allowed[#allowed + 1] = part
+                end
+            end
+            if #allowed == 0 then
+                allowed = { safeCandidate(cfg) or SAFE_CANDIDATES[1] }
+            end
+            return {
+                name = method.name,
+                kind = "ptfx",
+                scale = method.scale or MAX_SCALE,
+                parts = allowed,
+            }
+        end
+
+        local parts = method.parts or {}
+        local allowed = {}
+        local guardActive = type(ex) == "table"
+            and (ex.EnableParticlesWhiteList == true
+                or ex.EnableParticlesAI == true)
+        for i = 1, #parts do
+            local part = parts[i]
+            if part and type(part.effect) == "string"
+                and (not guardActive or whitelisted(cfg, part.effect)
+                    or autoSafeEffect(part.effect, ex)) then
+                allowed[#allowed + 1] = part
+            end
+        end
+        if #allowed == 0 then
+            allowed = { safeCandidate(cfg) or SAFE_CANDIDATES[1] }
+        end
+        return {
+            name = method.name,
+            kind = "explosion",
+            scale = method.scale or MAX_SCALE,
+            parts = allowed,
+        }
+    end
 
     if type(ex) ~= "table" then
         -- No readable policy means no list to honour. The old loop kept the
@@ -26858,10 +27226,15 @@ local function emitShellAt(burst, limit, index)
     if index < 1 or index > SHELL_TOTAL then index = 1 end
 
     local part, x, y, z, scale
+    local flip = (index % 2 == 0)
     if index <= 6 then
         local axis = SHELL_AXES[index]
         if not axis then return 0 end
-        part = burst.axisPart
+        -- Alternate the two allowed effects on the inner halo so the red and
+        -- yellow parts are mixed at the head instead of living on separate
+        -- layers. If the whitelist filtered one part, both slots point at the
+        -- same effect and the colour is unchanged.
+        part = flip and burst.ringPart or burst.axisPart
         local radius = SHELL_AXIS_RADIUS * (0.94 + math.random() * 0.12)
         x = burst.hx + axis[1] * radius
         y = burst.hy + axis[2] * radius
@@ -26872,7 +27245,7 @@ local function emitShellAt(burst, limit, index)
             and SHELL_RING_B or SHELL_RING_A
         local point = ring[index - 6]
         if not point then return 0 end
-        part = burst.ringPart
+        part = flip and burst.axisPart or burst.ringPart
         local radius = burst.vehicle and SHELL_RADIUS_VEHICLE or SHELL_RADIUS
         radius = radius * (0.95 + math.random() * 0.10)
         x = burst.hx + point[1] * radius
@@ -27347,6 +27720,11 @@ end
 local function tickCore()
     if not FL.active then return end
 
+    -- The overlay fades on the 20 ms tick, independently of the pulse
+    -- deadline. A self target therefore stays washed between flashbang
+    -- pulses instead of clearing on the particle cadence.
+    drawOverlay()
+
     -- Latch the remote-only mode as soon as a remote appears. If that player
     -- then leaves and the menu clears the selection, the loop must stay
     -- remote-only and wait instead of falling back to the local ped.
@@ -27366,6 +27744,7 @@ local function tickCore()
         FL.resolveAt = now()
         if not targets or #targets == 0 then
             FL.target = nil
+            clearOverlay()
             -- Stay armed and wait for a selected player to stream back in.
             return
         end
@@ -27383,6 +27762,7 @@ local function tickCore()
     local okMy, myServerId = pcall(GetPlayerServerId, PlayerId())
     local alive = {}
     local anyRemote = false
+    local anySelf = false
     for i = 1, #targets do
         local t = targets[i]
         local ped, player = liveTargetPed(t, okMy and myServerId or nil)
@@ -27396,6 +27776,7 @@ local function tickCore()
                 if t.self then
                     t.dist = 0.0
                     alive[#alive + 1] = t
+                    anySelf = true
                 else
                     t.dist = distance(meCoords, coords)
                     if t.dist > REACH_MAX then
@@ -27415,12 +27796,14 @@ local function tickCore()
     if #alive == 0 then
         FL.targets = nil
         FL.target = nil
+        clearOverlay()
         return
     end
 
     FL.targets = alive
     FL.target = alive[1]
     FL.localOnly = not anyRemote
+    if not anySelf then clearOverlay() end
 
     if now() < FL.nextAt then return end
 
@@ -27432,26 +27815,69 @@ local function tickCore()
     local emitted = false
     local throttled = false
 
-    -- Self and remote share the same particle path. The retired self branch
-    -- drew a client-only rectangle; it produced no visible pulse on builds
-    -- where the menu render callback was unavailable. The burst below renders
-    -- for the operator and for the selected target, including the side offset
-    -- in each recipe.
     local cfg = acConfig()
     local ex = cfg and cfg.Explosions
     local maxScale = tonumber(ex and ex.MaxParticleScale)
     if maxScale == nil or maxScale < 1.0 then maxScale = MAX_SCALE end
     if maxScale > MAX_SCALE then maxScale = MAX_SCALE end
     FL.maxScale = maxScale
+    local selectedMethod = currentMethod()
+    local selectedIsFlashbang = selectedMethod ~= nil
+        and selectedMethod.kind == "explosion"
     local effective = resolveDelivery(cfg)
     FL.effective = effective
     FL.lastEffect = effective and effective.parts
         and effective.parts[1] and effective.parts[1].effect or nil
+    local isExplosion = effective ~= nil and effective.kind == "explosion"
+
     if effective then
-        -- The bucket is the crash ceiling. It is refilled at pulse time
-        -- rather than every scheduler tick, which is equivalent for a token
-        -- bucket and keeps the idle tick free of arithmetic.
+        -- The particle bucket is the crash ceiling. It is refilled at pulse
+        -- time rather than every scheduler tick, which is equivalent for a
+        -- token bucket and keeps the idle tick free of arithmetic.
         refillTokens()
+
+        -- One burst context per target, built before the particle gate: the
+        -- flashbang layer must fire even when the particle bucket is empty.
+        local bursts = {}
+        for i = 1, #alive do
+            bursts[i] = makeBurst(effective, alive[i].aim or alive[i].coords)
+        end
+
+        if isExplosion and #bursts > 0 then
+            refillExplosionTokens()
+            local count = #bursts
+            local start = ((tonumber(FL.explosionCursor) or 0) % count) + 1
+            for n = 0, count - 1 do
+                local i = ((start + n - 1) % count) + 1
+                if (tonumber(FL.explosionTokens) or 0.0) < 1.0 then
+                    FL.stats.explosionSkips =
+                        (tonumber(FL.stats.explosionSkips) or 0) + 1
+                else
+                    local b = bursts[i]
+                    local ok = pcall(AddExplosion,
+                        b.hx, b.hy, b.hz + FLASH_Z_OFFSET,
+                        FLASH_TYPE, FLASH_DAMAGE_SCALE, false, false, 0.0)
+                    if ok then
+                        spendExplosionTokens(1)
+                        FL.stats.explosions =
+                            (tonumber(FL.stats.explosions) or 0) + 1
+                        emitted = true
+                    else
+                        FL.stats.explosionSkips =
+                            (tonumber(FL.stats.explosionSkips) or 0) + 1
+                    end
+                end
+            end
+            FL.explosionCursor = (start % count)
+        end
+
+        -- The local whiteout is part of the Flashbang method, not of the
+        -- particle bucket. It re-arms every 160 ms pulse even when the server
+        -- blocks the networked explosion, so a self test still blinds.
+        if selectedIsFlashbang and anySelf then
+            triggerOverlay()
+        end
+
         local budget = MAX_PARTICLES_PER_PULSE
         local available = math.floor((tonumber(FL.tokens) or 0.0) + 1e-6)
         if available < budget then budget = available end
@@ -27464,10 +27890,6 @@ local function tickCore()
             -- so a multi-select spends its budget evenly and each target
             -- still gets points from a different part of the sphere.
             FL.pulse = ((tonumber(FL.pulse) or 0) + 1) % 2
-            local bursts = {}
-            for i = 1, #alive do
-                bursts[i] = makeBurst(effective, alive[i].aim or alive[i].coords)
-            end
 
             local sent = 0
             for i = 1, #bursts do
@@ -27511,10 +27933,12 @@ local function tickCore()
         FL.stats.fails = FL.stats.fails + 1
     end
 
+    local period = selectedIsFlashbang and EXPLOSION_PERIOD_MS or PERIOD_MS
     local spread = (type(O) == "table" and type(O.jitter) == "function")
-        and PERIOD_SPREAD or 0.0
+        and (selectedIsFlashbang and EXPLOSION_PERIOD_SPREAD or PERIOD_SPREAD)
+        or 0.0
     local base = (type(O) == "table" and type(O.jitter) == "function")
-        and O.jitter(PERIOD_MS, spread) or PERIOD_MS
+        and O.jitter(period, spread) or period
     FL.nextAt = now() + base
 end
 
@@ -27543,6 +27967,13 @@ function FL.start()
         FL.tokens = TOKEN_CAPACITY
         FL.tokenAt = now()
     end
+    if (tonumber(FL.explosionTokenAt) or 0) <= 0 then
+        FL.explosionTokens = EXPLOSION_TOKEN_CAPACITY
+        FL.explosionTokenAt = now()
+    end
+    FL.explosionBlocked = false
+    FL.explosionCursor = 0
+    clearOverlay()
     FL.pulse = 0
     FL.lastBurst = 0
 
@@ -27582,6 +28013,9 @@ function FL.stop(reason)
     FL.lastEffect = nil
     FL.localOnly = false
     FL.remoteOnly = false
+    FL.explosionBlocked = false
+    FL.explosionCursor = 0
+    clearOverlay()
     FL.pulse = 0
     FL.lastBurst = 0
 end
@@ -27590,14 +28024,19 @@ function FL.status()
     if not FL.active then return "Flash idle" end
     local targets = FL.targets
     if not targets or #targets == 0 then return "Flash idle" end
+    local method = currentMethod()
+    local label = method and method.name or "Flash"
+    if FL.explosionBlocked then label = label .. " blocked" end
     if #targets == 1 then
         local t = targets[1]
         if t.self or FL.localOnly then
-            return ("Flash local | test | %d"):format(FL.stats.flashes)
+            return ("%s | local | %d"):format(label, FL.stats.flashes)
         end
-        return ("Flash %s | %.0f m | %d"):format(t.name, t.dist or 0.0, FL.stats.flashes)
+        return ("%s | %s | %.0f m | %d"):format(
+            label, t.name, t.dist or 0.0, FL.stats.flashes)
     end
-    return ("Flash %d targets | %d"):format(#targets, FL.stats.flashes)
+    return ("%s | %d targets | %d"):format(
+        label, #targets, FL.stats.flashes)
 end
 
 -- Internal smoke seam. It is not a menu row and never calls a native by
@@ -40414,7 +40853,7 @@ local SP = (function(O, N)
             if not air and type(GetGroundZFor_3dCoord) == "function" then
                 local okG, retval, groundZ = pcall(GetGroundZFor_3dCoord,
                     coords.x, coords.y, coords.z, true)
-                if okG and retval == true and finite(groundZ)
+                if okG and retval and finite(groundZ)
                     and coords.z > groundZ + 0.1 then
                     air = true
                 end
@@ -40431,17 +40870,8 @@ local SP = (function(O, N)
         if O.Ctx and O.Ctx.inVehicle then return "vehicle" end
         local okView, view = pcall(GetFollowPedCamViewMode)
         if okView and type(view) == "number" and view >= 3 then return "view" end
-        -- Hover is the shooting state: a latched fly altitude must not be
-        -- torn down by the aim camera. Aim/free-aim only suspend when the
-        -- module is not hovering; while hovering the spin and the fixed Z
-        -- stay live so the operator can fire.
-        if not SP.hover then
-            local okAim, aiming = pcall(IsAimCamActive)
-            if okAim and aiming then return "aim" end
-            local player = (O.Ctx and O.Ctx.player) or PlayerId()
-            local okFree, free = pcall(IsPlayerFreeAiming, player)
-            if okFree and free then return "aim" end
-        end
+        -- Aim/free-aim never suspend the row: firing while advancing is the
+        -- intended state, not a reason to tear down the movement writer.
         local okCover, cover = pcall(IsPedInCover, ped, false)
         if okCover and cover then return "cover" end
         local okSwim, swimming = pcall(IsPedSwimming, ped)
@@ -44791,7 +45221,7 @@ end
 -- ---------------------------------------------------------------------------
 -- REMOVE OLD ENTRY POINTS
 -- ---------------------------------------------------------------------------
-local MENU_REV = "2026-11-24-r111"
+local MENU_REV = "2026-11-25-r113"
 
 -- A previous execution of the old loader can leave its category in the shared
 -- Menu table. Match both the literal name and the old nine-tab fingerprint so
