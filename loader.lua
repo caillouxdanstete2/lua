@@ -548,7 +548,7 @@ end
 LibraryCode = string.gsub(
     LibraryCode,
     'imageUrl%s*=%s*"[^"]*"',
-    'imageUrl = "https://i.imgur.com/wbYgWhZ.png"',
+    'imageUrl = "https://i.imgur.com/LScj53Bh.jpg"',
     1
 )
 
@@ -907,6 +907,31 @@ do
     )
 end
 
+-- ============================================
+-- PATCH: selector change callback
+-- ============================================
+-- The library special-cases the "Menu Theme" row on left/right and silently
+-- drops every other selector change. Forward each committed index to one hook
+-- so loader-owned rows (the gradient style picker) react without duplicating
+-- the whole input branch. The hook is optional and never raises.
+do
+    local callback = "\n                                if type(Menu.OnSelectorChanged) == \"function\" then Menu.OnSelectorChanged(selectedItem, currentIndex) end"
+    local count = 0
+    local index = 1
+    local needle = "selectedItem.selected = currentIndex"
+    while true do
+        local found = LibraryCode:find(needle, index, true)
+        if not found then break end
+        local after = found + #needle
+        LibraryCode = LibraryCode:sub(1, after - 1) .. callback .. LibraryCode:sub(after)
+        index = after + #callback
+        count = count + 1
+    end
+    if count == 0 then
+        print("[Menu] selector callback anchor not found")
+    end
+end
+
 local chunk, err = load(LibraryCode)
 if not chunk then
     print("[Menu] Erreur compilation: " .. tostring(err))
@@ -914,6 +939,1859 @@ if not chunk then
 end
 
 local Menu = chunk()
+
+-- ============================================
+-- GRADIENT THEME ENGINE
+-- ============================================
+-- One palette keeps every accent surface in the menu coherent: the tab pill,
+-- the selection plates, the toggle tracks, the slider fills, the scrollbar
+-- thumb, the footer rule and the separator rules. The primary primitive is
+-- Susano.DrawRectGradient (four corner colours plus a rounding value); the
+-- banded fallback keeps the same palette on builds that do not expose it.
+--
+-- Flow: the palette is sampled as a mirrored loop, so a slowly advancing phase
+-- travels across a surface without a seam at either end. White and Cyan keep
+-- their original monochrome/cyan identity; the new presets are Violet (the
+-- reference purple), Aurora, Ember and Ocean. Stops never enter the glyph
+-- layer: text stays high-contrast white or near-black by measured luminance.
+do
+    local Grad = {}
+    Menu.Grad = Grad
+
+    Grad.basePresets = {
+        Violet = {
+            { 0.30, 0.19, 0.87 },
+            { 0.47, 0.33, 0.99 },
+            { 0.66, 0.50, 1.00 },
+            { 0.83, 0.72, 1.00 },
+        },
+        Aurora = {
+            { 0.20, 0.80, 0.76 },
+            { 0.32, 0.55, 1.00 },
+            { 0.58, 0.42, 1.00 },
+            { 0.86, 0.48, 0.92 },
+        },
+        Ember = {
+            { 1.00, 0.52, 0.20 },
+            { 1.00, 0.36, 0.40 },
+            { 0.88, 0.28, 0.68 },
+            { 0.62, 0.32, 0.96 },
+        },
+        Ocean = {
+            { 0.10, 0.62, 0.92 },
+            { 0.18, 0.44, 0.98 },
+            { 0.34, 0.38, 0.96 },
+            { 0.52, 0.42, 0.98 },
+        },
+        White = {
+            { 0.86, 0.87, 0.92 },
+            { 0.97, 0.97, 0.99 },
+            { 1.00, 1.00, 1.00 },
+            { 0.82, 0.83, 0.88 },
+        },
+        Cyan = {
+            { 0.28, 0.72, 0.90 },
+            { 0.40, 0.84, 0.94 },
+            { 0.62, 0.92, 0.97 },
+            { 0.34, 0.76, 0.92 },
+        },
+        Panel = {
+            { 0.108, 0.108, 0.125 },
+            { 0.062, 0.062, 0.072 },
+            { 0.045, 0.045, 0.053 },
+        },
+    }
+
+    -- The preset tables above are immutable source data. Every visible
+    -- palette is a tuned copy: hue, saturation and brightness can be edited
+    -- live without destroying the preset the user can return to.
+    Grad.presets = {}
+    Grad.tuning = {
+        hue = 0.0,
+        saturation = 1.0,
+        brightness = 1.0,
+    }
+
+    Grad.active = "Violet"
+    Grad.animated = true
+    Grad.style = 1
+    Grad.speed = 0.075
+    Grad.glow = 1.0
+    Grad.enabled = true
+    Grad.transitionFrom = nil
+    Grad.transitionTo = nil
+    Grad.transitionStart = nil
+    Grad.transitionDuration = 0.45
+    -- The palette phase is an accumulator, not clock * speed. Turning
+    -- Gradient Flow off must freeze the colours where they are; the old
+    -- clock-derived phase snapped every surface back to stop 0, then jumped
+    -- forward when flow resumed. One advance per render frame also keeps the
+    -- cost independent of how many surfaces sample the palette.
+    Grad.phaseValue = 0.0
+    -- Speed-independent flow time for live previews (the Speed row runs
+    -- three chips at their own rates from this same frozen/resumed clock).
+    Grad.flowClock = 0.0
+    Grad.lastPhaseClock = nil
+    Menu.Glow = 1.0
+    Menu.GlowScale = 1.0
+
+    local function clamp01(value)
+        if type(value) ~= "number" then return 0.0 end
+        if value < 0.0 then return 0.0 end
+        if value > 1.0 then return 1.0 end
+        return value
+    end
+
+    local function clampRange(value, low, high)
+        if type(value) ~= "number" then return low end
+        if value < low then return low end
+        if value > high then return high end
+        return value
+    end
+
+    local function rgbToHsv(r, g, b)
+        local high = math.max(r, g, b)
+        local low = math.min(r, g, b)
+        local delta = high - low
+        local h = 0.0
+        if delta > 0.000001 then
+            if high == r then
+                h = ((g - b) / delta) % 6.0
+            elseif high == g then
+                h = (b - r) / delta + 2.0
+            else
+                h = (r - g) / delta + 4.0
+            end
+            h = h / 6.0
+            if h < 0.0 then h = h + 1.0 end
+        end
+        local s = (high > 0.000001) and (delta / high) or 0.0
+        return h, s, high
+    end
+
+    local function hsvToRgb(h, s, v)
+        h = h % 1.0
+        if h < 0.0 then h = h + 1.0 end
+        local sector = math.floor(h * 6.0)
+        local f = h * 6.0 - sector
+        local p = v * (1.0 - s)
+        local q = v * (1.0 - f * s)
+        local t = v * (1.0 - (1.0 - f) * s)
+        local r, g, b
+        if sector == 0 then
+            r, g, b = v, t, p
+        elseif sector == 1 then
+            r, g, b = q, v, p
+        elseif sector == 2 then
+            r, g, b = p, v, t
+        elseif sector == 3 then
+            r, g, b = p, q, v
+        elseif sector == 4 then
+            r, g, b = t, p, v
+        else
+            r, g, b = v, p, q
+        end
+        return clamp01(r), clamp01(g), clamp01(b)
+    end
+
+    local function tunedColor(r, g, b)
+        local h, s, v = rgbToHsv(r, g, b)
+        h = h + (Grad.tuning.hue / 360.0)
+        s = clamp01(s * Grad.tuning.saturation)
+        v = clamp01(v * Grad.tuning.brightness)
+        return hsvToRgb(h, s, v)
+    end
+
+    -- Rebuild in place so transitionTo keeps pointing at the live table.
+    -- Replacing the tables would strand an in-flight theme crossfade on the
+    -- old palette while the active theme had already changed.
+    local function rebuildPresets()
+        for name, base in pairs(Grad.basePresets) do
+            local tuned = Grad.presets[name]
+            if type(tuned) ~= "table" then
+                tuned = {}
+                Grad.presets[name] = tuned
+            end
+            for i = 1, #base do
+                local source = base[i]
+                local r, g, b = source[1], source[2], source[3]
+                if name ~= "Panel" then
+                    r, g, b = tunedColor(r, g, b)
+                end
+                local slot = tuned[i]
+                if type(slot) ~= "table" then
+                    slot = {}
+                    tuned[i] = slot
+                end
+                slot[1], slot[2], slot[3] = r, g, b
+            end
+        end
+    end
+
+    rebuildPresets()
+
+    local function currentPhase()
+        local clock = tonumber(Menu.AnimTime) or 0.0
+        local last = Grad.lastPhaseClock
+        if last == nil then
+            Grad.lastPhaseClock = clock
+            return Grad.phaseValue
+        end
+        if clock == last then return Grad.phaseValue end
+
+        if Grad.animated then
+            local delta = clock - last
+            -- A stall or a menu reopen can produce a large clock jump. Keep
+            -- the phase stable instead of teleporting the gradient; the next
+            -- real frame resumes from the current colour.
+            if delta > 0.0 and delta < 2.0 then
+                Grad.phaseValue = Grad.phaseValue + delta * (tonumber(Grad.speed) or 0.075)
+                Grad.flowClock = Grad.flowClock + delta
+            end
+        end
+        Grad.lastPhaseClock = clock
+        return Grad.phaseValue
+    end
+
+    local function paletteFor(name)
+        local palette = (type(name) == "table" and name) or Grad.presets[name or Grad.active]
+        if type(palette) ~= "table" or #palette == 0 then
+            palette = Grad.presets[Grad.active] or Grad.presets.Violet
+        end
+        return palette
+    end
+
+    local function sample(palette, u)
+        local count = #palette
+        if count == 0 then return 1.0, 1.0, 1.0 end
+        u = u % 2.0
+        if u < 0.0 then u = u + 2.0 end
+        if u > 1.0 then u = 2.0 - u end
+        if count == 1 then
+            local only = palette[1]
+            return only[1], only[2], only[3]
+        end
+        local scaled = u * (count - 1)
+        local index = math.floor(scaled)
+        if index >= count - 1 then index = count - 2 end
+        local t = scaled - index
+        local a = palette[index + 1]
+        local b = palette[index + 2]
+        return a[1] + (b[1] - a[1]) * t,
+            a[2] + (b[2] - a[2]) * t,
+            a[3] + (b[3] - a[3]) * t
+    end
+
+    -- Theme changes crossfade the whole palette instead of snapping every
+    -- accent at once. Fixed-preset surfaces keep their exact sample; only the
+    -- active palette (preset nil or the current name) participates.
+    local function transitionValue()
+        if not Grad.transitionFrom or not Grad.transitionTo then return 1.0 end
+        local clock = tonumber(Menu.AnimTime)
+        if not clock then return 1.0 end
+        local start = tonumber(Grad.transitionStart) or clock
+        local duration = tonumber(Grad.transitionDuration) or 0.45
+        if duration <= 0.001 then duration = 0.001 end
+        local progress = (clock - start) / duration
+        if progress < 0.0 then progress = 0.0 elseif progress > 1.0 then progress = 1.0 end
+        if progress >= 1.0 then
+            Grad.transitionFrom = nil
+            Grad.transitionTo = nil
+            Grad.transitionStart = nil
+            return 1.0
+        end
+        -- Smoothstep, not linear: the palette settles into the new theme
+        -- instead of changing at a constant rate and stopping hard.
+        return progress * progress * (3.0 - 2.0 * progress)
+    end
+
+    local function samplePreset(preset, u)
+        local from, to = Grad.transitionFrom, Grad.transitionTo
+        if from and to and (preset == nil or preset == Grad.active) then
+            local progress = transitionValue()
+            if progress < 1.0 then
+                local r0, g0, b0 = sample(from, u)
+                local r1, g1, b1 = sample(to, u)
+                return r0 + (r1 - r0) * progress,
+                    g0 + (g1 - g0) * progress,
+                    b0 + (b1 - b0) * progress
+            end
+        end
+        return sample(paletteFor(preset), u)
+    end
+
+    function Grad.color(name, t, phase)
+        local u = (tonumber(t) or 0.0) + (tonumber(phase) or 0.0)
+        return samplePreset(name, u)
+    end
+
+    function Grad.accent(t)
+        local r, g, b = samplePreset(nil, tonumber(t) or 0.5)
+        return r, g, b
+    end
+
+    function Grad.luminance()
+        -- Use the blended palette, not SelectedBg: during a theme crossfade the
+        -- flat accent has already changed but the visible pill is still midway.
+        local r, g, b = Grad.accent(0.5)
+        return 0.299 * r + 0.587 * g + 0.114 * b
+    end
+
+    -- Keep the library-owned flat accent (scrollbar thumb, tab plate, legacy
+    -- text) aligned with the tuned palette. Without this the gradient
+    -- surfaces would follow a hue shift while the library accents stayed on
+    -- the original preset colour.
+    function Grad.refreshAccent()
+        if type(Menu.Colors) ~= "table" then return end
+        local r, g, b = Grad.accent(0.5)
+        Menu.Colors.SelectedBg = {
+            r = math.floor(clamp01(r) * 255.0 + 0.5),
+            g = math.floor(clamp01(g) * 255.0 + 0.5),
+            b = math.floor(clamp01(b) * 255.0 + 0.5),
+        }
+    end
+
+    -- Four-corner paint. style 1 = diagonal, 2 = horizontal, 3 = vertical.
+    -- alphaCorners is {tl, tr, bl, br}; when omitted every corner uses alpha.
+    function Grad.draw(x, y, width, height, opts)
+        if not Grad.enabled then return end
+        if type(x) ~= "number" or type(y) ~= "number"
+            or type(width) ~= "number" or type(height) ~= "number" then
+            return
+        end
+        if width <= 0.0 or height <= 0.0 then return end
+        opts = opts or {}
+
+        local style = tonumber(opts.style) or Grad.style
+        local u0 = tonumber(opts.u0) or 0.0
+        local u1 = tonumber(opts.u1) or 1.0
+        local phase = tonumber(opts.phase)
+        if phase == nil then
+            if opts.static then
+                phase = 0.0
+            else
+                phase = currentPhase()
+            end
+        end
+        local alpha = clamp01(tonumber(opts.alpha) or 1.0)
+        if alpha <= 0.0 then return end
+        local rounding = tonumber(opts.rounding) or 0.0
+
+        local tlR, tlG, tlB
+        local trR, trG, trB
+        local brR, brG, brB
+        local blR, blG, blB
+        if style == 2 then
+            tlR, tlG, tlB = samplePreset(opts.preset, u0 + phase)
+            blR, blG, blB = tlR, tlG, tlB
+            trR, trG, trB = samplePreset(opts.preset, u1 + phase)
+            brR, brG, brB = trR, trG, trB
+        elseif style == 3 then
+            tlR, tlG, tlB = samplePreset(opts.preset, u0 + phase)
+            trR, trG, trB = tlR, tlG, tlB
+            blR, blG, blB = samplePreset(opts.preset, u1 + phase)
+            brR, brG, brB = blR, blG, blB
+        else
+            tlR, tlG, tlB = samplePreset(opts.preset, u0 + phase)
+            brR, brG, brB = samplePreset(opts.preset, u1 + phase)
+            local midR, midG, midB = samplePreset(opts.preset, (u0 + u1) * 0.5 + phase)
+            trR, trG, trB = midR, midG, midB
+            blR, blG, blB = midR, midG, midB
+        end
+
+        local aTL, aTR, aBL, aBR = alpha, alpha, alpha, alpha
+        if type(opts.alphaCorners) == "table" then
+            local corners = opts.alphaCorners
+            aTL = clamp01(tonumber(corners[1]) or alpha)
+            aTR = clamp01(tonumber(corners[2]) or alpha)
+            aBL = clamp01(tonumber(corners[3]) or alpha)
+            aBR = clamp01(tonumber(corners[4]) or alpha)
+        end
+
+        local primitive = type(Susano) == "table" and Susano.DrawRectGradient or nil
+        if type(primitive) == "function" then
+            local ok = pcall(primitive, x, y, width, height,
+                tlR, tlG, tlB, aTL,
+                trR, trG, trB, aTR,
+                brR, brG, brB, aBR,
+                blR, blG, blB, aBL,
+                rounding)
+            if ok then return end
+        end
+
+        local fillFn = type(Susano) == "table" and Susano.DrawRectFilled or nil
+        if type(fillFn) ~= "function" then return end
+
+        -- Fallback: bands sampled from the same curve. The strip direction
+        -- follows the selected style: horizontal for style 2, vertical for
+        -- style 3 and for the diagonal approximation. Rounded corners are
+        -- approximated by rounding the first and last band only.
+        local bands = tonumber(opts.bands) or 18
+        if bands < 2 then bands = 2 end
+        if bands > 48 then bands = 48 end
+
+        if style == 2 then
+            local bandWidth = width / bands
+            local leftAlpha = (aTL + aBL) * 0.5
+            local rightAlpha = (aTR + aBR) * 0.5
+            for i = 0, bands - 1 do
+                local t0 = i / bands
+                local t1 = (i + 1) / bands
+                local r0, g0, b0 = samplePreset(opts.preset, u0 + (u1 - u0) * t0 + phase)
+                local r1, g1, b1 = samplePreset(opts.preset, u0 + (u1 - u0) * t1 + phase)
+                local bandAlpha = leftAlpha + (rightAlpha - leftAlpha) * ((t0 + t1) * 0.5)
+                local bandRound = 0.0
+                if rounding > 0.0 and (i == 0 or i == bands - 1) then
+                    bandRound = rounding * 0.5
+                end
+                fillFn(x + i * bandWidth, y, bandWidth + 0.5, height,
+                    (r0 + r1) * 0.5, (g0 + g1) * 0.5, (b0 + b1) * 0.5,
+                    bandAlpha, bandRound)
+            end
+            return
+        end
+
+        local bandHeight = height / bands
+        local topAlpha = (aTL + aTR) * 0.5
+        local bottomAlpha = (aBL + aBR) * 0.5
+        for i = 0, bands - 1 do
+            local t0 = i / bands
+            local t1 = (i + 1) / bands
+            local r0, g0, b0 = samplePreset(opts.preset, u0 + (u1 - u0) * t0 + phase)
+            local r1, g1, b1 = samplePreset(opts.preset, u0 + (u1 - u0) * t1 + phase)
+            local bandAlpha = topAlpha + (bottomAlpha - topAlpha) * ((t0 + t1) * 0.5)
+            local bandRound = 0.0
+            if rounding > 0.0 and (i == 0 or i == bands - 1) then
+                bandRound = rounding * 0.5
+            end
+            fillFn(x, y + i * bandHeight, width, bandHeight + 0.5,
+                (r0 + r1) * 0.5, (g0 + g1) * 0.5, (b0 + b1) * 0.5,
+                bandAlpha, bandRound)
+        end
+    end
+
+    -- Per-glyph gradient text. Used for the footer wordmark and small accent
+    -- marks; never for dense rows, because every glyph is one draw call.
+    function Grad.text(x, y, text, size, opts)
+        if type(text) ~= "string" or text == "" then return 0.0 end
+        opts = opts or {}
+        local scale = Menu.Scale or 1.0
+        local fontSize = tonumber(size) or 16
+        local scaled = fontSize * scale
+        local phase = tonumber(opts.phase)
+        if phase == nil then phase = opts.static and 0.0 or currentPhase() end
+        local alpha = clamp01(tonumber(opts.alpha) or 1.0)
+        if alpha <= 0.0 then return 0.0 end
+        local total = #text
+
+        -- Count code points first. Using byte offsets for the colour ramp
+        -- compressed every glyph after a multi-byte character and left the
+        -- final stop unreachable on non-ASCII labels.
+        local glyphCount = 0
+        local cursor = 1
+        while cursor <= total do
+            local byte = string.byte(text, cursor)
+            local length = 1
+            if byte and byte >= 240 then length = 4
+            elseif byte and byte >= 224 then length = 3
+            elseif byte and byte >= 192 then length = 2 end
+            glyphCount = glyphCount + 1
+            cursor = cursor + length
+        end
+        if glyphCount == 0 then return 0.0 end
+
+        local startX = x
+        local glyphIndex = 0
+        cursor = 1
+        while cursor <= total do
+            local byte = string.byte(text, cursor)
+            local length = 1
+            if byte and byte >= 240 then length = 4
+            elseif byte and byte >= 224 then length = 3
+            elseif byte and byte >= 192 then length = 2 end
+            local glyph = string.sub(text, cursor, cursor + length - 1)
+            local glyphWidth = 0.0
+            if type(Susano) == "table" and type(Susano.GetTextWidth) == "function" then
+                local measured = Susano.GetTextWidth(glyph, scaled)
+                if type(measured) == "number" and measured > 0.0 then glyphWidth = measured end
+            end
+            if glyphWidth <= 0.0 then glyphWidth = fontSize * 0.56 * scale end
+            local t = (glyphCount > 1) and (glyphIndex / (glyphCount - 1)) or 0.5
+            local r, g, b = Grad.color(opts.preset, t, phase)
+            Menu.DrawText(x, y, glyph, fontSize, r, g, b, alpha)
+            if opts.bold and alpha > 0.1 then
+                Menu.DrawText(x + 1, y, glyph, fontSize, r, g, b, alpha * 0.72)
+            end
+            x = x + glyphWidth
+            cursor = cursor + length
+            glyphIndex = glyphIndex + 1
+        end
+        return x - startX
+    end
+
+    function Grad.SetTheme(name)
+        if not Grad.presets[name] then return Grad.active end
+        if name == Grad.active then return Grad.active end
+
+        -- Snapshot the exact colours on screen right now. A second theme
+        -- change mid-fade therefore starts from the visible blend instead of
+        -- jumping back to the previous preset.
+        local snapshot = {}
+        local from, to = Grad.transitionFrom, Grad.transitionTo
+        if from and to then
+            local progress = transitionValue()
+            if progress < 1.0 then
+                for i = 1, 5 do
+                    local u = (i - 1) / 4
+                    local r0, g0, b0 = sample(from, u)
+                    local r1, g1, b1 = sample(to, u)
+                    snapshot[i] = {
+                        r0 + (r1 - r0) * progress,
+                        g0 + (g1 - g0) * progress,
+                        b0 + (b1 - b0) * progress,
+                    }
+                end
+            end
+        end
+        if #snapshot == 0 then
+            local current = paletteFor(Grad.active)
+            for i = 1, #current do
+                local stop = current[i]
+                snapshot[i] = { stop[1], stop[2], stop[3] }
+            end
+        end
+
+        Grad.transitionFrom = snapshot
+        Grad.transitionTo = Grad.presets[name]
+        Grad.active = name
+        Grad.transitionStart = tonumber(Menu.AnimTime) or 0.0
+        Grad.refreshAccent()
+        return Grad.active
+    end
+
+    function Grad.SetAnimated(enabled)
+        local nextValue = enabled and true or false
+        if Grad.animated == nextValue then return Grad.animated end
+        if Grad.animated then
+            currentPhase()
+        end
+        Grad.animated = nextValue
+        if Grad.animated then
+            Grad.lastPhaseClock = tonumber(Menu.AnimTime) or Grad.lastPhaseClock
+        end
+        return Grad.animated
+    end
+
+    function Grad.SetStyle(index)
+        local style = math.floor(tonumber(index) or 1)
+        if style < 1 then style = 1 elseif style > 3 then style = 3 end
+        Grad.style = style
+        return style
+    end
+
+    function Grad.SetSpeed(value)
+        local speed
+        if type(value) == "string" then
+            speed = ({ Slow = 0.035, Balanced = 0.075, Fast = 0.160 })[value]
+        else
+            local index = math.floor(tonumber(value) or 2)
+            speed = ({ [1] = 0.035, [2] = 0.075, [3] = 0.160 })[index]
+        end
+        Grad.speed = speed or 0.075
+        return Grad.speed
+    end
+
+    function Grad.SetGlow(value)
+        local glow
+        if type(value) == "string" then
+            glow = ({ Soft = 0.55, Normal = 1.0, Vivid = 1.6 })[value]
+        else
+            local index = math.floor(tonumber(value) or 2)
+            glow = ({ [1] = 0.55, [2] = 1.0, [3] = 1.6 })[index]
+        end
+        Grad.glow = glow or 1.0
+        Menu.GlowScale = Grad.glow
+        return Grad.glow
+    end
+
+    local function scaleSetting(value, low, high)
+        local number = tonumber(value)
+        if not number then return 1.0 end
+        -- Slider rows pass percent (0-200); direct callers can pass the
+        -- multiplier itself. Values above 2 are unambiguously percentages.
+        if number > 2.0 then number = number / 100.0 end
+        return clampRange(number, low, high)
+    end
+
+    function Grad.SetHue(value)
+        local hue = clampRange(tonumber(value) or 0.0, -180.0, 180.0)
+        if math.abs(hue - Grad.tuning.hue) < 0.0001 then return Grad.tuning.hue end
+        Grad.tuning.hue = hue
+        rebuildPresets()
+        Grad.refreshAccent()
+        return Grad.tuning.hue
+    end
+
+    function Grad.SetSaturation(value)
+        local saturation = scaleSetting(value, 0.0, 2.0)
+        if math.abs(saturation - Grad.tuning.saturation) < 0.0001 then
+            return Grad.tuning.saturation
+        end
+        Grad.tuning.saturation = saturation
+        rebuildPresets()
+        Grad.refreshAccent()
+        return Grad.tuning.saturation
+    end
+
+    function Grad.SetBrightness(value)
+        local brightness = scaleSetting(value, 0.25, 2.0)
+        if math.abs(brightness - Grad.tuning.brightness) < 0.0001 then
+            return Grad.tuning.brightness
+        end
+        Grad.tuning.brightness = brightness
+        rebuildPresets()
+        Grad.refreshAccent()
+        return Grad.tuning.brightness
+    end
+
+    function Grad.ResetTuning()
+        Grad.tuning.hue = 0.0
+        Grad.tuning.saturation = 1.0
+        Grad.tuning.brightness = 1.0
+        rebuildPresets()
+        Grad.refreshAccent()
+        return true
+    end
+
+    -- The library forwards every selector commit here (patched above). Only
+    -- loader-owned rows are handled; the library keeps owning Menu Theme.
+    Menu.OnSelectorChanged = function(item, index)
+        if type(item) ~= "table" then return end
+        if item.name == "Gradient Style" then
+            Grad.SetStyle(index)
+        elseif item.name == "Gradient Speed" then
+            Grad.SetSpeed(index)
+        elseif item.name == "Gradient Glow" then
+            Grad.SetGlow(index)
+        end
+    end
+
+    local function screenSize()
+        local width, height = 1920, 1080
+        if type(Susano) == "table" then
+            if type(Susano.GetScreenWidth) == "function" then
+                local ok, value = pcall(Susano.GetScreenWidth)
+                if ok and type(value) == "number" and value > 0 then width = value end
+            end
+            if type(Susano.GetScreenHeight) == "function" then
+                local ok, value = pcall(Susano.GetScreenHeight)
+                if ok and type(value) == "number" and value > 0 then height = value end
+            end
+        end
+        return width, height
+    end
+
+    -- ------------------------------------------------------------------
+    -- Background: one animated, very low-alpha wash over the content plate.
+    -- It is painted after the library background and before every glyph, so
+    -- text contrast is untouched.
+    -- ------------------------------------------------------------------
+    do
+        local baseBackground = Menu.DrawBackground
+        if type(baseBackground) == "function" then
+            Menu.DrawBackground = function(...)
+                baseBackground(...)
+                local grad = Menu.Grad
+                if not grad then return end
+                -- Keep the library-owned flat accents on the same crossfade
+                -- as the gradient surfaces. Without this the tab pill and the
+                -- scrollbar thumb stay on the old palette for the 0.45 s
+                -- transition while every gradient has already moved.
+                if grad.transitionFrom and grad.refreshAccent then
+                    grad.refreshAccent()
+                end
+                local sp = type(Menu.GetScaledPosition) == "function" and Menu.GetScaledPosition() or nil
+                if type(sp) ~= "table" then return end
+                local width = (tonumber(sp.width) or 0.0) - 1.0
+                if width <= 2.0 then return end
+
+                local topY
+                local height
+                if Menu.OpenedCategory then
+                    local category = Menu.Categories and Menu.Categories[Menu.OpenedCategory]
+                    local tab = category and category.tabs and category.tabs[Menu.CurrentTab]
+                    local count = (tab and tab.items) and #tab.items or 0
+                    local maxVisible = tonumber(Menu.ItemsPerPage) or 8
+                    if count > maxVisible then count = maxVisible end
+                    topY = (tonumber(sp.y) or 0.0) + (tonumber(sp.headerHeight) or 0.0)
+                        + (tonumber(sp.headerSpacing) or 0.0)
+                    height = (tonumber(sp.mainMenuHeight) or 0.0)
+                        + (tonumber(sp.mainMenuSpacing) or 0.0)
+                        + count * (tonumber(sp.itemHeight) or 0.0)
+                else
+                    local total = math.max(0, #(Menu.Categories or {}) - 1)
+                    local count = math.min(tonumber(Menu.ItemsPerPage) or 8, total)
+                    topY = (tonumber(sp.y) or 0.0) + (tonumber(sp.headerHeight) or 0.0)
+                        + (tonumber(sp.headerSpacing) or 0.0)
+                    height = count * (tonumber(sp.itemHeight) or 0.0)
+                end
+                if height <= 2.0 then return end
+
+                local x = tonumber(sp.x) or 0.0
+                grad.draw(x + 1, topY + 1, width - 2, height - 2, {
+                    alpha = 0.105,
+                    rounding = 6,
+                    u0 = 0.0,
+                    u1 = 1.0,
+                })
+                grad.draw(x + 1, topY + 1, width - 2, height - 2, {
+                    alpha = 0.045,
+                    rounding = 6,
+                    style = 3,
+                    u0 = 0.55,
+                    u1 = 1.55,
+                })
+                grad.draw(x + 1, topY + height - 2, width - 2, 1, {
+                    alpha = 0.32,
+                    rounding = 0,
+                    u0 = 0.08,
+                    u1 = 0.92,
+                })
+            end
+        end
+    end
+
+    -- ------------------------------------------------------------------
+    -- Header: themed halo outside the banner, a very light palette tint on the
+    -- image, and a one-pixel gradient rim. The library still owns the banner
+    -- decode, aspect fit, inset and slow Ken Burns zoom.
+    -- ------------------------------------------------------------------
+    do
+        local baseHeader = Menu.DrawHeader
+        if type(baseHeader) == "function" then
+            Menu.DrawHeader = function(...)
+                local grad = Menu.Grad
+                local scale = Menu.Scale or 1.0
+                local sp = type(Menu.GetScaledPosition) == "function" and Menu.GetScaledPosition() or nil
+                local geometry = nil
+                if grad and type(sp) == "table" then
+                    local x = tonumber(sp.x) or 0.0
+                    local y = tonumber(sp.y) or 0.0
+                    local width = (tonumber(sp.width) or 0.0) - 1.0
+                    local height = tonumber(sp.headerHeight) or 0.0
+                    local radius = tonumber(sp.headerRadius) or 0.0
+                    if width > 4.0 and height > 4.0 then
+                        geometry = { x = x, y = y, width = width, height = height, radius = radius }
+                        grad.draw(x - 2 * scale, y - 2 * scale,
+                            width + 4 * scale, height + 4 * scale, {
+                                alpha = 0.20 * (Menu.BarGlow or Menu.Glow or 1.0),
+                                rounding = radius + 2 * scale,
+                            })
+                    end
+                end
+
+                baseHeader(...)
+
+                if not geometry then return end
+                local x, y = geometry.x, geometry.y
+                local width, height, radius = geometry.width, geometry.height, geometry.radius
+                local hasBanner = Menu.bannerTexture and Menu.bannerTexture > 0
+                    and type(Susano) == "table" and type(Susano.DrawImage) == "function"
+                if not hasBanner then
+                    -- No decoded image yet (or the theme has none): the header
+                    -- becomes a full gradient plate instead of a flat block,
+                    -- so the first frames never read as a broken theme.
+                    Grad.draw(x + 1, y + 1, width - 2, height - 2, {
+                        alpha = 0.92,
+                        rounding = radius,
+                        style = 3,
+                        u0 = 0.12,
+                        u1 = 0.88,
+                    })
+                    -- A second diagonal pass gives the fallback plate depth
+                    -- without waiting for the artwork. It is deliberately
+                    -- low-alpha so the eventual banner swap is seamless.
+                    Grad.draw(x + 1, y + 1, width - 2, height - 2, {
+                        alpha = 0.16,
+                        rounding = radius,
+                        style = 1,
+                        alphaCorners = { 0.0, 0.12, 0.16, 0.04 },
+                        u0 = 0.08,
+                        u1 = 0.92,
+                    })
+                elseif Grad.active ~= "White" and Grad.active ~= "Cyan" then
+                    Grad.draw(x + 1, y + radius, width - 2, height - radius - 1, {
+                        alpha = 0.085,
+                        rounding = 0,
+                        u0 = 0.05,
+                        u1 = 0.95,
+                    })
+                    -- A directional bloom over the lower-left of the artwork:
+                    -- enough to pull the banner into the palette, never enough
+                    -- to flatten the image or the logo sitting on top of it.
+                    Grad.draw(x + 1, y + radius, width - 2, height - radius - 1, {
+                        alpha = 0.13,
+                        rounding = 0,
+                        alphaCorners = { 0.0, 0.015, 0.22, 0.045 },
+                        u0 = 0.10,
+                        u1 = 0.90,
+                    })
+                end
+                if hasBanner then
+                    -- Fade the last rows of the artwork into the panel colour.
+                    -- The tab strip meets the banner directly, so this removes
+                    -- the hard photo seam without adding a spacer or a new
+                    -- plate; the image keeps its full-bleed width and height.
+                    Grad.draw(x + 1, y + height - math.floor(20 * scale),
+                        width - 2, math.floor(19 * scale), {
+                            preset = "Panel",
+                            style = 3,
+                            alphaCorners = { 0.0, 0.0, 0.52, 0.52 },
+                            rounding = 0,
+                            static = true,
+                        })
+                end
+                local edge = math.max(1, math.floor(1 * scale))
+                Grad.draw(x + radius, y, math.max(1, width - radius * 2), edge, {
+                    alpha = 0.90, rounding = 0,
+                })
+                Grad.draw(x, y + radius, edge, math.max(1, height - radius), {
+                    alpha = 0.55, rounding = 0,
+                })
+                Grad.draw(x + width - edge, y + radius, edge, math.max(1, height - radius), {
+                    alpha = 0.55, rounding = 0,
+                })
+                Grad.draw(x, y + height - edge, width, edge, {
+                    alpha = 0.30, rounding = 0,
+                })
+            end
+        end
+    end
+
+    -- ------------------------------------------------------------------
+    -- Footer: same layout and page counter, with a gradient rule along the
+    -- top edge and a per-glyph gradient wordmark.
+    -- ------------------------------------------------------------------
+    do
+        local function fill(x, y, width, height, r, g, b, a, radius)
+            if type(Susano) == "table" and type(Susano.DrawRectFilled) == "function" then
+                Susano.DrawRectFilled(x, y, width, height, r, g, b, a, radius or 0)
+            elseif type(Menu.DrawRoundedRect) == "function" then
+                Menu.DrawRoundedRect(x, y, width, height,
+                    math.floor((r or 0) * 255), math.floor((g or 0) * 255),
+                    math.floor((b or 0) * 255), math.floor((a or 1) * 255), radius or 0)
+            end
+        end
+
+        Menu.DrawFooter = function()
+            local sp = Menu.GetScaledPosition()
+            local scale = Menu.Scale or 1.0
+            local x = sp.x
+            local totalHeight
+
+            if Menu.OpenedCategory then
+                local category = Menu.Categories[Menu.OpenedCategory]
+                if category and category.hasTabs and category.tabs then
+                    local currentTab = category.tabs[Menu.CurrentTab]
+                    if currentTab and currentTab.items then
+                        local maxVisible = Menu.ItemsPerPage
+                        local totalItems = #currentTab.items
+                        local visibleItems = math.min(maxVisible, totalItems)
+                        totalHeight = sp.headerHeight + (sp.headerSpacing or 0)
+                            + sp.mainMenuHeight + sp.mainMenuSpacing
+                            + (visibleItems * sp.itemHeight)
+                    else
+                        totalHeight = sp.headerHeight + sp.mainMenuHeight + sp.mainMenuSpacing
+                    end
+                else
+                    totalHeight = sp.headerHeight + (sp.headerSpacing or 0)
+                        + sp.mainMenuHeight + sp.mainMenuSpacing
+                end
+            else
+                local maxVisible = Menu.ItemsPerPage
+                local totalCategories = #Menu.Categories - 1
+                local visibleCategories = math.min(maxVisible, totalCategories)
+                totalHeight = sp.headerHeight + (sp.headerSpacing or 0)
+                    + (visibleCategories * sp.itemHeight)
+            end
+
+            local footerY = sp.y + totalHeight + sp.footerSpacing
+            local footerWidth = sp.width - 1
+            local footerHeight = sp.footerHeight
+            local footerRounding = sp.footerRadius
+
+            fill(x, footerY, footerWidth, footerHeight,
+                0.180, 0.180, 0.190, 0.99, footerRounding)
+            fill(x + 1, footerY + 1, footerWidth - 2, footerHeight - 2,
+                0.052, 0.052, 0.056, 0.99, footerRounding)
+
+            local grad = Menu.Grad
+            if grad then
+                grad.draw(x + 1, footerY + 1, footerWidth - 2, 1, {
+                    alpha = 0.85, rounding = 0, u0 = 0.02, u1 = 0.98,
+                })
+                grad.draw(x + 1, footerY + footerHeight - 1, footerWidth - 2, 1, {
+                    alpha = 0.22, rounding = 0, u0 = 0.10, u1 = 0.90,
+                })
+            end
+
+            local footerPadding = 15 * scale
+            local footerSize = 15
+            local scaledFooterSize = footerSize * scale
+            local footerTextY = footerY + math.floor((footerHeight - scaledFooterSize) / 2)
+            local footerText = (Menu.FooterText and Menu.FooterText ~= "") and Menu.FooterText or "BUSDANSTETE"
+            local currentX = x + footerPadding
+
+            if grad then
+                local accentHeight = math.max(4, footerHeight - 14 * scale)
+                grad.draw(currentX, footerTextY + (scaledFooterSize - accentHeight) * 0.5,
+                    2 * scale, accentHeight, { alpha = 0.95, rounding = 1 })
+                currentX = currentX + 7 * scale
+            end
+
+            if grad then
+                grad.text(currentX, footerTextY, footerText, footerSize, {
+                    bold = true,
+                    preset = Grad.active,
+                })
+            else
+                local tR = Menu.Colors.TextWhite.r / 255.0
+                local tG = Menu.Colors.TextWhite.g / 255.0
+                local tB = Menu.Colors.TextWhite.b / 255.0
+                Menu.DrawText(currentX, footerTextY, footerText, footerSize, tR, tG, tB, 1.0)
+                Menu.DrawText(currentX + 1, footerTextY, footerText, footerSize, tR, tG, tB, 1.0)
+            end
+
+            if Menu.FooterLogoTex and Menu.FooterLogoTex > 0
+                and type(Susano) == "table" and type(Susano.DrawImage) == "function" then
+                local logoSize = footerHeight * 0.7
+                local logoX = x + (footerWidth / 2) - (logoSize / 2)
+                local logoY = footerY + (footerHeight - logoSize) / 2
+                Susano.DrawImage(Menu.FooterLogoTex, logoX, logoY, logoSize, logoSize, 1, 1, 1, 1, 0)
+            end
+
+            local displayIndex
+            local totalItems
+            if Menu.OpenedCategory then
+                local category = Menu.Categories[Menu.OpenedCategory]
+                if category and category.hasTabs and category.tabs then
+                    local currentTab = category.tabs[Menu.CurrentTab]
+                    if currentTab and currentTab.items then
+                        displayIndex = Menu.CurrentItem
+                        totalItems = #currentTab.items
+                    else
+                        displayIndex = 1
+                        totalItems = 1
+                    end
+                else
+                    displayIndex = 1
+                    totalItems = 1
+                end
+            else
+                displayIndex = Menu.CurrentCategory - 1
+                if displayIndex < 1 then displayIndex = 1 end
+                totalItems = #Menu.Categories - 1
+            end
+
+            local posText = string.format("%d/%d", displayIndex, totalItems)
+            local posWidth = 0
+            if type(Susano) == "table" and type(Susano.GetTextWidth) == "function" then
+                local measured = Susano.GetTextWidth(posText, scaledFooterSize)
+                if type(measured) == "number" and measured > 0 then posWidth = measured end
+            end
+            if posWidth <= 0 then posWidth = string.len(posText) * 8 * scale end
+
+            local posX = x + footerWidth - posWidth - footerPadding
+            local cR = Menu.Colors.TextWhite.r / 255.0
+            local cG = Menu.Colors.TextWhite.g / 255.0
+            local cB = Menu.Colors.TextWhite.b / 255.0
+            if grad then
+                grad.text(posX, footerTextY, posText, footerSize, {
+                    alpha = 0.92, preset = Grad.active,
+                })
+            else
+                Menu.DrawText(posX, footerTextY, posText, footerSize, cR, cG, cB, 1.0)
+                Menu.DrawText(posX + 1, footerTextY, posText, footerSize, cR, cG, cB, 1.0)
+            end
+
+            if grad then
+                grad.draw(posX - 10 * scale, footerTextY + scaledFooterSize * 0.5 - 1,
+                    5 * scale, 2, { alpha = 0.75, rounding = 1 })
+            end
+        end
+    end
+
+    -- ------------------------------------------------------------------
+    -- Rows. The patched library geometry is preserved exactly (row plate,
+    -- selection plate, toggle travel, slider bounds, selector anchors); the
+    -- flat accent fills become palette gradients and the selection gains a
+    -- 1 px gradient rim with a breathing halo.
+    -- ------------------------------------------------------------------
+    do
+        local function fill(x, y, width, height, r, g, b, a, radius)
+            if type(Susano) == "table" and type(Susano.DrawRectFilled) == "function" then
+                Susano.DrawRectFilled(x, y, width, height, r, g, b, a, radius or 0)
+            elseif type(Menu.DrawRoundedRect) == "function" then
+                Menu.DrawRoundedRect(x, y, width, height,
+                    math.floor((r or 0) * 255), math.floor((g or 0) * 255),
+                    math.floor((b or 0) * 255), math.floor((a or 1) * 255), radius or 0)
+            end
+        end
+
+        local DESIGN_STYLE_BY_NAME = { Diagonal = 1, Horizontal = 2, Vertical = 3 }
+        local DESIGN_SPEED_BY_NAME = { Slow = 0.035, Balanced = 0.075, Fast = 0.160 }
+        local DESIGN_GLOW_BY_NAME = { Soft = 0.55, Normal = 1.0, Vivid = 1.6 }
+        local DESIGN_RATIO_BY_NAME = { Slow = 0.34, Balanced = 0.67, Fast = 1.0 }
+
+        local function selectedContrastColor()
+            local r, g, b
+            if Menu.Grad then
+                r, g, b = Menu.Grad.accent(0.5)
+            else
+                local accent = Menu.Colors and Menu.Colors.SelectedBg
+                r = accent and (tonumber(accent.r) or 255) / 255.0 or 1.0
+                g = accent and (tonumber(accent.g) or 255) / 255.0 or 1.0
+                b = accent and (tonumber(accent.b) or 255) / 255.0 or 1.0
+            end
+            local luminance = 0.299 * r + 0.587 * g + 0.114 * b
+            if luminance > 0.60 then
+                return 0.055, 0.055, 0.065
+            end
+            return 0.985, 0.985, 1.0
+        end
+
+        local function paintSlider(sliderX, sliderY, sliderWidth, sliderHeight, percent, radius, thumbSize)
+            percent = math.max(0.0, math.min(1.0, tonumber(percent) or 0.0))
+            fill(sliderX, sliderY, sliderWidth, sliderHeight,
+                0.12, 0.12, 0.12, 0.70, radius)
+            local filled = sliderWidth * percent
+            if filled > 0.5 then
+                if Menu.Grad then
+                    Menu.Grad.draw(sliderX, sliderY, filled, sliderHeight, {
+                        alpha = 1.0,
+                        rounding = radius,
+                        u0 = 0.05,
+                        u1 = 0.05 + 0.90 * percent,
+                    })
+                    Menu.Grad.draw(sliderX - 1.5, sliderY - 1.5, filled + 3, sliderHeight + 3, {
+                        alpha = 0.20,
+                        rounding = radius + 1.5,
+                        u0 = 0.0,
+                        u1 = 1.0,
+                    })
+                else
+                    local accent = Menu.Colors and Menu.Colors.SelectedBg or { r = 255, g = 255, b = 255 }
+                    local accentR = math.min(255, (tonumber(accent.r) or 255) * 1.3)
+                    local accentG = math.min(255, (tonumber(accent.g) or 255) * 1.3)
+                    local accentB = math.min(255, (tonumber(accent.b) or 255) * 1.3)
+                    fill(sliderX, sliderY, filled, sliderHeight,
+                        accentR / 255.0, accentG / 255.0, accentB / 255.0, 1.0, radius)
+                end
+            end
+            local thumbX = sliderX + filled - thumbSize / 2
+            local thumbY = sliderY + sliderHeight / 2 - thumbSize / 2
+            if Menu.Grad then
+                Menu.Grad.draw(thumbX - 1, thumbY - 1, thumbSize + 2, thumbSize + 2, {
+                    alpha = 0.80,
+                    rounding = (thumbSize + 2) / 2,
+                    static = true,
+                })
+            end
+            fill(thumbX, thumbY, thumbSize, thumbSize, 1.0, 1.0, 1.0, 1.0, thumbSize / 2)
+        end
+
+        local function paintToggleTrack(toggleX, toggleY, toggleWidth, toggleHeight, progress, radius)
+            progress = math.max(0.0, math.min(1.0, tonumber(progress) or 0.0))
+            fill(toggleX, toggleY, toggleWidth, toggleHeight,
+                0.17, 0.17, 0.18, 0.95, radius)
+            if progress > 0.001 then
+                if Menu.Grad then
+                    Menu.Grad.draw(toggleX - 2, toggleY - 2, toggleWidth + 4, toggleHeight + 4, {
+                        alpha = 0.20 * progress,
+                        rounding = radius + 2,
+                    })
+                    Menu.Grad.draw(toggleX, toggleY, toggleWidth, toggleHeight, {
+                        alpha = 0.95 * progress,
+                        rounding = radius,
+                        u0 = 0.08,
+                        u1 = 0.92,
+                    })
+                else
+                    local accent = Menu.Colors and Menu.Colors.SelectedBg or { r = 255, g = 255, b = 255 }
+                    local trackR = 0.17 + ((tonumber(accent.r) or 255) / 255.0 - 0.17) * progress
+                    local trackG = 0.17 + ((tonumber(accent.g) or 255) / 255.0 - 0.17) * progress
+                    local trackB = 0.18 + ((tonumber(accent.b) or 255) / 255.0 - 0.18) * progress
+                    fill(toggleX, toggleY, toggleWidth, toggleHeight,
+                        trackR, trackG, trackB, 0.95, radius)
+                end
+            end
+        end
+
+        local function toggleProgress(item)
+            local want = item.value and 1.0 or 0.0
+            local progress = tonumber(item._toggleAnim)
+            if progress == nil then progress = want end
+            local step = 1.0 - math.exp(-20.0 * (Menu.AnimDelta or 0.016))
+            progress = progress + (want - progress) * step
+            if math.abs(progress - want) < 0.002 then progress = want end
+            item._toggleAnim = progress
+            return progress
+        end
+
+        function Menu.DrawItem(x, itemY, width, itemHeight, item, isSelected)
+            if type(item) ~= "table" then return end
+            local scale = Menu.Scale or 1.0
+            local textR = Menu.Colors.TextWhite.r / 255.0
+            local textG = Menu.Colors.TextWhite.g / 255.0
+            local textB = Menu.Colors.TextWhite.b / 255.0
+
+            -- A non-interactive live strip that shows the exact palette,
+            -- direction, speed and glow currently applied. It is a separator
+            -- so keyboard navigation skips it, but it draws a full-width
+            -- gradient instead of the usual rule.
+            if item.gradientPreview and Menu.Grad then
+                local label = tostring(item.separatorText or "Gradient Preview")
+                local labelSize = 14
+                local labelY = itemY + math.floor(3 * scale)
+                local barX = x + math.floor(15 * scale)
+                local barW = width - math.floor(30 * scale)
+                local barH = math.max(4, math.floor(7 * scale))
+                local barY = itemY + itemHeight - barH - math.floor(5 * scale)
+                Menu.DrawText(barX, labelY, label, labelSize,
+                    textR, textG, textB, 0.78)
+                if barW > 2 and barH > 1 then
+                    Menu.Grad.draw(barX - 2, barY - 2, barW + 4, barH + 4, {
+                        alpha = 0.11 * (Menu.Grad.glow or 1.0),
+                        rounding = (barH + 4) * 0.5,
+                    })
+                    Menu.Grad.draw(barX, barY, barW, barH, {
+                        alpha = 0.96,
+                        rounding = barH * 0.5,
+                        style = Menu.Grad.style,
+                        u0 = 0.0,
+                        u1 = 1.0,
+                    })
+                    Menu.Grad.draw(barX, barY, barW, math.max(1, math.floor(barH * 0.38)), {
+                        alpha = 0.18,
+                        rounding = barH * 0.5,
+                        style = 3,
+                        u0 = 0.0,
+                        u1 = 1.0,
+                    })
+                end
+                return
+            end
+
+            if item.isSeparator then
+                if item.separatorText then
+                    local textY = itemY + itemHeight / 2 - 7
+                    local textSize = 14
+                    local textScale = scale
+                    local scaledTextSize = textSize * textScale
+                    local textWidth = 0
+                    if type(Susano) == "table" and type(Susano.GetTextWidth) == "function" then
+                        local measured = Susano.GetTextWidth(item.separatorText, scaledTextSize)
+                        if type(measured) == "number" and measured > 0 then textWidth = measured end
+                    end
+                    if textWidth <= 0 then textWidth = string.len(item.separatorText) * 8 * textScale end
+
+                    local textX = x + (width / 2) - (textWidth / 2)
+                    Menu.DrawText(textX, textY, item.separatorText, textSize,
+                        textR, textG, textB, 1.0)
+
+                    local barY = math.floor(itemY + (itemHeight / 2))
+                    local barSpacing = 8 * textScale
+                    local barInset = 15 * textScale
+
+                    local leftBarX = x + barInset
+                    local leftBarWidth = (textX - barSpacing) - leftBarX
+                    if leftBarWidth > 0 then
+                        if Menu.Grad then
+                            Menu.Grad.draw(leftBarX, barY, leftBarWidth, 1, {
+                                alpha = 0.70,
+                                rounding = 0,
+                                alphaCorners = { 0.0, 0.70, 0.0, 0.70 },
+                                u0 = 0.0,
+                                u1 = 0.5,
+                            })
+                        else
+                            fill(leftBarX, barY, leftBarWidth, 1, textR, textG, textB, 1.0, 0.5)
+                        end
+                    end
+
+                    local rightBarX = textX + textWidth + barSpacing
+                    local rightBarWidth = (x + width - barInset) - rightBarX
+                    if rightBarWidth > 0 then
+                        if Menu.Grad then
+                            Menu.Grad.draw(rightBarX, barY, rightBarWidth, 1, {
+                                alpha = 0.70,
+                                rounding = 0,
+                                alphaCorners = { 0.70, 0.0, 0.70, 0.0 },
+                                u0 = 0.5,
+                                u1 = 1.0,
+                            })
+                        else
+                            fill(rightBarX, barY, rightBarWidth, 1, textR, textG, textB, 1.0, 0.5)
+                        end
+                    end
+                end
+                return
+            end
+
+            -- Base row plate, identical to the patched library geometry.
+            local plateX = x + 6
+            local plateW = width - 12
+            local plateH = itemHeight - 8
+            local plateY = itemY + math.floor((itemHeight - plateH) / 2)
+            if plateW > 2 and plateH > 2 then
+                fill(plateX, plateY, plateW, plateH, 0.135, 0.135, 0.145, 0.99, 5)
+                fill(plateX + 1, plateY + 1, plateW - 2, plateH - 2,
+                    0.072, 0.072, 0.080, 1.0, 4)
+                if Menu.Grad then
+                    Menu.Grad.draw(plateX + 1, plateY + 1, plateW - 2, 1, {
+                        alpha = 0.10, rounding = 0, u0 = 0.10, u1 = 0.90, static = true,
+                    })
+                end
+            end
+
+            if isSelected then
+                if Menu.SelectorY == 0 then Menu.SelectorY = itemY end
+                local smoothSpeed = Menu.SmoothFactorFrame or Menu.SmoothFactor or 0.2
+                Menu.SelectorY = Menu.SelectorY + (itemY - Menu.SelectorY) * smoothSpeed
+                if math.abs(Menu.SelectorY - itemY) < 0.5 then Menu.SelectorY = itemY end
+
+                local drawY = Menu.SelectorY
+                local floatPad = 6
+                local selX = x + floatPad
+                local selW = width - (floatPad * 2)
+                local selH = itemHeight - 8
+                local selY = drawY + math.floor((itemHeight - selH) / 2)
+                local selRadius = 5
+                if selW > 2 and selH > 2 then
+                    if Menu.Grad then
+                        local glow = Menu.Glow or 1.0
+                        Menu.Grad.draw(selX - 8, selY - 5, selW + 16, selH + 10, {
+                            alpha = 0.055 * glow, rounding = selRadius + 7,
+                        })
+                        Menu.Grad.draw(selX - 3, selY - 2, selW + 6, selH + 4, {
+                            alpha = 0.090 * glow, rounding = selRadius + 3,
+                        })
+                        Menu.Grad.draw(selX, selY, selW, selH, {
+                            alpha = 0.98, rounding = selRadius,
+                            u0 = 0.03, u1 = 0.97,
+                        })
+                        fill(selX + 1, selY + 1, selW - 2, selH - 2,
+                            0.076, 0.076, 0.086, 1.0, selRadius - 1)
+                        Menu.Grad.draw(selX + 1, selY + 1, selW - 2, selH - 2, {
+                            alpha = 0.10, rounding = selRadius - 1,
+                        })
+                        fill(selX + 2, selY + 2, selW - 4, math.floor(selH * 0.45),
+                            1.0, 1.0, 1.0, 0.030, math.max(1, selRadius - 1))
+                        if selH > 12 then
+                            Menu.Grad.draw(selX + 1, selY + 4, 2, selH - 8, {
+                                alpha = 0.95, rounding = 1,
+                                u0 = 0.15, u1 = 0.85,
+                            })
+                        end
+                    else
+                        fill(selX - 4, selY - 2, selW + 8, selH + 4,
+                            0.97, 0.97, 0.98, 0.050, selRadius + 3)
+                        fill(selX, selY, selW, selH, 0.320, 0.320, 0.340, 1.0, selRadius)
+                        fill(selX + 1, selY + 1, selW - 2, selH - 2,
+                            0.095, 0.095, 0.105, 1.0, selRadius - 1)
+                    end
+                end
+            end
+
+            local textX = x + 16
+            local textY = itemY + itemHeight / 2 - 8
+            local labelName = tostring(item.name or "")
+            Menu.DrawText(textX, textY, labelName, 19,
+                textR, textG, textB, 1.0)
+
+            -- Same draw-time reconciliation as the design selectors: the
+            -- visible switch is authoritative even if a remote library build
+            -- changes how its toggle callback is dispatched.
+            if Menu.Grad and item.name == "Gradient Flow" then
+                local want = item.value and true or false
+                if Menu.Grad.animated ~= want then Menu.Grad.SetAnimated(want) end
+            end
+
+            -- Slider rows are library-owned. Reconcile from the visible value
+            -- every frame so a remote library revision that forgets to call
+            -- onClick still drives the gradient instead of showing a slider
+            -- that does nothing.
+            if Menu.Grad then
+                if item.name == "Gradient Hue" then
+                    local value = tonumber(item.value)
+                    if value and math.abs(value - (tonumber(Menu.Grad.tuning.hue) or 0.0)) > 0.5 then
+                        Menu.Grad.SetHue(value)
+                    end
+                elseif item.name == "Gradient Saturation" then
+                    local value = (tonumber(item.value) or 100.0) / 100.0
+                    if math.abs(value - (tonumber(Menu.Grad.tuning.saturation) or 1.0)) > 0.005 then
+                        Menu.Grad.SetSaturation(value)
+                    end
+                elseif item.name == "Gradient Brightness" then
+                    local value = (tonumber(item.value) or 100.0) / 100.0
+                    if math.abs(value - (tonumber(Menu.Grad.tuning.brightness) or 1.0)) > 0.005 then
+                        Menu.Grad.SetBrightness(value)
+                    end
+                end
+            end
+
+            -- A live swatch next to the design rows: the user can read the
+            -- active palette, gradient direction, flow speed and glow without
+            -- leaving the menu or opening a second preview window.
+            if Menu.Grad and (item.name == "Menu Theme" or item.name == "Gradient Style"
+                or item.name == "Gradient Speed" or item.name == "Gradient Glow") then
+                local labelWidth = 0
+                if type(Susano) == "table" and type(Susano.GetTextWidth) == "function" then
+                    local measured = Susano.GetTextWidth(labelName, 19 * scale)
+                    if type(measured) == "number" and measured > 0 then labelWidth = measured end
+                end
+                if labelWidth <= 0 then labelWidth = string.len(labelName) * 9 * scale end
+
+                local swatchW = math.max(18, math.floor(
+                    (item.name == "Menu Theme" and 44 or 34) * scale))
+                local swatchH = math.max(6, math.floor(10 * scale))
+                local swatchX = textX + labelWidth + math.floor(12 * scale)
+                local swatchY = itemY + (itemHeight - swatchH) * 0.5
+                local rightLimit = x + width - math.floor(170 * scale)
+                if swatchX + swatchW < rightLimit then
+                    fill(swatchX - 1, swatchY - 1, swatchW + 2, swatchH + 2,
+                        0.02, 0.02, 0.03, 0.85, swatchH * 0.5 + 1)
+                    local options = type(item.options) == "table" and item.options or nil
+                    local count = options and #options or 0
+                    local selectedIndex = math.max(1, math.floor(tonumber(item.selected) or 1))
+                    -- Menu Theme is owned by the library, but Grad.active is
+                    -- the authoritative palette. If a theme change lands one
+                    -- frame before the row index, keep the deck honest.
+                    if item.name == "Menu Theme" and count > 0 then
+                        for i = 1, count do
+                            if options[i] == Menu.Grad.active then
+                                selectedIndex = i
+                                break
+                            end
+                        end
+                    end
+                    if count > 0 and (selectedIndex < 1 or selectedIndex > count) then
+                        selectedIndex = 1
+                    end
+
+                    -- The library patch is the primary selector channel. This
+                    -- draw-time reconciliation is the fallback: if a remote
+                    -- library revision moves the anchor, the visible row still
+                    -- drives the state instead of lying to the operator.
+                    local selectedOption = options and options[selectedIndex] or nil
+                    if selectedOption then
+                        if item.name == "Gradient Style" then
+                            local style = DESIGN_STYLE_BY_NAME[selectedOption] or selectedIndex
+                            if Menu.Grad.style ~= style then Menu.Grad.SetStyle(style) end
+                        elseif item.name == "Gradient Speed" and DESIGN_SPEED_BY_NAME[selectedOption] then
+                            if math.abs((tonumber(Menu.Grad.speed) or 0.075)
+                                - DESIGN_SPEED_BY_NAME[selectedOption]) > 0.0001 then
+                                Menu.Grad.SetSpeed(selectedOption)
+                            end
+                        elseif item.name == "Gradient Glow" and DESIGN_GLOW_BY_NAME[selectedOption] then
+                            if math.abs((tonumber(Menu.Grad.glow) or 1.0)
+                                - DESIGN_GLOW_BY_NAME[selectedOption]) > 0.0001 then
+                                Menu.Grad.SetGlow(selectedOption)
+                            end
+                        end
+                    end
+
+                    local gap = math.max(1, math.floor(2 * scale))
+                    local chipW = count > 0 and ((swatchW - gap * (count - 1)) / count) or swatchW
+                    if chipW < 2 then chipW = 2 end
+
+                    local function chipX(index)
+                        return swatchX + (index - 1) * (chipW + gap)
+                    end
+
+                    local function chipRim(index)
+                        if index ~= selectedIndex then return end
+                        fill(chipX(index) - 1, swatchY - 1, chipW + 2, swatchH + 2,
+                            1.0, 1.0, 1.0, 0.38, math.min(swatchH + 2, chipW + 2) * 0.5)
+                    end
+
+                    if item.name == "Menu Theme" and count > 0 then
+                        for i = 1, count do
+                            chipRim(i)
+                            Menu.Grad.draw(chipX(i), swatchY, chipW, swatchH, {
+                                alpha = (i == selectedIndex) and 1.0 or 0.52,
+                                rounding = math.min(swatchH, chipW) * 0.5,
+                                preset = options[i], u0 = 0.0, u1 = 1.0,
+                                static = true,
+                            })
+                        end
+                    elseif item.name == "Gradient Style" and count > 0 then
+                        for i = 1, count do
+                            chipRim(i)
+                            Menu.Grad.draw(chipX(i), swatchY, chipW, swatchH, {
+                                alpha = (i == selectedIndex) and 1.0 or 0.50,
+                                rounding = math.min(swatchH, chipW) * 0.5,
+                                style = DESIGN_STYLE_BY_NAME[options[i]] or math.min(3, i),
+                                u0 = 0.0, u1 = 1.0, static = true,
+                            })
+                        end
+                    elseif item.name == "Gradient Speed" and count > 0 then
+                        local baseClock = tonumber(Menu.Grad.flowClock) or 0.0
+                        for i = 1, count do
+                            local active = (i == selectedIndex)
+                            local cx = chipX(i)
+                            chipRim(i)
+                            fill(cx, swatchY, chipW, swatchH,
+                                0.18, 0.18, 0.20, 0.72, math.min(swatchH, chipW) * 0.5)
+                            local ratio = DESIGN_RATIO_BY_NAME[options[i]] or (i / count)
+                            local fillW = math.max(2, chipW * ratio)
+                            -- Each chip runs the palette at its own speed, so
+                            -- the row is a live speed comparison rather than a
+                            -- static bar chart. The shared phase accumulator
+                            -- means Flow off freezes all three in place.
+                            local chipSpeed = DESIGN_SPEED_BY_NAME[options[i]]
+                                or (tonumber(Menu.Grad.speed) or 0.075)
+                            Menu.Grad.draw(cx, swatchY, fillW, swatchH, {
+                                alpha = active and 1.0 or 0.62,
+                                rounding = math.min(swatchH, fillW) * 0.5,
+                                style = 2, u0 = 0.0, u1 = 1.0,
+                                phase = baseClock * chipSpeed,
+                            })
+                        end
+                    elseif item.name == "Gradient Glow" and count > 0 then
+                        for i = 1, count do
+                            local active = (i == selectedIndex)
+                            local glow = DESIGN_GLOW_BY_NAME[options[i]]
+                                or (0.55 + (i - 1) * 0.5)
+                            local cx = chipX(i)
+                            Menu.Grad.draw(cx - 2, swatchY - 2, chipW + 4, swatchH + 4, {
+                                alpha = math.min(0.24, 0.09 * glow),
+                                rounding = math.min(swatchH + 4, chipW + 4) * 0.5,
+                                static = true,
+                            })
+                            chipRim(i)
+                            Menu.Grad.draw(cx, swatchY, chipW, swatchH, {
+                                alpha = math.min(1.0, 0.55 + 0.25 * glow),
+                                rounding = math.min(swatchH, chipW) * 0.5,
+                                u0 = 0.0, u1 = 1.0, static = true,
+                            })
+                        end
+                    else
+                        Menu.Grad.draw(swatchX, swatchY, swatchW, swatchH, {
+                            alpha = 1.0, rounding = swatchH * 0.5,
+                            preset = Menu.Grad.active, u0 = 0.0, u1 = 1.0,
+                            static = true,
+                        })
+                    end
+                    fill(swatchX + 1, swatchY + 1, swatchW - 2, 1,
+                        1.0, 1.0, 1.0, 0.22, 0.0)
+                end
+            end
+
+            if (item.risk or item.dynasty or item.seed)
+                and type(Susano) == "table" and type(Susano.GetTextWidth) == "function" then
+                local scaledTagSize = 19 * scale
+                local offset = Susano.GetTextWidth(tostring(item.name or ""), scaledTagSize) or 0
+                if item.risk then
+                    Menu.DrawText(textX + offset, textY, "  [RISK]", 19, 1.0, 0.15, 0.15, 1.0)
+                    offset = offset + (Susano.GetTextWidth("  [RISK]", scaledTagSize) or 0)
+                end
+                if item.dynasty then
+                    if Menu.Grad then
+                        Menu.Grad.text(textX + offset, textY, "  [DYNASTY]", 19, {
+                            alpha = 1.0, preset = Menu.Grad.active,
+                        })
+                    else
+                        Menu.DrawText(textX + offset, textY, "  [DYNASTY]", 19, 0.60, 0.20, 1.0, 1.0)
+                    end
+                    offset = offset + (Susano.GetTextWidth("  [DYNASTY]", scaledTagSize) or 0)
+                end
+                if item.seed then
+                    Menu.DrawText(textX + offset, textY, "  [SEED]", 19, 0.35, 0.75, 0.42, 1.0)
+                end
+            end
+
+            if item.type == "toggle" then
+                local toggleWidth = 36
+                local toggleHeight = 16
+                local toggleX = x + width - toggleWidth - 16
+                local toggleY = itemY + (itemHeight / 2) - (toggleHeight / 2)
+                local toggleRadius = toggleHeight / 2
+                local progress = toggleProgress(item)
+
+                paintToggleTrack(toggleX, toggleY, toggleWidth, toggleHeight,
+                    progress, toggleRadius)
+
+                local circleSize = toggleHeight - 4
+                local circleY = toggleY + 2
+                local circleX = toggleX + 2 + (toggleWidth - circleSize - 4) * progress
+                if Menu.Grad and progress > 0.05 then
+                    Menu.Grad.draw(circleX - 1, circleY - 1, circleSize + 2, circleSize + 2, {
+                        alpha = 0.55 * progress,
+                        rounding = (circleSize + 2) / 2,
+                        static = true,
+                    })
+                end
+                local knob = 1.0 - 0.94 * progress
+                fill(circleX, circleY, circleSize, circleSize,
+                    knob, knob, knob, 1.0, circleSize / 2)
+
+                if item.hasSlider then
+                    local sliderWidth = 85
+                    local sliderHeight = 6
+                    local sliderX = x + width - sliderWidth - 95
+                    local sliderY = itemY + (itemHeight / 2) - (sliderHeight / 2)
+                    local currentValue = item.sliderValue or item.sliderMin or 0.0
+                    local minValue = item.sliderMin or 0.0
+                    local maxValue = item.sliderMax or 100.0
+                    local percent = 0.0
+                    if maxValue ~= minValue then
+                        percent = (currentValue - minValue) / (maxValue - minValue)
+                    end
+                    paintSlider(sliderX, sliderY, sliderWidth, sliderHeight, percent, 3.0, 10)
+                    local valueText = string.format("%.1f", currentValue)
+                    local valueX = sliderX + sliderWidth + 10
+                    local valueY = sliderY + (sliderHeight / 2) - 6
+                    Menu.DrawText(valueX, valueY, valueText, 10,
+                        textR, textG, textB, 0.8)
+                end
+            elseif item.type == "toggle_selector" then
+                local toggleWidth = 32
+                local toggleHeight = 14
+                local toggleX = x + width - toggleWidth - 15
+                local toggleY = itemY + (itemHeight / 2) - (toggleHeight / 2)
+                local toggleRadius = toggleHeight / 2
+                local progress = toggleProgress(item)
+
+                paintToggleTrack(toggleX, toggleY, toggleWidth, toggleHeight,
+                    progress, toggleRadius)
+
+                local circleSize = toggleHeight - 4
+                local circleY = toggleY + 2
+                local circleX = toggleX + 2 + (toggleWidth - circleSize - 4) * progress
+                if Menu.Grad and progress > 0.05 then
+                    Menu.Grad.draw(circleX - 1, circleY - 1, circleSize + 2, circleSize + 2, {
+                        alpha = 0.55 * progress,
+                        rounding = (circleSize + 2) / 2,
+                        static = true,
+                    })
+                end
+                local knob = 1.0 - 0.94 * progress
+                fill(circleX, circleY, circleSize, circleSize,
+                    knob, knob, knob, 1.0, circleSize / 2)
+
+                if item.options then
+                    local selectedIndex = item.selected or 1
+                    local selectedOption = item.options[selectedIndex] or ""
+                    local selectorSize = 16
+                    local selectorTextY = itemY + itemHeight / 2 - 7
+                    local fullText = "< " .. selectedOption .. " >"
+                    local selectorWidth = 0
+                    if type(Susano) == "table" and type(Susano.GetTextWidth) == "function" then
+                        selectorWidth = Susano.GetTextWidth(fullText, selectorSize) or 0
+                    end
+                    if selectorWidth <= 0 then selectorWidth = string.len(fullText) * 9 end
+                    local selectorX = toggleX - selectorWidth - 15
+                    local arrowR, arrowG, arrowB = selectedContrastColor()
+
+                    Menu.DrawText(selectorX, selectorTextY, "<", selectorSize,
+                        arrowR, arrowG, arrowB, 1.0)
+
+                    local leftArrowWidth = 18
+                    if type(Susano) == "table" and type(Susano.GetTextWidth) == "function" then
+                        leftArrowWidth = Susano.GetTextWidth("< ", selectorSize) or 18
+                    end
+                    Menu.DrawText(selectorX + leftArrowWidth, selectorTextY, selectedOption,
+                        selectorSize, textR, textG, textB, 1.0)
+
+                    local optionWidth = 0
+                    if type(Susano) == "table" and type(Susano.GetTextWidth) == "function" then
+                        optionWidth = Susano.GetTextWidth(selectedOption, selectorSize) or 0
+                    end
+                    if optionWidth <= 0 then optionWidth = string.len(selectedOption) * 9 end
+                    Menu.DrawText(selectorX + leftArrowWidth + optionWidth + 5, selectorTextY,
+                        ">", selectorSize, arrowR, arrowG, arrowB, 1.0)
+                end
+            elseif item.type == "slider" then
+                local sliderWidth = 100
+                local sliderHeight = 7
+                local sliderX = x + width - sliderWidth - 60
+                local sliderY = itemY + (itemHeight / 2) - (sliderHeight / 2)
+                local currentValue = item.value or item.min or 0.0
+                local minValue = item.min or 0.0
+                local maxValue = item.max or 100.0
+                local percent = 0.0
+                if maxValue ~= minValue then
+                    percent = (currentValue - minValue) / (maxValue - minValue)
+                end
+                paintSlider(sliderX, sliderY, sliderWidth, sliderHeight, percent, 3.0, 11)
+
+                local valueText = string.format("%.0f", currentValue)
+                local valueSize = 15
+                local valueScale = Menu.Scale or 1.0
+                local valueRight = x + width - (10 * valueScale)
+                local valueWidth = #valueText * 8 * valueScale
+                if type(Susano) == "table" and type(Susano.GetTextWidth) == "function" then
+                    local measured = Susano.GetTextWidth(valueText, valueSize * valueScale)
+                    if type(measured) == "number" and measured > 0 then valueWidth = measured end
+                end
+                local valueX = valueRight - valueWidth
+                local valueY = itemY + (itemHeight / 2) - (valueSize * valueScale / 2)
+                Menu.DrawText(valueX, valueY, valueText, valueSize,
+                    textR, textG, textB, 1.0)
+            elseif item.type == "selector" and item.options then
+                local selectedIndex = item.selected or 1
+                local selectedOption = item.options[selectedIndex] or ""
+                local selectorSize = 17
+
+                local isWardrobeSelector = false
+                local wardrobeItemNames = { "Hat", "Mask", "Glasses", "Torso", "Tshirt", "Pants", "Shoes" }
+                for _, name in ipairs(wardrobeItemNames) do
+                    if item.name == name then
+                        isWardrobeSelector = true
+                        break
+                    end
+                end
+
+                if isWardrobeSelector then
+                    local selectorText = "- " .. tostring(selectedIndex) .. " -"
+                    local selectorWidth = 0
+                    if type(Susano) == "table" and type(Susano.GetTextWidth) == "function" then
+                        selectorWidth = Susano.GetTextWidth(selectorText, selectorSize) or 0
+                    end
+                    if selectorWidth <= 0 then selectorWidth = string.len(selectorText) * 9 end
+                    local selectorX = x + width - selectorWidth - 16
+                    Menu.DrawText(selectorX, textY, selectorText, selectorSize,
+                        textR, textG, textB, 1.0)
+                else
+                    local fullText = "< " .. selectedOption .. " >"
+                    local selectorWidth = 0
+                    if type(Susano) == "table" and type(Susano.GetTextWidth) == "function" then
+                        selectorWidth = Susano.GetTextWidth(fullText, selectorSize) or 0
+                    end
+                    if selectorWidth <= 0 then selectorWidth = string.len(fullText) * 9 end
+                    local selectorX = x + width - selectorWidth - 16
+                    local arrowR, arrowG, arrowB = selectedContrastColor()
+
+                    Menu.DrawText(selectorX, textY, "<", selectorSize,
+                        arrowR, arrowG, arrowB, 1.0)
+
+                    local leftArrowWidth = 18
+                    if type(Susano) == "table" and type(Susano.GetTextWidth) == "function" then
+                        leftArrowWidth = Susano.GetTextWidth("< ", selectorSize) or 18
+                    end
+                    Menu.DrawText(selectorX + leftArrowWidth, textY, selectedOption,
+                        selectorSize, textR, textG, textB, 1.0)
+
+                    local optionWidth = 0
+                    if type(Susano) == "table" and type(Susano.GetTextWidth) == "function" then
+                        optionWidth = Susano.GetTextWidth(selectedOption, selectorSize) or 0
+                    end
+                    if optionWidth <= 0 then optionWidth = string.len(selectedOption) * 9 end
+                    Menu.DrawText(selectorX + leftArrowWidth + optionWidth + 5, textY,
+                        ">", selectorSize, arrowR, arrowG, arrowB, 1.0)
+                end
+            end
+        end
+    end
+
+    -- ------------------------------------------------------------------
+    -- Scrollbar: same track, arrows, smoothing and X contract the right-side
+    -- wrapper depends on; the thumb and its halo become vertical gradients.
+    -- ------------------------------------------------------------------
+    do
+        local function fill(x, y, width, height, r, g, b, a, radius)
+            if type(Susano) == "table" and type(Susano.DrawRectFilled) == "function" then
+                Susano.DrawRectFilled(x, y, width, height, r, g, b, a, radius or 0)
+            elseif type(Menu.DrawRoundedRect) == "function" then
+                Menu.DrawRoundedRect(x, y, width, height,
+                    math.floor((r or 0) * 255), math.floor((g or 0) * 255),
+                    math.floor((b or 0) * 255), math.floor((a or 1) * 255), radius or 0)
+            end
+        end
+
+        function Menu.DrawScrollbar(x, startY, visibleHeight, selectedIndex, totalItems, isMainMenu, menuWidth)
+            if totalItems < 2 then return end
+
+            local sp = Menu.GetScaledPosition()
+            local scale = Menu.Scale or 1.0
+            local scrollbarWidth = sp.scrollbarWidth
+            local scrollbarPadding = sp.scrollbarPadding
+            local width = menuWidth or sp.width
+            local scrollbarX = x - scrollbarWidth - scrollbarPadding
+
+            local barY = startY
+            local barH = visibleHeight
+            local arrowH = math.floor(16 * scale)
+            local trackY = barY + arrowH + 1
+            local trackH = barH - (arrowH * 2) - 2
+            if trackH < 10 then return end
+            local barRadius = scrollbarWidth / 2
+
+            fill(scrollbarX, barY, scrollbarWidth, barH,
+                0.180, 0.180, 0.190, 0.85, barRadius)
+            fill(scrollbarX + 1, barY + 1, scrollbarWidth - 2, barH - 2,
+                0.042, 0.042, 0.046, 0.92, barRadius)
+            if Menu.Grad then
+                Menu.Grad.draw(scrollbarX + 2, barY + 2, scrollbarWidth - 4, barH - 4, {
+                    alpha = 0.05, rounding = math.max(1, barRadius - 2), style = 3, static = true,
+                })
+            end
+
+            if type(Susano) == "table" and type(Susano.DrawImage) == "function" then
+                local iconSize = scrollbarWidth
+                local iconX = scrollbarX
+                local upR, upG, upB = 1.0, 1.0, 1.0
+                local downR, downG, downB = 1.0, 1.0, 1.0
+                if Menu.Grad then
+                    upR, upG, upB = Menu.Grad.color(nil, 0.20, 0)
+                    downR, downG, downB = Menu.Grad.color(nil, 0.80, 0)
+                end
+                local arrowUp = Menu.IconTextures and Menu.IconTextures["_arrowUp"]
+                if arrowUp and arrowUp > 0 then
+                    Susano.DrawImage(arrowUp, iconX,
+                        barY + math.floor((arrowH - iconSize) / 2),
+                        iconSize, iconSize, upR, upG, upB, 0.75, 0)
+                end
+                local arrowDown = Menu.IconTextures and Menu.IconTextures["_arrowDown"]
+                if arrowDown and arrowDown > 0 then
+                    Susano.DrawImage(arrowDown, iconX,
+                        barY + barH - arrowH + math.floor((arrowH - iconSize) / 2),
+                        iconSize, iconSize, downR, downG, downB, 0.75, 0)
+                end
+            end
+
+            local adjustedIndex = selectedIndex
+            if isMainMenu then adjustedIndex = selectedIndex - 1 end
+            local progress = math.max(0.0, math.min(1.0,
+                (adjustedIndex - 1) / math.max(1, totalItems - 1)))
+
+            local thumbHeight = math.max(trackH * 0.15,
+                math.min(trackH * 0.25, math.floor(20 * scale)))
+            local thumbY = math.max(trackY,
+                math.min(trackY + trackH - thumbHeight,
+                    trackY + progress * (trackH - thumbHeight)))
+
+            local context = isMainMenu and "cat" or ("items_" .. tostring(Menu.CurrentTab or 0))
+            if Menu.scrollbarContext ~= context then
+                Menu.scrollbarY = nil
+                Menu.scrollbarHeight = nil
+                Menu.scrollbarContext = context
+            end
+            if not Menu.scrollbarY then Menu.scrollbarY = thumbY end
+            if not Menu.scrollbarHeight then Menu.scrollbarHeight = thumbHeight end
+
+            Menu.scrollbarY = Menu.scrollbarY + (thumbY - Menu.scrollbarY) * 0.18
+            Menu.scrollbarHeight = Menu.scrollbarHeight + (thumbHeight - Menu.scrollbarHeight) * 0.18
+
+            local thumbPad = 2
+            local thumbW = scrollbarWidth - (thumbPad * 2)
+            local thumbRadius = thumbW / 2
+
+            if Menu.Grad then
+                Menu.Grad.draw(scrollbarX - 2, Menu.scrollbarY - 4,
+                    scrollbarWidth + 4, Menu.scrollbarHeight + 8, {
+                        alpha = 0.18, rounding = thumbRadius + 4, style = 3,
+                    })
+                Menu.Grad.draw(scrollbarX + thumbPad - 2, Menu.scrollbarY - 2,
+                    thumbW + 4, Menu.scrollbarHeight + 4, {
+                        alpha = 0.30, rounding = thumbRadius + 2, style = 3,
+                    })
+                Menu.Grad.draw(scrollbarX + thumbPad, Menu.scrollbarY,
+                    thumbW, Menu.scrollbarHeight, {
+                        alpha = 1.0, rounding = thumbRadius, style = 3,
+                        u0 = 0.06, u1 = 0.94,
+                    })
+            else
+                local accent = Menu.Colors and Menu.Colors.SelectedBg or { r = 255, g = 255, b = 255 }
+                fill(scrollbarX + thumbPad, Menu.scrollbarY, thumbW, Menu.scrollbarHeight,
+                    (tonumber(accent.r) or 255) / 255.0,
+                    (tonumber(accent.g) or 255) / 255.0,
+                    (tonumber(accent.b) or 255) / 255.0, 1.0, thumbRadius)
+            end
+        end
+    end
+
+    -- ------------------------------------------------------------------
+    -- Independent panels: input dialog and keybind list. Each keeps its
+    -- original geometry and alpha; only the flat accent lines are repainted
+    -- with the palette. The loading card and key picker are loader-owned
+    -- later in this chunk, so their gradient lives in that definition.
+    -- ------------------------------------------------------------------
+    do
+        local baseInput = Menu.DrawInputWindow
+        if type(baseInput) == "function" then
+            Menu.DrawInputWindow = function(...)
+                baseInput(...)
+                if not Menu.InputOpen then return end
+                local grad = Menu.Grad
+                if not grad then return end
+                local screenW, screenH = screenSize()
+                local width, height = 350, 130
+                local x = math.floor((screenW - width) / 2)
+                local y = math.floor((screenH - height) / 2)
+                grad.draw(x, y, width, 2, { alpha = 1.0, rounding = 0 })
+                grad.draw(x, y, 1, height, { alpha = 0.45, rounding = 0 })
+                grad.draw(x + width - 1, y, 1, height, { alpha = 0.45, rounding = 0 })
+                grad.draw(x, y + height - 1, width, 1, { alpha = 0.28, rounding = 0 })
+                grad.draw(x + 1, y + 2, width - 2, height - 3, {
+                    alpha = 0.035, rounding = 5, style = 3, static = true,
+                })
+
+                -- The field inside the dialog still carries the library's
+                -- white 1 px rim. Repaint that rim as a gradient so the input
+                -- belongs to the palette without changing its geometry.
+                local boxX, boxY = x + 20, y + 70
+                local boxW, boxH = width - 40, 30
+                grad.draw(boxX, boxY, boxW, 1, { alpha = 0.55, rounding = 0 })
+                grad.draw(boxX, boxY + boxH, boxW, 1, { alpha = 0.85, rounding = 0 })
+                grad.draw(boxX, boxY, 1, boxH, { alpha = 0.45, rounding = 0 })
+                grad.draw(boxX + boxW - 1, boxY, 1, boxH, { alpha = 0.45, rounding = 0 })
+            end
+        end
+
+        local baseKeybinds = Menu.DrawKeybindsInterface
+        if type(baseKeybinds) == "function" then
+            Menu.DrawKeybindsInterface = function(alpha)
+                baseKeybinds(alpha)
+                local grad = Menu.Grad
+                if not grad or type(alpha) ~= "number" or alpha <= 0 then return end
+                local count = 0
+                local maxWidth = 0
+                for _, category in ipairs(Menu.Categories or {}) do
+                    if category.hasTabs and category.tabs then
+                        for _, tab in ipairs(category.tabs) do
+                            for _, item in ipairs(tab.items or {}) do
+                                if item.bindKey and item.bindKeyName
+                                    and (item.type == "toggle" or item.type == "action") then
+                                    count = count + 1
+                                    local status = item.value and "on" or "off"
+                                    local text = tostring(item.name or "") .. " (" .. tostring(item.bindKeyName)
+                                        .. ") [" .. status .. "]"
+                                    local textWidth = 0
+                                    if type(Susano) == "table" and type(Susano.GetTextWidth) == "function" then
+                                        textWidth = Susano.GetTextWidth(text, 14) or 0
+                                    end
+                                    if textWidth <= 0 then textWidth = string.len(text) * 8 end
+                                    if textWidth > maxWidth then maxWidth = textWidth end
+                                end
+                            end
+                        end
+                    end
+                end
+                if count == 0 then return end
+                local screenW = screenSize()
+                local width = math.max(200, maxWidth + 30)
+                local x = screenW - width - 20
+                grad.draw(x + 15, 20 + 40, width - 30, 2, {
+                    alpha = alpha, rounding = 0,
+                })
+                grad.draw(x, 20, 1, 60, { alpha = alpha * 0.35, rounding = 0 })
+            end
+        end
+
+    end
+end
 
 -- ============================================
 -- PATCH: Delete / Suppr / Backspace closes the menu
@@ -1131,14 +3009,26 @@ do
 
     local function drawPlate(x, y, width, height, radius, alpha)
         local ar, ag, ab = accentColor()
-        if type(Susano) == "table" and type(Susano.DrawRectFilled) == "function" then
-            -- Fine white rim, black glass body and a one-pixel sheen.
+        local canFill = type(Susano) == "table" and type(Susano.DrawRectFilled) == "function"
+        if Menu.Grad then
+            Menu.Grad.draw(x - 1, y - 1, width + 2, height + 2, {
+                alpha = 0.46 * alpha, rounding = radius + 1, style = 3,
+            })
+        elseif canFill then
             Susano.DrawRectFilled(x - 1, y - 1, width + 2, height + 2,
                 ar, ag, ab, 0.28 * alpha, radius + 1)
+        end
+
+        if canFill then
             Susano.DrawRectFilled(x, y, width, height,
                 0.043, 0.044, 0.048, 0.985 * alpha, radius)
-            Susano.DrawRectFilled(x + math.floor(radius * 0.4), y, width - radius,
-                1, 1.0, 1.0, 1.0, 0.065 * alpha, 0)
+            if Menu.Grad then
+                Menu.Grad.draw(x + math.floor(radius * 0.4), y, width - radius,
+                    1, { preset = "White", alpha = 0.15 * alpha, static = true })
+            else
+                Susano.DrawRectFilled(x + math.floor(radius * 0.4), y, width - radius,
+                    1, 1.0, 1.0, 1.0, 0.065 * alpha, 0)
+            end
         elseif type(Menu) == "table" and type(Menu.DrawRoundedRect) == "function" then
             Menu.DrawRoundedRect(x, y, width, height,
                 math.floor(ar * 255), math.floor(ag * 255), math.floor(ab * 255),
@@ -1157,8 +3047,17 @@ do
         local fillWidth = width * progress
         if fillWidth > 0 then
             if fillWidth < height then fillWidth = height end
-            Susano.DrawRectFilled(x, y, fillWidth, height,
-                ar, ag, ab, 0.94 * alpha, height * 0.5)
+            if Menu.Grad then
+                Menu.Grad.draw(x, y, fillWidth, height, {
+                    alpha = 0.96 * alpha, rounding = height * 0.5,
+                    style = 2, u0 = 0.0, u1 = 0.90,
+                })
+                Susano.DrawRectFilled(x + height * 0.5, y, math.max(0, fillWidth - height),
+                    1, 1.0, 1.0, 1.0, 0.22 * alpha, 0)
+            else
+                Susano.DrawRectFilled(x, y, fillWidth, height,
+                    ar, ag, ab, 0.94 * alpha, height * 0.5)
+            end
         end
     end
 
@@ -1226,9 +3125,13 @@ do
         drawText(contentX, titleY, "Loading assets", titleSize,
             1.0, 1.0, 1.0, alpha)
         local percentWidth = textWidth(percent, detailSize)
+        local pr, pg, pb = ar, ag, ab
+        if Menu.Grad then
+            pr, pg, pb = Menu.Grad.color(nil, progress, 0)
+        end
         drawText(contentRight - percentWidth,
             titleY + math.floor((titleSize - detailSize) * 0.5 + 0.5),
-            percent, detailSize, ar, ag, ab, 0.98 * alpha)
+            percent, detailSize, pr, pg, pb, 0.98 * alpha)
     end
 
     function Menu.DrawKeySelector(alpha)
@@ -1466,6 +3369,12 @@ do
             local now = nowMs()
             if now - lastPlayedAt < MIN_GAP_MS then return end
             lastPlayedAt = now
+            -- GTA's frontend play native carries no volume argument, and the
+            -- per-sound "Loudness" variable is not defined on the stock HUD
+            -- set. Two identical voices started in the same frame sum
+            -- coherently (about +6 dB): the same click, fuller, still on the
+            -- exact native path the game uses for its own menus.
+            pcall(PlaySoundFrontend, -1, name, SOUNDSET, true)
             pcall(PlaySoundFrontend, -1, name, SOUNDSET, true)
         end
 
@@ -1730,9 +3639,13 @@ do
             end
             Menu.SmoothFactorFrame = 1.0 - math.exp(-(Menu.Anim.smoothRate or 13.4) * dt)
 
-            -- Slow breathing bloom on the active selection.
-            Menu.Glow = 1.0 + 0.16 * math.sin(clock * 1.7)
-            Menu.BarGlow = 0.82 + 0.18 * (0.5 + 0.5 * math.sin(clock * 1.45))
+            -- Slow breathing bloom on the active selection, scaled by the
+            -- user's Gradient Glow setting. Keep the breathing value and the
+            -- setting separate so the selector cannot be overwritten each frame.
+            local glowScale = tonumber(Menu.GlowScale) or 1.0
+            Menu.Glow = (1.0 + 0.16 * math.sin(clock * 1.7)) * glowScale
+            Menu.BarGlow = (0.82 + 0.18 * (0.5 + 0.5 * math.sin(clock * 1.45)))
+                * glowScale
 
             -- A new category, tab or visible row count fades its rows in and
             -- clears the previous overlay. Two scalar fields instead of a
@@ -1859,6 +3772,24 @@ do
                 return drawFilledRect(x, y, w, h, r, g, b, scaleAlpha(a), ...)
             end
         end
+        -- Four-corner gradient primitive: every corner alpha follows the same
+        -- open/close fade, so a gradient never outlives the tween that owns it.
+        local drawRectGradient = Susano.DrawRectGradient
+        if type(drawRectGradient) == "function" then
+            Susano.DrawRectGradient = function(x, y, w, h,
+                r1, g1, b1, a1,
+                r2, g2, b2, a2,
+                r3, g3, b3, a3,
+                r4, g4, b4, a4,
+                rounding)
+                return drawRectGradient(x, y, w, h,
+                    r1, g1, b1, scaleAlphaWithDefault(a1, 1.0),
+                    r2, g2, b2, scaleAlphaWithDefault(a2, 1.0),
+                    r3, g3, b3, scaleAlphaWithDefault(a3, 1.0),
+                    r4, g4, b4, scaleAlphaWithDefault(a4, 1.0),
+                    rounding)
+            end
+        end
         -- Legacy alias: library.lua falls back to FillRect before DrawRect.
         local fillRect = Susano.FillRect
         if type(fillRect) == "function" then
@@ -1921,38 +3852,68 @@ end
 -- ============================================
 -- VANGUARD THEME PATCH
 -- ============================================
--- The library is downloaded at runtime, so its palette is not guaranteed to
--- match this build. White is the default and Cyan restores the reference
--- accent and its original banner. An unknown name falls back to White.
---
--- Each theme carries the accent used by every selection surface: the tab pill,
--- scrollbar thumb, toggle track and slider fill. The list rows keep their own
--- dark glass with a neutral light rim, so the selected row stays legible on
--- both themes. White carries the monochrome plate; Cyan carries the sky tone of
--- its own banner.
-do
+    -- The library is downloaded at runtime, so its palette is not guaranteed to
+    -- match this build. An unknown name falls back to Violet.
+    --
+    -- Each theme carries the accent used by every selection surface: the tab
+    -- pill, scrollbar thumb, toggle track and slider fill. The list rows keep
+    -- their own dark glass with a neutral light rim, so the selected row stays
+    -- legible on every preset.
+    --
+    -- Banner source: https://i.imgur.com/LScj53B.gif. The 84 MB .gif is not a
+    -- sensible download because Susano's documented GIF path decodes only the
+    -- first frame (no animation). https://i.imgur.com/LScj53Bh.jpg is the same
+    -- 2173x724 frame at 1024x342 and 42 KB, so every theme uses it as the
+    -- banner still. Swap the image strings below to the .gif URL if the
+    -- original file is ever needed.
+    do
+    -- Each entry owns an accent (SelectedBg, scrollbar geometry, chevrons), a
+    -- banner and the gradient preset that paints every accent surface. All
+    -- presets share the new banner; the palette tint and the gradient rim on
+    -- the header frame do the colour work.
     local themes = {
+        Violet = {
+            r = 124, g = 106, b = 246,
+            image = "https://i.imgur.com/LScj53Bh.jpg",
+            headerHeight = 130,
+            gradient = "Violet",
+        },
+        Aurora = {
+            r = 92, g = 140, b = 255,
+            image = "https://i.imgur.com/LScj53Bh.jpg",
+            headerHeight = 130,
+            gradient = "Aurora",
+        },
+        Ember = {
+            r = 255, g = 118, b = 88,
+            image = "https://i.imgur.com/LScj53Bh.jpg",
+            headerHeight = 130,
+            gradient = "Ember",
+        },
+        Ocean = {
+            r = 54, g = 150, b = 244,
+            image = "https://i.imgur.com/LScj53Bh.jpg",
+            headerHeight = 130,
+            gradient = "Ocean",
+        },
         White = {
             r = 245, g = 246, b = 250,
-            image = "https://i.imgur.com/wbYgWhZ.png",
+            image = "https://i.imgur.com/LScj53Bh.jpg",
             headerHeight = 130,
+            gradient = "White",
         },
         Cyan = {
             r = 96, g = 198, b = 232,
-            image = "https://i.imgur.com/3HLMxX5.png",
-            -- 1032x252 is 4.10:1. At the 360 px menu width the inner frame
-            -- after the 8 px inset needs 107 px to fill that aspect; the old
-            -- 100 px left side bands and made the image look detached from
-            -- the card. The extra 7 px keeps the banner flush to the inset.
-            headerHeight = 107,
+            image = "https://i.imgur.com/LScj53Bh.jpg",
+            headerHeight = 130,
+            gradient = "Cyan",
         },
     }
 
     Menu.Banner = Menu.Banner or { enabled = true, height = 100 }
     Menu.Banner.enabled = true
-    -- White is 2173x724 (3:1) and keeps the 130 px header it was tuned for.
-    -- Cyan is 1032x252 (4.1:1): its header is set to 107 px so the shorter
-    -- image fills the frame instead of leaving tall dark bars.
+    -- The shared banner is 3:1, so the 130 px header fills edge to edge at
+    -- every menu width and every theme.
     Menu.Banner.height = 130
     if Menu.Position then
         Menu.Position.headerHeight = 130
@@ -2031,14 +3992,19 @@ do
     end
 
     function Menu.ApplyTheme(themeName)
-        local theme = themes[themeName] or themes.White
-        -- The banner draw branches on the active theme: Cyan is inset and
-        -- aspect-locked inside the frame; White keeps the full-width plate.
-        Menu.CurrentTheme = (theme == themes.Cyan) and "Cyan" or "White"
+        local theme = themes[themeName] or themes.Violet
+        -- Every preset now shares the same 3:1 banner, so the header always
+        -- uses the full-bleed path. Keeping CurrentTheme on the White branch
+        -- also keeps the old Cyan inset/aspect-lock from cropping it.
+        Menu.CurrentTheme = "White"
+        if Menu.Grad then
+            Menu.Grad.SetTheme(theme.gradient or themeName)
+        end
         -- HeaderPink is the no-banner fallback only. Keep it anthracite so a
         -- slow or missing banner never paints a bright slab over the frame.
         Menu.Colors.HeaderPink = { r = 18, g = 18, b = 20 }
         Menu.Colors.SelectedBg = { r = theme.r, g = theme.g, b = theme.b }
+        if Menu.Grad and Menu.Grad.refreshAccent then Menu.Grad.refreshAccent() end
         Menu.Banner.imageUrl = theme.image
         if Menu.Position then
             Menu.Position.headerHeight = theme.headerHeight or 130
@@ -2056,7 +4022,7 @@ do
         tabText      = { 0.035, 0.035, 0.040, 1.0 },
     }
 
-    Menu.ApplyTheme("White")
+    Menu.ApplyTheme("Violet")
 end
 
 -- ============================================
@@ -3598,7 +5564,33 @@ Menu.Categories = {
             { name = "Editor Mode", type = "toggle", value = false },
             { name = "Menu Size", type = "slider", value = 110.0, min = 50.0, max = 200.0, step = 1.0 },
             { name = "", isSeparator = true, separatorText = "Design" },
-            { name = "Menu Theme", type = "selector", options = {"White", "Cyan"}, selected = 1 },
+            { name = "Menu Theme", type = "selector", options = {"Violet", "Aurora", "Ember", "Ocean", "White", "Cyan"}, selected = 1 },
+            { name = "Gradient Flow", type = "toggle", value = true, onClick = function(value)
+                if Menu.Grad then Menu.Grad.SetAnimated(value) end
+            end },
+            { name = "Gradient Style", type = "selector", options = {"Diagonal", "Horizontal", "Vertical"}, selected = 1 },
+            { name = "Gradient Speed", type = "selector", options = {"Slow", "Balanced", "Fast"}, selected = 2 },
+            { name = "Gradient Glow", type = "selector", options = {"Soft", "Normal", "Vivid"}, selected = 2 },
+            { name = "Gradient Hue", type = "slider", value = 0.0, min = -180.0, max = 180.0, step = 1.0,
+                onClick = function(value)
+                    if Menu.Grad then Menu.Grad.SetHue(value) end
+                end },
+            { name = "Gradient Saturation", type = "slider", value = 100.0, min = 0.0, max = 200.0, step = 1.0,
+                onClick = function(value)
+                    if Menu.Grad then Menu.Grad.SetSaturation(value) end
+                end },
+            { name = "Gradient Brightness", type = "slider", value = 100.0, min = 50.0, max = 150.0, step = 1.0,
+                onClick = function(value)
+                    if Menu.Grad then Menu.Grad.SetBrightness(value) end
+                end },
+            { name = "Gradient Preview", isSeparator = true, separatorText = "Gradient Preview", gradientPreview = true },
+            { name = "Reset Gradient", type = "action",
+                onClick = function()
+                    if Menu.Grad then
+                        Menu.Grad.ResetTuning()
+                        if Menu.SyncGradientTuningRows then Menu.SyncGradientTuningRows() end
+                    end
+                end },
             { name = "Flocon", type = "toggle", value = true },
             { name = "Scroll Bar Position", type = "selector", options = {"Left", "Right"}, selected = 1 },
             { name = "", isSeparator = true, separatorText = "Feedback" },
@@ -3607,9 +5599,34 @@ Menu.Categories = {
     }}
 }
 
+-- Reset Gradient is an action, so the library does not update the slider rows
+-- it sits beside. Push the reset values back into the visible controls or the
+-- next DrawItem reconciliation would immediately re-apply the old tuning.
+function Menu.SyncGradientTuningRows()
+    if not Menu.Grad or type(Menu.Grad.tuning) ~= "table" then return end
+    local tuning = Menu.Grad.tuning
+    for _, category in ipairs(Menu.Categories or {}) do
+        if category.name == "Settings" then
+            for _, tab in ipairs(category.tabs or {}) do
+                if tab.name == "General" then
+                    for _, row in ipairs(tab.items or {}) do
+                        if row.name == "Gradient Hue" then
+                            row.value = tuning.hue
+                        elseif row.name == "Gradient Saturation" then
+                            row.value = tuning.saturation * 100.0
+                        elseif row.name == "Gradient Brightness" then
+                            row.value = tuning.brightness * 100.0
+                        end
+                    end
+                end
+            end
+        end
+    end
+end
+
 -- Appliquer le thme monochrome par dfaut au dmarrage.
 if Menu.ApplyTheme then
-    Menu.ApplyTheme("White")
+    Menu.ApplyTheme("Violet")
 end
 
 -- Load UI arrow/chevron textures after categories are defined. The footer
@@ -3683,6 +5700,23 @@ function Menu.DrawTabs(category, x, startY, width, tabHeight)
 
     fill(x, startY, stripW, tabHeight, barBorder[1], barBorder[2], barBorder[3], barBorder[4], radius)
     fill(x + 1, startY + 1, stripW - 2, tabHeight - 2, bar[1], bar[2], bar[3], bar[4], math.max(0, radius - 1))
+    -- The strip is a vertical smoked gradient, not a flat slab: lighter at the
+    -- top edge, near-black at the plate seam. The alpha stays low enough that
+    -- the idle labels and the selected pill keep their contrast.
+    if Menu.Grad then
+        Menu.Grad.draw(x + 1, startY + 1, stripW - 2, tabHeight - 2, {
+            preset = "Panel", style = 3, alpha = 0.55, rounding = math.max(0, radius - 1),
+            static = true,
+        })
+        -- Hairline rails: the top one catches the banner seam, the bottom one
+        -- separates the strip from the item column without a hard grey rule.
+        Menu.Grad.draw(x + 1, startY, stripW - 2, 1, {
+            alpha = 0.42, rounding = 0, static = true,
+        })
+        Menu.Grad.draw(x + 1, startY + tabHeight - 1, stripW - 2, 1, {
+            alpha = 0.30, rounding = 0, u0 = 0.08, u1 = 0.92, static = true,
+        })
+    end
 
     local selected = Menu.CurrentTab or 1
     if selected < 1 then selected = 1 end
@@ -3726,10 +5760,32 @@ function Menu.DrawTabs(category, x, startY, width, tabHeight)
         local edge = math.max(1, math.floor(1 * scale))
 
         fill(px + 1 * scale, py + 2 * scale, pw, ph, 0.0, 0.0, 0.0, 0.16, pr)
-        fill(px, py, pw, ph,
-            pillEdge[1], pillEdge[2], pillEdge[3], 1.0, pr)
-        fill(px + edge, py + edge, pw - edge * 2, ph - edge * 2,
-            tabPill[1], tabPill[2], tabPill[3], 1.0, math.max(1, pr - edge))
+        if Menu.Grad then
+            local glow = Menu.Glow or 1.0
+            Menu.Grad.draw(px - 3 * scale, py - 2 * scale,
+                pw + 6 * scale, ph + 4 * scale, {
+                    alpha = 0.12 * glow,
+                    rounding = pr + 2 * scale,
+                })
+            Menu.Grad.draw(px, py, pw, ph, {
+                alpha = 1.0,
+                rounding = pr,
+                u0 = 0.03,
+                u1 = 0.97,
+            })
+            -- Thin top glass so the pill reads as a lit button rather than a
+            -- flat swatch. It never reaches the glyph baseline.
+            Menu.Grad.draw(px + edge, py + edge, pw - edge * 2,
+                math.floor(ph * 0.44), {
+                    preset = "White", alpha = 0.13,
+                    rounding = math.max(1, pr - edge), static = true,
+                })
+        else
+            fill(px, py, pw, ph,
+                pillEdge[1], pillEdge[2], pillEdge[3], 1.0, pr)
+            fill(px + edge, py + edge, pw - edge * 2, ph - edge * 2,
+                tabPill[1], tabPill[2], tabPill[3], 1.0, math.max(1, pr - edge))
+        end
     end
 
     for i, tab in ipairs(category.tabs) do
@@ -3737,7 +5793,24 @@ function Menu.DrawTabs(category, x, startY, width, tabHeight)
         local isSelected = (i == selected)
         local cr, cg, cb
         if isSelected then
-            cr, cg, cb = tabText[1], tabText[2], tabText[3]
+            -- Selected label contrast follows the visible plate, not the flat
+            -- target colour: during a theme crossfade the blended accent can
+            -- sit between dark violet and bright silver.
+            local luminance
+            if Menu.Grad then
+                luminance = Menu.Grad.luminance()
+            elseif type(selectedBg) == "table" then
+                luminance = 0.299 * ((tonumber(selectedBg.r) or 255) / 255.0)
+                    + 0.587 * ((tonumber(selectedBg.g) or 255) / 255.0)
+                    + 0.114 * ((tonumber(selectedBg.b) or 255) / 255.0)
+            else
+                luminance = 0.96
+            end
+            if luminance > 0.60 then
+                cr, cg, cb = tabText[1], tabText[2], tabText[3]
+            else
+                cr, cg, cb = 0.985, 0.985, 1.0
+            end
         else
             cr, cg, cb = idleText[1], idleText[2], idleText[3]
         end
@@ -3756,6 +5829,9 @@ function Menu.DrawTabs(category, x, startY, width, tabHeight)
         if gx + textWidth > x + stripW then gx = x + stripW - textWidth end
         if gx < x then gx = x end
         local textY = startY + tabHeight * 0.5 - textScale * 0.5 + 1 * scale
+        if isSelected and (cr + cg + cb) > 1.5 then
+            Menu.DrawText(gx + 1, textY + 1, tab.name, textSize, 0.0, 0.0, 0.0, 0.38)
+        end
         Menu.DrawText(gx, textY, tab.name, textSize, cr, cg, cb, 1.0)
     end
 end
@@ -3830,14 +5906,43 @@ if type(originalDrawCategories) == "function" then
                         local plateY = Menu.CategorySelectorY + math.floor((itemHeight - plateH) * 0.5)
                         local plateR = math.floor(5 * scale)
                         if plateW > 2 and plateH > 2 then
-                            fill(plateX - math.floor(6 * scale), plateY - math.floor(3 * scale),
-                                plateW + math.floor(12 * scale), plateH + math.floor(6 * scale),
-                                0.97, 0.97, 0.98, 0.035, plateR + math.floor(4 * scale))
-                            fill(plateX, plateY, plateW, plateH, 0.320, 0.320, 0.340, 1.0, plateR)
-                            fill(plateX + 1, plateY + 1, plateW - 2, plateH - 2,
-                                0.095, 0.095, 0.105, 1.0, math.max(1, plateR - 1))
-                            fill(plateX + 1, plateY + 1, plateW - 2, math.floor(plateH * 0.5),
-                                1.0, 1.0, 1.0, 0.035, math.max(1, plateR - 1))
+                            if Menu.Grad then
+                                local glow = Menu.Glow or 1.0
+                                Menu.Grad.draw(plateX - math.floor(6 * scale),
+                                    plateY - math.floor(3 * scale),
+                                    plateW + math.floor(12 * scale),
+                                    plateH + math.floor(6 * scale), {
+                                        alpha = 0.055 * glow,
+                                        rounding = plateR + math.floor(4 * scale),
+                                    })
+                                Menu.Grad.draw(plateX, plateY, plateW, plateH, {
+                                    alpha = 0.98, rounding = plateR,
+                                    u0 = 0.03, u1 = 0.97,
+                                })
+                                fill(plateX + 1, plateY + 1, plateW - 2, plateH - 2,
+                                    0.076, 0.076, 0.086, 1.0, math.max(1, plateR - 1))
+                                Menu.Grad.draw(plateX + 1, plateY + 1,
+                                    plateW - 2, plateH - 2, {
+                                        alpha = 0.10, rounding = math.max(1, plateR - 1),
+                                    })
+                                fill(plateX + 1, plateY + 1, plateW - 2,
+                                    math.floor(plateH * 0.5), 1.0, 1.0, 1.0, 0.030,
+                                    math.max(1, plateR - 1))
+                                Menu.Grad.draw(plateX + 1, plateY + math.floor(4 * scale),
+                                    2, plateH - math.floor(8 * scale), {
+                                        alpha = 0.95, rounding = 1,
+                                        u0 = 0.15, u1 = 0.85,
+                                    })
+                            else
+                                fill(plateX - math.floor(6 * scale), plateY - math.floor(3 * scale),
+                                    plateW + math.floor(12 * scale), plateH + math.floor(6 * scale),
+                                    0.97, 0.97, 0.98, 0.035, plateR + math.floor(4 * scale))
+                                fill(plateX, plateY, plateW, plateH, 0.320, 0.320, 0.340, 1.0, plateR)
+                                fill(plateX + 1, plateY + 1, plateW - 2, plateH - 2,
+                                    0.095, 0.095, 0.105, 1.0, math.max(1, plateR - 1))
+                                fill(plateX + 1, plateY + 1, plateW - 2, math.floor(plateH * 0.5),
+                                    1.0, 1.0, 1.0, 0.035, math.max(1, plateR - 1))
+                            end
                         end
                     end
 
@@ -3870,7 +5975,11 @@ if type(originalDrawCategories) == "function" then
                         local inner = math.max(3, iconSize - ring * 2)
                         local bgR, bgG, bgB = 0.052, 0.052, 0.056
                         if isSelected then bgR, bgG, bgB = 0.095, 0.095, 0.105 end
-                        fill(iconX, iconY, iconSize, iconSize, textR, textG, textB, 1.0, iconSize / 2)
+                        local lensR, lensG, lensB = textR, textG, textB
+                        if isSelected and Menu.Grad then
+                            lensR, lensG, lensB = Menu.Grad.color(nil, 0.55, 0)
+                        end
+                        fill(iconX, iconY, iconSize, iconSize, lensR, lensG, lensB, 1.0, iconSize / 2)
                         fill(iconX + ring, iconY + ring, inner, inner, bgR, bgG, bgB, 1.0, inner / 2)
 
                         -- Handle: discs marched along the icon's 45-degree axis
@@ -3888,7 +5997,7 @@ if type(originalDrawCategories) == "function" then
                         for s = 0, hSamples do
                             local off = hRun * (s / hSamples)
                             fill(iconX + hStart + off, iconY + hStart + off,
-                                hThick, hThick, textR, textG, textB, 1.0, hRad)
+                                hThick, hThick, lensR, lensG, lensB, 1.0, hRad)
                         end
                         textX = x + math.floor(33 * scale)
                     end
@@ -3910,10 +6019,14 @@ if type(originalDrawCategories) == "function" then
                     local chevWidth = chevGlyphWidth + chevStep
                     local chevX = x + width - math.floor(16 * scale) - chevWidth
                     local chevBold = math.max(1, math.floor(1 * scale))
+                    local chevR, chevG, chevB = textR, textG, textB
+                    if isSelected and Menu.Grad then
+                        chevR, chevG, chevB = Menu.Grad.color(nil, 0.38, 0)
+                    end
                     for chevIndex = 0, 1 do
                         local cx = chevX + chevIndex * chevStep
-                        Menu.DrawText(cx, textY, chevGlyph, chevSize, textR, textG, textB, 1.0)
-                        Menu.DrawText(cx + chevBold, textY, chevGlyph, chevSize, textR, textG, textB, 1.0)
+                        Menu.DrawText(cx, textY, chevGlyph, chevSize, chevR, chevG, chevB, 1.0)
+                        Menu.DrawText(cx + chevBold, textY, chevGlyph, chevSize, chevR, chevG, chevB, 1.0)
                     end
                 end
             end
@@ -21023,6 +23136,18 @@ local function DrawToasts()
         local top = y + (i - 1) * (height + gap)
 
         pcall(Api.DrawRectFilled, x, top, width, height, 0.04, 0.04, 0.05, 0.82 * alpha, 4)
+        if Menu.Grad then
+            Menu.Grad.draw(x, top, width, 1, {
+                alpha = 0.55 * alpha, rounding = 0, static = true,
+            })
+            Menu.Grad.draw(x, top + height - 1, width, 1, {
+                alpha = 0.18 * alpha, rounding = 0, u0 = 0.10, u1 = 0.90,
+                static = true,
+            })
+            Menu.Grad.draw(x + width - 2, top + 6, 1, height - 12, {
+                alpha = 0.55 * alpha, rounding = 1, static = true,
+            })
+        end
         pcall(Api.DrawRectFilled, x, top, 3, height,
             colour[1] / 255, colour[2] / 255, colour[3] / 255, alpha, 2)
         pcall(Api.DrawText, x + 12, top + 4, tostring(toast.text), 15,
@@ -26505,10 +28630,12 @@ local FL = (function(O,Menu)
 --   * Flashbang 78 (default): one networked ADD_EXPLOSION type 78
 --     (EXP_TAG_FLASHGRENADE) at the victim's head, damageScale 0.0,
 --     isAudible false, isInvisible false, cameraShake 0.0. The same pulse
---     also emits the whitelisted particle shell. On the operator's own ped
---     the pulse additionally draws a full-screen white/red/yellow overlay and
---     plays the DefaultFlash postfx, so a local test is a real whiteout.
---   * Burnout Ember / Acid Green: particle-only recipes.
+--     also emits the whitelisted particle shell.
+--   * Network Flash: one networked flash particle (core /
+--     exp_arc_grd_flashbang) at the head per 160 ms pulse, no shell and no
+--     local screen effect. It is used only when the server particle policy
+--     allows it; otherwise the method falls back to the safe pair.
+--   * Burnout Ember / Acid Green: particle-only recipes, unchanged.
 --
 -- WHY TYPE 78 IS ACCEPTED
 --
@@ -26518,14 +28645,22 @@ local FL = (function(O,Menu)
 -- handler. The module still reads CancelAllExplosions from the replicated
 -- policy: when that switch is on, the explosion layer is not sent and the
 -- pulse falls back to the particle shell. No entity, event, decorator, hook,
--- graft or resource write is created by this module; AddExplosion is the only
--- networked call.
+-- graft or resource write is created by this module; AddExplosion and
+-- StartNetworkedParticleFxNonLoopedAtCoord are the only networked calls.
 --
 -- PARTICLES
 --
---   * Only scr_wheel_burnout (scr_recartheft, rcore_spray) and
---     scr_alien_teleport (scr_rcbarry1, WaveAdmin) are emitted, at or below
---     MaxParticleScale. The hash is read from the replicated static list.
+--   * scr_wheel_burnout (scr_recartheft, rcore_spray) and scr_alien_teleport
+--     (scr_rcbarry1, WaveAdmin) are emitted at or below MaxParticleScale.
+--     The hash is read from the replicated static list.
+--   * Network Flash uses core / exp_arc_grd_flashbang through the same
+--     networked particle native. It also skips SetParticleFxNonLoopedColour
+--     and SetParticleFxNonLoopedAlpha (tint=false): the effect is authored
+--     white, so the path has two fewer native call sites than the shell. It
+--     is not in autoWhiteList: when EnableParticlesWhiteList or
+--     EnableParticlesAI is on and the server policy does not whitelist it,
+--     the effect is dropped and the method falls back to the safe pair. Add
+--     its hash to WhiteListedParticles to enable it under the guard.
 --   * The recipe parts are emitted at the head; the red and yellow parts are
 --     co-located at the head and interleaved on the six-axis halo at 0.95 m
 --     and the eight-point ring at 2.35 m (2.95 m in a vehicle). The ring
@@ -26534,10 +28669,10 @@ local FL = (function(O,Menu)
 --
 -- RATE AND BUDGET
 --
---   * Flashbang pulse: 160 ms (O.jitter, 10 % spread; 160 is a multiple of
---     the 20 ms tick, so the scheduler does not round it up). Particle-only
---     pulse: 440 ms (O.jitter, 15 % spread; 440 is a multiple of the 20 ms
---     tick).
+--   * Flashbang 78 and Network Flash pulse: 160 ms (O.jitter, 10 % spread;
+--     160 is a multiple of the 20 ms tick, so the scheduler does not round it
+--     up). Particle-only shell methods: 440 ms (O.jitter, 15 % spread; 440
+--     is a multiple of the 20 ms tick).
 --   * Particles: hard token bucket at 36 particles/s, 20-particle reserve,
 --     shared across every target. At 160 ms the first pulse still emits 16;
 --     later pulses emit the available remainder.
@@ -26548,15 +28683,11 @@ local FL = (function(O,Menu)
 --   * The retired 200 ms / 26-point shell produced up to 140 networked
 --     particles/s and crashed the client; this path stays at or below 36/s.
 --
--- OVERLAY
+-- CLIENT SURFACE
 --
---   * DrawRect is called from the same 20 ms scheduler tick, not from
---     Menu.OnRender, so it does not depend on the menu render callback. Four
---     layers: red-orange, yellow, a 0.94 central white core and a full-screen
---     white wash. The overlay is armed only when the local ped is a target;
---     a remote-only selection does not flash the operator.
---   * AnimpostfxPlay("DefaultFlash", 0, false) is played on each self pulse
---     and stopped on FL.stop().
+--   * No DrawRect, no Animpostfx, no local screen effect. The flash is the
+--     networked explosion and/or the networked particle; the operator's
+--     screen is not painted by this module.
 --
 -- TARGET RULES
 --
@@ -26577,8 +28708,9 @@ local FL = (function(O,Menu)
 -- A custom resource that logs raw explosion events independently of
 -- WaveShield can see the type-78 call; a server with CancelAllExplosions on
 -- will drop it. The server's optional particle log can print the effect hash
--- and source. The target sees the flash and can report it. No client-side
--- path can hide a server-side log.
+-- and source. Network Flash is outside autoWhiteList; under the guard it is
+-- dropped unless WhiteListedParticles contains its hash. The target sees the
+-- flash and can report it. No client-side path can hide a server-side log.
 -- ============================================================================
 
 local FL = {}
@@ -26601,9 +28733,8 @@ local EXPLOSION_REFILL_PER_SEC = 12.0
 local FLASH_TYPE = 78
 local FLASH_DAMAGE_SCALE = 0.0
 local FLASH_Z_OFFSET = 0.5
-local OVERLAY_MS = 320
-local OVERLAY_CORE_SCALE = 0.94
-local POSTFX_NAME = "DefaultFlash"
+local NETWORK_FLASH_DICT = "core"
+local NETWORK_FLASH_FX = "exp_arc_grd_flashbang"
 local CONFIG_TTL = 1500
 local SHELL_AXIS_RADIUS = 0.95
 local SHELL_RADIUS = 2.35
@@ -26656,7 +28787,7 @@ local SHELL_RING_B = buildRing(RING_PHASE)
 -- the per-pulse plate and the round-robin cycle together.
 local SHELL_TOTAL = #SHELL_AXES + #SHELL_RING_A
 
-local function flashPart(dict, effect, scale, color, ox, oy, oz)
+local function flashPart(dict, effect, scale, color, ox, oy, oz, tint)
     return {
         dict = dict,
         effect = effect,
@@ -26665,6 +28796,7 @@ local function flashPart(dict, effect, scale, color, ox, oy, oz)
         ox = ox or 0.0,
         oy = oy or 0.0,
         oz = oz or 0.0,
+        tint = tint,
     }
 end
 
@@ -26690,6 +28822,16 @@ FL.methods = {
             flashPart(ALIEN_DICT, ALIEN_FX, 5.5, { 0.45, 1.00, 0.20 }, 0.0, 0.0, 1.0),
         },
     },
+    {
+        name = "Network Flash", kind = "ptfx", safe = false,
+        shell = false,
+        period = EXPLOSION_PERIOD_MS,
+        spread = EXPLOSION_PERIOD_SPREAD,
+        parts = {
+            flashPart(NETWORK_FLASH_DICT, NETWORK_FLASH_FX, 6.0,
+                { 1.00, 1.00, 1.00 }, 0.0, 0.0, 1.0, false),
+        },
+    },
 }
 
 FL.active = false
@@ -26711,12 +28853,11 @@ FL.explosionTokens = EXPLOSION_TOKEN_CAPACITY
 FL.explosionTokenAt = 0
 FL.explosionBlocked = false
 FL.explosionCursor = 0
-FL.overlayAt = 0
-FL.postfxOn = false
+FL.networkFlashActive = false
 FL.pulse = 0
 FL.lastBurst = 0
 FL.stats = { flashes = 0, skips = 0, fails = 0, particles = 0,
-    throttled = 0, explosions = 0, explosionSkips = 0, overlays = 0 }
+    throttled = 0, explosions = 0, explosionSkips = 0, networkFlashes = 0 }
 
 local function now()
     return GetGameTimer()
@@ -26788,56 +28929,6 @@ local function spendExplosionTokens(count)
     FL.explosionTokens = tokens
 end
 
--- Full-screen whiteout. DrawRect is a GTA native and is already used by the
--- loader from a scheduler thread, so this path does not depend on
--- Menu.OnRender. The overlay is drawn every 20 ms while FL.overlayAt is live;
--- the 160 ms flashbang pulse re-arms it before the 320 ms fade completes, so
--- a self target stays washed instead of seeing the road between pulses.
-local function drawOverlay()
-    local at = tonumber(FL.overlayAt) or 0
-    if at <= 0 then return end
-    local age = now() - at
-    if age < 0 or age > OVERLAY_MS then
-        FL.overlayAt = 0
-        return
-    end
-    local alpha = 1.0 - (age / OVERLAY_MS)
-    if alpha < 0.0 then alpha = 0.0 end
-    if alpha > 1.0 then alpha = 1.0 end
-    if type(DrawRect) ~= "function" then return end
-
-    local function layer(x, y, w, h, r, g, b, a)
-        pcall(DrawRect, x, y, w, h, r, g, b,
-            math.floor(math.max(0.0, math.min(1.0, a)) * 255.0))
-    end
-
-    -- The red and yellow tints share the white core's pulse: they are drawn
-    -- under the white wash, not on a separate cadence. The 0.94 core covers
-    -- the centre and the full-screen wash covers the edges.
-    layer(0.5, 0.5, 1.0, 1.0, 255, 72, 12, alpha * 0.55)
-    layer(0.5, 0.5, 1.0, 1.0, 255, 200, 48, alpha * 0.35)
-    layer(0.5, 0.5, OVERLAY_CORE_SCALE, OVERLAY_CORE_SCALE,
-        255, 255, 255, alpha * 0.98)
-    layer(0.5, 0.5, 1.0, 1.0, 255, 255, 255, alpha * 0.55)
-end
-
-local function triggerOverlay()
-    FL.overlayAt = now()
-    FL.stats.overlays = (tonumber(FL.stats.overlays) or 0) + 1
-    if type(AnimpostfxPlay) == "function" then
-        pcall(AnimpostfxPlay, POSTFX_NAME, 0, false)
-        FL.postfxOn = true
-    end
-end
-
-local function clearOverlay()
-    FL.overlayAt = 0
-    if FL.postfxOn and type(AnimpostfxStop) == "function" then
-        pcall(AnimpostfxStop, POSTFX_NAME)
-    end
-    FL.postfxOn = false
-end
-
 local function decodeState(value)
     if type(value) == "table" then return value end
     if type(value) ~= "string" then return nil end
@@ -26888,6 +28979,18 @@ local function acConfig()
     FL.acCache = cfg
     FL.acAt = current
     return cfg
+end
+
+-- Read-only view of the guard's explosion policy. WaveShield cancels every
+-- explosion event before its vehicleNetworkId branch when this switch is on,
+-- so a networked vehicle explosion cannot be delivered through that policy.
+-- Callers that need one must not fire and report a success. No native, event
+-- or state write is made here; acConfig() is the same cached replicated read
+-- the flash delivery resolver uses.
+function FL.explosionsCancelled()
+    local cfg = acConfig()
+    local ex = cfg and cfg.Explosions
+    return type(ex) == "table" and ex.CancelAllExplosions == true
 end
 
 local function whitelisted(cfg, effect)
@@ -27023,6 +29126,7 @@ local function resolveDelivery(cfg)
                 kind = "ptfx",
                 scale = method.scale or MAX_SCALE,
                 parts = allowed,
+                shell = method.shell,
             }
         end
 
@@ -27047,6 +29151,7 @@ local function resolveDelivery(cfg)
             kind = "explosion",
             scale = method.scale or MAX_SCALE,
             parts = allowed,
+            shell = method.shell,
         }
     end
 
@@ -27061,6 +29166,7 @@ local function resolveDelivery(cfg)
                 kind = "ptfx",
                 scale = SAFE_CANDIDATES[1].scale,
                 parts = { SAFE_CANDIDATES[1] },
+                shell = method.shell,
             }
         end
         return method
@@ -27090,6 +29196,7 @@ local function resolveDelivery(cfg)
                 kind = "ptfx",
                 scale = safe.scale,
                 parts = { safe },
+                shell = method.shell,
             }
         end
         -- The list exists but neither entry is readable as whitelisted. The
@@ -27100,6 +29207,7 @@ local function resolveDelivery(cfg)
             kind = "ptfx",
             scale = SAFE_CANDIDATES[1].scale,
             parts = { SAFE_CANDIDATES[1] },
+            shell = method.shell,
         }
     end
 
@@ -27109,6 +29217,7 @@ local function resolveDelivery(cfg)
         kind = method.kind,
         scale = method.scale,
         parts = allowed,
+        shell = method.shell,
     }
 end
 
@@ -27129,25 +29238,29 @@ end
 -- Emit one particle at a whitelisted effect. The optional colour triple lets
 -- the shell shimmer around the recipe's base tint without touching the recipe
 -- part itself. The rotation is a visual parameter only; ptFxEvent does not
--- inspect it. No entity, event, decorator or hook is created here.
+-- inspect it. Network Flash is authored white and sets tint=false, so its path
+-- skips the two tint natives entirely: fewer call sites, same visual. No
+-- entity, event, decorator or hook is created here.
 local function startPart(part, x, y, z, scale, rx, ry, rz, cr, cg, cb)
     if not part or type(part.dict) ~= "string"
         or type(part.effect) ~= "string" then
         return false
     end
     pcall(UseParticleFxAssetNextCall, part.dict)
-    if cr ~= nil then
-        pcall(SetParticleFxNonLoopedColour, cr, cg, cb)
-    else
-        local color = part.color
-        if type(color) == "table" and #color >= 3 then
-            pcall(SetParticleFxNonLoopedColour,
-                tonumber(color[1]) or 1.0,
-                tonumber(color[2]) or 1.0,
-                tonumber(color[3]) or 1.0)
+    if part.tint ~= false then
+        if cr ~= nil then
+            pcall(SetParticleFxNonLoopedColour, cr, cg, cb)
+        else
+            local color = part.color
+            if type(color) == "table" and #color >= 3 then
+                pcall(SetParticleFxNonLoopedColour,
+                    tonumber(color[1]) or 1.0,
+                    tonumber(color[2]) or 1.0,
+                    tonumber(color[3]) or 1.0)
+            end
         end
+        pcall(SetParticleFxNonLoopedAlpha, 1.0)
     end
-    pcall(SetParticleFxNonLoopedAlpha, 1.0)
     local ok, started = pcall(StartNetworkedParticleFxNonLoopedAtCoord,
         part.effect, x, y, z,
         rx or 0.0, ry or 0.0, rz or 0.0, scale,
@@ -27155,11 +29268,11 @@ local function startPart(part, x, y, z, scale, rx, ry, rz, cr, cg, cb)
     return ok and started ~= false
 end
 
--- One burst context per target per pulse. It preloads both ptfx dictionaries
--- once instead of once per particle, and resolves the head anchor, the scale
--- ceiling and the vehicle/high-speed boost a single time. The outer ring uses
--- the second allowed effect when the whitelist kept it; otherwise it reuses
--- the first, so a filtered delivery stays on one known effect.
+-- One burst context per target per pulse. It preloads every ptfx dictionary in
+-- the recipe once instead of once per particle, and resolves the head anchor,
+-- the scale ceiling and the vehicle/high-speed boost a single time. The outer
+-- ring uses the second allowed effect when the whitelist kept it; otherwise it
+-- reuses the first, so a filtered delivery stays on one known effect.
 local function makeBurst(method, coords)
     local parts = method and method.parts
     if type(parts) ~= "table" or #parts == 0 then parts = { method } end
@@ -27208,7 +29321,13 @@ local function emitRecipeAt(burst, limit)
             local x = burst.hx + (tonumber(part.ox) or 0.0)
             local y = burst.hy + (tonumber(part.oy) or 0.0)
             local z = burst.hz + (tonumber(part.oz) or 0.0)
-            if startPart(part, x, y, z, scale) then sent = sent + 1 end
+            if startPart(part, x, y, z, scale) then
+                sent = sent + 1
+                if part.effect == NETWORK_FLASH_FX then
+                    FL.stats.networkFlashes =
+                        (tonumber(FL.stats.networkFlashes) or 0) + 1
+                end
+            end
         end
     end
 
@@ -27720,11 +29839,6 @@ end
 local function tickCore()
     if not FL.active then return end
 
-    -- The overlay fades on the 20 ms tick, independently of the pulse
-    -- deadline. A self target therefore stays washed between flashbang
-    -- pulses instead of clearing on the particle cadence.
-    drawOverlay()
-
     -- Latch the remote-only mode as soon as a remote appears. If that player
     -- then leaves and the menu clears the selection, the loop must stay
     -- remote-only and wait instead of falling back to the local ped.
@@ -27744,7 +29858,7 @@ local function tickCore()
         FL.resolveAt = now()
         if not targets or #targets == 0 then
             FL.target = nil
-            clearOverlay()
+            FL.networkFlashActive = false
             -- Stay armed and wait for a selected player to stream back in.
             return
         end
@@ -27762,7 +29876,6 @@ local function tickCore()
     local okMy, myServerId = pcall(GetPlayerServerId, PlayerId())
     local alive = {}
     local anyRemote = false
-    local anySelf = false
     for i = 1, #targets do
         local t = targets[i]
         local ped, player = liveTargetPed(t, okMy and myServerId or nil)
@@ -27776,7 +29889,6 @@ local function tickCore()
                 if t.self then
                     t.dist = 0.0
                     alive[#alive + 1] = t
-                    anySelf = true
                 else
                     t.dist = distance(meCoords, coords)
                     if t.dist > REACH_MAX then
@@ -27796,14 +29908,13 @@ local function tickCore()
     if #alive == 0 then
         FL.targets = nil
         FL.target = nil
-        clearOverlay()
+        FL.networkFlashActive = false
         return
     end
 
     FL.targets = alive
     FL.target = alive[1]
     FL.localOnly = not anyRemote
-    if not anySelf then clearOverlay() end
 
     if now() < FL.nextAt then return end
 
@@ -27828,6 +29939,16 @@ local function tickCore()
     FL.effective = effective
     FL.lastEffect = effective and effective.parts
         and effective.parts[1] and effective.parts[1].effect or nil
+    FL.networkFlashActive = false
+    if effective and type(effective.parts) == "table" then
+        for i = 1, #effective.parts do
+            local part = effective.parts[i]
+            if part and part.effect == NETWORK_FLASH_FX then
+                FL.networkFlashActive = true
+                break
+            end
+        end
+    end
     local isExplosion = effective ~= nil and effective.kind == "explosion"
 
     if effective then
@@ -27871,13 +29992,6 @@ local function tickCore()
             FL.explosionCursor = (start % count)
         end
 
-        -- The local whiteout is part of the Flashbang method, not of the
-        -- particle bucket. It re-arms every 160 ms pulse even when the server
-        -- blocks the networked explosion, so a self test still blinds.
-        if selectedIsFlashbang and anySelf then
-            triggerOverlay()
-        end
-
         local budget = MAX_PARTICLES_PER_PULSE
         local available = math.floor((tonumber(FL.tokens) or 0.0) + 1e-6)
         if available < budget then budget = available end
@@ -27885,12 +29999,6 @@ local function tickCore()
             throttled = true
             FL.stats.throttled = (tonumber(FL.stats.throttled) or 0) + 1
         else
-            -- One ring phase per pulse: A on even, B on odd. The shell point
-            -- sequence is shared by every target through a per-target cursor,
-            -- so a multi-select spends its budget evenly and each target
-            -- still gets points from a different part of the sphere.
-            FL.pulse = ((tonumber(FL.pulse) or 0) + 1) % 2
-
             local sent = 0
             for i = 1, #bursts do
                 if budget <= 0 then break end
@@ -27899,21 +30007,30 @@ local function tickCore()
                 sent = sent + used
             end
 
-            local cursor = {}
-            for i = 1, #bursts do
-                cursor[i] = ((i - 1) * 3) % SHELL_TOTAL + 1
-            end
-            local progress = true
-            while budget > 0 and progress do
-                progress = false
+            if effective.shell ~= false then
+                -- One ring phase per pulse: A on even, B on odd. The shell
+                -- point sequence is shared by every target through a
+                -- per-target cursor, so a multi-select spends its budget
+                -- evenly and each target still gets points from a different
+                -- part of the sphere.
+                FL.pulse = ((tonumber(FL.pulse) or 0) + 1) % 2
+
+                local cursor = {}
                 for i = 1, #bursts do
-                    if budget <= 0 then break end
-                    local used = emitShellAt(bursts[i], budget, cursor[i])
-                    if used > 0 then
-                        budget = budget - used
-                        sent = sent + used
-                        cursor[i] = (cursor[i] % SHELL_TOTAL) + 1
-                        progress = true
+                    cursor[i] = ((i - 1) * 3) % SHELL_TOTAL + 1
+                end
+                local progress = true
+                while budget > 0 and progress do
+                    progress = false
+                    for i = 1, #bursts do
+                        if budget <= 0 then break end
+                        local used = emitShellAt(bursts[i], budget, cursor[i])
+                        if used > 0 then
+                            budget = budget - used
+                            sent = sent + used
+                            cursor[i] = (cursor[i] % SHELL_TOTAL) + 1
+                            progress = true
+                        end
                     end
                 end
             end
@@ -27933,12 +30050,15 @@ local function tickCore()
         FL.stats.fails = FL.stats.fails + 1
     end
 
-    local period = selectedIsFlashbang and EXPLOSION_PERIOD_MS or PERIOD_MS
-    local spread = (type(O) == "table" and type(O.jitter) == "function")
-        and (selectedIsFlashbang and EXPLOSION_PERIOD_SPREAD or PERIOD_SPREAD)
-        or 0.0
-    local base = (type(O) == "table" and type(O.jitter) == "function")
-        and O.jitter(period, spread) or period
+    local methodPeriod = tonumber(selectedMethod and selectedMethod.period)
+    local methodSpread = tonumber(selectedMethod and selectedMethod.spread)
+    local period = methodPeriod
+        or (selectedIsFlashbang and EXPLOSION_PERIOD_MS or PERIOD_MS)
+    local spread = methodSpread
+        or (selectedIsFlashbang and EXPLOSION_PERIOD_SPREAD or PERIOD_SPREAD)
+    local jitterFn = (type(O) == "table" and type(O.jitter) == "function")
+        and O.jitter or nil
+    local base = jitterFn and jitterFn(period, spread) or period
     FL.nextAt = now() + base
 end
 
@@ -27973,7 +30093,7 @@ function FL.start()
     end
     FL.explosionBlocked = false
     FL.explosionCursor = 0
-    clearOverlay()
+    FL.networkFlashActive = false
     FL.pulse = 0
     FL.lastBurst = 0
 
@@ -28015,7 +30135,7 @@ function FL.stop(reason)
     FL.remoteOnly = false
     FL.explosionBlocked = false
     FL.explosionCursor = 0
-    clearOverlay()
+    FL.networkFlashActive = false
     FL.pulse = 0
     FL.lastBurst = 0
 end
@@ -28026,6 +30146,7 @@ function FL.status()
     if not targets or #targets == 0 then return "Flash idle" end
     local method = currentMethod()
     local label = method and method.name or "Flash"
+    if FL.networkFlashActive then label = label .. " +flash" end
     if FL.explosionBlocked then label = label .. " blocked" end
     if #targets == 1 then
         local t = targets[1]
@@ -37420,7 +39541,17 @@ local function drawIcon(name, x, y, size, cr, cg, cb)
     local ir, ig, ib = cr, cg, cb
     if not ir then
         local theme = type(Menu) == "table" and Menu.Colors and Menu.Colors.SelectedBg
-        if type(theme) == "table" and type(theme.r) == "number" then
+        if type(Menu) == "table" and Menu.Grad then
+            -- The dossier glyphs fan across the same palette as the menu
+            -- accents: identity rows warm up left to right, context rows keep
+            -- moving, while health/armour retain their semantic green/blue.
+            local gradientT = ({
+                character = 0.02, phone = 0.14, radio = 0.26, job = 0.38,
+                group = 0.50, distance = 0.62, vehicle = 0.74,
+                weapon = 0.86, speed = 0.96,
+            })[name] or 0.50
+            ir, ig, ib = Menu.Grad.color(nil, gradientT, 0)
+        elseif type(theme) == "table" and type(theme.r) == "number" then
             ir, ig, ib = theme.r / 255, theme.g / 255, theme.b / 255
         else
             ir, ig, ib = ICON_R, ICON_G, ICON_B
@@ -38587,6 +40718,16 @@ function Menu.DrawPlayerInfoPanel()
     -- documented primitive; the plain fill is the fallback. Alpha stays just
     -- below 1 so the card reads as an overlay rather than a hole in the game.
     local radius = RADIUS * scale
+    if Menu.Grad then
+        -- The card carries the same outer bloom as the menu header, so the
+        -- dossier reads as part of the same lit object instead of a flat
+        -- rectangle parked beside it.
+        Menu.Grad.draw(panelX - 3 * scale, panelY - 3 * scale,
+            panelWidth + 6 * scale, panelHeight + 6 * scale, {
+                alpha = 0.10 * (Menu.Glow or 1.0),
+                rounding = radius + 3 * scale,
+            })
+    end
     local shadowDrawn = false
     if Susano and type(Susano.DrawShadowRect) == "function" then
         shadowDrawn = pcall(Susano.DrawShadowRect,
@@ -38601,6 +40742,21 @@ function Menu.DrawPlayerInfoPanel()
     fillRect(panelX + 1, panelY + 1, panelWidth - 2, panelHeight - 2,
         BODY_R, BODY_G, BODY_B, 0.98, radius)
 
+    if Menu.Grad then
+        Menu.Grad.draw(panelX + 1, panelY + 1, panelWidth - 2, panelHeight - 2, {
+            alpha = 0.045, rounding = math.max(1, radius - 1),
+            style = 3, static = true,
+        })
+        Menu.Grad.draw(panelX + radius, panelY, math.max(1, panelWidth - radius * 2), 1, {
+            alpha = 0.85, rounding = 0, u0 = 0.05, u1 = 0.95,
+        })
+        Menu.Grad.draw(panelX, panelY + radius, 1, math.max(1, panelHeight - radius), {
+            alpha = 0.45, rounding = 0,
+        })
+        Menu.Grad.draw(panelX + panelWidth - 1, panelY + radius, 1,
+            math.max(1, panelHeight - radius), { alpha = 0.45, rounding = 0 })
+    end
+
     local innerWidth = panelWidth - padX * 2
     local cx = panelX + padX
     local innerRight = panelX + panelWidth - padX
@@ -38608,8 +40764,16 @@ function Menu.DrawPlayerInfoPanel()
     local cy = panelY + padY
 
     local function divider(y)
-        fillRect(cx, y, innerWidth, math.max(1.0, scale),
-            DIV_R, DIV_G, DIV_B, 0.42, 0.0)
+        if Menu.Grad then
+            Menu.Grad.draw(cx, y, innerWidth, math.max(1.0, scale), {
+                alpha = 0.42, rounding = 0,
+                alphaCorners = { 0.10, 0.42, 0.10, 0.42 },
+                u0 = 0.0, u1 = 1.0, static = true,
+            })
+        else
+            fillRect(cx, y, innerWidth, math.max(1.0, scale),
+                DIV_R, DIV_G, DIV_B, 0.42, 0.0)
+        end
     end
 
     local function sectionGap()
@@ -38683,8 +40847,14 @@ function Menu.DrawPlayerInfoPanel()
     local shownName = fitText(name, nameMax, FONT_HEADER, scale)
 
     local headerCenter = cy + headerHeight * 0.5
-    text(cx, centeredTextY(headerCenter, FONT_HEADER, scale), shownName,
-        FONT_HEADER, HEAD_R, HEAD_G, HEAD_B, 1.0)
+    local headerTextY = centeredTextY(headerCenter, FONT_HEADER, scale)
+    if Menu.Grad then
+        Menu.Grad.text(cx, headerTextY, shownName, FONT_HEADER, {
+            alpha = 1.0, preset = Menu.Grad.active,
+        })
+    else
+        text(cx, headerTextY, shownName, FONT_HEADER, HEAD_R, HEAD_G, HEAD_B, 1.0)
+    end
     if isStaff then
         local shownWidth = textWidth(shownName, FONT_HEADER, scale)
         drawStaffBadge(cx + shownWidth + staffGap,
@@ -40443,14 +42613,17 @@ end)(O,S,B,Menu)
 -- reference guard (WaveShield V4/latest) has no heading, rotation, spin,
 -- angular, antiaim or desync check.
 --
--- Suspension matrix: aim (IS_AIM_CAM_ACTIVE / IS_PLAYER_FREE_AIMING), vehicle,
--- dead, ragdoll, falling, in air, parachute, cover, swimming, climbing,
--- jumping, diving, first-person/cinematic view, and No Clip/Naruto active.
--- Speed is deliberately not a suspension input: running must keep spinning.
--- First-person is suspended because its camera is head-locked and its movement
--- is heading-relative; third-person is the supported mode. The row stays on
--- while suspended and resumes after a 120 ms grace so an aim flick cannot put a
--- heading write inside the aim window.
+-- Suspension matrix: vehicle, dead, ragdoll, falling, in air, parachute,
+-- cover, swimming, climbing, jumping, diving, first-person/cinematic view,
+-- and No Clip/Naruto active. Speed is deliberately not a suspension input:
+-- running must keep spinning.
+--
+-- Aim and attack are not suspension inputs either. They take the fire-safe
+-- branch inside the writer: the native on-foot task gets the frame back, so
+-- walking and firing work exactly like vanilla, and the spin resumes when the
+-- trigger is released. First-person is suspended because its camera is
+-- head-locked and its movement is heading-relative; third-person is the
+-- supported mode.
 --
 -- Cadence: one runtime thread per arm, Wait(0), dt from GetGameTimer. The
 -- global CreateThread/Wait pair is preferred and Citizen.CreateThread/Wait is
@@ -40479,6 +42652,7 @@ end)(O,S,B,Menu)
 --   SET_PED_DESIRED_HEADING      0xAA5A7ECE2AA8FE70 (Ped, float) -> void
 --   IS_AIM_CAM_ACTIVE            0x68EDDA28A5976D07 () -> BOOL
 --   IS_PLAYER_FREE_AIMING        0x2E397FD2ECD37C87 (Player) -> BOOL
+--   IS_PED_SHOOTING              0x34616828CD07F1A1 (Ped) -> BOOL
 --   IS_PED_DEAD_OR_DYING         0x3317DEDB88C95038 (Ped, BOOL) -> BOOL
 --   IS_PED_FALLING               0xFB92A102F1C4DFA3 (Ped) -> BOOL
 --   IS_ENTITY_IN_AIR             0x886E37EC497200B6 (Entity) -> BOOL
@@ -40551,6 +42725,8 @@ local SP = (function(O, N)
         vz = 0.0,
         verticalAssist = false,
         hover = false,
+        fireSafe = false,
+        fireSafeReleased = false,
         lastZ = nil,
         vzProbeAt = 0,
         vzProbeZ = nil,
@@ -40687,7 +42863,7 @@ local SP = (function(O, N)
     local MAX_FALL = 20.0
     local FLY_ACCEL = 18.0
     local SPEED_CAP = 28.0
-    local VK_SPACE, VK_CONTROL = 0x20, 0x11
+    local VK_SPACE, VK_CONTROL, VK_SHIFT = 0x20, 0x11, 0x10
 
     -- Read the action first, then the disabled-control value, then the raw
     -- Susano key state. Space/Ctrl are disabled while Spinbot is armed so a
@@ -40708,7 +42884,8 @@ local SP = (function(O, N)
     end
 
     local function flyInput()
-        return controlDown(22, VK_SPACE), controlDown(36, VK_CONTROL)
+        local down = controlDown(36, VK_CONTROL) or controlDown(21, VK_SHIFT)
+        return controlDown(22, VK_SPACE), down
     end
 
     local function setGravityOff(off)
@@ -40969,6 +43146,38 @@ local SP = (function(O, N)
         return pressed and 1.0 or 0.0
     end
 
+    -- The spin is a forced heading write. GTA owns weapon aim and fire on that
+    -- same heading, so a forced rotation and a live shot cannot share a frame:
+    -- the shot is what loses. While the attack or aim control is held the
+    -- module therefore hands the frame back to the native on-foot task: no
+    -- heading write, no velocity write, no movement-control isolation. The
+    -- operator walks and fires exactly like vanilla. The spin target follows
+    -- the heading the game chose, and the spin resumes on release without a
+    -- snap.
+    local function firingNow(ped)
+        if type(IsPedShooting) == "function" then
+            local ok, shooting = pcall(IsPedShooting, ped)
+            if ok and shooting then return true end
+        end
+        local function held(control)
+            local ok, value = pcall(IsControlPressed, 0, control)
+            if ok and (value == true or value == 1) then return true end
+            local okD, disabled = pcall(IsDisabledControlPressed, 0, control)
+            return okD and (disabled == true or disabled == 1)
+        end
+        if held(24) or held(25) then return true end
+        if type(IsAimCamActive) == "function" then
+            local ok, aiming = pcall(IsAimCamActive)
+            if ok and aiming then return true end
+        end
+        if type(IsPlayerFreeAiming) == "function" then
+            local player = (O.Ctx and O.Ctx.player) or PlayerId()
+            local ok, free = pcall(IsPlayerFreeAiming, player)
+            if ok and free then return true end
+        end
+        return false
+    end
+
     local function movementVector()
         local mx = readControl(30)
         -- Control 31 reports positive for backward on the live build. The
@@ -41191,6 +43400,46 @@ local SP = (function(O, N)
     end
 
     local function writeHeading(ped, dt)
+        if firingNow(ped) then
+            if not SP.fireSafe then
+                SP.fireSafe = true
+                SP.fireSafeReleased = false
+                -- On the ground the native walk and weapon tasks need their
+                -- own gravity. At altitude the hover state is kept: releasing
+                -- gravity there would drop the operator out of the shot.
+                if not SP.hover or not isAirborne(ped) then
+                    releaseAirState()
+                    SP.fireSafeReleased = true
+                else
+                    -- Hover at altitude: keep the altitude latched. One zero
+                    -- write stops a descent that was already in flight; no
+                    -- per-frame velocity write is left to fight the weapon.
+                    SP.vz = 0.0
+                    pcall(SetEntityVelocity, ped, 0.0, 0.0, 0.0)
+                end
+                SP.travel = 0.0
+                SP.lastActual = nil
+                SP.probeAt = 0
+                SP.moveFails = 0
+                O.log("spin: fire safe")
+            end
+            setControlsOff(false)
+            local okH, heading = pcall(GetEntityHeading, ped)
+            if okH and finite(heading) then SP.target = wrap360(heading) end
+            SP.stats.calls = SP.stats.calls + 1
+            return true
+        end
+        if SP.fireSafe then
+            SP.fireSafe = false
+            SP.travel = 0.0
+            SP.lastActual = nil
+            SP.sampleAt = O.now() + SAMPLE_MS
+            if SP.fireSafeReleased then
+                SP.fireSafeReleased = false
+                engageAirState()
+            end
+            O.log("spin: fire release")
+        end
         reassertControls()
         reassertAirControls()
         local dx, dy, mag = movementVector()
@@ -41305,6 +43554,8 @@ local SP = (function(O, N)
         SP.travel = 0.0
         SP.vz = 0.0
         SP.hover = false
+        SP.fireSafe = false
+        SP.fireSafeReleased = false
         SP.verticalAssist = false
         SP.lastZ = nil
         SP.vzProbeAt = 0
@@ -41384,6 +43635,8 @@ local SP = (function(O, N)
         SP.camNoData = false
         SP.camRetryAt = 0
         SP.vz = 0.0
+        SP.fireSafe = false
+        SP.fireSafeReleased = false
         SP.positionMove = false
         SP.probeAt = 0
         SP.moveFails = 0
@@ -41429,6 +43682,7 @@ local SP = (function(O, N)
             positionMove = SP.positionMove,
             verticalAssist = SP.verticalAssist,
             hover = SP.hover,
+            fireSafe = SP.fireSafe,
             vz = SP.vz,
             gravityOff = SP.gravityOff,
             airControlsOff = SP.airControlsOff,
@@ -41484,6 +43738,8 @@ local SP = (function(O, N)
             releaseAirState()
             SP.ped = ped
             SP.gravityOff = false
+            SP.fireSafe = false
+            SP.fireSafeReleased = false
             SP.suspended = false
             SP.resumeAt = 0
             if not anchor(ped) then
@@ -41505,6 +43761,8 @@ local SP = (function(O, N)
         if why then
             setControlsOff(false)
             releaseAirState()
+            SP.fireSafe = false
+            SP.fireSafeReleased = false
             pcall(SetEntityVelocity, ped, 0.0, 0.0, 0.0)
             if not SP.suspended then
                 SP.suspended = true
@@ -41569,7 +43827,7 @@ local SP = (function(O, N)
         -- the frame and the direct path is not producing the visible spin; the
         -- row stays on and the log names the condition instead of failing
         -- silently.
-        if now >= SP.sampleAt then
+        if not SP.fireSafe and now >= SP.sampleAt then
             local okH, heading = pcall(GetEntityHeading, ped)
             if okH and finite(heading) then
                 local lag = math.abs(delta(SP.target, heading))
@@ -41672,6 +43930,7 @@ local U = (function(O,S,E,D,F,V,M,SN,C,G,FL,A,ST,SB,VS,K,N,L,VC,CU,UC,FA,TP,FP,S
 --                       resource grafts; historical entity crash rows are swept
 --   Settings > Protection anti-freeze, anti-attach, anti-spectate and Anti-Ped Crasher,
 --                       armed at load
+--   Online > Vehicle    Explode Vehicle (networked vehicle explosion)
 --   Vehicle > Spoofed   real local vehicles over the one you already stole
 --
 -- Removed on purpose:
@@ -43592,6 +45851,243 @@ end
 Menu.__vgd_installFlash = installFlash
 
 -- ---------------------------------------------------------------------------
+-- ONLINE > VEHICLE > EXPLODE VEHICLE
+--
+-- The 2:22 feature from the Vanity capture: explode the selected player's
+-- current vehicle through the game's own networked vehicle explosion.
+--
+-- THE EFFECT
+--
+--   GetVehiclePedIsIn(targetPed, false) returns the vehicle the selected
+--   player is sitting in. NETWORK_EXPLODE_VEHICLE(vehicle, true, false, false)
+--   is the same call FiveM's own managed wrapper exposes as
+--   NetworkExplodeVehicle(Handle, true, false, false) (Vehicle.cs,
+--   ExplodeNetworked). The engine builds a CExplosionEvent attached to that
+--   vehicle; every client in scope applies the explosion. No entity is
+--   created, no event is triggered from this client, no ped/vehicle state is
+--   written directly.
+--
+-- WHY IT STAYS OUT OF WAVESHIELD
+--
+--   The server handler (WaveShield V4 modules/server/events/explosionEvent.lua)
+--   returns at its vehicleNetworkId check before the invisible/audible,
+--   blacklist, limiter and AI branches:
+--
+--       if data.damageScale <= 0 then return end
+--       if vehicleNetworkId ~= 0 then return end -- vehicle-attached blast
+--
+--   The field is f210. The FiveM event payload documents f210 as the network
+--   ID of the vehicle/prop the blast is on, and the public server recipe for
+--   the "unnetworked explosion" cheat checks explosionType == 7 and
+--   f210 == 0 precisely because a networked vehicle explosion carries a
+--   non-zero f210. The action refuses a vehicle with no network ID, so this
+--   path can never produce the f210 == 0 signature the guard acts on.
+--
+--   The v15.1 client source you provided has no explosion detector in
+--   detections.lua and no NetworkExplodeVehicle call in its recovered
+--   detectors (main_natives.md); its tick rules are noclip, teleport, plate,
+--   weapon, ammo, health, proofs, ped model, events, exports, globals,
+--   vehicle spawn, gunshot, particle and control action. None observes this.
+--
+-- DELIBERATELY NOT DONE
+--
+--   * No NetworkRequestControlOfEntity. The driver owns the vehicle; a remote
+--     client cannot take an occupied vehicle, and WaveShield servers set
+--     sv_filterRequestControl=4 (core/server/system/configUpdater.lua:37), so
+--     the request never succeeds anyway. The explosion native is not a
+--     transform write and does not need ownership.
+--   * No SetEntityAsMissionEntity. It is a local flag; it would only pin the
+--     wreck on this client.
+--   * No DeleteEntity / DeleteVehicle / SetEntityAsNoLongerNeeded. A remote
+--     delete only replicates when the caller owns the entity; on an occupied
+--     vehicle it would be local-only. Leaving the wreck also avoids a second
+--     network-entity observable and lets the server's normal cleanup run.
+--   * No AddExplosion. A raw AddExplosion has f210 == 0, which is the exact
+--     signature WaveShield's explosion module cancels and reports.
+--
+-- RESIDUAL RISK
+--
+--   * CancelAllExplosions. The guard cancels the event before the
+--     vehicleNetworkId branch when that policy is on. FL.explosionsCancelled()
+--     reads the same replicated policy; the action refuses and logs instead
+--     of firing a client-local placebo. No client-side path can override a
+--     server-side CancelEvent.
+--   * A custom, non-WaveShield explosion logger sees the native vehicle
+--     explosion. That is the game's own event and cannot be hidden client-side.
+--   * The explosion is visible and audible to the victim and nearby players.
+--     This feature is outside the guard's vehicle branch, not invisible in the
+--     world.
+--   * The target must be in a networked vehicle in local scope. A culled
+--     vehicle has no local handle; the action fails closed.
+--   * The wreck remains until the game/server cleans it. The Vanity capture's
+--     despawn is not reproduced: deleting the target's vehicle needs ownership
+--     that an occupied vehicle does not grant, and the delete itself is a
+--     separate network-entity write.
+-- ---------------------------------------------------------------------------
+local EXPLODE_COOLDOWN_MS = 1000
+
+local function explodeSelectedVehicle()
+    local targetServerId = tonumber(Menu.SelectedPlayer)
+    if not targetServerId or targetServerId <= 0 then
+        O.log("explode: no player selected")
+        return false
+    end
+
+    local nowAt = O.now()
+    if nowAt - (tonumber(Menu.__vgd_explodeVehicleAt) or 0) < EXPLODE_COOLDOWN_MS then
+        O.log("explode: cooldown")
+        return false
+    end
+
+    if type(FL) == "table" and type(FL.explosionsCancelled) == "function"
+        and FL.explosionsCancelled() then
+        O.log("explode: wave shield cancels explosion events; no event sent")
+        return false
+    end
+
+    local targetPed = 0
+    for _, player in ipairs(GetActivePlayers()) do
+        if tonumber(GetPlayerServerId(player)) == targetServerId then
+            targetPed = GetPlayerPed(player)
+            break
+        end
+    end
+    if not targetPed or targetPed == 0 or not DoesEntityExist(targetPed) then
+        O.log("explode: target ped unavailable")
+        return false
+    end
+    if targetPed == PlayerPedId() then
+        O.log("explode: self target ignored")
+        return false
+    end
+    if IsPedDeadOrDying(targetPed, true) then
+        O.log("explode: target is dead")
+        return false
+    end
+
+    local vehicle = GetVehiclePedIsIn(targetPed, false)
+    if not vehicle or vehicle == 0 or not DoesEntityExist(vehicle) then
+        O.log("explode: target is not in a vehicle")
+        return false
+    end
+    if GetEntityType(vehicle) ~= 2 then
+        O.log("explode: target entity is not a vehicle")
+        return false
+    end
+
+    local ownVehicle = GetVehiclePedIsIn(PlayerPedId(), false)
+    if ownVehicle and ownVehicle ~= 0 and ownVehicle == vehicle then
+        O.log("explode: target shares the operator vehicle")
+        return false
+    end
+
+    if not NetworkGetEntityIsNetworked(vehicle) then
+        O.log("explode: vehicle is local-only; f210 would be zero")
+        return false
+    end
+    local netId = NetworkGetNetworkIdFromEntity(vehicle)
+    if type(netId) ~= "number" or netId == 0 then
+        O.log("explode: vehicle has no network id")
+        return false
+    end
+    local health = GetEntityHealth(vehicle)
+    if type(health) == "number" and health <= 0 then
+        O.log("explode: vehicle already destroyed")
+        return false
+    end
+
+    local ok, err = pcall(NetworkExplodeVehicle, vehicle, true, false, false)
+    if not ok then
+        O.log("explode: native failed: %s", tostring(err))
+        return false
+    end
+
+    Menu.__vgd_explodeVehicleAt = nowAt
+    O.log("explode: vehicle %d (net %d) on target %d", vehicle, netId, targetServerId)
+    return true
+end
+
+Menu.__vgd_explodeVehicle = explodeSelectedVehicle
+
+local function installExplodeVehicle()
+    local tab = findTab("Online", "Vehicle")
+    if not tab then return false end
+    tab.items = tab.items or {}
+
+    local online = findCategory("Online")
+    local tabOpen = online
+        and type(Menu.OpenedCategory) == "number"
+        and type(Menu.Categories) == "table"
+        and Menu.Categories[Menu.OpenedCategory] == online
+        and type(Menu.CurrentTab) == "number"
+        and online.tabs
+        and online.tabs[Menu.CurrentTab] == tab
+
+    local selected = nil
+    if tabOpen and type(Menu.CurrentItem) == "number" then
+        selected = tab.items[Menu.CurrentItem]
+    end
+
+    for i = #tab.items, 1, -1 do
+        if tab.items[i].name == "Explode Vehicle" then
+            table.remove(tab.items, i)
+        end
+    end
+
+    local row = {
+        name = "Explode Vehicle",
+        type = "action",
+        risk = true,
+        onClick = function()
+            local ok, err = pcall(explodeSelectedVehicle)
+            if not ok then O.log("explode: %s", tostring(err)) end
+        end,
+    }
+
+    local insertAt = #tab.items + 1
+    for i = 1, #tab.items do
+        if tab.items[i].name == "Delete Vehicle" then
+            insertAt = i + 1
+            break
+        end
+    end
+    table.insert(tab.items, insertAt, row)
+
+    if tabOpen then
+        local restored = false
+        if selected then
+            for i = 1, #tab.items do
+                if tab.items[i] == selected then
+                    Menu.CurrentItem = i
+                    restored = true
+                    break
+                end
+            end
+        end
+        if not restored and selected and selected.name then
+            for i = 1, #tab.items do
+                if tab.items[i].name == selected.name then
+                    Menu.CurrentItem = i
+                    restored = true
+                    break
+                end
+            end
+        end
+        if not restored then
+            local currentItem = tonumber(Menu.CurrentItem) or 1
+            if currentItem < 1 then currentItem = 1 end
+            if currentItem > #tab.items then currentItem = #tab.items end
+            Menu.CurrentItem = math.max(1, currentItem)
+        end
+    end
+
+    Menu.__vgd_explodeVehicleRow = row
+    return true
+end
+
+Menu.__vgd_installExplodeVehicle = installExplodeVehicle
+
+-- ---------------------------------------------------------------------------
 -- VEHICLE > SPOOFED
 --
 -- The network model stays whatever vehicle you are already in; this client
@@ -45221,7 +47717,7 @@ end
 -- ---------------------------------------------------------------------------
 -- REMOVE OLD ENTRY POINTS
 -- ---------------------------------------------------------------------------
-local MENU_REV = "2026-11-25-r113"
+local MENU_REV = "2026-11-25-r116"
 
 -- A previous execution of the old loader can leave its category in the shared
 -- Menu table. Match both the literal name and the old nine-tab fingerprint so
@@ -45966,6 +48462,7 @@ local function build()
     Menu.__vgdInstallBan()
     installSink()
     installFlash()
+    installExplodeVehicle()
     installFightParty()
     installVehicleSpoof()
     installRampFix()
