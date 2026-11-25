@@ -958,7 +958,7 @@ do
     local Grad = {}
     Menu.Grad = Grad
 
-    Grad.basePresets = {
+    Grad.presets = {
         Violet = {
             { 0.30, 0.19, 0.87 },
             { 0.47, 0.33, 0.99 },
@@ -1002,16 +1002,6 @@ do
         },
     }
 
-    -- The preset tables above are immutable source data. Every visible
-    -- palette is a tuned copy: hue, saturation and brightness can be edited
-    -- live without destroying the preset the user can return to.
-    Grad.presets = {}
-    Grad.tuning = {
-        hue = 0.0,
-        saturation = 1.0,
-        brightness = 1.0,
-    }
-
     Grad.active = "Violet"
     Grad.animated = true
     Grad.style = 1
@@ -1041,94 +1031,6 @@ do
         if value > 1.0 then return 1.0 end
         return value
     end
-
-    local function clampRange(value, low, high)
-        if type(value) ~= "number" then return low end
-        if value < low then return low end
-        if value > high then return high end
-        return value
-    end
-
-    local function rgbToHsv(r, g, b)
-        local high = math.max(r, g, b)
-        local low = math.min(r, g, b)
-        local delta = high - low
-        local h = 0.0
-        if delta > 0.000001 then
-            if high == r then
-                h = ((g - b) / delta) % 6.0
-            elseif high == g then
-                h = (b - r) / delta + 2.0
-            else
-                h = (r - g) / delta + 4.0
-            end
-            h = h / 6.0
-            if h < 0.0 then h = h + 1.0 end
-        end
-        local s = (high > 0.000001) and (delta / high) or 0.0
-        return h, s, high
-    end
-
-    local function hsvToRgb(h, s, v)
-        h = h % 1.0
-        if h < 0.0 then h = h + 1.0 end
-        local sector = math.floor(h * 6.0)
-        local f = h * 6.0 - sector
-        local p = v * (1.0 - s)
-        local q = v * (1.0 - f * s)
-        local t = v * (1.0 - (1.0 - f) * s)
-        local r, g, b
-        if sector == 0 then
-            r, g, b = v, t, p
-        elseif sector == 1 then
-            r, g, b = q, v, p
-        elseif sector == 2 then
-            r, g, b = p, v, t
-        elseif sector == 3 then
-            r, g, b = p, q, v
-        elseif sector == 4 then
-            r, g, b = t, p, v
-        else
-            r, g, b = v, p, q
-        end
-        return clamp01(r), clamp01(g), clamp01(b)
-    end
-
-    local function tunedColor(r, g, b)
-        local h, s, v = rgbToHsv(r, g, b)
-        h = h + (Grad.tuning.hue / 360.0)
-        s = clamp01(s * Grad.tuning.saturation)
-        v = clamp01(v * Grad.tuning.brightness)
-        return hsvToRgb(h, s, v)
-    end
-
-    -- Rebuild in place so transitionTo keeps pointing at the live table.
-    -- Replacing the tables would strand an in-flight theme crossfade on the
-    -- old palette while the active theme had already changed.
-    local function rebuildPresets()
-        for name, base in pairs(Grad.basePresets) do
-            local tuned = Grad.presets[name]
-            if type(tuned) ~= "table" then
-                tuned = {}
-                Grad.presets[name] = tuned
-            end
-            for i = 1, #base do
-                local source = base[i]
-                local r, g, b = source[1], source[2], source[3]
-                if name ~= "Panel" then
-                    r, g, b = tunedColor(r, g, b)
-                end
-                local slot = tuned[i]
-                if type(slot) ~= "table" then
-                    slot = {}
-                    tuned[i] = slot
-                end
-                slot[1], slot[2], slot[3] = r, g, b
-            end
-        end
-    end
-
-    rebuildPresets()
 
     local function currentPhase()
         local clock = tonumber(Menu.AnimTime) or 0.0
@@ -1235,20 +1137,6 @@ do
         -- flat accent has already changed but the visible pill is still midway.
         local r, g, b = Grad.accent(0.5)
         return 0.299 * r + 0.587 * g + 0.114 * b
-    end
-
-    -- Keep the library-owned flat accent (scrollbar thumb, tab plate, legacy
-    -- text) aligned with the tuned palette. Without this the gradient
-    -- surfaces would follow a hue shift while the library accents stayed on
-    -- the original preset colour.
-    function Grad.refreshAccent()
-        if type(Menu.Colors) ~= "table" then return end
-        local r, g, b = Grad.accent(0.5)
-        Menu.Colors.SelectedBg = {
-            r = math.floor(clamp01(r) * 255.0 + 0.5),
-            g = math.floor(clamp01(g) * 255.0 + 0.5),
-            b = math.floor(clamp01(b) * 255.0 + 0.5),
-        }
     end
 
     -- Four-corner paint. style 1 = diagonal, 2 = horizontal, 3 = vertical.
@@ -1465,7 +1353,6 @@ do
         Grad.transitionTo = Grad.presets[name]
         Grad.active = name
         Grad.transitionStart = tonumber(Menu.AnimTime) or 0.0
-        Grad.refreshAccent()
         return Grad.active
     end
 
@@ -1514,55 +1401,6 @@ do
         return Grad.glow
     end
 
-    local function scaleSetting(value, low, high)
-        local number = tonumber(value)
-        if not number then return 1.0 end
-        -- Slider rows pass percent (0-200); direct callers can pass the
-        -- multiplier itself. Values above 2 are unambiguously percentages.
-        if number > 2.0 then number = number / 100.0 end
-        return clampRange(number, low, high)
-    end
-
-    function Grad.SetHue(value)
-        local hue = clampRange(tonumber(value) or 0.0, -180.0, 180.0)
-        if math.abs(hue - Grad.tuning.hue) < 0.0001 then return Grad.tuning.hue end
-        Grad.tuning.hue = hue
-        rebuildPresets()
-        Grad.refreshAccent()
-        return Grad.tuning.hue
-    end
-
-    function Grad.SetSaturation(value)
-        local saturation = scaleSetting(value, 0.0, 2.0)
-        if math.abs(saturation - Grad.tuning.saturation) < 0.0001 then
-            return Grad.tuning.saturation
-        end
-        Grad.tuning.saturation = saturation
-        rebuildPresets()
-        Grad.refreshAccent()
-        return Grad.tuning.saturation
-    end
-
-    function Grad.SetBrightness(value)
-        local brightness = scaleSetting(value, 0.25, 2.0)
-        if math.abs(brightness - Grad.tuning.brightness) < 0.0001 then
-            return Grad.tuning.brightness
-        end
-        Grad.tuning.brightness = brightness
-        rebuildPresets()
-        Grad.refreshAccent()
-        return Grad.tuning.brightness
-    end
-
-    function Grad.ResetTuning()
-        Grad.tuning.hue = 0.0
-        Grad.tuning.saturation = 1.0
-        Grad.tuning.brightness = 1.0
-        rebuildPresets()
-        Grad.refreshAccent()
-        return true
-    end
-
     -- The library forwards every selector commit here (patched above). Only
     -- loader-owned rows are handled; the library keeps owning Menu Theme.
     Menu.OnSelectorChanged = function(item, index)
@@ -1603,13 +1441,6 @@ do
                 baseBackground(...)
                 local grad = Menu.Grad
                 if not grad then return end
-                -- Keep the library-owned flat accents on the same crossfade
-                -- as the gradient surfaces. Without this the tab pill and the
-                -- scrollbar thumb stay on the old palette for the 0.45 s
-                -- transition while every gradient has already moved.
-                if grad.transitionFrom and grad.refreshAccent then
-                    grad.refreshAccent()
-                end
                 local sp = type(Menu.GetScaledPosition) == "function" and Menu.GetScaledPosition() or nil
                 if type(sp) ~= "table" then return end
                 local width = (tonumber(sp.width) or 0.0) - 1.0
@@ -2045,43 +1876,6 @@ do
             local textG = Menu.Colors.TextWhite.g / 255.0
             local textB = Menu.Colors.TextWhite.b / 255.0
 
-            -- A non-interactive live strip that shows the exact palette,
-            -- direction, speed and glow currently applied. It is a separator
-            -- so keyboard navigation skips it, but it draws a full-width
-            -- gradient instead of the usual rule.
-            if item.gradientPreview and Menu.Grad then
-                local label = tostring(item.separatorText or "Gradient Preview")
-                local labelSize = 14
-                local labelY = itemY + math.floor(3 * scale)
-                local barX = x + math.floor(15 * scale)
-                local barW = width - math.floor(30 * scale)
-                local barH = math.max(4, math.floor(7 * scale))
-                local barY = itemY + itemHeight - barH - math.floor(5 * scale)
-                Menu.DrawText(barX, labelY, label, labelSize,
-                    textR, textG, textB, 0.78)
-                if barW > 2 and barH > 1 then
-                    Menu.Grad.draw(barX - 2, barY - 2, barW + 4, barH + 4, {
-                        alpha = 0.11 * (Menu.Grad.glow or 1.0),
-                        rounding = (barH + 4) * 0.5,
-                    })
-                    Menu.Grad.draw(barX, barY, barW, barH, {
-                        alpha = 0.96,
-                        rounding = barH * 0.5,
-                        style = Menu.Grad.style,
-                        u0 = 0.0,
-                        u1 = 1.0,
-                    })
-                    Menu.Grad.draw(barX, barY, barW, math.max(1, math.floor(barH * 0.38)), {
-                        alpha = 0.18,
-                        rounding = barH * 0.5,
-                        style = 3,
-                        u0 = 0.0,
-                        u1 = 1.0,
-                    })
-                end
-                return
-            end
-
             if item.isSeparator then
                 if item.separatorText then
                     local textY = itemY + itemHeight / 2 - 7
@@ -2215,29 +2009,6 @@ do
             if Menu.Grad and item.name == "Gradient Flow" then
                 local want = item.value and true or false
                 if Menu.Grad.animated ~= want then Menu.Grad.SetAnimated(want) end
-            end
-
-            -- Slider rows are library-owned. Reconcile from the visible value
-            -- every frame so a remote library revision that forgets to call
-            -- onClick still drives the gradient instead of showing a slider
-            -- that does nothing.
-            if Menu.Grad then
-                if item.name == "Gradient Hue" then
-                    local value = tonumber(item.value)
-                    if value and math.abs(value - (tonumber(Menu.Grad.tuning.hue) or 0.0)) > 0.5 then
-                        Menu.Grad.SetHue(value)
-                    end
-                elseif item.name == "Gradient Saturation" then
-                    local value = (tonumber(item.value) or 100.0) / 100.0
-                    if math.abs(value - (tonumber(Menu.Grad.tuning.saturation) or 1.0)) > 0.005 then
-                        Menu.Grad.SetSaturation(value)
-                    end
-                elseif item.name == "Gradient Brightness" then
-                    local value = (tonumber(item.value) or 100.0) / 100.0
-                    if math.abs(value - (tonumber(Menu.Grad.tuning.brightness) or 1.0)) > 0.005 then
-                        Menu.Grad.SetBrightness(value)
-                    end
-                end
             end
 
             -- A live swatch next to the design rows: the user can read the
@@ -4004,7 +3775,6 @@ end
         -- slow or missing banner never paints a bright slab over the frame.
         Menu.Colors.HeaderPink = { r = 18, g = 18, b = 20 }
         Menu.Colors.SelectedBg = { r = theme.r, g = theme.g, b = theme.b }
-        if Menu.Grad and Menu.Grad.refreshAccent then Menu.Grad.refreshAccent() end
         Menu.Banner.imageUrl = theme.image
         if Menu.Position then
             Menu.Position.headerHeight = theme.headerHeight or 130
@@ -5571,26 +5341,6 @@ Menu.Categories = {
             { name = "Gradient Style", type = "selector", options = {"Diagonal", "Horizontal", "Vertical"}, selected = 1 },
             { name = "Gradient Speed", type = "selector", options = {"Slow", "Balanced", "Fast"}, selected = 2 },
             { name = "Gradient Glow", type = "selector", options = {"Soft", "Normal", "Vivid"}, selected = 2 },
-            { name = "Gradient Hue", type = "slider", value = 0.0, min = -180.0, max = 180.0, step = 1.0,
-                onClick = function(value)
-                    if Menu.Grad then Menu.Grad.SetHue(value) end
-                end },
-            { name = "Gradient Saturation", type = "slider", value = 100.0, min = 0.0, max = 200.0, step = 1.0,
-                onClick = function(value)
-                    if Menu.Grad then Menu.Grad.SetSaturation(value) end
-                end },
-            { name = "Gradient Brightness", type = "slider", value = 100.0, min = 50.0, max = 150.0, step = 1.0,
-                onClick = function(value)
-                    if Menu.Grad then Menu.Grad.SetBrightness(value) end
-                end },
-            { name = "Gradient Preview", isSeparator = true, separatorText = "Gradient Preview", gradientPreview = true },
-            { name = "Reset Gradient", type = "action",
-                onClick = function()
-                    if Menu.Grad then
-                        Menu.Grad.ResetTuning()
-                        if Menu.SyncGradientTuningRows then Menu.SyncGradientTuningRows() end
-                    end
-                end },
             { name = "Flocon", type = "toggle", value = true },
             { name = "Scroll Bar Position", type = "selector", options = {"Left", "Right"}, selected = 1 },
             { name = "", isSeparator = true, separatorText = "Feedback" },
@@ -5598,31 +5348,6 @@ Menu.Categories = {
         }}
     }}
 }
-
--- Reset Gradient is an action, so the library does not update the slider rows
--- it sits beside. Push the reset values back into the visible controls or the
--- next DrawItem reconciliation would immediately re-apply the old tuning.
-function Menu.SyncGradientTuningRows()
-    if not Menu.Grad or type(Menu.Grad.tuning) ~= "table" then return end
-    local tuning = Menu.Grad.tuning
-    for _, category in ipairs(Menu.Categories or {}) do
-        if category.name == "Settings" then
-            for _, tab in ipairs(category.tabs or {}) do
-                if tab.name == "General" then
-                    for _, row in ipairs(tab.items or {}) do
-                        if row.name == "Gradient Hue" then
-                            row.value = tuning.hue
-                        elseif row.name == "Gradient Saturation" then
-                            row.value = tuning.saturation * 100.0
-                        elseif row.name == "Gradient Brightness" then
-                            row.value = tuning.brightness * 100.0
-                        end
-                    end
-                end
-            end
-        end
-    end
-end
 
 -- Appliquer le thme monochrome par dfaut au dmarrage.
 if Menu.ApplyTheme then
@@ -47717,7 +47442,7 @@ end
 -- ---------------------------------------------------------------------------
 -- REMOVE OLD ENTRY POINTS
 -- ---------------------------------------------------------------------------
-local MENU_REV = "2026-11-25-r116"
+local MENU_REV = "2026-11-25-r115"
 
 -- A previous execution of the old loader can leave its category in the shared
 -- Menu table. Match both the literal name and the old nine-tab fingerprint so
