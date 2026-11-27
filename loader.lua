@@ -2327,6 +2327,17 @@ do
                 audit.record(outName, outPayload)
             end
 
+            -- Seed Guardian report channels. The Guardian captures its own
+            -- TriggerServerEvent local at file load, so a resource-VM patch
+            -- applied after the fact cannot see its sends; this bridge sees
+            -- every resource's frames. Exact names only: the Guardian's names
+            -- are short and a substring match would eat legitimate traffic.
+            -- `hb` is its 60 s heartbeat and is deliberately absent.
+            local seedOut = Menu.__vgd_seedOutbound
+            if type(seedOut) == "table" and seedOut[outName] == true then
+                return false
+            end
+
             -- Exact ban-event name computed once by the VANGUARD module. A
             -- table lookup is safe inside this callback; no native call and no
             -- msgpack decode happens here.
@@ -20161,14 +20172,22 @@ local CFG = {
 
     -- Seed's own report/rollback family. These are exact names, not
     -- substrings: "st" or "sm" as a substring would eat legitimate traffic.
+    -- Liveness channels (hb, sync, checkpoint, ...) are deliberately absent:
+    -- dropping one is a kick, not an evasion.
     seedEvents = {
-        "st", "hb", "iven", "it", "fc", "rcm", "sm", "blev",
-        "playerTookDamage", "playerEnteredVehicleNow", "playerLeftVehicle",
-        "guardian", "rollback", "rb", "revert", "restore", "sync", "checkpoint",
+        "st", "iven", "it", "fc", "rcm", "sm", "blev", "sect",
+        "guardian", "rollback", "rb",
     },
 
     -- Liveness channels owned by an anticheat: dropping them is a detection.
+    -- The prefixes are session-generated; the patterns cover the fixed names
+    -- Seed itself uses (guardian/client/main.lua sends `hb` every 60 s) and
+    -- the generic sync/checkpoint channels other Seed modules depend on.
     protectedPrefixes = { "ach_", "acr_", "axa_", "axb_" },
+    livenessPatterns = {
+        "heart", "hb", "beat", "alive", "ping", "sync",
+        "checkpoint", "keepalive", "handshake", "token", "auth",
+    },
 
     eventSweepRate = 60000,
 }
@@ -20276,8 +20295,18 @@ end
 local function IsProtectedChannel(name)
     local lowered = string.lower(tostring(name))
     local head = lowered:sub(1, 4)
+    -- "ack" is a liveness name, not a substring: without this, "rollback"
+    -- would be classified as safe and its block would silently disappear.
+    if lowered == "ack" or head == "ack_" or head == "ack:" then
+        return true
+    end
     for i = 1, #CFG.protectedPrefixes do
         if head == CFG.protectedPrefixes[i] then return true end
+    end
+    for i = 1, #CFG.livenessPatterns do
+        if string.find(lowered, CFG.livenessPatterns[i], 1, true) then
+            return true
+        end
     end
     return false
 end
@@ -21595,10 +21624,21 @@ end
 local function SetSeedHooks(state)
     S.hooks = state and true or false
 
+    -- Guardian report channels, verified against the Seed dump
+    -- (seed/modules/[common]/guardian/client/main.lua): st, iven, it, fc,
+    -- rcm, sm, blev and sect. The Guardian's `hb` is the 60 s heartbeat and
+    -- must keep flowing. The sandbox bridge drops these exact names, which is
+    -- the only outbound layer that sees the Guardian's sends because the
+    -- module captured its own TriggerServerEvent local at file load.
+    Menu.__vgd_seedOutbound = state and {
+        st = true, iven = true, it = true, fc = true, rcm = true,
+        sm = true, blev = true, sect = true,
+    } or nil
+
     if S.hooks then
         InstallNativeHooks()
         ApplyEventShield(true)
-        Notify(("Seed loaded - %d hooks, %d event(s)"):format(
+        Notify(("Seed client profile armed - %d hooks, %d report(s); liveness preserved; server checks remain"):format(
             HookStats.installed, BlockedCount()), C.green)
     else
         RemoveNativeHooks()
@@ -21804,7 +21844,7 @@ end)()
 -- replaces this marked block; everything above the marker is the base loader.
 -- ============================================================================
 
-(function()
+;(function()
 -- ---------------------------------------------------------------------------
 -- PART: 00_core.lua
 -- ---------------------------------------------------------------------------
@@ -23958,9 +23998,10 @@ V.profiles = {
     seed = profile {
         label = "Seed", confidence = "server-specific",
         vector = "Seed AC client checks: inbound/outbound events, native writes, health, teleport, outfit, ped flags, vehicle control, attachment sanitizer",
-        technique = "full Seed client profile: Seed-specific Susano native hooks + inbound event shield, plus the Seed resource patch for CPlayer.GetResetFlag, jobsbuilder ambulance and the Seed event list",
-        hooks = {}, keys = "server-specific", events = "Seed event list only; heartbeat prefixes preserved",
-        residual = "server-side validation (position, damage, spawn authority) remains; a seed restart clears the injected resource patch; the main hooks stay until the Seed row is clicked off or the menu is reloaded",
+        technique = "full Seed client profile: Seed-specific Susano native hooks + inbound event shield; the sandbox bridge drops the Guardian's report names exactly (st, iven, it, fc, rcm, sm, blev, sect) while hb keeps beating; plus the Seed resource patch for CPlayer.GetResetFlag, jobsbuilder ambulance and the Seed event list",
+        hooks = {}, keys = "server-specific",
+        events = "Guardian report names only, exact match; hb (60 s heartbeat) and sync/checkpoint liveness preserved",
+        residual = "server-side validation (position, damage, spawn authority) remains; the Guardian's clothes-diff restore still reverts outfit changes even though the report is dropped; attachment sanitization stays server-side; a seed restart clears the injected resource patch but the sandbox bridge and native hooks persist",
     },
 
     dynasty = profile {
@@ -30640,6 +30681,34 @@ function ST.reset()
     return true
 end
 
+-- Seed's admin module exposes ToggleNoclip() as a public method and the
+-- noclipToggle net event routes to it. The method itself has no permission
+-- check; it only refuses when the ped is attached. That is the cleanest
+-- native Seed action: no menu, no event, no CPlayer.HasPermission spoof.
+-- Each click toggles the real Seed noclip thread.
+function ST.toggleNoclip()
+    if not susano() then
+        O.log("protection: injector unavailable")
+        return false
+    end
+
+    local code = table.concat({
+        "if not (Modules and Modules.Get) then return end",
+        "local adm = Modules.Get('admin')",
+        "if not adm or type(adm.ToggleNoclip) ~= 'function' then return end",
+        "adm.ToggleNoclip()",
+    }, "\n")
+
+    local ok = injectCode(code)
+    if not ok then
+        O.log("protection: native noclip injection failed")
+        return false
+    end
+
+    O.log("protection: native noclip toggled")
+    return true
+end
+
 return ST
 
 end)(O)
@@ -30653,6 +30722,9 @@ local SB = (function(O)
 -- ----------------------------------------------------------------------------
 -- Server-specific Seed client patch, derived from:
 --   C:\Users\caca\Documents\AC\bypass_seed.lua
+-- Guardian report names verified against the live Seed dump:
+--   seed/modules/[common]/guardian/client/main.lua (st, iven, it, fc, rcm,
+--   sm, blev, sect; hb is the 60 s heartbeat and is never dropped).
 --
 -- The yellow overlay and the Ham.getAntiCheats notification were removed. The
 -- payload is injected only into the "seed" resource, only when the operator
@@ -30666,23 +30738,24 @@ SB._injected = false
 SB.code = [==[
 local blockedEvents = {
     "st",
-    "hb",
     "iven",
     "it",
     "fc",
     "rcm",
     "sm",
     "blev",
-    "playerTookDamage",
-    "playerEnteredVehicleNow",
-    "playerLeftVehicle",
+    "sect",
     "guardian",
     "rollback",
-    "rb",
-    "revert",
-    "restore",
-    "sync",
-    "checkpoint"
+    "rb"
+}
+
+-- Liveness is not a report. Seed's guardian sends `hb` every 60 s; Seed
+-- modules also use `sync` and `checkpoint`. Dropping one is a kick/rollback,
+-- not an evasion. This classifier wins before blockedEvents is consulted.
+local safePatterns = {
+    "heart", "hb", "beat", "alive", "ping", "sync",
+    "checkpoint", "keepalive", "handshake", "token", "auth"
 }
 
 local function isBlockedName(name)
@@ -30702,8 +30775,22 @@ local function isBlockedName(name)
 end
 
 local function isProtectedChannel(name)
-    local head = string.lower(tostring(name)):sub(1, 4)
-    return head == "ach_" or head == "acr_" or head == "axa_" or head == "axb_"
+    local lowered = string.lower(tostring(name))
+    local head = lowered:sub(1, 4)
+    -- "ack" is a liveness name, not a substring: without this, "rollback"
+    -- would be classified as safe and its block would silently disappear.
+    if lowered == "ack" or head == "ack_" or head == "ack:" then
+        return true
+    end
+    if head == "ach_" or head == "acr_" or head == "axa_" or head == "axb_" then
+        return true
+    end
+    for i = 1, #safePatterns do
+        if string.find(lowered, safePatterns[i], 1, true) then
+            return true
+        end
+    end
+    return false
 end
 
 local originalTriggerServerEvent = TriggerServerEvent
@@ -30727,8 +30814,11 @@ if originalTriggerLatent then
 end
 
 -- Inbound blocking is owned by the Seed profile in the Susano sandbox
--- (Susano.BlockServerEvent); this resource patch only handles outbound names
--- and Seed globals that the sandbox cannot reach.
+-- (Susano.BlockServerEvent). The Guardian's outbound report names are dropped
+-- exactly by the sandbox bridge (Menu.__vgd_seedOutbound), which is the only
+-- layer that sees them after the module captured its TriggerServerEvent local.
+-- This resource patch remains a second layer for Seed globals the sandbox
+-- cannot reach and for modules that read the global after injection.
 
 local originalSetEntityCoords = SetEntityCoords
 _G.SetEntityCoords = function(entity, x, y, z, xAxis, yAxis, zAxis, clearArea)
@@ -31115,6 +31205,14 @@ end
 local function requestModel(hash, timeout)
     if not hash or hash == 0 then return false end
     if IsModelInCdimage and not IsModelInCdimage(hash) then return false end
+
+    -- Seed's Guardian suppresses deluxo, oppressor/oppressor2, ruiner2 and
+    -- stromberg client-side at resource start (BlockedPopulationVehicles in
+    -- seed/modules/[common]/guardian/config.lua). Re-enable the exact model
+    -- we are about to stream; this is a local client flag, no server write.
+    if type(SetVehicleModelIsSuppressed) == "function" then
+        pcall(SetVehicleModelIsSuppressed, hash, false)
+    end
 
     RequestModel(hash)
     local deadline = GetGameTimer() + (timeout or 3000)
@@ -41618,6 +41716,9 @@ function UI.panic()
     FA.disable()
     FP.disable()
     S.cyberac.disarm()
+    if type(Menu.SeedFull) == "table" and type(Menu.SeedFull.set) == "function" then
+        Menu.SeedFull.set(false)
+    end
 
     -- The base Spectate Player feature injects a loop that re-enters spectator
     -- mode every frame. Stopping only the mode (A.panic) would let that loop
@@ -41916,14 +42017,17 @@ Menu.__vgd_vendors = V
 -- ---------------------------------------------------------------------------
 -- EXPLOIT > BYPASS
 --
--- One universal AC row. It arms three vendor-agnostic layers:
+-- One universal AC row plus the vendor rows. Universal arms three
+-- vendor-agnostic layers:
 --   1. the outbound pattern choke (`_Stealth.blockAC` + `acPatterns`),
 --   2. the exact WaveShield token choke (random per build, computed from
 --      GlobalState.BanEventToken + the source substitution),
 --   3. the export suppression (`S.setSuppress` + `S.setOverlayProbe`).
 -- No resource stop and no freeze: WaveShield's heartbeat keeps beating.
 -- Seed injects only into seed; Dynasty injects only into Putin; Raven uses
--- only Raven's documented client movement-grace export.
+-- only Raven's documented client movement-grace export. FiveGuard, Electron
+-- and Reason use their vendor profile (ghost entities + read repair). CyberAC
+-- empties the guard's own config gates and keeps its liveness channels alive.
 -- ---------------------------------------------------------------------------
 Menu.__vgdUniversalBypass = function()
     if type(_Stealth) == "table" then
@@ -41979,6 +42083,33 @@ local function installBypassProfiles()
             name = "Universal",
             type = "action",
             onClick = function() Menu.__vgdUniversalBypass() end,
+        },
+        {
+            name = "WaveShield",
+            type = "action",
+            onClick = function()
+                -- The ban-event choke is armed at load; this row re-arms it if a
+                -- reload left it disabled and recomputes the token names.
+                Menu.__vgd_wsBanChoke = true
+                if type(Menu.__vgd_wsComputeBanNames) == "function" then
+                    Menu.__vgd_wsComputeBanNames()
+                end
+            end,
+        },
+        {
+            name = "FiveGuard",
+            type = "action",
+            onClick = function() V.applyVendor("fiveguard") end,
+        },
+        {
+            name = "Electron AC",
+            type = "action",
+            onClick = function() V.applyVendor("electron") end,
+        },
+        {
+            name = "Reason AC",
+            type = "action",
+            onClick = function() V.applyVendor("reason") end,
         },
         {
             name = "Seed",
@@ -42188,6 +42319,26 @@ local function installSeed()
     seed.type = "action"
     seed.dynasty = nil
     seed.onClick = seedClick
+
+    -- Second Seed-native row: call the real admin module's ToggleNoclip().
+    -- This is not the staff menu and does not spoof CPlayer.HasPermission;
+    -- it uses Seed's own noclip thread, so it stays valid even after the
+    -- admin menu has already been built or the staff marker was reset.
+    local nativeNoclip = nil
+    for i = 1, #tab.items do
+        if tab.items[i].name == "Seed Noclip" then
+            nativeNoclip = tab.items[i]
+            break
+        end
+    end
+    if not nativeNoclip then
+        nativeNoclip = { name = "Seed Noclip", type = "action" }
+        tab.items[#tab.items + 1] = nativeNoclip
+    end
+    nativeNoclip.seed = true
+    nativeNoclip.type = "action"
+    nativeNoclip.dynasty = nil
+    nativeNoclip.onClick = function() return ST.toggleNoclip() end
     return true
 end
 
@@ -45160,7 +45311,7 @@ end
 -- ---------------------------------------------------------------------------
 -- REMOVE OLD ENTRY POINTS
 -- ---------------------------------------------------------------------------
-local MENU_REV = "2026-11-27-r117"
+local MENU_REV = "2026-11-27-r120"
 
 -- A previous execution of the old loader can leave its category in the shared
 -- Menu table. Match both the literal name and the old nine-tab fingerprint so
