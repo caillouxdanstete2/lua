@@ -28180,6 +28180,15 @@ if type(O) == "table" and type(O.every) == "function" then
     O.every("flashTick", TICK_MS, function() FL.tick() end)
 end
 
+-- Read-only view of the replicated CancelAllExplosions policy, exposed to the
+-- Explode Vehicle action so it refuses before the native instead of firing a
+-- blast the server will cancel. Same cached read the flash resolver uses.
+function FL.explosionsCancelled()
+    local cfg = acConfig()
+    local ex = cfg and cfg.Explosions
+    return type(ex) == "table" and ex.CancelAllExplosions == true
+end
+
 return FL
 
 end)(O,Menu)
@@ -30686,6 +30695,35 @@ end
 -- check; it only refuses when the ped is attached. That is the cleanest
 -- native Seed action: no menu, no event, no CPlayer.HasPermission spoof.
 -- Each click toggles the real Seed noclip thread.
+-- Camera-only Seed freecam. It uses the admin module's real FreeCamera
+-- instance but never attaches it to the ped, so the ped position never moves
+-- and the server has no position delta to validate. This is the safe Seed
+-- action when noclip is rejected by server-side movement checks.
+function ST.toggleFreecam()
+    if not susano() then
+        O.log("protection: injector unavailable")
+        return false
+    end
+
+    local code = table.concat({
+        "if not (Modules and Modules.Get) then return end",
+        "local adm = Modules.Get('admin')",
+        "if not adm or not adm.noclipFreecam then return end",
+        "if adm.noclipActive then return end",
+        "local cam = adm.noclipFreecam",
+        "if cam:IsActive() then cam:SetActive(false) else cam:SetActive(true) end",
+    }, "\n")
+
+    local ok = injectCode(code)
+    if not ok then
+        O.log("protection: freecam injection failed")
+        return false
+    end
+
+    O.log("protection: native freecam injected")
+    return true
+end
+
 function ST.toggleNoclip()
     if not susano() then
         O.log("protection: injector unavailable")
@@ -30696,6 +30734,20 @@ function ST.toggleNoclip()
         "if not (Modules and Modules.Get) then return end",
         "local adm = Modules.Get('admin')",
         "if not adm or type(adm.ToggleNoclip) ~= 'function' then return end",
+        "-- Seed hides the ped with SetEntityVisible(..., false). That is the",
+        "-- network-visible flag; keep the hide local while noclip is active so",
+        "-- the server never sees an invisible ped.",
+        "if not _G.__vgdNoclipVisible then",
+        "    _G.__vgdNoclipVisible = true",
+        "    local originalSetEntityVisible = SetEntityVisible",
+        "    SetEntityVisible = function(entity, toggle, locallyVisible)",
+        "        local current = Modules.Get('admin')",
+        "        if current and current.noclipActive and entity == PlayerPedId() then",
+        "            locallyVisible = true",
+        "        end",
+        "        return originalSetEntityVisible(entity, toggle, locallyVisible)",
+        "    end",
+        "end",
         "adm.ToggleNoclip()",
     }, "\n")
 
@@ -30705,7 +30757,7 @@ function ST.toggleNoclip()
         return false
     end
 
-    O.log("protection: native noclip toggled")
+    O.log("protection: native noclip injected")
     return true
 end
 
@@ -30860,16 +30912,10 @@ _G.SmashVehicleDoor = function(...)
     return
 end
 
-if IO then
-    IO.Info = function(...) return end
-    IO.Warn = function(...) return end
-    IO.Error = function(...) return end
-    IO.Debug = function(...) return end
-end
-
-_G.print = function(...)
-    return
-end
+-- Do not replace IO.Info/Warn/Error/Debug here. Seed's io.lua stores each
+-- generated logger in ioLogLevelsByFns and IO.WillDisplay(IO.Debug) looks the
+-- function up as a key; a replacement function has no entry and throws
+-- "attempt to compare nil with number" at io.lua:207 on every join/drop.
 
 Citizen.CreateThread(function()
     local lastTime = 0
@@ -30891,6 +30937,20 @@ Citizen.CreateThread(function()
         local health = GetEntityHealth(playerPed)
         if health < 190 then
             SetEntityHealth(playerPed, 200)
+        end
+
+        -- The Guardian's outfit diff is gated by CPlayer.HasPermission, which
+        -- reads the live GM.isOwner field even through the local it captured
+        -- at load. Keeping the field set skips the revert without touching the
+        -- report path; the server owns the real permission state.
+        if currentTime - (lastOwnerAt or 0) > 1000 then
+            lastOwnerAt = currentTime
+            pcall(function()
+                local player = CPlayer and CPlayer()
+                if type(player) == "table" and type(player.GM) == "table" then
+                    player.GM.isOwner = true
+                end
+            end)
         end
 
         if currentTime - lastTime > 500 then
@@ -40694,97 +40754,125 @@ end)(O,S,B,Menu)
 -- ============================================================================
 -- VANGUARD / 29 SPINBOT
 -- ----------------------------------------------------------------------------
--- One row in Player > Movement. The effect is a continuous yaw spin driven by
--- SET_ENTITY_HEADING (0x8E2530AA8ADA980E). Each tick reads the entity's live
--- heading, adds the profile step, and writes the result back. Basing the write
--- on the live heading instead of an internal target that only advances is what
--- keeps the spin alive when the game, a task or the server moves the ped
--- between ticks: the next frame continues from wherever the engine put it
--- instead of fighting for a stale angle. The same heading is what replicates
--- to the other clients.
---
--- There is no vertical path in this module. SetPedGravity, SetEntityHasGravity,
--- SetEntityCoordsNoOffset, SetEntityCoords, the fly/hover controller, the
--- vertical velocity integration and the position fallback are gone. They were
--- the source of the "spinbot puts me under the map" report: the module owned
--- gravity, integrated a negative Z from a height read and could drive the
--- capsule into the ground. Physics is now untouched. The only velocity write
--- is the optional, grounded, horizontal camera-relative walk (z = 0) used to
--- keep W/A/S/D independent of the spin heading; while airborne the module
--- writes no velocity at all, so a fall or a jump is never frozen.
+-- One row in Player > Movement. The effect is a direct, frame-rate independent
+-- yaw spin driven by SET_ENTITY_HEADING (0x8E2530AA8ADA980E). The heading is
+-- written every frame, so the local model and the replicated ped heading both
+-- carry the spin. The network-override path is gone: it armed cleanly but
+-- produced no visible or replicated change on the current build, so it was
+-- dead weight rather than a quiet path.
 --
 -- Movement contract: the on-foot task derives its movement basis from the
--- entity heading, so a heading-only spin makes W/A/S/D walk in the spin
--- direction. While a movement control is held and the ped is grounded, the
--- module isolates controls 30/31, reads them through GET_DISABLED_CONTROL_
--- NORMAL, and writes the camera-relative horizontal velocity itself (28 m/s,
--- the Naruto Run parity speed). The camera is READ ONLY: GET_GAMEPLAY_CAM_ROT
--- is sampled while moving and no camera native is written. Control isolation
--- is reasserted every active frame and restored on idle, airborne, suspend and
--- stop.
+-- entity heading. A heading-only spin therefore makes W/A/S/D walk in the spin
+-- direction and the operator runs in a circle. The module writes the
+-- camera-relative velocity itself while a movement control is held. The entity
+-- heading remains the spin, so the model turns while the walk goes where the
+-- operator points it. The camera is READ ONLY: the live gameplay-camera yaw is
+-- sampled every tick, so the walk follows the view without a script camera, a
+-- relative-heading hold, or any other camera write. Control 31 is positive for
+-- backward on the live build, so it is flipped once before the world vector is
+-- built. A/D strafe, Z/W forward and S backward. Space/Ctrl is the No Clip
+-- Undetect vertical line (12 m/s, 18 m/s^2 ramp, 28 m/s total cap); ped gravity
+-- is disabled only after the first vertical input and integrated manually, so
+-- arming the row leaves the launch frame on normal physics. Collision stays on:
+-- flight, not pass-through.
+--
+-- The desired-heading native stays on the spin too, so the task steering
+-- target matches the entity heading. The velocity write is what makes the
+-- movement independent of the spin. If the locomotion task wins the heading
+-- anyway (the readback stays static while the target advances), the module
+-- disables movement controls 30/31 while a synthetic walk is active, reads
+-- them through GET_DISABLED_CONTROL_NORMAL, and restores them as soon as the
+-- input is released or the row is suspended. The controls are re-asserted
+-- every active frame because the game can re-enable them between ticks.
+-- No task is started, no event, entity, state bag or hook is created.
+--
+-- There is no new camera observable: no CREATE_CAM, no RENDER_SCRIPT_CAMS and
+-- no SET_GAMEPLAY_CAM_RELATIVE_HEADING. The heading remains replicated; a
+-- server-side rotation heuristic or a human report can still see the spin. The
+-- reference guard (WaveShield V4/latest) has no heading, rotation, spin,
+-- angular, antiaim or desync check.
+--
+-- Suspension matrix: vehicle, dead, ragdoll, falling, in air, parachute,
+-- cover, swimming, climbing, jumping, diving, first-person/cinematic view,
+-- and No Clip/Naruto active. Speed is deliberately not a suspension input:
+-- running must keep spinning.
+--
+-- Aim and attack are not suspension inputs either. The heading write stays on
+-- while the trigger is held, so arming Spinbot while aiming or firing starts
+-- the spin immediately instead of waiting for the trigger to release.
+-- First-person is suspended because its camera is
+-- head-locked and its movement is heading-relative; third-person is the
+-- supported mode.
 --
 -- Cadence: one runtime thread per arm, Wait(0), dt from GetGameTimer. The
 -- global CreateThread/Wait pair is preferred and Citizen.CreateThread/Wait is
--- the fallback. A generation token makes stop/panic/re-arm idempotent: the old
--- thread exits on its next wake-up and cannot write after the row is off. The
--- loader scheduler is the watchdog fallback if the executor never schedules
--- the coroutine.
+-- the fallback, because the executor may expose either surface. A generation
+-- token makes stop/panic/re-arm idempotent: the old thread exits on its next
+-- wake-up and cannot write after the row is off. The scheduler's O.every path
+-- is not used because a 16-24 ms pump is not frame-locked; the visual spin
+-- needs the same cadence as the game.
 --
--- Suspension matrix: vehicle, ragdoll and No Clip/Naruto. The row stays armed
--- while suspended and resumes on the next eligible tick. Dead stops the row.
--- Aim, fire, running, jumping, falling, swimming, climbing, cover, parachute,
--- first-person and cinematic are deliberately not suspension inputs: a spinbot
--- that stops when the operator shoots, jumps or falls is the "it only spins
--- for a second" report this version removes.
+-- Speed profiles: 720 / 900 / 1080 deg/s. The fastest profile is 3 rev/s and
+-- stays below the 1200 deg/s snap threshold used by public client anticheats
+-- (SDR aimbot_detection.lua). The speed is modulated by +/-2 % per frame so the
+-- angular velocity is not a bit-exact constant; the modulation is below the
+-- visible threshold. This is a design bound, not a claim that every AC is
+-- blind: the heading is replicated, so a server-side rotation heuristic or a
+-- human report can still see the spin. The reference guard (WaveShield
+-- V4/latest) has no heading, rotation, spin, angular, antiaim or desync check.
 --
--- Speed profiles: 720 / 900 / 1080 deg/s. The step is scaled by the measured
--- dt, so the angular velocity is frame-rate independent. A +/-2 % per-frame
--- jitter keeps the angular velocity from being a bit-exact constant; it stays
--- below the visible threshold. This is a design bound, not a claim that every
--- AC is blind: the heading is replicated, so a server-side rotation heuristic
--- or a human report can still see the spin. The reference guard (WaveShield
--- V4) has an aimbot detector that samples camera rotation, relative heading
--- and rapid mouse movement; it does not read entity heading changes or ped
--- angular velocity, so the SET_ENTITY_HEADING write does not feed it, and the
--- camera is never written. That is a build-specific observation, not a
--- guarantee. Firing is not suspended: in third-person the aim task keeps the
--- weapon on the camera, but a hip-fire while spinning can still produce an
--- off-camera impact, which is the one behavioral signal a server-side
--- silent-aim check could see.
+-- Natives verified in natives.json:
+--   PLAYER_PED_ID                0xD80958FC74E988A6 () -> Ped
+--   DOES_ENTITY_EXIST            0x7239B21A38F536BA (Entity) -> BOOL
+--   GET_ENTITY_HEADING           0xE83D4F9BA2A38914 (Entity) -> float
+--   GET_ENTITY_ROTATION          0xAFBD61CC738D9EB9 (Entity, int) -> Vector3
+--   GET_PLAYER_PED               0x43A66C31C68491C0 (Player) -> Ped
+--   SET_ENTITY_HEADING           0x8E2530AA8ADA980E (Entity, float) -> void
+--   SET_PED_DESIRED_HEADING      0xAA5A7ECE2AA8FE70 (Ped, float) -> void
+--   IS_AIM_CAM_ACTIVE            0x68EDDA28A5976D07 () -> BOOL
+--   IS_PLAYER_FREE_AIMING        0x2E397FD2ECD37C87 (Player) -> BOOL
+--   IS_PED_SHOOTING              0x34616828CD07F1A1 (Ped) -> BOOL
+--   IS_PED_DEAD_OR_DYING         0x3317DEDB88C95038 (Ped, BOOL) -> BOOL
+--   IS_PED_FALLING               0xFB92A102F1C4DFA3 (Ped) -> BOOL
+--   IS_ENTITY_IN_AIR             0x886E37EC497200B6 (Entity) -> BOOL
+--   GET_PED_PARACHUTE_STATE      0x79CFD9827CC979B6 (Ped) -> int
+--   IS_PED_IN_COVER              0x60DFD0691A170B88 (Ped, BOOL) -> BOOL
+--   IS_PED_SWIMMING              0x9DE327631295B4C2 (Ped) -> BOOL
+--   IS_PED_CLIMBING              0x53E8CB4F48BFE623 (Ped) -> BOOL
+--   IS_PED_JUMPING               0xCEDABC5900A0BF97 (Ped) -> BOOL
+--   IS_PED_DIVING                0x5527B8246FEF9B11 (Ped) -> BOOL
+--   GET_GAMEPLAY_CAM_ROT         0x837765A25378F0BB (int) -> Vector3
+--   GET_CONTROL_NORMAL           0xEC3C9B8D5327B563 (int, int) -> float
+--   GET_ENTITY_VELOCITY          0x4805D2B1D8CF94A9 (Entity) -> Vector3
+--   SET_ENTITY_VELOCITY          0x1C99BB7B6E96D16F (Entity, float, float, float) -> void
+--   GET_ENTITY_COORDS            0x3FEF770D40960D5A (Entity, BOOL) -> Vector3
+--   SET_ENTITY_COORDS_NO_OFFSET  0x239A3351AC1DA385 (Entity, float, float, float, BOOL, BOOL, BOOL) -> void
+--   IS_CONTROL_PRESSED           0xF3A21BCD95725A4A (int, int) -> bool
+--   GET_DISABLED_CONTROL_NORMAL  0x11E65974A982637C (int, int) -> float
+--   DISABLE_CONTROL_ACTION       0xFE99B66D079CF6BC (int, int, BOOL) -> void
+--   ENABLE_CONTROL_ACTION        0x351220255D64C155 (int, int, BOOL) -> void
+--   IS_DISABLED_CONTROL_PRESSED  0xE2587F8CBBD87B1D (int, int) -> bool
+--   GET_FOLLOW_PED_CAM_VIEW_MODE 0x8D4D46230B2C353A () -> int
+--   CREATE_CAM                   0xC3981DCE61D9E13F (char*, BOOL) -> Cam
+--   SET_CAM_COORD                0x4D41783FB745E42E (Cam, float, float, float) -> void
+--   SET_CAM_ROT                  0x85973643155D0B07 (Cam, float, float, float, int) -> void
+--   SET_CAM_FOV                  0xB13C14F66A00D047 (Cam, float) -> void
+--   SET_CAM_ACTIVE               0x026FB97D0A425F84 (Cam, BOOL) -> void
+--   RENDER_SCRIPT_CAMS           0x07E5B515DB0636FC (BOOL, BOOL, int, BOOL, BOOL) -> void
+--   DESTROY_CAM                  0x865908C81A2C22E9 (Cam, BOOL) -> void
+--   DOES_CAM_EXIST               0xA7A932170592B50E (Cam) -> BOOL
+--   GET_GAMEPLAY_CAM_FOV         0x65019750A0324133 () -> float
 --
--- Natives verified in the loader native table / natives.json:
---   PLAYER_PED_ID                   0xD80958FC74E988A6 () -> Ped
---   PLAYER_ID                       0x4F8644AF03D0E0D6 () -> Player
---   GET_PLAYER_PED                  0x43A66C31C68491C0 (Player) -> Ped
---   DOES_ENTITY_EXIST               0x7239B21A38F536BA (Entity) -> BOOL
---   GET_ENTITY_HEADING              0xE83D4F9BA2A38914 (Entity) -> float
---   GET_ENTITY_ROTATION             0xAFBD61CC738D9EB9 (Entity, int) -> Vector3
---   SET_ENTITY_HEADING              0x8E2530AA8ADA980E (Entity, float) -> void
---   IS_PED_DEAD_OR_DYING            0x3317DEDB88C95038 (Ped, BOOL) -> BOOL
---   IS_PED_RAGDOLL                  0x47E4E977581C5B55 (Ped) -> BOOL
---   GET_GAMEPLAY_CAM_ROT            0x837765A25378F0BB (int) -> Vector3
---   GET_CONTROL_NORMAL              0xEC3C9B8D5327B563 (int, int) -> float
---   GET_DISABLED_CONTROL_NORMAL     0x11E65974A982637C (int, int) -> float
---   IS_CONTROL_PRESSED              0xF3A21BCD95725A4A (int, int) -> BOOL
---   IS_DISABLED_CONTROL_PRESSED     0xE2587F8CBBD87B1D (int, int) -> BOOL
---   DISABLE_CONTROL_ACTION          0xFE99B66D079CF6BC (int, int, BOOL) -> void
---   ENABLE_CONTROL_ACTION           0x351220255D64C155 (int, int, BOOL) -> void
---   GET_ENTITY_HEIGHT_ABOVE_GROUND  0x1DD55701034110E5 (Entity) -> float
---   IS_ENTITY_IN_AIR                0x886E37EC497200B6 (Entity) -> BOOL
---   IS_PED_FALLING                  0xFB92A102F1C4DFA3 (Ped) -> BOOL
---   SET_ENTITY_VELOCITY             0x1C99BB7B6E96D16F (Entity, float, float, float) -> void
---
--- Vehicle, death and ragdoll are read from O.Ctx, which the core samples every
--- 50 ms; the module does not duplicate those natives.
+-- Vehicle, ragdoll and height are read from O.Ctx, which the core samples
+-- every 50 ms; the module does not duplicate those natives.
 -- ============================================================================
 local SP = (function(O, N)
     local SPEEDS = { 720.0, 900.0, 1080.0 }
     local MAX_DT = 0.05
     local RESUME_MS = 120
     local SPEED_JITTER = 0.02
-    local GROUND_MARGIN = 0.4
-    local MOVE_SPEED = 28.0
-    local MOVE_CONTROLS = { 30, 31 }
+    local SAMPLE_MS = 500
+    local LAG_WARN = 120.0
 
     local SP = {
         active = false,
@@ -40794,28 +40882,35 @@ local SP = (function(O, N)
         dir = 1.0,
         target = 0.0,
         camYaw = 0.0,
-        camValid = false,
+        camHold = true,
+        camNoData = false,
+        camRetryAt = 0,
         gen = 0,
         resumeAt = 0,
         suspended = false,
         lastAt = 0,
+        sampleAt = 0,
+        lagLogged = false,
+        camLogged = false,
+        camFailLogged = false,
+        lastWhy = nil,
+        effectLogged = false,
+        fallback = false,
         lastTickAt = 0,
         ticks = 0,
-        fallback = false,
-        controlsOff = false,
-        lastWhy = nil,
-        writeFailLogged = false,
-        tickErrorLogged = false,
-        grounded = true,
         onChange = nil,
-        stats = {
-            calls = 0,
-            moves = 0,
-            velocityWrites = 0,
-            headingFails = 0,
-            suspends = 0,
-            resumes = 0,
-        },
+        gravityOff = false,
+        airControlsOff = false,
+        vz = 0.0,
+        verticalAssist = false,
+        hover = false,
+        fireSafe = false,
+        fireSafeReleased = false,
+        lastZ = nil,
+        vzProbeAt = 0,
+        vzProbeZ = nil,
+        vzProbeWant = 0.0,
+        stats = { calls = 0, moves = 0, positionWrites = 0, verticalWrites = 0, suspends = 0, resumes = 0, lag = 0.0, camWrites = 0, camFails = 0 },
     }
 
     local function wrap360(a)
@@ -40824,8 +40919,11 @@ local SP = (function(O, N)
         return a
     end
 
-    local function finite(v)
-        return type(v) == "number" and v == v and v ~= math.huge and v ~= -math.huge
+    -- Shortest signed angle from b to a, in (-180, 180].
+    local function delta(a, b)
+        local d = (a - b + 180.0) % 360.0
+        if d < 0.0 then d = d + 360.0 end
+        return d - 180.0
     end
 
     -- The library changes toggle_selector.selected on Left/Right without firing
@@ -40866,6 +40964,10 @@ local SP = (function(O, N)
         return SP.speed
     end
 
+    local function finite(v)
+        return type(v) == "number" and v == v and v ~= math.huge and v ~= -math.huge
+    end
+
     local function headingOf(ped)
         local ok, heading = pcall(GetEntityHeading, ped)
         if ok and finite(heading) then return heading end
@@ -40887,31 +40989,285 @@ local SP = (function(O, N)
         return ped or 0
     end
 
+    local function anchor(ped)
+        local heading = headingOf(ped)
+        if not heading then return nil end
+        SP.target = wrap360(heading)
+        SP.sampleAt = O.now() + SAMPLE_MS
+        return heading
+    end
+
     -- The camera is read, never written. Movement is camera-relative, so the
     -- basis follows the view the operator actually has; the game camera keeps
-    -- its own follow, look and collision behaviour. If the read fails, the
-    -- current heading is the fallback; the last valid yaw is the final floor.
-    local function cameraYaw(ped)
+    -- its own follow, look and collision behaviour. There is no script camera
+    -- and no relative-heading hold: nothing freezes the frame while moving.
+    local function captureCameraYaw(fallback)
         local ok, cam = pcall(GetGameplayCamRot, 2)
         if ok and cam and finite(cam.z) then
             SP.camYaw = wrap360(cam.z)
-            SP.camValid = true
-        elseif not SP.camValid then
-            local heading = headingOf(ped)
-            if heading then
-                SP.camYaw = wrap360(heading)
-                SP.camValid = true
-            end
+            SP.camHold = true
+            SP.camNoData = false
+            SP.camRetryAt = 0
+        else
+            SP.camYaw = wrap360(fallback or SP.target)
+            SP.camHold = false
+            SP.camNoData = true
+            SP.camRetryAt = O.now() + 500
         end
         return SP.camYaw
     end
 
+    -- Read the live camera yaw every tick. A held yaw is what made W/A/S/D
+    -- ignore the view; refreshing it here keeps the synthetic walk aligned with
+    -- the operator's camera without writing a single camera native.
+    local function syncCameraYaw()
+        local ok, cam = pcall(GetGameplayCamRot, 2)
+        if ok and cam and finite(cam.z) then
+            SP.camYaw = wrap360(cam.z)
+            SP.camHold = true
+            SP.camNoData = false
+        end
+    end
+
+    -- Vertical controls borrow the No Clip Undetect profile: explicit
+    -- vertical 12 m/s, 18 m/s^2 acceleration, 28 m/s total cap. The key
+    -- difference from the previous version is that ped gravity is disabled
+    -- while Spinbot is armed and gravity is integrated here. A velocity write
+    -- therefore cannot be cancelled by the engine's own gravity, which was
+    -- the source of both "fly does nothing" and "descending but altitude
+    -- stays pinned". Collision stays enabled: this is low-speed flight, not a
+    -- pass-through noclip.
+    local FLY_SPEED = 12.0
+    local GRAVITY = 9.81
+    local MAX_FALL = 20.0
+    local FLY_ACCEL = 18.0
+    local SPEED_CAP = 28.0
+    local VK_SPACE, VK_CONTROL, VK_SHIFT = 0x20, 0x11, 0x10
+
+    -- Read the action first, then the disabled-control value, then the raw
+    -- Susano key state. Space/Ctrl are disabled while Spinbot is armed so a
+    -- held fly key cannot open a parachute or start a jump task; the disabled
+    -- read is what keeps the same key available to the fly controller. This is
+    -- the input path the No Clip module already uses.
+    local function controlDown(control, vk)
+        local ok, value = pcall(IsControlPressed, 0, control)
+        if ok and (value == true or value == 1) then return true end
+        local okDisabled, disabled = pcall(IsDisabledControlPressed, 0, control)
+        if okDisabled and (disabled == true or disabled == 1) then return true end
+        local api = rawget(_G, "Susano")
+        if type(api) == "table" and type(api.GetAsyncKeyState) == "function" then
+            local okRaw, raw = pcall(api.GetAsyncKeyState, vk)
+            if okRaw and (raw == true or raw == 1) then return true end
+        end
+        return false
+    end
+
+    local function flyInput()
+        local down = controlDown(36, VK_CONTROL) or controlDown(21, VK_SHIFT)
+        return controlDown(22, VK_SPACE), down
+    end
+
+    local function setGravityOff(off)
+        off = off and true or false
+        if SP.gravityOff == off then return true end
+        local ped = SP.ped
+        if not ped or ped == 0 or not DoesEntityExist(ped) then return false end
+        local ok = pcall(SetPedGravity, ped, not off)
+        if not ok then return false end
+        pcall(SetEntityHasGravity, ped, not off)
+        SP.gravityOff = off
+        return true
+    end
+
+    local function setAirControlsOff(off)
+        off = off and true or false
+        if SP.airControlsOff == off then return end
+        local fn = off and DisableControlAction or EnableControlAction
+        if type(fn) ~= "function" then return end
+        pcall(fn, 0, 22, true)
+        pcall(fn, 0, 36, true)
+        SP.airControlsOff = off
+    end
+
+    local function reassertAirControls()
+        if not SP.airControlsOff then return end
+        if type(DisableControlAction) ~= "function" then return end
+        pcall(DisableControlAction, 0, 22, true)
+        pcall(DisableControlAction, 0, 36, true)
+    end
+
+    local function engageAirState()
+        setAirControlsOff(true)
+        if not setGravityOff(true) then
+            -- The position assist is the backstop when a runtime refuses the
+            -- gravity flag: the velocity Z is then written but cannot be
+            -- trusted to survive the engine step.
+            SP.verticalAssist = true
+            O.log("spin: gravity flag refused; vertical assist")
+        end
+    end
+
+    local function releaseAirState()
+        setAirControlsOff(false)
+        setGravityOff(false)
+        SP.vz = 0.0
+        SP.hover = false
+        SP.verticalAssist = false
+        SP.lastZ = nil
+        SP.vzProbeAt = 0
+        SP.vzProbeZ = nil
+        SP.vzProbeWant = 0.0
+    end
+
+    local currentVertical
+
+    local function heightAboveGround(ped)
+        if type(GetEntityHeightAboveGround) == "function" then
+            local ok, height = pcall(GetEntityHeightAboveGround, ped)
+            if ok and finite(height) then return height end
+        end
+        if O.Ctx and finite(O.Ctx.height) then return O.Ctx.height end
+        return nil
+    end
+
+    local function groundZAt(x, y, z)
+        if type(GetGroundZFor_3dCoord) ~= "function" then return nil end
+        local ok, retval, groundZ = pcall(GetGroundZFor_3dCoord, x, y, z, true)
+        if ok and retval and finite(groundZ) then return groundZ end
+        return nil
+    end
+
+    local nearGround
+
+    -- Ground guard shared by the vertical writer and both translation paths.
+    -- The position fallback ignores collision by design, so a negative Z step
+    -- or a slope step can otherwise put the capsule under the map. The guard
+    -- lifts the target to the sampled ground + 5 cm and never writes upward
+    -- past the current Z.
+    local function clampGroundZ(ped, x, y, z, currentZ)
+        local groundZ = groundZAt(x, y, z)
+        if groundZ and z < groundZ + 0.05 then return groundZ + 0.05 end
+        if not groundZ and nearGround(ped, 0.05)
+            and currentZ and z < currentZ then
+            return currentZ
+        end
+        return z
+    end
+
+    nearGround = function(ped, margin)
+        local height = heightAboveGround(ped)
+        local okC, coords = pcall(GetEntityCoords, ped)
+        local groundZ = nil
+        if okC and coords and finite(coords.z) then
+            groundZ = groundZAt(coords.x, coords.y, coords.z)
+            if groundZ and coords.z <= groundZ + margin then return true end
+        end
+        if height and height <= margin then
+            -- Height 0 on a ledge edge is not ground. Explicit air/fall or a
+            -- sampled ground far below the body both veto the clamp.
+            if type(IsEntityInAir) == "function" then
+                local okAir, air = pcall(IsEntityInAir, ped)
+                if okAir and air == true then return false end
+            end
+            if type(IsPedFalling) == "function" then
+                local okFall, falling = pcall(IsPedFalling, ped)
+                if okFall and falling == true then return false end
+            end
+            if groundZ and coords and finite(coords.z)
+                and coords.z > groundZ + margin then
+                return false
+            end
+            return true
+        end
+        return false
+    end
+
+    -- Multiple sensors, ORed. The previous version returned early from the
+    -- ground-height read, so a 0.0 height on a ledge edge discarded a real
+    -- IsEntityInAir/IsPedFalling/negative-velocity descent and the vertical
+    -- writer held altitude. A measured Z drop is the final proof.
+    local function isAirborne(ped)
+        local air = false
+        local height = heightAboveGround(ped)
+        if height and height > 0.05 then air = true end
+        if type(IsEntityInAir) == "function" then
+            local ok, value = pcall(IsEntityInAir, ped)
+            if ok and value == true then air = true end
+        end
+        if type(IsPedFalling) == "function" then
+            local ok, value = pcall(IsPedFalling, ped)
+            if ok and value == true then air = true end
+        end
+        if currentVertical(ped) < -0.5 then air = true end
+        local okC, coords = pcall(GetEntityCoords, ped)
+        if okC and coords and finite(coords.z) then
+            if SP.lastZ ~= nil and coords.z < SP.lastZ - 0.01 then air = true end
+            SP.lastZ = coords.z
+            -- Third sensor: the map ground Z. It catches the ledge/roof edge
+            -- where the height-above-ground native can report 0 while the
+            -- entity is already over empty space. Read only, never a write.
+            if not air and type(GetGroundZFor_3dCoord) == "function" then
+                local okG, retval, groundZ = pcall(GetGroundZFor_3dCoord,
+                    coords.x, coords.y, coords.z, true)
+                if okG and retval and finite(groundZ)
+                    and coords.z > groundZ + 0.1 then
+                    air = true
+                end
+            end
+        end
+        return air
+    end
+
+    -- Reads only. First-person and cinematic are suspended because the camera
+    -- is head-locked/scripted and on-foot movement is heading-relative there;
+    -- third-person is the mode where the camera frame is authoritative.
+    local function suspendedNow(ped)
+        if N and type(N.isActive) == "function" and N.isActive() then return "noclip" end
+        if O.Ctx and O.Ctx.inVehicle then return "vehicle" end
+        local okView, view = pcall(GetFollowPedCamViewMode)
+        if okView and type(view) == "number" and view >= 3 then return "view" end
+        -- Aim/free-aim never suspend the row: firing while advancing is the
+        -- intended state, not a reason to tear down the movement writer.
+        local okCover, cover = pcall(IsPedInCover, ped, false)
+        if okCover and cover then return "cover" end
+        local okSwim, swimming = pcall(IsPedSwimming, ped)
+        if okSwim and swimming then return "swim" end
+        local okClimb, climbing = pcall(IsPedClimbing, ped)
+        if okClimb and climbing then return "climb" end
+        local up, down = flyInput()
+        local flying = up ~= down
+        if not flying then
+            local okJump, jumping = pcall(IsPedJumping, ped)
+            if okJump and jumping then return "jump" end
+        end
+        local okDive, diving = pcall(IsPedDiving, ped)
+        if okDive and diving and not flying then return "dive" end
+        if O.Ctx and O.Ctx.ragdoll then return "ragdoll" end
+        -- While the module owns gravity, a descending body is the intended
+        -- state, not a reason to suspend and hand physics back. The old
+        -- fall/air suspension is what turned a real descent into a frozen
+        -- altitude whenever the cached height crossed the threshold.
+        if not flying and not SP.gravityOff and O.Ctx and O.Ctx.height
+            and O.Ctx.height > 1.0 then
+            local okFall, falling = pcall(IsPedFalling, ped)
+            if okFall and falling then return "fall" end
+            local okAir, air = pcall(IsEntityInAir, ped)
+            if okAir and air then return "air" end
+            local okChute, chute = pcall(GetPedParachuteState, ped)
+            if okChute and type(chute) == "number" and chute > 0 then return "parachute" end
+        end
+        return nil
+    end
+
     -- The on-foot task reads the entity heading for its movement basis. When
     -- that heading is the spin, a held movement control walks in the spin
-    -- direction and the player runs in a circle. While input is held and the
-    -- ped is grounded the module writes the camera-relative velocity itself,
-    -- so the walk goes where the operator points it regardless of the model's
-    -- facing. Idle and airborne frames leave the native movement alone.
+    -- direction and the player runs in a circle. The desired heading and the
+    -- entity heading stay on the spin so the model turns; while input is held
+    -- the module writes the camera-relative velocity itself, so the walk goes
+    -- where the operator points it regardless of the model's facing. Idle
+    -- frames leave velocity alone.
+    local MOVE_CONTROLS = { 30, 31 }
+
     local function setControlsOff(off)
         off = off and true or false
         if SP.controlsOff == off then return end
@@ -40922,13 +41278,14 @@ local SP = (function(O, N)
             end
         end
         SP.controlsOff = off
+        O.log("spin: controls %s", off and "off" or "on")
     end
 
     -- DISABLE_CONTROL_ACTION is a per-frame state in the game, not a one-shot
-    -- latch. The task manager can re-enable the movement controls between
-    -- ticks; if that happens while SP.controlsOff is still true, the disabled
-    -- reader goes dead and the synthetic velocity path silently loses its
-    -- input. Reapply the isolation every active frame without changing state.
+    -- latch. The task manager can re-enable the movement controls between ticks;
+    -- if that happens while SP.controlsOff is still true, the disabled reader
+    -- goes dead and the synthetic velocity path silently loses its input. Reapply
+    -- the isolation every frame without changing state or logging.
     local function reassertControls()
         if not SP.controlsOff then return end
         if type(DisableControlAction) ~= "function" then return end
@@ -40948,6 +41305,9 @@ local SP = (function(O, N)
                 if value ~= 0.0 then return value end
                 local okPress, pressed = pcall(IsDisabledControlPressed, 0, control)
                 if okPress and pressed then return 1.0 end
+                -- The game may have re-enabled the control after the last
+                -- disable write. A live normal reader is still a valid input
+                -- source for this frame; the next tick reasserts isolation.
                 if SP.controlsOff then
                     local okNormal, normal = pcall(GetControlNormal, 0, control)
                     if okNormal and finite(normal) and normal ~= 0.0 then return normal end
@@ -40965,7 +41325,7 @@ local SP = (function(O, N)
         return pressed and 1.0 or 0.0
     end
 
-    local function movementVector(ped)
+    local function movementVector()
         local mx = readControl(30)
         -- Control 31 reports positive for backward on the live build. The
         -- world vector wants positive forward, so flip the axis once here.
@@ -40976,59 +41336,254 @@ local SP = (function(O, N)
         if not SP.controlsOff then setControlsOff(true) end
         local mag = raw
         if mag > 1.0 then mag = 1.0 end
-        local yaw = math.rad(cameraYaw(ped))
+
+        local yaw = math.rad(SP.camYaw)
         local dx = (-math.sin(yaw) * my + math.cos(yaw) * mx) / raw
         local dy = (math.cos(yaw) * my + math.sin(yaw) * mx) / raw
         return dx, dy, mag
     end
 
-    local function airborne(ped)
-        local checked = false
-        if type(GetEntityHeightAboveGround) == "function" then
-            local ok, height = pcall(GetEntityHeightAboveGround, ped)
-            if ok and finite(height) then
-                checked = true
-                if height > GROUND_MARGIN then return true end
-            end
+
+    -- Same movement budget as Naruto Run (FWD_SPEED = 28.0). Sprint is not a
+    -- second, faster mode: the operator asked for parity with Naruto.
+    local WALK_SPEED = 28.0
+    local SPRINT_SPEED = 28.0
+
+    local function moveSpeed(mag)
+        local speed = WALK_SPEED
+        if type(IsControlPressed) == "function" then
+            local ok, sprint = pcall(IsControlPressed, 0, 21)
+            if ok and sprint then speed = SPRINT_SPEED end
         end
-        if type(IsEntityInAir) == "function" then
-            local ok, air = pcall(IsEntityInAir, ped)
-            if ok then
-                checked = true
-                if air == true then return true end
-            end
-        end
-        if type(IsPedFalling) == "function" then
-            local ok, falling = pcall(IsPedFalling, ped)
-            if ok then
-                checked = true
-                if falling == true then return true end
-            end
-        end
-        -- No probe answered: the state is unknown. Treat it as airborne so the
-        -- module never writes velocity into a fall it cannot see; the heading
-        -- spin continues either way.
-        return not checked
+        return speed * (mag or 1.0)
     end
 
-    -- The velocity write is horizontal only. z is always 0: the module never
-    -- owns gravity and never cancels a fall. The caller only reaches this path
-    -- while the ped is grounded.
-    local function applyVelocity(ped, dx, dy, speed)
-        local ok = pcall(SetEntityVelocity, ped, dx * speed, dy * speed, 0.0)
-        if ok then SP.stats.velocityWrites = SP.stats.velocityWrites + 1 end
+    currentVertical = function(ped)
+        local okV, vel = pcall(GetEntityVelocity, ped)
+        if okV and type(vel) == "table" and finite(vel.z) then return vel.z end
+        return 0.0
     end
 
-    local function suspendedNow(ped)
-        if N and type(N.isActive) == "function" and N.isActive() then return "noclip" end
-        if O.Ctx and O.Ctx.inVehicle then return "vehicle" end
-        local ragdoll = O.Ctx and O.Ctx.ragdoll
-        if ragdoll == nil and type(IsPedRagdoll) == "function" then
-            local ok, value = pcall(IsPedRagdoll, ped)
-            if ok then ragdoll = value == true end
+    local function approach(value, target, maxDelta)
+        if value < target then
+            return math.min(value + maxDelta, target)
         end
-        if ragdoll then return "ragdoll" end
-        return nil
+        return math.max(value - maxDelta, target)
+    end
+
+    -- Fly target is the No Clip Undetect explicit vertical (12 m/s), ramped
+    -- at the same 18 m/s^2. Once fly has been used, the module latches hover:
+    -- releasing Space/Ctrl keeps the current altitude instead of re-entering
+    -- gravity. Ctrl descends, Space climbs, and releasing again holds the new
+    -- altitude. The latch is cleared by stop/suspend, where gravity is handed
+    -- back to the engine.
+    local function verticalVelocity(ped, dt)
+        local up, down = flyInput()
+        if up ~= down then
+            if not SP.gravityOff then engageAirState() end
+            SP.hover = true
+            local target = up and FLY_SPEED or -FLY_SPEED
+            if down and (not isAirborne(ped) or nearGround(ped, 0.15)) then
+                target = 0.0
+            end
+            SP.vz = approach(SP.vz or 0.0, target, FLY_ACCEL * dt)
+            return SP.vz
+        end
+        if SP.hover then
+            SP.vz = 0.0
+            SP.verticalAssist = false
+            SP.vzProbeAt = 0
+            return 0.0
+        end
+        if isAirborne(ped) then
+            if (SP.vz or 0.0) < 0.0 and nearGround(ped, 0.15) then
+                SP.vz = 0.0
+            else
+                SP.vz = math.max(-MAX_FALL, (SP.vz or 0.0) - GRAVITY * dt)
+            end
+        else
+            SP.vz = 0.0
+            SP.verticalAssist = false
+            SP.vzProbeAt = 0
+        end
+        return SP.vz
+    end
+
+    -- Read-only vertical probe. If the velocity write is being ignored by the
+    -- on-foot task, the measured Z does not move; latch the bounded position
+    -- assist. It is cleared on ground/stop, never per probe, so the path cannot
+    -- oscillate between "velocity ignored" and "assist off" every 150 ms.
+    local function probeVertical(ped)
+        if SP.positionMove or SP.verticalAssist then return end
+        local want = SP.vz or 0.0
+        if math.abs(want) < 0.75 then
+            SP.vzProbeAt = 0
+            SP.vzProbeZ = nil
+            SP.vzProbeWant = 0
+            return
+        end
+        local okC, coords = pcall(GetEntityCoords, ped)
+        if not okC or not coords or not finite(coords.z) then return end
+        local now = O.now()
+        if SP.vzProbeAt == 0 then
+            SP.vzProbeAt = now
+            SP.vzProbeZ = coords.z
+            SP.vzProbeWant = want
+            return
+        end
+        if now - SP.vzProbeAt < 150 then return end
+        local actual = coords.z - (SP.vzProbeZ or coords.z)
+        if math.abs(actual) < 0.02 then
+            SP.verticalAssist = true
+            O.log("spin: vertical assist")
+        end
+        SP.vzProbeAt = now
+        SP.vzProbeZ = coords.z
+        SP.vzProbeWant = want
+    end
+
+    local function applyVelocity(ped, dx, dy, speed, vz)
+        local vx, vy = dx * speed, dy * speed
+        local z = vz or 0.0
+        local mag = math.sqrt(vx * vx + vy * vy + z * z)
+        if mag > SPEED_CAP and mag > 0.0 then
+            local scale = SPEED_CAP / mag
+            vx, vy, z = vx * scale, vy * scale, z * scale
+        end
+        local ok = pcall(SetEntityVelocity, ped, vx, vy, z)
+        if ok then
+            SP.stats.moves = SP.stats.moves + 1
+            if not SP.moveLogged then
+                SP.moveLogged = true
+                O.log("spin: velocity path")
+            end
+        end
+    end
+
+    -- Last-resort translation. A task or a server correction can erase the
+    -- velocity every frame; a small explicit position step cannot be steered
+    -- by the spin heading. The step is bounded and only runs after two
+    -- measured velocity failures, so the normal path is not teleporting. Z is
+    -- integrated from the live vertical velocity (or fly input), never pinned.
+    local function applyPositionStep(ped, dx, dy, speed, dt, vz)
+        local okC, coords = pcall(GetEntityCoords, ped)
+        if not okC or not coords or not finite(coords.x) or not finite(coords.y) or not finite(coords.z) then
+            return
+        end
+        local frame = dt or (1.0 / 60.0)
+        local step = speed * frame
+        if step > 0.6 then step = 0.6 end
+        local zStep = (vz or 0.0) * frame
+        local total = math.sqrt(step * step + zStep * zStep)
+        local maxStep = SPEED_CAP * frame
+        if total > maxStep and total > 0.0 then
+            local scale = maxStep / total
+            step, zStep = step * scale, zStep * scale
+        end
+        if step <= 0.0 and zStep == 0.0 then return end
+        local targetX, targetY = coords.x + dx * step, coords.y + dy * step
+        local targetZ = clampGroundZ(ped, targetX, targetY,
+            coords.z + zStep, coords.z)
+        zStep = targetZ - coords.z
+        if step <= 0.0 and zStep == 0.0 then return end
+        local ok = pcall(SetEntityCoordsNoOffset, ped,
+            targetX, targetY, targetZ, false, false, false)
+        if ok then SP.stats.positionWrites = SP.stats.positionWrites + 1 end
+    end
+
+    -- Bounded Z-only position assist. It exists only after the read-only probe
+    -- proves the velocity Z is ignored; X/Y stay on the normal velocity path.
+    local function applyVerticalStep(ped, vz, dt)
+        if not vz or math.abs(vz) < 0.0001 then return end
+        local okC, coords = pcall(GetEntityCoords, ped)
+        if not okC or not coords or not finite(coords.z) then return end
+        local step = vz * (dt or (1.0 / 60.0))
+        if step > 0.5 then step = 0.5 end
+        if step < -0.5 then step = -0.5 end
+        local targetZ = clampGroundZ(ped, coords.x, coords.y,
+            coords.z + step, coords.z)
+        step = targetZ - coords.z
+        if math.abs(step) < 0.0001 then return end
+        local ok = pcall(SetEntityCoordsNoOffset, ped,
+            coords.x, coords.y, targetZ, false, false, false)
+        if ok then SP.stats.verticalWrites = SP.stats.verticalWrites + 1 end
+    end
+
+    local function probeMovement(ped, dx, dy, speed)
+        local now = O.now()
+        local okC, coords = pcall(GetEntityCoords, ped)
+        if not okC or not coords or not finite(coords.x) or not finite(coords.y) then return end
+        if SP.probeAt == 0 then
+            SP.probeAt = now
+            SP.probeX = coords.x
+            SP.probeY = coords.y
+            SP.probeDx = dx
+            SP.probeDy = dy
+            return
+        end
+        local elapsed = now - SP.probeAt
+        if elapsed < 150 then return end
+        local ax = coords.x - (SP.probeX or coords.x)
+        local ay = coords.y - (SP.probeY or coords.y)
+        local dist = math.sqrt(ax * ax + ay * ay)
+        local expected = speed * (elapsed / 1000.0)
+        local dot = 0.0
+        if dist > 0.0001 then
+            dot = (ax * (SP.probeDx or dx) + ay * (SP.probeDy or dy)) / dist
+        end
+        if dist < math.min(0.25, expected * 0.25) or dot < 0.5 then
+            SP.moveFails = (SP.moveFails or 0) + 1
+            if SP.moveFails >= 2 and not SP.positionMove then
+                SP.positionMove = true
+                O.log("spin: position fallback")
+            end
+        else
+            SP.moveFails = 0
+        end
+        SP.probeAt = now
+        SP.probeX = coords.x
+        SP.probeY = coords.y
+        SP.probeDx = dx
+        SP.probeDy = dy
+    end
+
+    local function writeHeading(ped, dt)
+        reassertControls()
+        reassertAirControls()
+        local dx, dy, mag = movementVector()
+        if type(SetPedDesiredHeading) == "function" then
+            pcall(SetPedDesiredHeading, ped, SP.target)
+        end
+        local ok = pcall(SetEntityHeading, ped, SP.target)
+        if not ok then return false end
+        local up, down = flyInput()
+        local flying = up ~= down
+        local vz = verticalVelocity(ped, dt)
+        probeVertical(ped)
+        local activeVertical = math.abs(vz) > 0.0001
+        if dx or flying or activeVertical then
+            local speed = dx and moveSpeed(mag) or 0.0
+            if not dx then setControlsOff(false) end
+            if SP.positionMove then
+                applyPositionStep(ped, dx or 0.0, dy or 0.0, speed, dt, vz)
+            else
+                -- When the vertical probe has proven the velocity Z is
+                -- ignored, zero that component and carry Z on the bounded
+                -- position assist. Horizontal velocity stays authoritative.
+                local writeVz = SP.verticalAssist and 0.0 or vz
+                applyVelocity(ped, dx or 0.0, dy or 0.0, speed, writeVz)
+                if SP.verticalAssist then applyVerticalStep(ped, vz, dt) end
+                if dx then probeMovement(ped, dx, dy, speed) end
+            end
+        else
+            SP.probeAt = 0
+            SP.moveFails = 0
+            -- No synthetic walk this frame: hand the normal controls back so
+            -- the operator is not locked out of the vanilla movement.
+            setControlsOff(false)
+        end
+        SP.stats.calls = SP.stats.calls + 1
+        return true
     end
 
     local function runtime()
@@ -41063,9 +41618,10 @@ local SP = (function(O, N)
             while SP.active and SP.gen == gen and (build == nil or O.build == build) do
                 if SP.fallback then break end
                 local ok, err = pcall(SP.tick)
-                if not ok and not SP.tickErrorLogged then
-                    SP.tickErrorLogged = true
+                if not ok then
                     O.log("spin: tick %s", tostring(err))
+                    SP.stop("tick error")
+                    break
                 end
                 wait(0)
             end
@@ -41080,45 +41636,74 @@ local SP = (function(O, N)
         end
         if not DoesEntityExist(ped) then return false end
         if IsPedDeadOrDying(ped, true) then return false end
-        local heading = headingOf(ped)
-        if not heading then
-            O.log("spin: no heading")
-            return false
-        end
-
-        -- One movement mode at a time. Naruto/No Clip own the same on-foot
-        -- locomotion slots; stop either before the first heading write.
-        if N and type(N.isActive) == "function" and N.isActive()
-            and type(N.stop) == "function" then
-            pcall(N.stop, "spinbot")
-        end
 
         setProfile(rowSelected())
-        setControlsOff(false)
+        -- Isolate from the first frame. Leaving the native walk live at arm
+        -- lets the on-foot task consume a held direction in the spin heading
+        -- before the synthetic vector exists. The controls are restored on the
+        -- first idle frame and on every stop/suspension.
+        setControlsOff(true)
         SP.ped = ped
         SP.active = true
         SP.gen = SP.gen + 1
         SP.dir = (O.rnd() < 0.5) and 1.0 or -1.0
-        SP.target = wrap360(heading)
-        SP.camYaw = 0.0
-        SP.camValid = false
         SP.resumeAt = 0
         SP.suspended = false
         SP.lastAt = O.now()
+        SP.sampleAt = 0
+        SP.lagLogged = false
+        SP.camLogged = false
+        SP.camFailLogged = false
+        SP.lastWhy = nil
+        SP.effectLogged = false
+        SP.fallback = false
         SP.lastTickAt = O.now()
         SP.ticks = 0
-        SP.fallback = false
-        SP.controlsOff = false
-        SP.lastWhy = nil
-        SP.writeFailLogged = false
-        SP.tickErrorLogged = false
-        SP.grounded = true
+        SP.travel = 0.0
+        SP.vz = 0.0
+        SP.hover = false
+        SP.fireSafe = false
+        SP.fireSafeReleased = false
+        SP.verticalAssist = false
+        SP.lastZ = nil
+        SP.vzProbeAt = 0
+        SP.vzProbeZ = nil
+        SP.vzProbeWant = 0.0
+        SP.positionMove = false
+        SP.probeAt = 0
+        SP.moveFails = 0
+        SP.lastActual = nil
+        SP.camHold = true
+        SP.camNoData = false
+        SP.camRetryAt = 0
         SP.stats.calls = 0
         SP.stats.moves = 0
-        SP.stats.velocityWrites = 0
-        SP.stats.headingFails = 0
+        SP.stats.positionWrites = 0
+        SP.stats.verticalWrites = 0
         SP.stats.suspends = 0
         SP.stats.resumes = 0
+        SP.stats.lag = 0.0
+        SP.stats.camWrites = 0
+        SP.stats.camFails = 0
+
+        if not anchor(ped) then
+            setControlsOff(false)
+            SP.active = false
+            SP.ped = 0
+            return false
+        end
+        captureCameraYaw(SP.target)
+        -- One movement mode at a time. Naruto/No Clip own the same on-foot
+        -- locomotion and task slots; arming Spinbot disarms either mode before
+        -- the first heading or velocity write.
+        if N and type(N.isActive) == "function" and N.isActive()
+            and type(N.stop) == "function" then
+            pcall(N.stop, "spinbot")
+        end
+        -- Launch stays on the normal physics frame. Gravity and the fly
+        -- controls are engaged only when the first Space/Ctrl input arrives,
+        -- so arming the row cannot float or drop the ped for the first second.
+        SP.gravityOff = false
 
         startThread()
         if not SP.active then return false end
@@ -41130,36 +41715,49 @@ local SP = (function(O, N)
 
     function SP.stop(reason)
         setControlsOff(false)
+        releaseAirState()
         local wasActive = SP.active
         local ped = SP.ped
+        local releaseYaw = SP.camYaw
+        if wasActive and ped and ped ~= 0 and DoesEntityExist(ped) then
+            pcall(SetEntityVelocity, ped, 0.0, 0.0, 0.0)
+        end
         SP.active = false
         SP.gen = SP.gen + 1
         SP.suspended = false
         SP.resumeAt = 0
         SP.lastAt = 0
-        SP.lastTickAt = 0
-        SP.fallback = false
+        SP.sampleAt = 0
+        SP.lagLogged = false
+        SP.camLogged = false
+        SP.camFailLogged = false
         SP.lastWhy = nil
-        SP.writeFailLogged = false
-        SP.tickErrorLogged = false
-        SP.camValid = false
+        SP.effectLogged = false
+        SP.fallback = false
+        SP.lastTickAt = 0
+        SP.camYaw = 0.0
+        SP.camHold = true
+        SP.camNoData = false
+        SP.camRetryAt = 0
+        SP.vz = 0.0
+        SP.fireSafe = false
+        SP.fireSafeReleased = false
+        SP.positionMove = false
+        SP.probeAt = 0
+        SP.moveFails = 0
         SP.ped = 0
 
-        -- Leave the operator in a normal third-person frame. The live camera
-        -- yaw becomes the ped heading so stopping cannot leave the model
-        -- facing the last spin angle. The camera itself is never written.
+        -- Leave the operator in a normal third-person frame. The last held
+        -- camera yaw becomes the ped heading and the camera returns to its
+        -- vanilla relative zero, so stopping cannot snap the view sideways.
         if wasActive and reason ~= "death" and reason ~= "ped lost"
-            and ped and ped ~= 0 and DoesEntityExist(ped) then
-            local releaseHeading
-            local ok, cam = pcall(GetGameplayCamRot, 2)
-            if ok and cam and finite(cam.z) then
-                releaseHeading = wrap360(cam.z)
-            else
-                releaseHeading = headingOf(ped)
+            and ped and ped ~= 0 and finite(releaseYaw)
+            and DoesEntityExist(ped) then
+            local releaseHeading = wrap360(releaseYaw)
+            if type(SetPedDesiredHeading) == "function" then
+                pcall(SetPedDesiredHeading, ped, releaseHeading)
             end
-            if releaseHeading then
-                pcall(SetEntityHeading, ped, wrap360(releaseHeading))
-            end
+            pcall(SetEntityHeading, ped, releaseHeading)
         end
 
         if wasActive then
@@ -41184,15 +41782,30 @@ local SP = (function(O, N)
             speed = SP.speed,
             calls = SP.stats.calls,
             moves = SP.stats.moves,
-            velocityWrites = SP.stats.velocityWrites,
-            headingFails = SP.stats.headingFails,
+            positionWrites = SP.stats.positionWrites,
+            verticalWrites = SP.stats.verticalWrites,
+            positionMove = SP.positionMove,
+            verticalAssist = SP.verticalAssist,
+            hover = SP.hover,
+            fireSafe = SP.fireSafe,
+            vz = SP.vz,
+            gravityOff = SP.gravityOff,
+            airControlsOff = SP.airControlsOff,
+            suspends = SP.stats.suspends,
+            resumes = SP.stats.resumes,
+            lag = SP.stats.lag,
+            camWrites = SP.stats.camWrites,
+            camFails = SP.stats.camFails,
             controlsOff = SP.controlsOff,
-            grounded = SP.grounded,
+            camYaw = SP.camYaw,
+            camHold = SP.camHold,
+            scriptCam = false,
+            camMode = "game",
             suspended = SP.suspended,
             why = SP.lastWhy,
             ticks = SP.ticks,
             fallback = SP.fallback,
-            target = SP.target,
+            confirmed = SP.effectLogged,
         }
     end
 
@@ -41204,13 +41817,6 @@ local SP = (function(O, N)
         SP.ticks = SP.ticks + 1
         local ped = localPed()
         if not ped or ped == 0 then
-            SP.stop("ped lost")
-            return
-        end
-        -- A handle can be deleted while the cached O.Ctx.ped still points at
-        -- it. Check the boundary every tick, not only when the handle changes,
-        -- so a dead handle cannot keep the row armed and writing into nothing.
-        if not DoesEntityExist(ped) then
             SP.stop("ped lost")
             return
         end
@@ -41234,23 +41840,34 @@ local SP = (function(O, N)
                 SP.stop("ped lost")
                 return
             end
-            setControlsOff(false)
+            releaseAirState()
             SP.ped = ped
+            SP.gravityOff = false
+            SP.fireSafe = false
+            SP.fireSafeReleased = false
             SP.suspended = false
             SP.resumeAt = 0
-            local heading = headingOf(ped)
-            if not heading then
+            if not anchor(ped) then
                 SP.stop("no heading")
                 return
             end
-            SP.target = wrap360(heading)
-            SP.camValid = false
-            SP.lastAt = now
+            captureCameraYaw(SP.target)
         end
+
+        -- Latch hover before the suspension pass. If the operator is already
+        -- aiming and presses Space/Ctrl, the aim-camera check must see hover
+        -- on the same tick; otherwise it would suspend and release gravity
+        -- before the fly controller ever runs.
+        local flyUp, flyDown = flyInput()
+        if flyUp ~= flyDown then SP.hover = true end
 
         local why = suspendedNow(ped)
         if why then
             setControlsOff(false)
+            releaseAirState()
+            SP.fireSafe = false
+            SP.fireSafeReleased = false
+            pcall(SetEntityVelocity, ped, 0.0, 0.0, 0.0)
             if not SP.suspended then
                 SP.suspended = true
                 SP.stats.suspends = SP.stats.suspends + 1
@@ -41273,14 +41890,14 @@ local SP = (function(O, N)
             SP.stats.resumes = SP.stats.resumes + 1
             SP.lastWhy = nil
             SP.lastAt = now
-            local heading = headingOf(ped)
-            if not heading then
+            SP.travel = 0.0
+            SP.lastActual = nil
+            O.log("spin: resume")
+            if not anchor(ped) then
                 SP.stop("no heading")
                 return
             end
-            SP.target = wrap360(heading)
-            SP.camValid = false
-            O.log("spin: resume")
+            captureCameraYaw(SP.target)
         end
 
         local dt = (now - SP.lastAt) / 1000.0
@@ -41298,40 +41915,50 @@ local SP = (function(O, N)
         -- constant. At 1080 deg/s and 60 fps the step is 18 deg +/- 0.36 deg,
         -- far below the visible threshold.
         local step = SP.speed * dt * (1.0 + (O.rnd() - 0.5) * SPEED_JITTER * 2.0)
-        local heading = headingOf(ped)
-        if heading then
-            -- Base the next angle on the live heading, not on the last target.
-            -- If a task, the camera or the server moved the ped between ticks,
-            -- this continues the spin from the new angle instead of fighting
-            -- for a stale one. This is what makes the spin continuous.
-            SP.target = wrap360(heading + SP.dir * step)
-        else
-            SP.target = wrap360(SP.target + SP.dir * step)
-            SP.stats.headingFails = SP.stats.headingFails + 1
-        end
-        local ok = pcall(SetEntityHeading, ped, SP.target)
-        if ok then
-            SP.stats.calls = SP.stats.calls + 1
-            SP.writeFailLogged = false
-        elseif not SP.writeFailLogged then
-            SP.writeFailLogged = true
-            O.log("spin: heading write refused")
+        SP.target = wrap360(SP.target + SP.dir * step)
+        SP.travel = (SP.travel or 0.0) + step
+
+        -- The heading is the visual spin; the camera is untouched. Refresh the
+        -- movement basis from the live view before writing the walk.
+        syncCameraYaw()
+        if not writeHeading(ped, dt) then
+            SP.stop("write error")
+            return
         end
 
-        -- Synthetic walk: grounded only. Airborne frames hand the physics and
-        -- the controls back and keep spinning; the module never writes Z.
-        local grounded = not airborne(ped)
-        SP.grounded = grounded
-        local dx, dy, mag
-        if grounded then
-            dx, dy, mag = movementVector(ped)
-        end
-        if dx then
-            reassertControls()
-            applyVelocity(ped, dx, dy, MOVE_SPEED * (mag or 1.0))
-            SP.stats.moves = SP.stats.moves + 1
-        elseif SP.controlsOff then
-            setControlsOff(false)
+        -- Low-rate readback. A large gap means the locomotion task is winning
+        -- the frame and the direct path is not producing the visible spin; the
+        -- row stays on and the log names the condition instead of failing
+        -- silently.
+        if not SP.fireSafe and now >= SP.sampleAt then
+            local okH, heading = pcall(GetEntityHeading, ped)
+            if okH and finite(heading) then
+                local lag = math.abs(delta(SP.target, heading))
+                SP.stats.lag = lag
+                local targetMoved = SP.travel or 0.0
+                local actualMoved = 0.0
+                if SP.lastActual ~= nil then
+                    actualMoved = math.abs(delta(heading, SP.lastActual))
+                end
+                SP.lastActual = heading
+                SP.travel = 0.0
+                if not SP.controlsOff and targetMoved > 10.0
+                    and actualMoved < 2.0 and movementVector() ~= nil then
+                    setControlsOff(true)
+                    O.log("spin: task static; controls isolated")
+                end
+                if lag > LAG_WARN and not SP.lagLogged then
+                    SP.lagLogged = true
+                    O.log("spin: direct lag %.0f deg", lag)
+                elseif lag <= LAG_WARN then
+                    SP.lagLogged = false
+                    if not SP.effectLogged then
+                        SP.effectLogged = true
+                        O.log("spin: heading confirmed")
+                    end
+                end
+            end
+            SP.sampleAt = now + SAMPLE_MS
         end
     end
 
@@ -41341,6 +41968,24 @@ local SP = (function(O, N)
     -- after 250 ms without a tick and the thread exits on its next wake-up.
     if type(O.every) == "function" then
         local build = O.build
+        -- The game can re-enable Space/Ctrl between ticks. Re-disable every
+        -- scheduler frame, exactly like the No Clip gate, while the disabled
+        -- read keeps the fly keys usable.
+        O.every("spin_air_controls", 0, function()
+            if not SP.active or not SP.airControlsOff then return end
+            if build ~= nil and O.build ~= build then return end
+            reassertAirControls()
+        end)
+        -- A task reset can restore ped/entity gravity. Reassert on a jittered
+        -- cadence while the session owns the vertical state.
+        O.every("spin_gravity", 250, function()
+            if not SP.active or not SP.gravityOff then return end
+            if build ~= nil and O.build ~= build then return end
+            local ped = SP.ped
+            if not ped or ped == 0 or not DoesEntityExist(ped) then return end
+            pcall(SetPedGravity, ped, false)
+            pcall(SetEntityHasGravity, ped, false)
+        end)
         O.every("spin_guard", 250, function()
             if not SP.active or SP.fallback then return end
             if build ~= nil and O.build ~= build then return end
@@ -41353,9 +41998,9 @@ local SP = (function(O, N)
             if not SP.active or not SP.fallback then return end
             if build ~= nil and O.build ~= build then return end
             local ok, err = pcall(SP.tick)
-            if not ok and not SP.tickErrorLogged then
-                SP.tickErrorLogged = true
+            if not ok then
                 O.log("spin: fallback %s", tostring(err))
+                SP.stop("fallback error")
             end
         end)
     end
@@ -42113,18 +42758,22 @@ local function installBypassProfiles()
         },
         {
             name = "Seed",
-            type = "action",
-            onClick = function()
+            type = "toggle",
+            value = (Menu.SeedFull and type(Menu.SeedFull.active) == "function"
+                and Menu.SeedFull.active()) and true or false,
+            onClick = function(value)
                 -- Full Seed client profile first: native hooks + inbound
                 -- event shield, both Seed-specific. SB.apply() only adds the
                 -- Seed resource globals that the Susano sandbox cannot reach.
+                -- A toggle, not a blind action: a second press is an explicit
+                -- off, and the row shows the live state.
                 local full = Menu.SeedFull
-                if full and type(full.toggle) == "function" then
-                    local active = full.toggle()
-                    if active then SB.apply() end
+                if full and type(full.set) == "function" then
+                    full.set(value and true or false)
+                    if value then SB.apply() end
                     return
                 end
-                SB.apply()
+                if value then SB.apply() end
             end,
         },
         {
@@ -42339,6 +42988,22 @@ local function installSeed()
     nativeNoclip.type = "action"
     nativeNoclip.dynasty = nil
     nativeNoclip.onClick = function() return ST.toggleNoclip() end
+
+    local nativeFreecam = nil
+    for i = 1, #tab.items do
+        if tab.items[i].name == "Seed Freecam" then
+            nativeFreecam = tab.items[i]
+            break
+        end
+    end
+    if not nativeFreecam then
+        nativeFreecam = { name = "Seed Freecam", type = "action" }
+        tab.items[#tab.items + 1] = nativeFreecam
+    end
+    nativeFreecam.seed = true
+    nativeFreecam.type = "action"
+    nativeFreecam.dynasty = nil
+    nativeFreecam.onClick = function() return ST.toggleFreecam() end
     return true
 end
 
@@ -43680,6 +44345,243 @@ local function installFlash()
 end
 
 Menu.__vgd_installFlash = installFlash
+
+-- ---------------------------------------------------------------------------
+-- ONLINE > VEHICLE > EXPLODE VEHICLE
+--
+-- The 2:22 feature from the Vanity capture: explode the selected player's
+-- current vehicle through the game's own networked vehicle explosion.
+--
+-- THE EFFECT
+--
+--   GetVehiclePedIsIn(targetPed, false) returns the vehicle the selected
+--   player is sitting in. NETWORK_EXPLODE_VEHICLE(vehicle, true, false, false)
+--   is the same call FiveM's own managed wrapper exposes as
+--   NetworkExplodeVehicle(Handle, true, false, false) (Vehicle.cs,
+--   ExplodeNetworked). The engine builds a CExplosionEvent attached to that
+--   vehicle; every client in scope applies the explosion. No entity is
+--   created, no event is triggered from this client, no ped/vehicle state is
+--   written directly.
+--
+-- WHY IT STAYS OUT OF WAVESHIELD
+--
+--   The server handler (WaveShield V4 modules/server/events/explosionEvent.lua)
+--   returns at its vehicleNetworkId check before the invisible/audible,
+--   blacklist, limiter and AI branches:
+--
+--       if data.damageScale <= 0 then return end
+--       if vehicleNetworkId ~= 0 then return end -- vehicle-attached blast
+--
+--   The field is f210. The FiveM event payload documents f210 as the network
+--   ID of the vehicle/prop the blast is on, and the public server recipe for
+--   the "unnetworked explosion" cheat checks explosionType == 7 and
+--   f210 == 0 precisely because a networked vehicle explosion carries a
+--   non-zero f210. The action refuses a vehicle with no network ID, so this
+--   path can never produce the f210 == 0 signature the guard acts on.
+--
+--   The v15.1 client source you provided has no explosion detector in
+--   detections.lua and no NetworkExplodeVehicle call in its recovered
+--   detectors (main_natives.md); its tick rules are noclip, teleport, plate,
+--   weapon, ammo, health, proofs, ped model, events, exports, globals,
+--   vehicle spawn, gunshot, particle and control action. None observes this.
+--
+-- DELIBERATELY NOT DONE
+--
+--   * No NetworkRequestControlOfEntity. The driver owns the vehicle; a remote
+--     client cannot take an occupied vehicle, and WaveShield servers set
+--     sv_filterRequestControl=4 (core/server/system/configUpdater.lua:37), so
+--     the request never succeeds anyway. The explosion native is not a
+--     transform write and does not need ownership.
+--   * No SetEntityAsMissionEntity. It is a local flag; it would only pin the
+--     wreck on this client.
+--   * No DeleteEntity / DeleteVehicle / SetEntityAsNoLongerNeeded. A remote
+--     delete only replicates when the caller owns the entity; on an occupied
+--     vehicle it would be local-only. Leaving the wreck also avoids a second
+--     network-entity observable and lets the server's normal cleanup run.
+--   * No AddExplosion. A raw AddExplosion has f210 == 0, which is the exact
+--     signature WaveShield's explosion module cancels and reports.
+--
+-- RESIDUAL RISK
+--
+--   * CancelAllExplosions. The guard cancels the event before the
+--     vehicleNetworkId branch when that policy is on. FL.explosionsCancelled()
+--     reads the same replicated policy; the action refuses and logs instead
+--     of firing a client-local placebo. No client-side path can override a
+--     server-side CancelEvent.
+--   * A custom, non-WaveShield explosion logger sees the native vehicle
+--     explosion. That is the game's own event and cannot be hidden client-side.
+--   * The explosion is visible and audible to the victim and nearby players.
+--     This feature is outside the guard's vehicle branch, not invisible in the
+--     world.
+--   * The target must be in a networked vehicle in local scope. A culled
+--     vehicle has no local handle; the action fails closed.
+--   * The wreck remains until the game/server cleans it. The Vanity capture's
+--     despawn is not reproduced: deleting the target's vehicle needs ownership
+--     that an occupied vehicle does not grant, and the delete itself is a
+--     separate network-entity write.
+-- ---------------------------------------------------------------------------
+local EXPLODE_COOLDOWN_MS = 1000
+
+local function explodeSelectedVehicle()
+    local targetServerId = tonumber(Menu.SelectedPlayer)
+    if not targetServerId or targetServerId <= 0 then
+        O.log("explode: no player selected")
+        return false
+    end
+
+    local nowAt = O.now()
+    if nowAt - (tonumber(Menu.__vgd_explodeVehicleAt) or 0) < EXPLODE_COOLDOWN_MS then
+        O.log("explode: cooldown")
+        return false
+    end
+
+    if type(FL) == "table" and type(FL.explosionsCancelled) == "function"
+        and FL.explosionsCancelled() then
+        O.log("explode: wave shield cancels explosion events; no event sent")
+        return false
+    end
+
+    local targetPed = 0
+    for _, player in ipairs(GetActivePlayers()) do
+        if tonumber(GetPlayerServerId(player)) == targetServerId then
+            targetPed = GetPlayerPed(player)
+            break
+        end
+    end
+    if not targetPed or targetPed == 0 or not DoesEntityExist(targetPed) then
+        O.log("explode: target ped unavailable")
+        return false
+    end
+    if targetPed == PlayerPedId() then
+        O.log("explode: self target ignored")
+        return false
+    end
+    if IsPedDeadOrDying(targetPed, true) then
+        O.log("explode: target is dead")
+        return false
+    end
+
+    local vehicle = GetVehiclePedIsIn(targetPed, false)
+    if not vehicle or vehicle == 0 or not DoesEntityExist(vehicle) then
+        O.log("explode: target is not in a vehicle")
+        return false
+    end
+    if GetEntityType(vehicle) ~= 2 then
+        O.log("explode: target entity is not a vehicle")
+        return false
+    end
+
+    local ownVehicle = GetVehiclePedIsIn(PlayerPedId(), false)
+    if ownVehicle and ownVehicle ~= 0 and ownVehicle == vehicle then
+        O.log("explode: target shares the operator vehicle")
+        return false
+    end
+
+    if not NetworkGetEntityIsNetworked(vehicle) then
+        O.log("explode: vehicle is local-only; f210 would be zero")
+        return false
+    end
+    local netId = NetworkGetNetworkIdFromEntity(vehicle)
+    if type(netId) ~= "number" or netId == 0 then
+        O.log("explode: vehicle has no network id")
+        return false
+    end
+    local health = GetEntityHealth(vehicle)
+    if type(health) == "number" and health <= 0 then
+        O.log("explode: vehicle already destroyed")
+        return false
+    end
+
+    local ok, err = pcall(NetworkExplodeVehicle, vehicle, true, false, false)
+    if not ok then
+        O.log("explode: native failed: %s", tostring(err))
+        return false
+    end
+
+    Menu.__vgd_explodeVehicleAt = nowAt
+    O.log("explode: vehicle %d (net %d) on target %d", vehicle, netId, targetServerId)
+    return true
+end
+
+Menu.__vgd_explodeVehicle = explodeSelectedVehicle
+
+local function installExplodeVehicle()
+    local tab = findTab("Online", "Vehicle")
+    if not tab then return false end
+    tab.items = tab.items or {}
+
+    local online = findCategory("Online")
+    local tabOpen = online
+        and type(Menu.OpenedCategory) == "number"
+        and type(Menu.Categories) == "table"
+        and Menu.Categories[Menu.OpenedCategory] == online
+        and type(Menu.CurrentTab) == "number"
+        and online.tabs
+        and online.tabs[Menu.CurrentTab] == tab
+
+    local selected = nil
+    if tabOpen and type(Menu.CurrentItem) == "number" then
+        selected = tab.items[Menu.CurrentItem]
+    end
+
+    for i = #tab.items, 1, -1 do
+        if tab.items[i].name == "Explode Vehicle" then
+            table.remove(tab.items, i)
+        end
+    end
+
+    local row = {
+        name = "Explode Vehicle",
+        type = "action",
+        risk = true,
+        onClick = function()
+            local ok, err = pcall(explodeSelectedVehicle)
+            if not ok then O.log("explode: %s", tostring(err)) end
+        end,
+    }
+
+    local insertAt = #tab.items + 1
+    for i = 1, #tab.items do
+        if tab.items[i].name == "Delete Vehicle" then
+            insertAt = i + 1
+            break
+        end
+    end
+    table.insert(tab.items, insertAt, row)
+
+    if tabOpen then
+        local restored = false
+        if selected then
+            for i = 1, #tab.items do
+                if tab.items[i] == selected then
+                    Menu.CurrentItem = i
+                    restored = true
+                    break
+                end
+            end
+        end
+        if not restored and selected and selected.name then
+            for i = 1, #tab.items do
+                if tab.items[i].name == selected.name then
+                    Menu.CurrentItem = i
+                    restored = true
+                    break
+                end
+            end
+        end
+        if not restored then
+            local currentItem = tonumber(Menu.CurrentItem) or 1
+            if currentItem < 1 then currentItem = 1 end
+            if currentItem > #tab.items then currentItem = #tab.items end
+            Menu.CurrentItem = math.max(1, currentItem)
+        end
+    end
+
+    Menu.__vgd_explodeVehicleRow = row
+    return true
+end
+
+Menu.__vgd_installExplodeVehicle = installExplodeVehicle
 
 -- ---------------------------------------------------------------------------
 -- VEHICLE > SPOOFED
@@ -45311,7 +46213,7 @@ end
 -- ---------------------------------------------------------------------------
 -- REMOVE OLD ENTRY POINTS
 -- ---------------------------------------------------------------------------
-local MENU_REV = "2026-11-27-r120"
+local MENU_REV = "2026-11-27-r123"
 
 -- A previous execution of the old loader can leave its category in the shared
 -- Menu table. Match both the literal name and the old nine-tab fingerprint so
@@ -46056,6 +46958,7 @@ local function build()
     Menu.__vgdInstallBan()
     installSink()
     installFlash()
+    installExplodeVehicle()
     installFightParty()
     installVehicleSpoof()
     installRampFix()
