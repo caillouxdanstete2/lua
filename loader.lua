@@ -3435,10 +3435,6 @@ Menu.Categories = {
     }},
     { name = "Vehicle", hasTabs = true, tabs = {
         { name = "Performance", items = {
-            { name = "", isSeparator = true, separatorText = "Warp" },
-            { name = "FOV Warp", type = "toggle", value = false, onClick = function(val) Menu.FOVWarp = val end },
-            { name = "Warp when u press W", type = "toggle", value = false, onClick = function(val) Menu.WarpPressW = val end },
-            { name = "Throw From Vehicle", type = "toggle", value = false },
             { name = "", isSeparator = true, separatorText = "Performance" },
             { name = "Max Upgrade", type = "action" },
             { name = "Repair Vehicle", type = "action" },
@@ -3468,7 +3464,11 @@ Menu.Categories = {
             { name = "Rainbow Paint", type = "toggle", value = false },
             { name = "", isSeparator = true, separatorText = "Buggy Ramp" },
             { name = "Attach Ramp", type = "action" },
-            { name = "Detach Ramp", type = "action" }
+            { name = "Detach Ramp", type = "action" },
+            { name = "", isSeparator = true, separatorText = "Warp" },
+            { name = "FOV Warp", type = "toggle", value = false, onClick = function(val) Menu.FOVWarp = val end },
+            { name = "Warp when u press W", type = "toggle", value = false, onClick = function(val) Menu.WarpPressW = val end },
+            { name = "Throw From Vehicle", type = "toggle", value = false }
         }},
         { name = "Radar", items = {
             { name = "Select Vehicle", type = "selector", options = {"Scanning..."}, selected = 1 },
@@ -19211,6 +19211,9 @@ end
                                         
                                         if applySuccess then
                                             -- Config loaded successfully
+                                            if type(Menu.__vgdAcEventSync) == "function" then
+                                                Menu.__vgdAcEventSync()
+                                            end
                                         else
                                             print("ApplyConfig error: " .. tostring(applyErr))
                                             if Menu and Menu.OpenInput then
@@ -21661,7 +21664,10 @@ Menu.SeedFull = {
     blocked = BlockedCount,
 }
 
-local seedItem = Toggle("Seed (legacy)", S.hooks, SetSeedHooks)
+-- Bypass entries are buttons, never toggles or sliders: the VANGUARD tab owns
+-- the live Seed row, and this fallback row must stay an action too so a
+-- stripped build never grows a Seed switch in the Bypass tab.
+local seedItem = Action("Seed", function() SetSeedHooks(true) end)
 
 -- The base menu owns the Bypass tab: only append one item to it.
 local function AttachSeed(item)
@@ -28275,12 +28281,23 @@ A._pedEventScanAt = 0
 A._hooks = { freeze = false, spectate = false }
 
 -- Shared inbound bridge. The Seed profile has its own event set; releasing it
--- must not reopen a name that the protection firewall still owns.
+-- must not reopen a name that the protection firewall still owns. The per-AC
+-- block rows live on Menu so a reload keeps the operator's choices.
+Menu.__vgdAcEventBlocked = type(Menu.__vgdAcEventBlocked) == "table"
+    and Menu.__vgdAcEventBlocked or {}
+
 function Menu.__vgdEventHeld(name)
     if type(name) ~= "string" then return false end
     if S.blocked[name] then return true end
     if A._pedEventBlocked[name] or A._freezeEventBlocked[name]
         or A._spectateEventBlocked[name] then
+        return true
+    end
+    if Menu.__vgdAcEventBlocked[name] then return true end
+    -- The report firewall owns a fourth inbound set. It is declared below this
+    -- bridge, so the check goes through the accessor it installs.
+    if type(Menu.__vgdFirewallEventHeld) == "function"
+        and Menu.__vgdFirewallEventHeld(name) then
         return true
     end
     return false
@@ -29344,6 +29361,13 @@ local outbound = {
 }
 local blockedByA = {}
 
+-- Public read for the shared inbound bridge: a report-firewall block is an
+-- owner like any other, so the per-AC rows and the Seed shield must not
+-- release a name this set still holds.
+Menu.__vgdFirewallEventHeld = function(name)
+    return type(name) == "string" and blockedByA[name] == true
+end
+
 local function installOutbound()
     if outbound.installed then return end
 
@@ -29391,6 +29415,8 @@ local function clearBlockedByA()
             or A._spectateEventBlocked[name]
             or (type(Menu.__vgdSeedEventHeld) == "function"
                 and Menu.__vgdSeedEventHeld(name))
+            or (type(Menu.__vgdAcEventBlocked) == "table"
+                and Menu.__vgdAcEventBlocked[name])
         if not held then
             pcall(Susano.BlockServerEvent, false, name)
             S.blocked[name] = nil
@@ -29410,6 +29436,10 @@ local function eventSetHolds(name, except)
     if A._spectateEventBlocked[name] and except ~= A._spectateEventBlocked then return true end
     if type(Menu.__vgdSeedEventHeld) == "function"
         and Menu.__vgdSeedEventHeld(name) then
+        return true
+    end
+    if type(Menu.__vgdAcEventBlocked) == "table"
+        and Menu.__vgdAcEventBlocked[name] then
         return true
     end
     return false
@@ -42016,6 +42046,524 @@ local SP = (function(O, N)
 end)(O, N)
 
 -- ---------------------------------------------------------------------------
+-- PART: 30_fly_vehicle.lua
+-- ---------------------------------------------------------------------------
+-- VANGUARD / 30 FLY VEHICLE
+--
+-- One row in Vehicle > Performance. The module owns exactly two values on the
+-- operator's own vehicle: the CFX gravity amount (0 while a session is live,
+-- the saved value restored on stop) and a camera-relative velocity written
+-- every frame. The engine integrates the position, so every transform sample
+-- is continuous motion from a real networked vehicle, never a coordinate
+-- write. Heading, pitch and roll are not touched: the body stays level and
+-- the flight direction follows the camera yaw plus the explicit vertical keys.
+--
+-- Why this shape is under the reference guard (WaveShield V4 client):
+--   * speedHack (2 s) is gated on not being in a vehicle; it never reads a
+--     vehicle session.
+--   * teleport (1 s) only builds a valid sample while the driver's vehicle
+--     speed is under 3 m/s, and its distance clause needs more than 50 m
+--     between two samples. A flying car above 3 m/s is outside the branch,
+--     and the 34 m/s cap cannot cover 50 m in one second.
+--   * noclip (3 s) only builds a valid vehicle sample at under 3 m/s, stopped,
+--     with wheels off the ground, frozen or collision disabled; its distance
+--     clause needs more than 15 m while the sample stays under 3 m/s, which
+--     the 34 m/s cap never produces inside the three-second window.
+--   * vehicleSpeed (3 s) flags topSpeedModifier above 2.1 (1.1 + 1),
+--     cheatPowerIncrease at 2.0 or above (floor > 1) and gravityAmount above
+--     25. The module never touches handling, top speed or torque, and the
+--     gravity amount is 0, below the 25 floor.
+-- Seed's vehicle validator rolls back a car moving near 200 m/s (see the
+-- 17_lockplayer note); 34 m/s is an order of magnitude below it.
+--
+-- Residual surface named, not hidden:
+--   * entities.lua AntiMagneto (beta, off by default) deletes an unowned
+--     ambient vehicle owned by the local player when it is airborne and more
+--     than 1.1 m above the ground. Fly a vehicle the player owns or spawned;
+--     do not cruise ambient PNJ traffic at altitude with that beta enabled.
+--   * Server-side position validation is not visible from the client source.
+--     The velocity path is the same one the game's own physics feeds, and the
+--     34 m/s cap keeps every one-second sample under the client teleport
+--     distance, but a server that hard-checks vertical motion cannot be
+--     answered from the client. If such a server kicks on altitude, the
+--     feature has no client-side fix and must be left off there.
+--
+-- No entity, event, state bag, task or hook is created. Collision stays on:
+-- the car flies, it does not pass through the map. The vertical descent stops
+-- half a metre above the ground so the chassis cannot grind into the surface.
+--
+-- Controls: W/S forward/back on the camera yaw, A/D strafe, Space/Ctrl up/down.
+-- The control ids and raw-key fallback are the same pair as 16_air_noclip, so
+-- a menu that disables movement actions cannot freeze the flight. Camera pitch
+-- is ignored on purpose: the flight stays level and the vertical keys own the
+-- altitude, which is the reference clip's behaviour.
+--
+-- Natives (verified against natives.json or already used by 17_lockplayer):
+--   GET_VEHICLE_PED_IS_IN            0x9A9112A0FE9A4713 (Ped, BOOL) -> Vehicle
+--   GET_PED_IN_VEHICLE_SEAT          0xBB40DD2270B65366 (Vehicle, int) -> Ped
+--   PLAYER_PED_ID                    0xD80958FC74E988A6 () -> Ped
+--   DOES_ENTITY_EXIST                0x7239B21A38F536BA (Entity) -> BOOL
+--   IS_PED_DEAD_OR_DYING             0x3317DEDB88C95038 (Ped, BOOL) -> BOOL
+--   GET_GAME_TIMER                   0x9CD27B0045628463 () -> int
+--   GET_GAMEPLAY_CAM_ROT             0x837765A25378F0BB (int) -> Vector3
+--   GET_ENTITY_VELOCITY              0x4805D2B1D8CF94A9 (Entity) -> Vector3
+--   SET_ENTITY_VELOCITY              0x1C99BB7B6E96D16F (Entity, float, float, float)
+--   GET_ENTITY_HEIGHT_ABOVE_GROUND   0x1DD55701034110E5 (Entity) -> float
+--   IS_CONTROL_PRESSED               0xF3A21BCD95725A4A (int, int) -> BOOL
+--   IS_DISABLED_CONTROL_PRESSED      0xE2587F8CBBD87B1D (int, int) -> BOOL
+--   Susano.GetAsyncKeyState(vk) -> down, pressed (raw AZERTY fallback)
+--   SET_VEHICLE_GRAVITY_AMOUNT       CFX native, already used by 17_lockplayer
+--   GET_VEHICLE_GRAVITY_AMOUNT       CFX native, read once at arm as the
+--                                    restore value; a missing or sub-1.0 read
+--                                    falls back to 9.8 so a reload that lost
+--                                    its cleanup cannot leave a car weightless.
+--
+-- Suspension: row off, driver left the seat, vehicle changed, ped dead, ped
+-- invalid, panic and a loader reload (O.build guard). A session restores the
+-- saved gravity amount on stop; velocity is left to physics so a car stopped
+-- mid-air keeps its momentum and falls naturally instead of snapping to zero.
+-- While Lock Player's Left Ctrl session is live it owns the same velocity
+-- channel, so fly yields that window and resumes on the same gravity floor.
+-- ============================================================================
+S.fly = (function(O)
+    local FLY = {
+        enabled = false,
+        active = false,
+        ped = 0,
+        veh = 0,
+        gen = 0,
+        fallback = false,
+        fallbackTask = false,
+        reason = "off",
+        lastTickAt = 0,
+        gravityNext = 0,
+        savedGravity = 9.8,
+        vx = 0.0,
+        vy = 0.0,
+        vz = 0.0,
+        fail = 0,
+        row = nil,
+        yield = nil,
+        stats = { sessions = 0, ticks = 0, writes = 0, stops = 0, refusals = 0 },
+    }
+
+    local FWD_SPEED = 30.0
+    local STRAFE_SPEED = 18.0
+    local VERT_SPEED = 10.0
+    local SPEED_CAP = 34.0
+    local ACCEL = 20.0
+    local MAX_DT = 0.05
+    local HOVER_DITHER = 0.5
+    local HOVER_PERIOD_MS = 500
+    local GRAVITY_REFRESH_MS = 250
+    local IDLE_WAIT_MS = 250
+    local DEFAULT_GRAVITY = 9.8
+    local MIN_GRAVITY = 1.0
+    local GROUND_CLEARANCE = 0.5
+    local AIRBORNE_MIN = 1.0
+
+    -- Control ids: 32/33/34/35 are Z/S/Q/D, 22 is Space, 36 is Ctrl. The raw
+    -- VK codes are the AZERTY layout the reference client uses; the control
+    -- ids still cover W/A/S/D on QWERTY.
+    local CTL_FWD, CTL_BACK, CTL_LEFT, CTL_RIGHT = 32, 33, 34, 35
+    local CTL_UP, CTL_DOWN = 22, 36
+    local VK_Z, VK_Q, VK_S, VK_D = 0x5A, 0x51, 0x53, 0x44
+    local VK_SPACE, VK_CONTROL = 0x20, 0x11
+
+    local function rawKeyDown(vk)
+        local api = rawget(_G, "Susano")
+        if type(api) ~= "table" or type(api.GetAsyncKeyState) ~= "function" then
+            return false
+        end
+        local ok, down = pcall(api.GetAsyncKeyState, vk)
+        return ok and (down == true or down == 1)
+    end
+
+    local function controlDown(control, vk)
+        -- Read the action first, then the disabled-control value: the menu or
+        -- another script can disable movement actions while it is open, and
+        -- IsControlPressed stays false even though the key is held. The raw
+        -- Susano key state is the last fallback, exactly like 16_air_noclip.
+        local ok, down = pcall(IsControlPressed, 0, control)
+        if ok and (down == true or down == 1) then return true end
+        local okDisabled, disabled = pcall(IsDisabledControlPressed, 0, control)
+        if okDisabled and (disabled == true or disabled == 1) then return true end
+        return vk ~= nil and rawKeyDown(vk)
+    end
+
+    local function exists(entity)
+        if type(entity) ~= "number" or entity == 0 then return false end
+        if type(DoesEntityExist) ~= "function" then return false end
+        local ok, value = pcall(DoesEntityExist, entity)
+        return ok and value == true
+    end
+
+    local function readHeight(veh)
+        if type(GetEntityHeightAboveGround) ~= "function" then return nil end
+        local ok, height = pcall(GetEntityHeightAboveGround, veh)
+        if ok and type(height) == "number" then return height end
+        return nil
+    end
+
+    local function restoreGravity(veh)
+        if not exists(veh) then return false end
+        local target = FLY.savedGravity
+        if type(target) ~= "number" or target < MIN_GRAVITY then
+            target = DEFAULT_GRAVITY
+        end
+        return pcall(SetVehicleGravityAmount, veh, target)
+    end
+
+    local function reassertGravity(now)
+        if not FLY.active then return end
+        if now < FLY.gravityNext then return end
+        FLY.gravityNext = now + O.jitter(GRAVITY_REFRESH_MS, 0.3)
+        local veh = FLY.veh
+        if exists(veh) then
+            pcall(SetVehicleGravityAmount, veh, 0.0)
+        end
+    end
+
+    local function stopSession(reason)
+        local wasActive = FLY.active
+        local veh = FLY.veh
+        FLY.active = false
+        FLY.veh = 0
+        FLY.ped = 0
+        FLY.reason = reason or "off"
+        FLY.vx, FLY.vy, FLY.vz = 0.0, 0.0, 0.0
+        FLY.gravityNext = 0
+        FLY.lastTickAt = 0
+        FLY.fail = 0
+        if wasActive then
+            restoreGravity(veh)
+            FLY.stats.stops = FLY.stats.stops + 1
+            O.log("fly vehicle off (%s)", tostring(FLY.reason))
+        end
+        return wasActive
+    end
+
+    local function startSession(veh, now, ped)
+        local saved = DEFAULT_GRAVITY
+        if type(GetVehicleGravityAmount) == "function" then
+            local ok, value = pcall(GetVehicleGravityAmount, veh)
+            if ok and type(value) == "number" and value >= MIN_GRAVITY then
+                saved = value
+            end
+        end
+        if not pcall(SetVehicleGravityAmount, veh, 0.0) then
+            FLY.stats.refusals = FLY.stats.refusals + 1
+            FLY.reason = "gravity failed"
+            O.log("fly vehicle: gravity write refused")
+            -- The native exists or it does not; a refused write cannot be
+            -- retried into success, and a row that stays armed would churn a
+            -- failed gravity write every idle tick. Fail closed.
+            FLY.setEnabled(false)
+            return false
+        end
+
+        FLY.savedGravity = saved
+        FLY.veh = veh
+        FLY.ped = ped or 0
+        FLY.active = true
+        FLY.reason = "armed"
+        FLY.fail = 0
+        FLY.vx, FLY.vy, FLY.vz = 0.0, 0.0, 0.0
+
+        -- Carry the car's current momentum into the session, capped. Arming
+        -- while driving must not snap a 40 m/s car to zero on the first tick;
+        -- the target ramp sheds the excess at the same 20 m/s^2 used below.
+        if type(GetEntityVelocity) == "function" then
+            local ok, vel = pcall(GetEntityVelocity, veh)
+            if ok and type(vel) == "table" and type(vel.x) == "number"
+                and type(vel.y) == "number" and type(vel.z) == "number" then
+                local vx, vy, vz = vel.x, vel.y, vel.z
+                local mag = math.sqrt(vx * vx + vy * vy + vz * vz)
+                if mag > SPEED_CAP then
+                    local scale = SPEED_CAP / mag
+                    vx, vy, vz = vx * scale, vy * scale, vz * scale
+                end
+                FLY.vx, FLY.vy, FLY.vz = vx, vy, vz
+            end
+        end
+
+        FLY.gravityNext = now + GRAVITY_REFRESH_MS
+        FLY.lastTickAt = now
+        FLY.stats.sessions = FLY.stats.sessions + 1
+        O.log("fly vehicle armed")
+        return true
+    end
+
+    local function movementTarget(now, airborne)
+        local yaw = 0.0
+        if type(GetGameplayCamRot) == "function" then
+            local ok, rot = pcall(GetGameplayCamRot, 2)
+            if ok and type(rot) == "table" then
+                yaw = tonumber(rot.z) or 0.0
+            end
+        end
+        local rz = math.rad(yaw)
+
+        local fwd = (controlDown(CTL_FWD, VK_Z) and 1 or 0)
+            - (controlDown(CTL_BACK, VK_S) and 1 or 0)
+        local strafe = (controlDown(CTL_RIGHT, VK_D) and 1 or 0)
+            - (controlDown(CTL_LEFT, VK_Q) and 1 or 0)
+        local vertical = (controlDown(CTL_UP, VK_SPACE) and 1 or 0)
+            - (controlDown(CTL_DOWN, VK_CONTROL) and 1 or 0)
+
+        local tx, ty, tz = 0.0, 0.0, 0.0
+        if fwd ~= 0 then
+            tx = tx - math.sin(rz) * FWD_SPEED * fwd
+            ty = ty + math.cos(rz) * FWD_SPEED * fwd
+        end
+        if strafe ~= 0 then
+            tx = tx + math.cos(rz) * STRAFE_SPEED * strafe
+            ty = ty + math.sin(rz) * STRAFE_SPEED * strafe
+        end
+        if vertical ~= 0 then
+            tz = tz + VERT_SPEED * vertical
+        end
+
+        -- Airborne hover keeps a non-zero observed speed without changing
+        -- altitude; on the ground an idle session writes a clean zero instead
+        -- of making a parked car creep in a circle.
+        if fwd == 0 and strafe == 0 and vertical == 0 and airborne then
+            local phase = (now % HOVER_PERIOD_MS) / HOVER_PERIOD_MS * math.pi * 2.0
+            tx = math.cos(phase) * HOVER_DITHER
+            ty = math.sin(phase) * HOVER_DITHER
+        end
+
+        local mag = math.sqrt(tx * tx + ty * ty + tz * tz)
+        if mag > SPEED_CAP then
+            local scale = SPEED_CAP / mag
+            tx, ty, tz = tx * scale, ty * scale, tz * scale
+        end
+        return tx, ty, tz
+    end
+
+    function FLY.tick(now)
+        if not FLY.enabled then
+            stopSession("off")
+            return
+        end
+        now = now or O.now()
+
+        local okPed, ped = pcall(PlayerPedId)
+        if not okPed or not exists(ped) then
+            stopSession("ped gone")
+            return
+        end
+        local okDead, dead = pcall(IsPedDeadOrDying, ped, true)
+        if okDead and dead == true then
+            stopSession("dead")
+            return
+        end
+
+        local okVeh, veh = pcall(GetVehiclePedIsIn, ped, false)
+        if not okVeh or not exists(veh) then
+            stopSession("vehicle")
+            return
+        end
+        local okSeat, seat = pcall(GetPedInVehicleSeat, veh, -1)
+        if not okSeat or seat ~= ped then
+            stopSession("passenger")
+            return
+        end
+
+        if FLY.active and FLY.veh ~= veh then
+            stopSession("vehicle change")
+        end
+        if not FLY.active then
+            if type(SetEntityVelocity) ~= "function" then
+                FLY.reason = "no velocity api"
+                O.log("fly vehicle: SetEntityVelocity missing")
+                FLY.setEnabled(false)
+                return
+            end
+            if not startSession(veh, now, ped) then return end
+        end
+
+        FLY.stats.ticks = FLY.stats.ticks + 1
+
+        -- Lock Player writes the same velocity channel while its Left Ctrl
+        -- session is live. Yield the write, keep the gravity floor, and drop
+        -- the stored vector: on resume the ramp starts from rest instead of
+        -- snapping the car back to a pre-yield speed the lock session erased.
+        if type(FLY.yield) == "function" and FLY.yield() then
+            FLY.vx, FLY.vy, FLY.vz = 0.0, 0.0, 0.0
+            reassertGravity(now)
+            FLY.lastTickAt = now
+            return
+        end
+
+        local height = readHeight(veh)
+        local airborne = height ~= nil and height > AIRBORNE_MIN
+        local tx, ty, tz = movementTarget(now, airborne)
+
+        local dt = 0.03
+        if FLY.lastTickAt and FLY.lastTickAt > 0 and now > FLY.lastTickAt then
+            dt = math.min(MAX_DT, (now - FLY.lastTickAt) / 1000.0)
+        end
+        FLY.lastTickAt = now
+
+        local dx, dy, dz = tx - FLY.vx, ty - FLY.vy, tz - FLY.vz
+        local delta = math.sqrt(dx * dx + dy * dy + dz * dz)
+        local step = ACCEL * dt
+        if delta > step and delta > 0.0 then
+            local scale = step / delta
+            dx, dy, dz = dx * scale, dy * scale, dz * scale
+        end
+        FLY.vx, FLY.vy, FLY.vz = FLY.vx + dx, FLY.vy + dy, FLY.vz + dz
+
+        -- Descent floor: stop half a metre above the ground so collision is
+        -- never ground into. The read is local and writes no position.
+        if FLY.vz < 0.0 and height ~= nil and height < GROUND_CLEARANCE then
+            FLY.vz = 0.0
+        end
+
+        local speed = math.sqrt(FLY.vx * FLY.vx + FLY.vy * FLY.vy + FLY.vz * FLY.vz)
+        if speed > SPEED_CAP then
+            local scale = SPEED_CAP / speed
+            FLY.vx, FLY.vy, FLY.vz = FLY.vx * scale, FLY.vy * scale, FLY.vz * scale
+        end
+
+        if not pcall(SetEntityVelocity, veh, FLY.vx, FLY.vy, FLY.vz) then
+            FLY.fail = FLY.fail + 1
+            if FLY.fail >= 3 then stopSession("write error") end
+            return
+        end
+        FLY.fail = 0
+        FLY.stats.writes = FLY.stats.writes + 1
+        reassertGravity(now)
+    end
+
+    local function startThread()
+        local gen = FLY.gen
+        local build = O.build
+        local citizen = rawget(_G, "Citizen")
+        if type(citizen) ~= "table" then citizen = rawget(_G, "citizen") end
+        local create = rawget(_G, "CreateThread")
+        local wait = rawget(_G, "Wait")
+        if type(create) ~= "function" then
+            create = citizen and citizen.CreateThread or nil
+        end
+        if type(wait) ~= "function" then
+            wait = citizen and citizen.Wait or nil
+        end
+
+        if not create or not wait then
+            -- Scheduler floor. The row must not arm and do nothing on a build
+            -- without the thread primitives.
+            FLY.fallback = true
+            O.log("fly vehicle: scheduler thread")
+            if not FLY.fallbackTask then
+                FLY.fallbackTask = true
+                O.every("fly_vehicle", 16, function()
+                    if not FLY.enabled or not FLY.fallback then return end
+                    if build ~= nil and O.build ~= build then return end
+                    local ok, err = pcall(FLY.tick)
+                    if not ok then
+                        O.log("fly vehicle: fallback %s", tostring(err))
+                        FLY.setEnabled(false)
+                    end
+                end)
+            end
+            return
+        end
+
+        create(function()
+            -- O.build changes when the loader is re-executed; the guard keeps
+            -- a soft reload from leaving a second writer on the same vehicle.
+            while FLY.enabled and FLY.gen == gen
+                and (build == nil or O.build == build) do
+                if FLY.fallback then break end
+                local ok, err = pcall(FLY.tick)
+                if not ok then
+                    O.log("fly vehicle: tick %s", tostring(err))
+                    FLY.setEnabled(false)
+                    break
+                end
+                wait(FLY.active and 0 or IDLE_WAIT_MS)
+            end
+        end)
+    end
+
+    function FLY.setEnabled(value)
+        value = value and true or false
+        if value == FLY.enabled then
+            if not value and FLY.active then stopSession("operator") end
+            return FLY.enabled
+        end
+
+        FLY.enabled = value
+        FLY.gen = FLY.gen + 1
+
+        if not value then
+            stopSession("operator")
+            if FLY.row then FLY.row.value = false end
+            return false
+        end
+
+        FLY.fallback = false
+        FLY.reason = "enabled"
+        if FLY.row then FLY.row.value = true end
+        startThread()
+        return true
+    end
+
+    function FLY.isEnabled()
+        return FLY.enabled == true
+    end
+
+    function FLY.isActive()
+        return FLY.active == true
+    end
+
+    function FLY.disable()
+        FLY.setEnabled(false)
+        return true
+    end
+
+    -- A soft reload kills the previous writer before its stop pass. If the
+    -- operator was flying, the car keeps gravity 0. Restore the current
+    -- vehicle only when the read is a stale sub-1.0 value; a live legacy
+    -- gravitate writer re-asserts its own value on the next frame.
+    function FLY.repair()
+        if type(GetVehicleGravityAmount) ~= "function" then return false end
+        local okPed, ped = pcall(PlayerPedId)
+        if not okPed or not exists(ped) then return false end
+        local okVeh, veh = pcall(GetVehiclePedIsIn, ped, false)
+        if not okVeh or not exists(veh) then return false end
+        local okRead, value = pcall(GetVehicleGravityAmount, veh)
+        if not okRead or type(value) ~= "number" or value >= MIN_GRAVITY then
+            return false
+        end
+        local ok = pcall(SetVehicleGravityAmount, veh, DEFAULT_GRAVITY)
+        if ok then O.log("fly vehicle: restored stale gravity") end
+        return ok
+    end
+
+    function FLY.status()
+        return {
+            enabled = FLY.enabled,
+            active = FLY.active,
+            vehicle = FLY.veh,
+            reason = FLY.reason,
+            speed = math.sqrt(FLY.vx * FLY.vx + FLY.vy * FLY.vy + FLY.vz * FLY.vz),
+            stats = {
+                sessions = FLY.stats.sessions,
+                ticks = FLY.stats.ticks,
+                writes = FLY.stats.writes,
+                stops = FLY.stats.stops,
+                refusals = FLY.stats.refusals,
+            },
+        }
+    end
+
+    return FLY
+end)(O)
+
+-- ---------------------------------------------------------------------------
 -- PART: 08_cyberac.lua
 -- ---------------------------------------------------------------------------
 -- The module is attached to the shield table instead of taking a local of its
@@ -42355,6 +42903,9 @@ function UI.panic()
     N.disable()
     SP.disable()
     L.disable()
+    if type(S.fly) == "table" and type(S.fly.disable) == "function" then
+        S.fly.disable()
+    end
     VC.disable()
     CU.disable()
     UC.disable()
@@ -42385,6 +42936,9 @@ function UI.panic()
     S.suppressOn = false
     S.disableOverlayProbe = false
     S.unblockAll()
+    if type(Menu.__vgdAcEventReset) == "function" then
+        Menu.__vgdAcEventReset()
+    end
 
     F.clearPlatform()
     F.clearFloor()
@@ -42758,22 +43312,19 @@ local function installBypassProfiles()
         },
         {
             name = "Seed",
-            type = "toggle",
-            value = (Menu.SeedFull and type(Menu.SeedFull.active) == "function"
-                and Menu.SeedFull.active()) and true or false,
-            onClick = function(value)
-                -- Full Seed client profile first: native hooks + inbound
-                -- event shield, both Seed-specific. SB.apply() only adds the
-                -- Seed resource globals that the Susano sandbox cannot reach.
-                -- A toggle, not a blind action: a second press is an explicit
-                -- off, and the row shows the live state.
+            type = "action",
+            onClick = function()
+                -- Button, like Dynasty: the full Seed client profile is armed
+                -- (native hooks + inbound event shield) and SB.apply() adds the
+                -- Seed resource globals the sandbox cannot reach. A second
+                -- press re-applies without disarming; panic releases it.
                 local full = Menu.SeedFull
                 if full and type(full.set) == "function" then
-                    full.set(value and true or false)
-                    if value then SB.apply() end
+                    full.set(true)
+                    SB.apply()
                     return
                 end
-                if value then SB.apply() end
+                SB.apply()
             end,
         },
         {
@@ -42795,6 +43346,183 @@ local function installBypassProfiles()
             end,
         },
     }
+
+    return true
+end
+
+-- ---------------------------------------------------------------------------
+-- MISC > BLOCKED (per-AC inbound event blocks)
+--
+-- Susano.BlockServerEvent drops a name before the Lua dispatcher sees it. The
+-- rows are toggles so the same surface can reverse a block. The three defaults
+-- are armed at load: screenshot_basic:requestScreenshot, anticheat:kick and
+-- anticheat:ban. Every name is exact; a namespace pattern would eat legitimate
+-- traffic. Menu.__vgdAcEventBlocked tracks this session's claims so release()
+-- and the shared bridge keep every other owner's block alive.
+-- ---------------------------------------------------------------------------
+local AC_EVENT_GROUPS = {
+    { name = "Defaults", events = {
+        { "screenshot_basic:requestScreenshot", true },
+        { "anticheat:kick", true },
+        { "anticheat:ban", true },
+    } },
+    { name = "WaveShield", events = {
+        { "__WaveShield:takeScreenShot" },
+        { "__WaveShield:uploadCapturedGameplay" },
+    } },
+    { name = "EasyAdmin", events = {
+        { "EasyAdmin:CaptureScreenshot" },
+        { "EasyAdmin:requestSpectate" },
+        { "EasyAdmin:kickPlayer" },
+        { "EasyAdmin:banPlayer" },
+        { "EasyAdmin:TeleportAdminToPlayer" },
+        { "EasyAdmin:SlapPlayer" },
+    } },
+    { name = "Tigo Anticheat", events = {
+        { "tigoanticheat:banPlayer" },
+        { "tigoanticheat:logToConsole" },
+    } },
+    { name = "AntiCheese", events = {
+        { "AntiCheese:RemoveInventoryWeapons" },
+    } },
+    { name = "el_bwh", events = {
+        { "el_bwh:ban" },
+        { "el_bwh:warn" },
+    } },
+}
+
+local function installBlockedEvents()
+    local category = findCategory("Visual")
+    local tab = nil
+
+    if category then
+        category.tabs = category.tabs or {}
+        for _, candidate in ipairs(category.tabs) do
+            if candidate.name == "Blocked" then tab = candidate break end
+        end
+        if not tab then
+            tab = { name = "Blocked", items = {} }
+            local index = #category.tabs + 1
+            for i, candidate in ipairs(category.tabs) do
+                if candidate.name == "Bypass" then index = i + 1 break end
+            end
+            table.insert(category.tabs, index, tab)
+        end
+    else
+        -- A stripped build without Misc: keep the rows reachable.
+        tab = { name = "Blocked", items = {} }
+        table.insert(Menu.Categories, {
+            name = "Blocked",
+            hasTabs = true,
+            tabs = { tab },
+        })
+    end
+
+    local held = Menu.__vgdAcEventBlocked
+    if type(held) ~= "table" then
+        held = {}
+        Menu.__vgdAcEventBlocked = held
+    end
+
+    tab.items = {}
+    local rows = {}
+
+    -- Drop our claim first, then release only when no other owner holds the
+    -- name. A protection filter or the Seed profile that still needs it keeps
+    -- it blocked; the row is a view, not the owner.
+    local function release(name)
+        held[name] = nil
+        local wasBlocked = S.blocked[name]
+        S.blocked[name] = nil
+        local otherOwner = (type(Menu.__vgdEventHeld) == "function"
+                and Menu.__vgdEventHeld(name))
+            or (type(Menu.__vgdSeedEventHeld) == "function"
+                and Menu.__vgdSeedEventHeld(name))
+        if otherOwner then
+            -- Another owner still needs the name; keep the shared record so a
+            -- later release from that owner is not lost.
+            if wasBlocked then S.blocked[name] = true end
+            return false
+        end
+        local api = rawget(_G, "Susano")
+        if type(api) ~= "table" or type(api.BlockServerEvent) ~= "function" then
+            return false
+        end
+        local ok = pcall(api.BlockServerEvent, false, name)
+        return ok
+    end
+
+    local function block(name)
+        if S.setBlocked(name, true) then
+            held[name] = true
+            return true
+        end
+        held[name] = nil
+        return false
+    end
+
+    for _, group in ipairs(AC_EVENT_GROUPS) do
+        tab.items[#tab.items + 1] = {
+            name = "",
+            isSeparator = true,
+            separatorText = group.name,
+        }
+
+        for _, entry in ipairs(group.events) do
+            local name = entry[1]
+            local defaultOn = entry[2] == true
+
+            local row
+            row = {
+                name = name,
+                type = "toggle",
+                value = false,
+                onClick = function(value)
+                    if value then
+                        row.value = block(name)
+                    else
+                        release(name)
+                        row.value = false
+                    end
+                    return row.value
+                end,
+            }
+            rows[name] = row
+
+            if defaultOn then
+                -- Armed at load. A block left by a previous execution is
+                -- re-asserted idempotently; no unblock window at install.
+                row.value = block(name)
+            else
+                -- A non-default row starts off. Release any claim left by a
+                -- previous execution before the row is painted off; release()
+                -- keeps every current owner's block.
+                release(name)
+                row.value = false
+            end
+
+            tab.items[#tab.items + 1] = row
+        end
+    end
+
+    Menu.__vgdAcEventReset = function()
+        for name in pairs(held) do held[name] = nil end
+        for _, row in pairs(rows) do row.value = false end
+    end
+
+    -- A config load restores row values without calling onClick. Reconcile the
+    -- bridge from the rows so a restored toggle is a real block, not a painted
+    -- switch.
+    Menu.__vgdAcEventSync = function()
+        for name, row in pairs(rows) do
+            if row.value then
+                row.value = block(name)
+            else
+                release(name)
+                row.value = false
+            end
+        end
+    end
 
     return true
 end
@@ -43256,6 +43984,10 @@ local function installVoice()
         onClick = function(value)
             local active
             if value then
+                -- The free camera reads WASD/look only while the overlay is
+                -- closed. Close it before arming, otherwise the camera parks
+                -- on the player and the row looks broken.
+                if type(Menu) == "table" then Menu.Visible = false end
                 active = FA.arm()
                 if not active then
                     -- A refusal is a policy decision, not a dead toggle. The
@@ -43415,6 +44147,80 @@ local function installLockPlayer()
         row,
         speedRow,
     }
+    return true
+end
+
+-- ---------------------------------------------------------------------------
+-- VEHICLE > PERFORMANCE > FLY VEHICLE
+--
+-- The row is the permanent arm; the module starts and stops its own session
+-- with the driver seat. The row stays on after an exit, death or vehicle
+-- change, exactly like Lock Player's arm. Panic and the row off both call the
+-- module's disable, which restores the vehicle's gravity amount. Lock Player's
+-- Left Ctrl session owns the velocity channel while it is live; the module
+-- yields that window instead of fighting it.
+-- ---------------------------------------------------------------------------
+local function installFlyVehicle()
+    local tab = findTab("Vehicle", "Performance")
+    if not tab then return false end
+
+    removeItem("Vehicle", "Performance", "Fly Vehicle")
+    tab.items = tab.items or {}
+    for i = #tab.items, 1, -1 do
+        if tab.items[i].isSeparator and tab.items[i].separatorText == "Flight" then
+            table.remove(tab.items, i)
+        end
+    end
+
+    -- The legacy Gravitate Vehicle injection writes the same two values (its
+    -- own gravity pass and its own velocity pass) and resets handling on its
+    -- own schedule. Two writers on one car is a broken state, not a feature:
+    -- enabling either flight row turns the other off. The wrapper is installed
+    -- once per row object and reads S.fly live, so a soft reload re-links it
+    -- to the new module without stacking closures.
+    local gravRow = findItem("Vehicle", "Performance", "Gravitate Vehicle")
+    if gravRow and not gravRow.__vgdFlyLinked then
+        local legacyClick = gravRow.onClick
+        gravRow.onClick = function(value, ...)
+            if value then
+                S.fly.setEnabled(false)
+                if S.fly.row then S.fly.row.value = false end
+            end
+            if type(legacyClick) == "function" then
+                return legacyClick(value, ...)
+            end
+        end
+        gravRow.__vgdFlyLinked = true
+    end
+
+    local row
+    row = {
+        name = "Fly Vehicle",
+        type = "toggle",
+        value = S.fly.isEnabled(),
+        onClick = function(value)
+            if value then
+                local grav = findItem("Vehicle", "Performance", "Gravitate Vehicle")
+                if grav and grav.value then
+                    grav.value = false
+                    if type(grav.onClick) == "function" then pcall(grav.onClick, false) end
+                end
+            end
+            local enabled = S.fly.setEnabled(value)
+            row.value = enabled
+            return enabled
+        end,
+    }
+    S.fly.row = row
+    S.fly.yield = function() return L.session == true end
+    S.fly.repair()
+
+    tab.items[#tab.items + 1] = {
+        name = "",
+        isSeparator = true,
+        separatorText = "Flight",
+    }
+    tab.items[#tab.items + 1] = row
     return true
 end
 
@@ -46213,7 +47019,7 @@ end
 -- ---------------------------------------------------------------------------
 -- REMOVE OLD ENTRY POINTS
 -- ---------------------------------------------------------------------------
-local MENU_REV = "2026-11-27-r123"
+local MENU_REV = "2026-11-28-r128"
 
 -- A previous execution of the old loader can leave its category in the shared
 -- Menu table. Match both the literal name and the old nine-tab fingerprint so
@@ -46945,10 +47751,12 @@ local function build()
 
     removeLegacyEntries()
     installBypassProfiles()
+    installBlockedEvents()
     installSeed()
     installMovement()
     installVoice()
     installLockPlayer()
+    installFlyVehicle()
     installUncuff()
     installCombatUnlock()
     installSettingsDefaults()
