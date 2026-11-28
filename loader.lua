@@ -3435,7 +3435,6 @@ Menu.Categories = {
     }},
     { name = "Vehicle", hasTabs = true, tabs = {
         { name = "Performance", items = {
-            { name = "", isSeparator = true, separatorText = "Performance" },
             { name = "Max Upgrade", type = "action" },
             { name = "Repair Vehicle", type = "action" },
             { name = "Flip Vehicle", type = "action" },
@@ -42098,13 +42097,22 @@ end)(O, N)
 -- is ignored on purpose: the flight stays level and the vertical keys own the
 -- altitude, which is the reference clip's behaviour.
 --
--- Natives (verified against natives.json or already used by 17_lockplayer):
+-- Mechanic: the 17_lockplayer one, adapted, not a new physics path. One
+-- O.every task owns the cadence, the same scheduler every working module in
+-- this build uses. At arm the car gets the lock prep (gravity 0, engine on,
+-- undriveable off, read-gated unfreeze); every tick writes the camera-relative
+-- velocity and re-asserts the gravity floor, because the handling pass can
+-- restore it between ticks. No per-feature thread, no injection, no native
+-- hook, no network-control request, no rotation write. The driver already owns
+-- the car, which is the same assumption 17_lockplayer ships on.
+--
+-- Natives (verified against the FiveM native reference or already used by
+-- 17_lockplayer in this build):
 --   GET_VEHICLE_PED_IS_IN            0x9A9112A0FE9A4713 (Ped, BOOL) -> Vehicle
 --   GET_PED_IN_VEHICLE_SEAT          0xBB40DD2270B65366 (Vehicle, int) -> Ped
 --   PLAYER_PED_ID                    0xD80958FC74E988A6 () -> Ped
 --   DOES_ENTITY_EXIST                0x7239B21A38F536BA (Entity) -> BOOL
 --   IS_PED_DEAD_OR_DYING             0x3317DEDB88C95038 (Ped, BOOL) -> BOOL
---   GET_GAME_TIMER                   0x9CD27B0045628463 () -> int
 --   GET_GAMEPLAY_CAM_ROT             0x837765A25378F0BB (int) -> Vector3
 --   GET_ENTITY_VELOCITY              0x4805D2B1D8CF94A9 (Entity) -> Vector3
 --   SET_ENTITY_VELOCITY              0x1C99BB7B6E96D16F (Entity, float, float, float)
@@ -42112,18 +42120,23 @@ end)(O, N)
 --   IS_CONTROL_PRESSED               0xF3A21BCD95725A4A (int, int) -> BOOL
 --   IS_DISABLED_CONTROL_PRESSED      0xE2587F8CBBD87B1D (int, int) -> BOOL
 --   Susano.GetAsyncKeyState(vk) -> down, pressed (raw AZERTY fallback)
---   SET_VEHICLE_GRAVITY_AMOUNT       CFX native, already used by 17_lockplayer
+--   SET_VEHICLE_GRAVITY_AMOUNT       CFX native, 17_lockplayer's gravity floor
 --   GET_VEHICLE_GRAVITY_AMOUNT       CFX native, read once at arm as the
 --                                    restore value; a missing or sub-1.0 read
 --                                    falls back to 9.8 so a reload that lost
 --                                    its cleanup cannot leave a car weightless.
+--   SET_VEHICLE_ENGINE_ON            0x2497C4717C8B881E (Vehicle, BOOL, BOOL, BOOL)
+--   SET_VEHICLE_UNDRIVEABLE          0x8ABA6AF54B942B95 (Vehicle, BOOL)
+--   IS_ENTITY_POSITION_FROZEN        CFX native (Entity) -> BOOL
+--   FREEZE_ENTITY_POSITION           0x428CA6DBD1094446 (Entity, BOOL), false only
 --
 -- Suspension: row off, driver left the seat, vehicle changed, ped dead, ped
--- invalid, panic and a loader reload (O.build guard). A session restores the
--- saved gravity amount on stop; velocity is left to physics so a car stopped
--- mid-air keeps its momentum and falls naturally instead of snapping to zero.
--- While Lock Player's Left Ctrl session is live it owns the same velocity
--- channel, so fly yields that window and resumes on the same gravity floor.
+-- invalid and panic. A session restores the saved gravity amount and zeroes
+-- the velocity, the same restore 17_lockplayer uses. While Lock Player's Left
+-- Ctrl session is live it owns the same velocity channel, so fly yields that
+-- window and drops the stored vector; on resume the ramp starts from rest.
+-- A loader reload kills the old task; FLY.repair() restores a stale gravity
+-- left on the operator's current vehicle.
 -- ============================================================================
 S.fly = (function(O)
     local FLY = {
@@ -42131,12 +42144,8 @@ S.fly = (function(O)
         active = false,
         ped = 0,
         veh = 0,
-        gen = 0,
-        fallback = false,
-        fallbackTask = false,
         reason = "off",
         lastTickAt = 0,
-        gravityNext = 0,
         savedGravity = 9.8,
         vx = 0.0,
         vy = 0.0,
@@ -42155,8 +42164,6 @@ S.fly = (function(O)
     local MAX_DT = 0.05
     local HOVER_DITHER = 0.5
     local HOVER_PERIOD_MS = 500
-    local GRAVITY_REFRESH_MS = 250
-    local IDLE_WAIT_MS = 250
     local DEFAULT_GRAVITY = 9.8
     local MIN_GRAVITY = 1.0
     local GROUND_CLEARANCE = 0.5
@@ -42205,23 +42212,34 @@ S.fly = (function(O)
         return nil
     end
 
-    local function restoreGravity(veh)
+    -- Same prep/restore pair as 17_lockplayer. The gravity write is the
+    -- load-bearing one and its pcall result is returned so a missing or
+    -- refusing native fails closed. The engine/undriveable pair makes the car
+    -- a live physics body; a frozen car is released with a read-gated unfreeze
+    -- (never an unconditional one).
+    local function prepVehicle(veh)
+        local okGravity = pcall(SetVehicleGravityAmount, veh, 0.0)
+        pcall(SetVehicleEngineOn, veh, true, true, false)
+        pcall(SetVehicleUndriveable, veh, false)
+
+        local okFrozen, frozen = pcall(IsEntityPositionFrozen, veh)
+        if okFrozen and frozen == true then
+            pcall(FreezeEntityPosition, veh, false)
+        end
+        return okGravity
+    end
+
+    local function restoreVehicle(veh)
         if not exists(veh) then return false end
         local target = FLY.savedGravity
         if type(target) ~= "number" or target < MIN_GRAVITY then
             target = DEFAULT_GRAVITY
         end
-        return pcall(SetVehicleGravityAmount, veh, target)
-    end
-
-    local function reassertGravity(now)
-        if not FLY.active then return end
-        if now < FLY.gravityNext then return end
-        FLY.gravityNext = now + O.jitter(GRAVITY_REFRESH_MS, 0.3)
-        local veh = FLY.veh
-        if exists(veh) then
-            pcall(SetVehicleGravityAmount, veh, 0.0)
-        end
+        pcall(SetVehicleGravityAmount, veh, target)
+        pcall(SetEntityVelocity, veh, 0.0, 0.0, 0.0)
+        pcall(SetVehicleEngineOn, veh, true, true, false)
+        pcall(SetVehicleUndriveable, veh, false)
+        return true
     end
 
     local function stopSession(reason)
@@ -42232,11 +42250,10 @@ S.fly = (function(O)
         FLY.ped = 0
         FLY.reason = reason or "off"
         FLY.vx, FLY.vy, FLY.vz = 0.0, 0.0, 0.0
-        FLY.gravityNext = 0
         FLY.lastTickAt = 0
         FLY.fail = 0
         if wasActive then
-            restoreGravity(veh)
+            restoreVehicle(veh)
             FLY.stats.stops = FLY.stats.stops + 1
             O.log("fly vehicle off (%s)", tostring(FLY.reason))
         end
@@ -42251,7 +42268,8 @@ S.fly = (function(O)
                 saved = value
             end
         end
-        if not pcall(SetVehicleGravityAmount, veh, 0.0) then
+        FLY.savedGravity = saved
+        if not prepVehicle(veh) then
             FLY.stats.refusals = FLY.stats.refusals + 1
             FLY.reason = "gravity failed"
             O.log("fly vehicle: gravity write refused")
@@ -42262,7 +42280,6 @@ S.fly = (function(O)
             return false
         end
 
-        FLY.savedGravity = saved
         FLY.veh = veh
         FLY.ped = ped or 0
         FLY.active = true
@@ -42273,9 +42290,11 @@ S.fly = (function(O)
         -- Carry the car's current momentum into the session, capped. Arming
         -- while driving must not snap a 40 m/s car to zero on the first tick;
         -- the target ramp sheds the excess at the same 20 m/s^2 used below.
+        -- The native returns a vector3 userdata on the live build, so read the
+        -- fields directly instead of testing for a table.
         if type(GetEntityVelocity) == "function" then
             local ok, vel = pcall(GetEntityVelocity, veh)
-            if ok and type(vel) == "table" and type(vel.x) == "number"
+            if ok and vel ~= nil and type(vel.x) == "number"
                 and type(vel.y) == "number" and type(vel.z) == "number" then
                 local vx, vy, vz = vel.x, vel.y, vel.z
                 local mag = math.sqrt(vx * vx + vy * vy + vz * vz)
@@ -42287,7 +42306,6 @@ S.fly = (function(O)
             end
         end
 
-        FLY.gravityNext = now + GRAVITY_REFRESH_MS
         FLY.lastTickAt = now
         FLY.stats.sessions = FLY.stats.sessions + 1
         O.log("fly vehicle armed")
@@ -42298,8 +42316,11 @@ S.fly = (function(O)
         local yaw = 0.0
         if type(GetGameplayCamRot) == "function" then
             local ok, rot = pcall(GetGameplayCamRot, 2)
-            if ok and type(rot) == "table" then
-                yaw = tonumber(rot.z) or 0.0
+            -- Vector3 is a userdata with a metatable on the live build; the
+            -- old table test silently pinned the yaw to 0 and made W move
+            -- north instead of following the camera.
+            if ok and rot ~= nil and type(rot.z) == "number" then
+                yaw = rot.z
             end
         end
         local rz = math.rad(yaw)
@@ -42386,12 +42407,12 @@ S.fly = (function(O)
         FLY.stats.ticks = FLY.stats.ticks + 1
 
         -- Lock Player writes the same velocity channel while its Left Ctrl
-        -- session is live. Yield the write, keep the gravity floor, and drop
-        -- the stored vector: on resume the ramp starts from rest instead of
-        -- snapping the car back to a pre-yield speed the lock session erased.
+        -- session is live. Yield the write, drop the stored vector (on resume
+        -- the ramp starts from rest instead of snapping the car back to a
+        -- pre-yield speed the lock session erased), and leave the gravity
+        -- floor to the lock session, which writes it every tick itself.
         if type(FLY.yield) == "function" and FLY.yield() then
             FLY.vx, FLY.vy, FLY.vz = 0.0, 0.0, 0.0
-            reassertGravity(now)
             FLY.lastTickAt = now
             return
         end
@@ -42434,58 +42455,12 @@ S.fly = (function(O)
         end
         FLY.fail = 0
         FLY.stats.writes = FLY.stats.writes + 1
-        reassertGravity(now)
-    end
-
-    local function startThread()
-        local gen = FLY.gen
-        local build = O.build
-        local citizen = rawget(_G, "Citizen")
-        if type(citizen) ~= "table" then citizen = rawget(_G, "citizen") end
-        local create = rawget(_G, "CreateThread")
-        local wait = rawget(_G, "Wait")
-        if type(create) ~= "function" then
-            create = citizen and citizen.CreateThread or nil
-        end
-        if type(wait) ~= "function" then
-            wait = citizen and citizen.Wait or nil
-        end
-
-        if not create or not wait then
-            -- Scheduler floor. The row must not arm and do nothing on a build
-            -- without the thread primitives.
-            FLY.fallback = true
-            O.log("fly vehicle: scheduler thread")
-            if not FLY.fallbackTask then
-                FLY.fallbackTask = true
-                O.every("fly_vehicle", 16, function()
-                    if not FLY.enabled or not FLY.fallback then return end
-                    if build ~= nil and O.build ~= build then return end
-                    local ok, err = pcall(FLY.tick)
-                    if not ok then
-                        O.log("fly vehicle: fallback %s", tostring(err))
-                        FLY.setEnabled(false)
-                    end
-                end)
-            end
-            return
-        end
-
-        create(function()
-            -- O.build changes when the loader is re-executed; the guard keeps
-            -- a soft reload from leaving a second writer on the same vehicle.
-            while FLY.enabled and FLY.gen == gen
-                and (build == nil or O.build == build) do
-                if FLY.fallback then break end
-                local ok, err = pcall(FLY.tick)
-                if not ok then
-                    O.log("fly vehicle: tick %s", tostring(err))
-                    FLY.setEnabled(false)
-                    break
-                end
-                wait(FLY.active and 0 or IDLE_WAIT_MS)
-            end
-        end)
+        -- The lock mechanic re-asserts the gravity floor every tick. The
+        -- vehicle handling pass can restore the CFX amount between ticks; the
+        -- first build refreshed it only every 250 ms, so the car fell for the
+        -- other 249 ms and never lifted. Same order as 17_lockplayer's drive():
+        -- velocity first, then the gravity write.
+        pcall(SetVehicleGravityAmount, veh, 0.0)
     end
 
     function FLY.setEnabled(value)
@@ -42496,18 +42471,14 @@ S.fly = (function(O)
         end
 
         FLY.enabled = value
-        FLY.gen = FLY.gen + 1
-
         if not value then
             stopSession("operator")
             if FLY.row then FLY.row.value = false end
             return false
         end
 
-        FLY.fallback = false
         FLY.reason = "enabled"
         if FLY.row then FLY.row.value = true end
-        startThread()
         return true
     end
 
@@ -42559,6 +42530,21 @@ S.fly = (function(O)
             },
         }
     end
+
+    -- The scheduler is the single owner, exactly like 17_lockplayer: one task
+    -- registered once, a boolean gate when the row is off, no per-feature
+    -- thread. O.every jitters the 16 ms cadence; the tick is cheap when idle.
+    O.every("fly_vehicle", 16, function(now)
+        if not FLY.enabled then
+            if FLY.active then stopSession("off") end
+            return
+        end
+        local ok, err = pcall(FLY.tick, now)
+        if not ok then
+            O.log("fly vehicle: tick %s", tostring(err))
+            FLY.setEnabled(false)
+        end
+    end, 0)
 
     return FLY
 end)(O)
@@ -43354,9 +43340,10 @@ end
 -- MISC > BLOCKED (per-AC inbound event blocks)
 --
 -- Susano.BlockServerEvent drops a name before the Lua dispatcher sees it. The
--- rows are toggles so the same surface can reverse a block. The three defaults
--- are armed at load: screenshot_basic:requestScreenshot, anticheat:kick and
--- anticheat:ban. Every name is exact; a namespace pattern would eat legitimate
+-- rows are toggles so the same surface can reverse a block. Every listed name
+-- is armed at load: the screenshot, spectate, kick, ban, slap, teleport,
+-- console-log, weapon-removal and upload paths of every supported AC start
+-- closed. Every name is exact; a namespace pattern would eat legitimate
 -- traffic. Menu.__vgdAcEventBlocked tracks this session's claims so release()
 -- and the shared bridge keep every other owner's block alive.
 -- ---------------------------------------------------------------------------
@@ -43367,27 +43354,27 @@ local AC_EVENT_GROUPS = {
         { "anticheat:ban", true },
     } },
     { name = "WaveShield", events = {
-        { "__WaveShield:takeScreenShot" },
-        { "__WaveShield:uploadCapturedGameplay" },
+        { "__WaveShield:takeScreenShot", true },
+        { "__WaveShield:uploadCapturedGameplay", true },
     } },
     { name = "EasyAdmin", events = {
-        { "EasyAdmin:CaptureScreenshot" },
-        { "EasyAdmin:requestSpectate" },
-        { "EasyAdmin:kickPlayer" },
-        { "EasyAdmin:banPlayer" },
-        { "EasyAdmin:TeleportAdminToPlayer" },
-        { "EasyAdmin:SlapPlayer" },
+        { "EasyAdmin:CaptureScreenshot", true },
+        { "EasyAdmin:requestSpectate", true },
+        { "EasyAdmin:kickPlayer", true },
+        { "EasyAdmin:banPlayer", true },
+        { "EasyAdmin:TeleportAdminToPlayer", true },
+        { "EasyAdmin:SlapPlayer", true },
     } },
     { name = "Tigo Anticheat", events = {
-        { "tigoanticheat:banPlayer" },
-        { "tigoanticheat:logToConsole" },
+        { "tigoanticheat:banPlayer", true },
+        { "tigoanticheat:logToConsole", true },
     } },
     { name = "AntiCheese", events = {
-        { "AntiCheese:RemoveInventoryWeapons" },
+        { "AntiCheese:RemoveInventoryWeapons", true },
     } },
     { name = "el_bwh", events = {
-        { "el_bwh:ban" },
-        { "el_bwh:warn" },
+        { "el_bwh:ban", true },
+        { "el_bwh:warn", true },
     } },
 }
 
@@ -47019,7 +47006,7 @@ end
 -- ---------------------------------------------------------------------------
 -- REMOVE OLD ENTRY POINTS
 -- ---------------------------------------------------------------------------
-local MENU_REV = "2026-11-28-r128"
+local MENU_REV = "2026-11-28-r130"
 
 -- A previous execution of the old loader can leave its category in the shared
 -- Menu table. Match both the literal name and the old nine-tab fingerprint so
